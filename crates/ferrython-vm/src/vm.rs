@@ -1196,11 +1196,9 @@ impl VirtualMachine {
                     let stack_pos = frame.stack.len() - idx;
                     let set_obj = frame.stack[stack_pos].clone();
                     if let PyObjectPayload::Set(s) = &set_obj.payload {
-                        let mut new_set = s.clone();
                         if let Ok(key) = item.to_hashable_key() {
-                            new_set.insert(key, item);
+                            s.write().insert(key, item);
                         }
-                        frame.stack[stack_pos] = PyObject::set(new_set);
                     }
                 }
                 Opcode::MapAdd => {
@@ -1418,7 +1416,22 @@ impl VirtualMachine {
 
                 Opcode::ReturnValue => {
                     let value = frame.pop();
-                    return Ok(Some(value));
+                    // Unwind block stack looking for Finally blocks
+                    while let Some(block) = frame.block_stack.last() {
+                        if block.kind == BlockKind::Finally {
+                            let handler = block.handler;
+                            frame.block_stack.pop();
+                            frame.pending_return = Some(value.clone());
+                            frame.push(PyObject::none()); // normal entry marker for finally
+                            frame.ip = handler;
+                            break;
+                        } else {
+                            frame.block_stack.pop();
+                        }
+                    }
+                    if frame.pending_return.is_none() {
+                        return Ok(Some(value));
+                    }
                 }
 
                 // ── Import ──
@@ -1461,31 +1474,54 @@ impl VirtualMachine {
                 Opcode::SetupFinally => {
                     frame.push_block(BlockKind::Finally, instr.arg as usize);
                 }
+                Opcode::SetupExcept => {
+                    frame.push_block(BlockKind::Except, instr.arg as usize);
+                }
                 Opcode::PopBlock => { frame.pop_block(); }
                 Opcode::PopExcept => { frame.pop_block(); }
                 Opcode::EndFinally => {
-                    // Check TOS: if it's an exception type, re-raise the exception.
-                    // If it's None, the finally block was entered normally — continue.
-                    // If the stack is empty or TOS is something else, just continue.
-                    if !frame.stack.is_empty() {
-                        let tos = frame.peek();
-                        match &tos.payload {
-                            PyObjectPayload::ExceptionType(kind) => {
-                                let kind = kind.clone();
-                                frame.pop(); // type
-                                let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
-                                if !frame.stack.is_empty() { frame.pop(); } // traceback
-                                let msg = match &value.payload {
-                                    PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
-                                    _ => value.py_to_string(),
-                                };
-                                return Err(PyException::new(kind, msg));
+                    // Check for pending return (from return-in-try-finally)
+                    if let Some(ret_val) = frame.pending_return.take() {
+                        // Check if there are more Finally blocks to unwind through
+                        let mut has_finally = false;
+                        while let Some(block) = frame.block_stack.last() {
+                            if block.kind == BlockKind::Finally {
+                                let handler = block.handler;
+                                frame.block_stack.pop();
+                                frame.pending_return = Some(ret_val.clone());
+                                frame.push(PyObject::none());
+                                frame.ip = handler;
+                                has_finally = true;
+                                break;
+                            } else {
+                                frame.block_stack.pop();
                             }
-                            PyObjectPayload::None => {
-                                frame.pop(); // consume the None
-                            }
-                            _ => {
-                                // Integer or other — just continue
+                        }
+                        if !has_finally {
+                            return Ok(Some(ret_val));
+                        }
+                    } else {
+                        // Normal EndFinally: check TOS for exception re-raise
+                        if !frame.stack.is_empty() {
+                            let tos = frame.peek();
+                            match &tos.payload {
+                                PyObjectPayload::ExceptionType(kind) => {
+                                    let kind = kind.clone();
+                                    frame.pop(); // type
+                                    let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
+                                    if !frame.stack.is_empty() { frame.pop(); } // traceback
+                                    let msg = match &value.payload {
+                                        PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
+                                        _ => value.py_to_string(),
+                                    };
+                                    return Err(PyException::new(kind, msg));
+                                }
+                                PyObjectPayload::None => {
+                                    frame.pop(); // consume the None
+                                }
+                                _ => {
+                                    // Integer or other — just continue
+                                }
                             }
                         }
                     }

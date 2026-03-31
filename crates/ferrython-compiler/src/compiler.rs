@@ -1051,7 +1051,7 @@ impl Compiler {
 
         // Set up try/except
         let except_label = if !handlers.is_empty() {
-            Some(self.emit_jump(Opcode::SetupFinally))
+            Some(self.emit_jump(Opcode::SetupExcept))
         } else {
             None
         };

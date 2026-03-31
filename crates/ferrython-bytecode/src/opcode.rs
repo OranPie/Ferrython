@@ -159,6 +159,9 @@ pub enum Opcode {
     // ── Method call optimization ──
     LoadMethod = 160,
     CallMethod = 161,
+
+    // ── Custom: distinguish except from finally ──
+    SetupExcept = 200,
 }
 
 impl Opcode {
@@ -248,7 +251,7 @@ impl Opcode {
             Self::ImportName => -1,
             Self::ImportFrom => 1,
             Self::ImportStar => -1,
-            Self::SetupFinally | Self::SetupWith => 0,
+            Self::SetupFinally | Self::SetupWith | Self::SetupExcept => 0,
             Self::PopBlock | Self::PopExcept => 0,
             Self::EndFinally | Self::BeginFinally => 0,
             Self::RaiseVarargs => -(arg as i32),
@@ -279,6 +282,7 @@ impl Opcode {
                 | Self::ForIter
                 | Self::SetupFinally
                 | Self::SetupWith
+                | Self::SetupExcept
         )
     }
 }

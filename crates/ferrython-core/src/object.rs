@@ -34,7 +34,7 @@ pub enum PyObjectPayload {
     ByteArray(Vec<u8>),
     List(Arc<RwLock<Vec<PyObjectRef>>>),
     Tuple(Vec<PyObjectRef>),
-    Set(IndexMap<HashableKey, PyObjectRef>),
+    Set(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     FrozenSet(IndexMap<HashableKey, PyObjectRef>),
     Dict(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     Function(PyFunction),
@@ -148,7 +148,7 @@ impl PyObject {
     pub fn bytes(v: Vec<u8>) -> PyObjectRef { Self::wrap(PyObjectPayload::Bytes(v)) }
     pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::List(Arc::new(RwLock::new(items)))) }
     pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Tuple(items)) }
-    pub fn set(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Set(items)) }
+    pub fn set(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(items)))) }
     pub fn dict(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(items)))) }
     pub fn function(func: PyFunction) -> PyObjectRef { Self::wrap(PyObjectPayload::Function(func)) }
     pub fn builtin_function(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinFunction(name)) }
@@ -336,7 +336,8 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => !b.is_empty(),
             PyObjectPayload::List(v) => !v.read().is_empty(),
             PyObjectPayload::Tuple(v) => !v.is_empty(),
-            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => !m.is_empty(),
+            PyObjectPayload::Set(m) => !m.read().is_empty(),
+            PyObjectPayload::FrozenSet(m) => !m.is_empty(),
             PyObjectPayload::Dict(m) => !m.read().is_empty(),
             _ => true,
         }
@@ -368,8 +369,11 @@ impl PyObjectMethods for PyObjectRef {
                 if items.len() == 1 { format!("({},)", items[0].repr()) }
                 else { format_collection("(", ")", items) }
             }
-            PyObjectPayload::Set(m) if m.is_empty() => "set()".into(),
-            PyObjectPayload::Set(m) => format_set("{", "}", m),
+            PyObjectPayload::Set(m) => {
+                let m = m.read();
+                if m.is_empty() { "set()".into() }
+                else { format_set("{", "}", &m) }
+            }
             PyObjectPayload::Dict(m) => format_dict(&m.read()),
             PyObjectPayload::Ellipsis => "Ellipsis".into(),
             PyObjectPayload::NotImplemented => "NotImplemented".into(),
@@ -415,7 +419,8 @@ impl PyObjectMethods for PyObjectRef {
         match &self.payload {
             PyObjectPayload::List(v) => Ok(v.read().clone()),
             PyObjectPayload::Tuple(v) => Ok(v.clone()),
-            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
+            PyObjectPayload::Set(m) => Ok(m.read().values().cloned().collect()),
+            PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
             PyObjectPayload::Dict(m) => Ok(m.read().keys().map(|k| k.to_object()).collect()),
             PyObjectPayload::Iterator(iter_data) => {
@@ -742,6 +747,18 @@ impl PyObjectMethods for PyObjectRef {
                 None
             }
             PyObjectPayload::Class(cd) => {
+                // Special class attributes
+                if name == "__name__" {
+                    return Some(PyObject::str_val(cd.name.clone()));
+                }
+                if name == "__bases__" {
+                    return Some(PyObject::tuple(cd.bases.clone()));
+                }
+                if name == "__mro__" {
+                    let mut mro_list = vec![self.clone()];
+                    mro_list.extend(cd.mro.iter().cloned());
+                    return Some(PyObject::tuple(mro_list));
+                }
                 // Check own namespace first, then bases
                 if let Some(v) = cd.namespace.read().get(name).cloned() {
                     match &v.payload {
@@ -856,7 +873,8 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok(b.len()),
             PyObjectPayload::List(v) => Ok(v.read().len()),
             PyObjectPayload::Tuple(v) => Ok(v.len()),
-            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => Ok(m.len()),
+            PyObjectPayload::Set(m) => Ok(m.read().len()),
+            PyObjectPayload::FrozenSet(m) => Ok(m.len()),
             PyObjectPayload::Dict(m) => Ok(m.read().len()),
             _ => Err(PyException::type_error(format!("object of type '{}' has no len()", self.type_name()))),
         }
@@ -912,7 +930,11 @@ impl PyObjectMethods for PyObjectRef {
                 if let Some(needle) = item.as_str() { Ok(haystack.contains(needle)) }
                 else { Err(PyException::type_error("'in <string>' requires string as left operand")) }
             }
-            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => {
+            PyObjectPayload::Set(m) => {
+                let hk = item.to_hashable_key()?;
+                Ok(m.read().contains_key(&hk))
+            }
+            PyObjectPayload::FrozenSet(m) => {
                 let hk = item.to_hashable_key()?;
                 Ok(m.contains_key(&hk))
             }
@@ -934,7 +956,11 @@ impl PyObjectMethods for PyObjectRef {
                 let keys: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
             }
-            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => {
+            PyObjectPayload::Set(m) => {
+                let vals: Vec<PyObjectRef> = m.read().values().cloned().collect();
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: vals, index: 0 })))))
+            }
+            PyObjectPayload::FrozenSet(m) => {
                 let vals: Vec<PyObjectRef> = m.values().cloned().collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: vals, index: 0 })))))
             }
@@ -1074,7 +1100,14 @@ fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ord
         (PyObjectPayload::BuiltinFunction(a), PyObjectPayload::BuiltinFunction(b)) => {
             if a == b { Some(std::cmp::Ordering::Equal) } else { None }
         }
-        (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) |
+        (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
+            let a = a.read(); let b = b.read();
+            if a.len() != b.len() { return None; }
+            for k in a.keys() {
+                if !b.contains_key(k) { return None; }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
         (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
             // Set equality: same keys
             if a.len() != b.len() { return None; }

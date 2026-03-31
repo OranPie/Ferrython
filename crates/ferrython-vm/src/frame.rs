@@ -39,6 +39,8 @@ pub struct Frame {
     pub scope_kind: ScopeKind,
     /// Set to true when a YieldValue instruction is executed.
     pub yielded: bool,
+    /// Pending return value when unwinding through finally blocks.
+    pub pending_return: Option<PyObjectRef>,
 }
 
 impl Frame {
@@ -61,6 +63,7 @@ impl Frame {
             cells,
             scope_kind: ScopeKind::Module,
             yielded: false,
+            pending_return: None,
         }
     }
     #[inline] pub fn push(&mut self, v: PyObjectRef) { self.stack.push(v); }

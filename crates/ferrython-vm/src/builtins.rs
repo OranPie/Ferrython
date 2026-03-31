@@ -404,13 +404,28 @@ fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
     match &cls.payload {
         PyObjectPayload::BuiltinFunction(type_name) => {
-            // Checking against a builtin type like int, str, float, etc.
-            obj.type_name() == type_name.as_str()
+            let obj_type = obj.type_name();
+            if obj_type == type_name.as_str() {
+                return true;
+            }
+            // Built-in subtype relationships: bool is subclass of int
+            if type_name.as_str() == "int" && obj_type == "bool" {
+                return true;
+            }
+            false
         }
         PyObjectPayload::Class(target_cd) => {
             // User-defined class check: walk the instance's class MRO
             if let PyObjectPayload::Instance(inst) = &obj.payload {
                 class_is_subclass_of(&inst.class, &target_cd.name)
+            } else {
+                false
+            }
+        }
+        PyObjectPayload::ExceptionType(kind) => {
+            // Check if obj is an exception instance of this type
+            if let PyObjectPayload::ExceptionInstance { kind: obj_kind, .. } = &obj.payload {
+                obj_kind == kind
             } else {
                 false
             }
@@ -1260,12 +1275,12 @@ fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyObjectRef]) 
     }
 }
 
-fn call_set_method(m: &IndexMap<HashableKey, PyObjectRef>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn call_set_method(m: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
-        "copy" => Ok(PyObject::set(m.clone())),
+        "copy" => Ok(PyObject::set(m.read().clone())),
         "union" | "__or__" => {
             check_args_min("union", args, 1)?;
-            let mut result = m.clone();
+            let mut result = m.read().clone();
             let other_list = args[0].to_list()?;
             for item in other_list {
                 let hk = item.to_hashable_key()?;
@@ -1278,10 +1293,46 @@ fn call_set_method(m: &IndexMap<HashableKey, PyObjectRef>, method: &str, args: &
             let other_items = args[0].to_list()?;
             let other_keys: std::collections::HashSet<String> = other_items.iter()
                 .map(|x| x.py_to_string()).collect();
-            let result: IndexMap<HashableKey, PyObjectRef> = m.iter()
+            let guard = m.read();
+            let result: IndexMap<HashableKey, PyObjectRef> = guard.iter()
                 .filter(|(_, v)| other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
+            Ok(PyObject::set(result))
+        }
+        "difference" | "__sub__" => {
+            check_args_min("difference", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let guard = m.read();
+            let result: IndexMap<HashableKey, PyObjectRef> = guard.iter()
+                .filter(|(_, v)| !other_keys.contains(&v.py_to_string()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(PyObject::set(result))
+        }
+        "symmetric_difference" | "__xor__" => {
+            check_args_min("symmetric_difference", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let guard = m.read();
+            let self_keys: std::collections::HashSet<String> = guard.values()
+                .map(|x| x.py_to_string()).collect();
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let mut result = IndexMap::new();
+            for (k, v) in guard.iter() {
+                if !other_keys.contains(&v.py_to_string()) {
+                    result.insert(k.clone(), v.clone());
+                }
+            }
+            for item in &other_items {
+                if !self_keys.contains(&item.py_to_string()) {
+                    if let Ok(hk) = item.to_hashable_key() {
+                        result.insert(hk, item.clone());
+                    }
+                }
+            }
             Ok(PyObject::set(result))
         }
         "issubset" => {
@@ -1289,14 +1340,70 @@ fn call_set_method(m: &IndexMap<HashableKey, PyObjectRef>, method: &str, args: &
             let other_items = args[0].to_list()?;
             let other_keys: std::collections::HashSet<String> = other_items.iter()
                 .map(|x| x.py_to_string()).collect();
-            let all_in = m.values().all(|v| other_keys.contains(&v.py_to_string()));
+            let all_in = m.read().values().all(|v| other_keys.contains(&v.py_to_string()));
             Ok(PyObject::bool_val(all_in))
         }
-        // add, remove, discard, pop, clear need mutability
-        "add" | "remove" | "discard" | "pop" | "clear" => {
-            Err(PyException::runtime_error(format!(
-                "set.{}() requires mutable set (not yet implemented)", method
-            )))
+        "issuperset" => {
+            check_args_min("issuperset", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let guard = m.read();
+            let self_keys: std::collections::HashSet<String> = guard.values()
+                .map(|x| x.py_to_string()).collect();
+            let all_in = other_items.iter().all(|v| self_keys.contains(&v.py_to_string()));
+            Ok(PyObject::bool_val(all_in))
+        }
+        "isdisjoint" => {
+            check_args_min("isdisjoint", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let guard = m.read();
+            let self_keys: std::collections::HashSet<String> = guard.values()
+                .map(|x| x.py_to_string()).collect();
+            let none_in = other_items.iter().all(|v| !self_keys.contains(&v.py_to_string()));
+            Ok(PyObject::bool_val(none_in))
+        }
+        "add" => {
+            check_args_min("add", args, 1)?;
+            let hk = args[0].to_hashable_key()?;
+            m.write().insert(hk, args[0].clone());
+            Ok(PyObject::none())
+        }
+        "remove" => {
+            check_args_min("remove", args, 1)?;
+            let hk = args[0].to_hashable_key()?;
+            if m.write().shift_remove(&hk).is_none() {
+                return Err(PyException::key_error(args[0].repr()));
+            }
+            Ok(PyObject::none())
+        }
+        "discard" => {
+            check_args_min("discard", args, 1)?;
+            let hk = args[0].to_hashable_key()?;
+            m.write().shift_remove(&hk);
+            Ok(PyObject::none())
+        }
+        "pop" => {
+            let mut guard = m.write();
+            if guard.is_empty() {
+                return Err(PyException::key_error("pop from an empty set"));
+            }
+            let key = guard.keys().next().unwrap().clone();
+            let val = guard.shift_remove(&key).unwrap();
+            Ok(val)
+        }
+        "clear" => {
+            m.write().clear();
+            Ok(PyObject::none())
+        }
+        "update" => {
+            check_args_min("update", args, 1)?;
+            let items = args[0].to_list()?;
+            let mut guard = m.write();
+            for item in items {
+                if let Ok(hk) = item.to_hashable_key() {
+                    guard.insert(hk, item);
+                }
+            }
+            Ok(PyObject::none())
         }
         _ => Err(PyException::attribute_error(format!(
             "'set' object has no attribute '{}'", method
