@@ -1,0 +1,11 @@
+[package]
+name = "ferrython-stdlib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standard library modules for Ferrython"
+
+[dependencies]
+ferrython-core = { workspace = true }
+ferrython-vm = { workspace = true }
+thiserror = { workspace = true }

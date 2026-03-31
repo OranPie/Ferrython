@@ -1,0 +1,20 @@
+[package]
+name = "ferrython-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core runtime for Ferrython: object model, memory management, GIL"
+
+[dependencies]
+ferrython-gc = { workspace = true }
+ferrython-bytecode = { workspace = true }
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
+num-integer = { workspace = true }
+compact_str = { workspace = true }
+parking_lot = { workspace = true }
+indexmap = { workspace = true }
+rustc-hash = { workspace = true }
+thiserror = { workspace = true }
+bitflags = { workspace = true }
+bumpalo = { workspace = true }

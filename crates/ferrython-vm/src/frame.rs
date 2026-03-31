@@ -1,0 +1,64 @@
+//! Execution frame for the Ferrython VM.
+
+use compact_str::CompactString;
+use ferrython_bytecode::CodeObject;
+use ferrython_core::object::PyObjectRef;
+use indexmap::IndexMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockKind { Loop, Except, Finally, With }
+
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub kind: BlockKind,
+    pub handler: usize,
+    pub stack_level: usize,
+}
+
+pub struct Frame {
+    pub code: CodeObject,
+    pub ip: usize,
+    pub stack: Vec<PyObjectRef>,
+    pub block_stack: Vec<Block>,
+    pub locals: Vec<Option<PyObjectRef>>,
+    pub local_names: IndexMap<CompactString, PyObjectRef>,
+    pub globals: IndexMap<CompactString, PyObjectRef>,
+    pub builtins: IndexMap<CompactString, PyObjectRef>,
+    pub cells: Vec<Option<PyObjectRef>>,
+}
+
+impl Frame {
+    pub fn new(
+        code: CodeObject,
+        globals: IndexMap<CompactString, PyObjectRef>,
+        builtins: IndexMap<CompactString, PyObjectRef>,
+    ) -> Self {
+        let nl = code.varnames.len();
+        let nc = code.cellvars.len() + code.freevars.len();
+        Self {
+            code, ip: 0,
+            stack: Vec::with_capacity(32),
+            block_stack: Vec::new(),
+            locals: vec![None; nl],
+            local_names: IndexMap::new(),
+            globals,
+            builtins,
+            cells: vec![None; nc],
+        }
+    }
+    #[inline] pub fn push(&mut self, v: PyObjectRef) { self.stack.push(v); }
+    #[inline] pub fn pop(&mut self) -> PyObjectRef { self.stack.pop().expect("stack underflow") }
+    #[inline] pub fn peek(&self) -> &PyObjectRef { self.stack.last().expect("stack underflow") }
+    pub fn get_local(&self, idx: usize) -> Option<&PyObjectRef> { self.locals[idx].as_ref() }
+    pub fn set_local(&mut self, idx: usize, v: PyObjectRef) { self.locals[idx] = Some(v); }
+    pub fn push_block(&mut self, kind: BlockKind, handler: usize) {
+        self.block_stack.push(Block { kind, handler, stack_level: self.stack.len() });
+    }
+    pub fn pop_block(&mut self) -> Option<Block> { self.block_stack.pop() }
+    pub fn load_name(&self, name: &str) -> Option<PyObjectRef> {
+        self.local_names.get(name).cloned()
+            .or_else(|| self.globals.get(name).cloned())
+            .or_else(|| self.builtins.get(name).cloned())
+    }
+    pub fn store_name(&mut self, name: CompactString, value: PyObjectRef) { self.local_names.insert(name, value); }
+}

@@ -1,0 +1,75 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ferrython-ast",
+    "crates/ferrython-parser",
+    "crates/ferrython-compiler",
+    "crates/ferrython-bytecode",
+    "crates/ferrython-vm",
+    "crates/ferrython-core",
+    "crates/ferrython-gc",
+    "crates/ferrython-jit",
+    "crates/ferrython-ffi",
+    "crates/ferrython-import",
+    "crates/ferrython-repl",
+    "crates/ferrython-debug",
+    "crates/ferrython-stdlib",
+    "crates/ferrython-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ferrython/ferrython"
+description = "A Rust implementation of the Python 3.8 interpreter"
+
+[workspace.dependencies]
+# Internal crates
+ferrython-ast = { path = "crates/ferrython-ast" }
+ferrython-parser = { path = "crates/ferrython-parser" }
+ferrython-compiler = { path = "crates/ferrython-compiler" }
+ferrython-bytecode = { path = "crates/ferrython-bytecode" }
+ferrython-vm = { path = "crates/ferrython-vm" }
+ferrython-core = { path = "crates/ferrython-core" }
+ferrython-gc = { path = "crates/ferrython-gc" }
+ferrython-jit = { path = "crates/ferrython-jit" }
+ferrython-ffi = { path = "crates/ferrython-ffi" }
+ferrython-import = { path = "crates/ferrython-import" }
+ferrython-repl = { path = "crates/ferrython-repl" }
+ferrython-debug = { path = "crates/ferrython-debug" }
+ferrython-stdlib = { path = "crates/ferrython-stdlib" }
+ferrython-cli = { path = "crates/ferrython-cli" }
+
+# External crates
+num-bigint = "0.4"
+num-traits = "0.2"
+num-integer = "0.1"
+unicode-normalization = "0.1"
+unicode-xid = "0.2"
+parking_lot = "0.12"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+bitflags = "2"
+indexmap = "2"
+rustc-hash = "1"
+bumpalo = "3"
+static_assertions = "1"
+compact_str = "0.8"
+phf = { version = "0.11", features = ["macros"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1
+
+[profile.bench]
+inherits = "release"
+debug = true

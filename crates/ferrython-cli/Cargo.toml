@@ -1,0 +1,25 @@
+[package]
+name = "ferrython-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI entry point for the Ferrython Python interpreter"
+
+[[bin]]
+name = "ferrython"
+path = "src/main.rs"
+
+[dependencies]
+ferrython-vm = { workspace = true }
+ferrython-core = { workspace = true }
+ferrython-parser = { workspace = true }
+ferrython-compiler = { workspace = true }
+ferrython-repl = { workspace = true }
+ferrython-import = { workspace = true }
+ferrython-stdlib = { workspace = true }
+ferrython-jit = { workspace = true }
+ferrython-gc = { workspace = true }
+ferrython-debug = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

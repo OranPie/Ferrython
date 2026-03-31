@@ -1,0 +1,12 @@
+[package]
+name = "ferrython-bytecode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Python 3.8 bytecode definitions and serialization for Ferrython"
+
+[dependencies]
+ferrython-ast = { workspace = true }
+compact_str = { workspace = true }
+bitflags = { workspace = true }
+num-bigint = { workspace = true }

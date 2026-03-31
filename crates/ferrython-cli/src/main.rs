@@ -1,0 +1,87 @@
+//! Ferrython — A Rust implementation of the Python 3.8 interpreter.
+
+use std::env;
+use std::fs;
+use std::process;
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+
+    if args.len() < 2 {
+        // Interactive REPL mode
+        println!("Ferrython 0.1.0 (Python 3.8 compatible)");
+        println!("Type \"help\", \"copyright\", \"credits\" or \"license\" for more information.");
+        // TODO: launch REPL
+        return;
+    }
+
+    // Check for -c flag
+    if args[1] == "-c" {
+        if args.len() < 3 {
+            eprintln!("Argument expected for the -c option");
+            process::exit(2);
+        }
+        run_string(&args[2], "<string>");
+        return;
+    }
+
+    // Check for -m flag
+    if args[1] == "-m" {
+        if args.len() < 3 {
+            eprintln!("No module name specified");
+            process::exit(2);
+        }
+        eprintln!("ferrython: -m flag not yet implemented");
+        process::exit(1);
+    }
+
+    // Check for --version
+    if args[1] == "--version" || args[1] == "-V" {
+        println!("Ferrython 0.1.0 (Python 3.8 compatible)");
+        return;
+    }
+
+    // Run a script file
+    let filename = &args[1];
+    match fs::read_to_string(filename) {
+        Ok(source) => run_string(&source, filename),
+        Err(e) => {
+            eprintln!("ferrython: can't open file '{}': {}", filename, e);
+            process::exit(2);
+        }
+    }
+}
+
+fn run_string(source: &str, filename: &str) {
+    // Parse
+    let module = match ferrython_parser::parse(source, filename) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("  File \"{}\"", filename);
+            eprintln!("SyntaxError: {}", e);
+            process::exit(1);
+        }
+    };
+
+    // Compile
+    let code = match ferrython_compiler::compile(&module, filename) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("  File \"{}\", compilation error", filename);
+            eprintln!("CompileError: {}", e);
+            process::exit(1);
+        }
+    };
+
+    // Execute
+    let mut vm = ferrython_vm::VirtualMachine::new();
+    match vm.execute(code) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Traceback (most recent call last):");
+            eprintln!("  File \"{}\"", filename);
+            eprintln!("{}: {}", e.kind, e.message);
+            process::exit(1);
+        }
+    }
+}

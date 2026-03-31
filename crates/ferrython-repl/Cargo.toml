@@ -1,0 +1,13 @@
+[package]
+name = "ferrython-repl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Interactive REPL for Ferrython"
+
+[dependencies]
+ferrython-vm = { workspace = true }
+ferrython-core = { workspace = true }
+ferrython-parser = { workspace = true }
+ferrython-compiler = { workspace = true }
+thiserror = { workspace = true }

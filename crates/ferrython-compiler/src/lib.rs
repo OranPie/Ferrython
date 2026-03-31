@@ -1,0 +1,27 @@
+//! Ferrython Compiler — translates Python 3.8 AST into bytecode.
+//!
+//! This crate takes a parsed AST (from `ferrython-ast`) and compiles it into
+//! a `CodeObject` (from `ferrython-bytecode`) that can be executed by the VM.
+
+mod compiler;
+pub mod error;
+pub mod symbol_table;
+
+pub use compiler::Compiler;
+pub use error::CompileError;
+
+use ferrython_ast::Module;
+use ferrython_bytecode::CodeObject;
+
+/// Compile a Python module AST into a bytecode `CodeObject`.
+///
+/// This is the main entry point for the compiler. It performs symbol-table
+/// analysis, then walks the AST emitting bytecode instructions.
+///
+/// # Errors
+/// Returns `CompileError` if the AST contains invalid constructs
+/// (e.g., `break` outside a loop, invalid assignment targets).
+pub fn compile(module: &Module, filename: &str) -> Result<CodeObject, CompileError> {
+    let mut compiler = Compiler::new(filename);
+    compiler.compile_module(module)
+}

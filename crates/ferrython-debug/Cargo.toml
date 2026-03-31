@@ -1,0 +1,13 @@
+[package]
+name = "ferrython-debug"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Developer tools for Ferrython: debugger, profiler, coverage"
+
+[dependencies]
+ferrython-vm = { workspace = true }
+ferrython-core = { workspace = true }
+ferrython-bytecode = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,15 @@
+[package]
+name = "ferrython-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Python 3.8 lexer and parser for Ferrython"
+
+[dependencies]
+ferrython-ast = { workspace = true }
+compact_str = { workspace = true }
+num-bigint = { workspace = true }
+thiserror = { workspace = true }
+unicode-xid = { workspace = true }
+unicode-normalization = { workspace = true }
+phf = { workspace = true }
