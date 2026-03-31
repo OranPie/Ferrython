@@ -1586,7 +1586,7 @@ impl VirtualMachine {
                             return Err(PyException::type_error("map() requires at least 2 arguments"));
                         }
                         let func_obj = args[0].clone();
-                        let iterable = args[1].to_list()?;
+                        let iterable = self.collect_iterable(&args[1])?;
                         let mut result = Vec::new();
                         for item in iterable {
                             result.push(self.call_object(func_obj.clone(), vec![item])?);
@@ -1600,7 +1600,7 @@ impl VirtualMachine {
                             return Err(PyException::type_error("filter() requires at least 2 arguments"));
                         }
                         let func_obj = args[0].clone();
-                        let iterable = args[1].to_list()?;
+                        let iterable = self.collect_iterable(&args[1])?;
                         let mut result = Vec::new();
                         for item in iterable {
                             let keep = if matches!(func_obj.payload, PyObjectPayload::None) {
@@ -1630,77 +1630,113 @@ impl VirtualMachine {
                                 Err(e) => Err(e),
                             };
                         }
+                        // Instance with __next__
+                        if let PyObjectPayload::Instance(_) = &args[0].payload {
+                            if let Some(next_method) = args[0].get_attr("__next__") {
+                                return match self.call_object(next_method, vec![]) {
+                                    Ok(value) => Ok(value),
+                                    Err(e) if e.kind == ExceptionKind::StopIteration && args.len() > 1 => {
+                                        Ok(args[1].clone())
+                                    }
+                                    Err(e) => Err(e),
+                                };
+                            }
+                        }
                         // Fall through to regular next() for iterators
                     }
                     "list" => {
                         if args.is_empty() {
                             return Ok(PyObject::list(vec![]));
                         }
-                        // Handle generators by draining them
-                        if let PyObjectPayload::Generator(ref gen_arc) = args[0].payload {
-                            let gen_arc = gen_arc.clone();
-                            let mut items = Vec::new();
-                            loop {
-                                match self.resume_generator(&gen_arc, PyObject::none()) {
-                                    Ok(value) => items.push(value),
-                                    Err(e) if e.kind == ExceptionKind::StopIteration => break,
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                            return Ok(PyObject::list(items));
-                        }
-                        // Handle custom iterators (Instance with __iter__)
-                        if matches!(&args[0].payload, PyObjectPayload::Instance(_)) {
-                            if let Some(iter_method) = args[0].get_attr("__iter__") {
-                                let iter_obj = self.call_object(iter_method, vec![])?;
-                                let mut items = Vec::new();
-                                loop {
-                                    if let Some(next_method) = iter_obj.get_attr("__next__") {
-                                        match self.call_object(next_method.clone(), vec![]) {
-                                            Ok(value) => items.push(value),
-                                            Err(e) if e.kind == ExceptionKind::StopIteration => break,
-                                            Err(e) => return Err(e),
-                                        }
-                                    } else { break; }
-                                }
-                                return Ok(PyObject::list(items));
-                            }
-                        }
-                        // Fall through to regular list() for other iterables
+                        let items = self.collect_iterable(&args[0])?;
+                        return Ok(PyObject::list(items));
                     }
                     "tuple" => {
                         if args.is_empty() {
                             return Ok(PyObject::tuple(vec![]));
                         }
-                        if let PyObjectPayload::Generator(ref gen_arc) = args[0].payload {
-                            let gen_arc = gen_arc.clone();
-                            let mut items = Vec::new();
-                            loop {
-                                match self.resume_generator(&gen_arc, PyObject::none()) {
-                                    Ok(value) => items.push(value),
-                                    Err(e) if e.kind == ExceptionKind::StopIteration => break,
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                            return Ok(PyObject::tuple(items));
-                        }
+                        let items = self.collect_iterable(&args[0])?;
+                        return Ok(PyObject::tuple(items));
                     }
                     "sum" => {
                         if args.is_empty() {
                             return Err(PyException::type_error("sum() requires at least 1 argument"));
                         }
-                        if let PyObjectPayload::Generator(ref gen_arc) = args[0].payload {
-                            let gen_arc = gen_arc.clone();
-                            let start = if args.len() > 1 { args[1].clone() } else { PyObject::int(0) };
-                            let mut total = start;
-                            loop {
-                                match self.resume_generator(&gen_arc, PyObject::none()) {
-                                    Ok(value) => total = total.add(&value)?,
-                                    Err(e) if e.kind == ExceptionKind::StopIteration => break,
-                                    Err(e) => return Err(e),
-                                }
+                        let items = self.collect_iterable(&args[0])?;
+                        let start = if args.len() > 1 { args[1].clone() } else { PyObject::int(0) };
+                        let mut total = start;
+                        for item in items {
+                            total = total.add(&item)?;
+                        }
+                        return Ok(total);
+                    }
+                    "sorted" => {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("sorted", &[PyObject::list(items)]);
+                        }
+                    }
+                    "set" => {
+                        if args.is_empty() {
+                            return builtins::dispatch("set", &[]);
+                        }
+                        let items = self.collect_iterable(&args[0])?;
+                        return builtins::dispatch("set", &[PyObject::list(items)]);
+                    }
+                    "frozenset" => {
+                        if args.is_empty() {
+                            return builtins::dispatch("frozenset", &[]);
+                        }
+                        let items = self.collect_iterable(&args[0])?;
+                        return builtins::dispatch("frozenset", &[PyObject::list(items)]);
+                    }
+                    "any" => {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("any", &[PyObject::list(items)]);
+                        }
+                    }
+                    "all" => {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("all", &[PyObject::list(items)]);
+                        }
+                    }
+                    "min" => {
+                        if args.len() == 1 {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("min", &items);
+                        }
+                    }
+                    "max" => {
+                        if args.len() == 1 {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("max", &items);
+                        }
+                    }
+                    "reversed" => {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("reversed", &[PyObject::list(items)]);
+                        }
+                    }
+                    "enumerate" => {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            let mut new_args = vec![PyObject::list(items)];
+                            if args.len() > 1 {
+                                new_args.push(args[1].clone());
                             }
-                            return Ok(total);
+                            return builtins::dispatch("enumerate", &new_args);
+                        }
+                    }
+                    "zip" => {
+                        if !args.is_empty() {
+                            let mut collected = Vec::new();
+                            for a in args.iter() {
+                                collected.push(PyObject::list(self.collect_iterable(a)?));
+                            }
+                            return builtins::dispatch("zip", &collected);
                         }
                     }
                     "len" => {
@@ -1891,24 +1927,95 @@ impl VirtualMachine {
     }
 
     /// Compute a simple MRO from bases (includes bases and their ancestors, NOT self).
+    /// C3 linearization for MRO computation (matches CPython).
     fn compute_mro(bases: &[PyObjectRef]) -> Vec<PyObjectRef> {
-        let mut mro = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for base in bases {
-            Self::collect_mro(base, &mut mro, &mut seen);
+        if bases.is_empty() {
+            return vec![];
         }
-        mro
+        // Build linearizations: L(base) for each base, plus the bases list itself
+        let mut linearizations: Vec<Vec<PyObjectRef>> = Vec::new();
+        for base in bases {
+            let mut l = vec![base.clone()];
+            if let PyObjectPayload::Class(cd) = &base.payload {
+                l.extend(cd.mro.iter().cloned());
+            }
+            linearizations.push(l);
+        }
+        linearizations.push(bases.to_vec());
+        Self::c3_merge(&mut linearizations)
     }
 
-    fn collect_mro(cls: &PyObjectRef, mro: &mut Vec<PyObjectRef>, seen: &mut std::collections::HashSet<*const PyObject>) {
-        let ptr = Arc::as_ptr(cls);
-        if seen.contains(&ptr) { return; }
-        seen.insert(ptr);
-        mro.push(cls.clone());
-        if let PyObjectPayload::Class(cd) = &cls.payload {
-            for base in &cd.bases {
-                Self::collect_mro(base, mro, seen);
+    fn c3_merge(linearizations: &mut Vec<Vec<PyObjectRef>>) -> Vec<PyObjectRef> {
+        let mut result = Vec::new();
+        loop {
+            // Remove empty lists
+            linearizations.retain(|l| !l.is_empty());
+            if linearizations.is_empty() {
+                break;
             }
+            // Find a good head: first element of some list that doesn't appear in the tail of any list
+            let mut found = None;
+            for lin in linearizations.iter() {
+                let candidate = &lin[0];
+                let candidate_ptr = Arc::as_ptr(candidate);
+                let in_tail = linearizations.iter().any(|other| {
+                    other.iter().skip(1).any(|x| Arc::as_ptr(x) == candidate_ptr)
+                });
+                if !in_tail {
+                    found = Some(candidate.clone());
+                    break;
+                }
+            }
+            if let Some(head) = found {
+                let head_ptr = Arc::as_ptr(&head);
+                result.push(head);
+                for lin in linearizations.iter_mut() {
+                    if !lin.is_empty() && Arc::as_ptr(&lin[0]) == head_ptr {
+                        lin.remove(0);
+                    }
+                }
+            } else {
+                // C3 linearization failure — fall back to DFS
+                break;
+            }
+        }
+        result
+    }
+
+    /// Collect all items from any iterable (list, tuple, generator, instance with __iter__/__next__).
+    fn collect_iterable(&mut self, obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
+        match &obj.payload {
+            PyObjectPayload::Generator(gen_arc) => {
+                let gen_arc = gen_arc.clone();
+                let mut items = Vec::new();
+                loop {
+                    match self.resume_generator(&gen_arc, PyObject::none()) {
+                        Ok(value) => items.push(value),
+                        Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(items)
+            }
+            PyObjectPayload::Instance(_) => {
+                if let Some(iter_method) = obj.get_attr("__iter__") {
+                    let iter_obj = self.call_object(iter_method, vec![])?;
+                    let mut items = Vec::new();
+                    loop {
+                        if let Some(next_method) = iter_obj.get_attr("__next__") {
+                            match self.call_object(next_method.clone(), vec![]) {
+                                Ok(value) => items.push(value),
+                                Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                                Err(e) => return Err(e),
+                            }
+                        } else { break; }
+                    }
+                    Ok(items)
+                } else {
+                    obj.to_list()
+                }
+            }
+            _ => obj.to_list(),
         }
     }
 

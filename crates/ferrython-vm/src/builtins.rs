@@ -150,6 +150,15 @@ pub fn get_builtin_fn(name: &str) -> Option<BuiltinFn> {
     }
 }
 
+/// Dispatch a builtin function by name (used by VM for pre-processed iterables).
+pub fn dispatch(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if let Some(f) = get_builtin_fn(name) {
+        f(args)
+    } else {
+        Err(PyException::runtime_error(format!("unknown builtin '{}'", name)))
+    }
+}
+
 // ── Iterator helpers (used by VM for FOR_ITER) ──
 
 /// Advance an iterator by one step. Returns (new_iterator, value) or None if exhausted.
