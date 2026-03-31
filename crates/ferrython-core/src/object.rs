@@ -5,13 +5,14 @@ use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
+use parking_lot::RwLock;
 use std::sync::Arc;
 
 /// A reference-counted handle to a Python object.
 pub type PyObjectRef = Arc<PyObject>;
 
 /// A Python object.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PyObject {
     pub payload: PyObjectPayload,
 }
@@ -37,6 +38,7 @@ pub enum PyObjectPayload {
     Function(PyFunction),
     BuiltinFunction(CompactString),
     BoundMethod { receiver: PyObjectRef, method: PyObjectRef },
+    BuiltinBoundMethod { receiver: PyObjectRef, method_name: CompactString },
     Code(Box<ferrython_bytecode::CodeObject>),
     Class(ClassData),
     Instance(InstanceData),
@@ -56,7 +58,7 @@ pub struct ClassData {
 #[derive(Debug, Clone)]
 pub struct InstanceData {
     pub class: PyObjectRef,
-    pub attrs: IndexMap<CompactString, PyObjectRef>,
+    pub attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +102,7 @@ impl PyObject {
         Self::wrap(PyObjectPayload::Class(ClassData { name, bases, namespace, mro: Vec::new() }))
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: IndexMap::new() }))
+        Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(IndexMap::new())) }))
     }
     pub fn module(name: CompactString) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: IndexMap::new() }))
@@ -181,6 +183,7 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Function(_) => "function",
             PyObjectPayload::BuiltinFunction(_) => "builtin_function_or_method",
             PyObjectPayload::BoundMethod { .. } => "method",
+            PyObjectPayload::BuiltinBoundMethod { .. } => "builtin_method",
             PyObjectPayload::Code(_) => "code",
             PyObjectPayload::Class(_) => "type",
             PyObjectPayload::Instance(inst) => {
@@ -467,14 +470,40 @@ impl PyObjectMethods for PyObjectRef {
     fn get_attr(&self, name: &str) -> Option<PyObjectRef> {
         match &self.payload {
             PyObjectPayload::Instance(inst) => {
-                if let Some(v) = inst.attrs.get(name) { return Some(v.clone()); }
+                // Instance attributes take priority
+                if let Some(v) = inst.attrs.read().get(name) { return Some(v.clone()); }
+                // Then check class namespace
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                    if let Some(v) = cd.namespace.get(name) { return Some(v.clone()); }
+                    if let Some(v) = cd.namespace.get(name) {
+                        // If it's a function, return a BoundMethod (auto-pass self)
+                        if matches!(&v.payload, PyObjectPayload::Function(_)) {
+                            return Some(Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: self.clone(),
+                                    method: v.clone(),
+                                }
+                            }));
+                        }
+                        return Some(v.clone());
+                    }
                 }
                 None
             }
             PyObjectPayload::Class(cd) => cd.namespace.get(name).cloned(),
             PyObjectPayload::Module(m) => m.attrs.get(name).cloned(),
+            // Built-in type methods — return bound method names
+            PyObjectPayload::Str(_) | PyObjectPayload::List(_) |
+            PyObjectPayload::Dict(_) | PyObjectPayload::Tuple(_) |
+            PyObjectPayload::Set(_) | PyObjectPayload::Int(_) |
+            PyObjectPayload::Float(_) | PyObjectPayload::Bytes(_) => {
+                // Create a BoundMethod wrapping (self_obj, method_name)
+                Some(Arc::new(PyObject {
+                    payload: PyObjectPayload::BuiltinBoundMethod {
+                        receiver: self.clone(),
+                        method_name: CompactString::from(name),
+                    }
+                }))
+            }
             _ => None,
         }
     }
@@ -554,7 +583,7 @@ impl PyObjectMethods for PyObjectRef {
     fn dir(&self) -> Vec<CompactString> {
         match &self.payload {
             PyObjectPayload::Instance(inst) => {
-                let mut names: Vec<CompactString> = inst.attrs.keys().cloned().collect();
+                let mut names: Vec<CompactString> = inst.attrs.read().keys().cloned().collect();
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     names.extend(cd.namespace.keys().cloned());
                 }

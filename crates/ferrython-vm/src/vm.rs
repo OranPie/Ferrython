@@ -1,7 +1,7 @@
 //! The main virtual machine — executes bytecode instructions.
 
 use crate::builtins;
-use crate::frame::{BlockKind, Frame};
+use crate::frame::{BlockKind, Frame, ScopeKind};
 use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeObject, ConstantValue};
 use ferrython_bytecode::opcode::Opcode;
@@ -43,14 +43,28 @@ impl VirtualMachine {
         &mut self,
         code: &CodeObject,
         args: Vec<PyObjectRef>,
+        defaults: &[PyObjectRef],
         globals: SharedGlobals,
     ) -> PyResult<PyObjectRef> {
         let mut frame = Frame::new(code.clone(), globals, self.builtins.clone());
-        for (i, arg) in args.into_iter().enumerate() {
+        let nparams = code.arg_count as usize;
+        for (i, arg) in args.iter().enumerate() {
             if i < code.varnames.len() {
-                frame.set_local(i, arg);
+                frame.set_local(i, arg.clone());
             }
         }
+        // Fill in defaults for missing positional args
+        if args.len() < nparams && !defaults.is_empty() {
+            let ndefaults = defaults.len();
+            let first_default_param = nparams - ndefaults;
+            for i in args.len()..nparams {
+                if i >= first_default_param {
+                    let default_idx = i - first_default_param;
+                    frame.set_local(i, defaults[default_idx].clone());
+                }
+            }
+        }
+        frame.scope_kind = ScopeKind::Function;
         self.call_stack.push(frame);
         let result = self.run_frame();
         self.call_stack.pop();
@@ -112,9 +126,21 @@ impl VirtualMachine {
                 Opcode::StoreName => {
                     let name = frame.code.names[instr.arg as usize].clone();
                     let value = frame.pop();
-                    // At module level, locals == globals. Write to shared globals
-                    // so that function mutations via STORE_GLOBAL are visible.
-                    frame.globals.write().insert(name, value);
+                    match frame.scope_kind {
+                        ScopeKind::Module => {
+                            // Module level: locals == globals
+                            frame.globals.write().insert(name, value);
+                        }
+                        ScopeKind::Class => {
+                            // Class body: write to local_names (the class namespace)
+                            frame.local_names.insert(name, value);
+                        }
+                        ScopeKind::Function => {
+                            // Shouldn't normally get STORE_NAME in function scope
+                            // (compiler uses STORE_FAST), but handle it anyway
+                            frame.local_names.insert(name, value);
+                        }
+                    }
                 }
                 Opcode::DeleteName => {
                     let name = &frame.code.names[instr.arg as usize];
@@ -169,10 +195,19 @@ impl VirtualMachine {
                     }
                 }
                 Opcode::StoreAttr => {
-                    let _name = &frame.code.names[instr.arg as usize];
-                    let _obj = frame.pop();
-                    let _value = frame.pop();
-                    // TODO: implement attribute setting (needs interior mutability)
+                    let name = frame.code.names[instr.arg as usize].clone();
+                    let obj = frame.pop();   // TOS: the object
+                    let value = frame.pop(); // TOS1: the value
+                    match &obj.payload {
+                        PyObjectPayload::Instance(inst) => {
+                            inst.attrs.write().insert(name, value);
+                        }
+                        _ => {
+                            return Err(PyException::attribute_error(format!(
+                                "'{}' object does not support attribute assignment", obj.type_name()
+                            )));
+                        }
+                    }
                 }
 
                 // ── Unary operations ──
@@ -266,10 +301,10 @@ impl VirtualMachine {
                         3 => a.compare(&b, CompareOp::Ne)?,
                         4 => a.compare(&b, CompareOp::Gt)?,
                         5 => a.compare(&b, CompareOp::Ge)?,
-                        6 => PyObject::bool_val(a.is_same(&b)),     // is
-                        7 => PyObject::bool_val(!a.is_same(&b)),    // is not
-                        8 => PyObject::bool_val(b.contains(&a)?),   // in
-                        9 => PyObject::bool_val(!b.contains(&a)?),  // not in
+                        6 => PyObject::bool_val(b.contains(&a)?),   // in
+                        7 => PyObject::bool_val(!b.contains(&a)?),  // not in
+                        8 => PyObject::bool_val(a.is_same(&b)),     // is
+                        9 => PyObject::bool_val(!a.is_same(&b)),    // is not
                         _ => return Err(PyException::runtime_error("invalid compare op")),
                     };
                     frame.push(result);
@@ -515,14 +550,15 @@ impl VirtualMachine {
                     let qualname = frame.pop();
                     let code_obj = frame.pop();
                     let flags = instr.arg;
+                    // CPython pops: closure(0x08), annotations(0x04), kwdefaults(0x02), defaults(0x01)
+                    if flags & 0x08 != 0 { frame.pop(); } // closure
+                    if flags & 0x04 != 0 { frame.pop(); } // annotations
+                    if flags & 0x02 != 0 { frame.pop(); } // kwdefaults
                     let mut defaults = Vec::new();
                     if flags & 0x01 != 0 {
                         let default_tuple = frame.pop();
                         defaults = default_tuple.to_list().unwrap_or_default();
                     }
-                    if flags & 0x02 != 0 { frame.pop(); } // kwdefaults
-                    if flags & 0x04 != 0 { frame.pop(); } // annotations
-                    if flags & 0x08 != 0 { frame.pop(); } // closure
                     let code = match &code_obj.payload {
                         PyObjectPayload::Code(c) => *c.clone(),
                         _ => return Err(PyException::type_error(
@@ -668,10 +704,9 @@ impl VirtualMachine {
         match &func.payload {
             PyObjectPayload::Function(pyfunc) => {
                 let code = pyfunc.code.clone();
-                // SharedGlobals is Arc — clone just bumps refcount.
-                // All functions from the same module share the same globals dict.
                 let globals = pyfunc.globals.clone();
-                self.call_function(&code, args, globals)
+                let defaults = pyfunc.defaults.clone();
+                self.call_function(&code, args, &defaults, globals)
             }
             PyObjectPayload::BuiltinFunction(name) => {
                 if name.as_str() == "__build_class__" {
@@ -692,6 +727,14 @@ impl VirtualMachine {
                     self.call_object(init.clone(), init_args)?;
                 }
                 Ok(instance)
+            }
+            PyObjectPayload::BoundMethod { receiver, method } => {
+                let mut bound_args = vec![receiver.clone()];
+                bound_args.extend(args);
+                self.call_object(method.clone(), bound_args)
+            }
+            PyObjectPayload::BuiltinBoundMethod { receiver, method_name } => {
+                builtins::call_method(receiver, method_name.as_str(), &args)
             }
             _ => Err(PyException::type_error(format!(
                 "'{}' object is not callable", func.type_name()
@@ -716,7 +759,8 @@ impl VirtualMachine {
             PyObjectPayload::Function(pyfunc) => {
                 let code = pyfunc.code.clone();
                 let globals = pyfunc.globals.clone();
-                let frame = Frame::new(code, globals, self.builtins.clone());
+                let mut frame = Frame::new(code, globals, self.builtins.clone());
+                frame.scope_kind = ScopeKind::Class;
                 self.call_stack.push(frame);
                 let _ = self.run_frame();
                 let frame = self.call_stack.pop().unwrap();

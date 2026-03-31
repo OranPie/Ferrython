@@ -9,6 +9,9 @@ use indexmap::IndexMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind { Loop, Except, Finally, With }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeKind { Module, Function, Class }
+
 #[derive(Debug, Clone)]
 pub struct Block {
     pub kind: BlockKind,
@@ -26,6 +29,7 @@ pub struct Frame {
     pub globals: SharedGlobals,
     pub builtins: IndexMap<CompactString, PyObjectRef>,
     pub cells: Vec<Option<PyObjectRef>>,
+    pub scope_kind: ScopeKind,
 }
 
 impl Frame {
@@ -45,6 +49,7 @@ impl Frame {
             globals,
             builtins,
             cells: vec![None; nc],
+            scope_kind: ScopeKind::Module,
         }
     }
     #[inline] pub fn push(&mut self, v: PyObjectRef) { self.stack.push(v); }

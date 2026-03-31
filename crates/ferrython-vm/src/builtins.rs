@@ -584,3 +584,434 @@ fn check_args_min(name: &str, args: &[PyObjectRef], min: usize) -> PyResult<()> 
         )))
     } else { Ok(()) }
 }
+
+// ── Built-in type method dispatch ──
+
+pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match &receiver.payload {
+        PyObjectPayload::Str(s) => call_str_method(s, method, args),
+        PyObjectPayload::List(items) => call_list_method(items, method, args),
+        PyObjectPayload::Dict(map) => call_dict_method(map, method, args),
+        PyObjectPayload::Int(_) => call_int_method(receiver, method, args),
+        PyObjectPayload::Float(f) => call_float_method(*f, method, args),
+        PyObjectPayload::Tuple(items) => call_tuple_method(items, method, args),
+        PyObjectPayload::Set(m) => call_set_method(m, method, args),
+        PyObjectPayload::Bytes(b) => call_bytes_method(b, method, args),
+        _ => Err(PyException::attribute_error(format!(
+            "'{}' object has no attribute '{}'", receiver.type_name(), method
+        ))),
+    }
+}
+
+fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match method {
+        "upper" => Ok(PyObject::str_val(CompactString::from(s.to_uppercase()))),
+        "lower" => Ok(PyObject::str_val(CompactString::from(s.to_lowercase()))),
+        "strip" => Ok(PyObject::str_val(CompactString::from(s.trim()))),
+        "lstrip" => Ok(PyObject::str_val(CompactString::from(s.trim_start()))),
+        "rstrip" => Ok(PyObject::str_val(CompactString::from(s.trim_end()))),
+        "split" => {
+            let parts: Vec<&str> = if args.is_empty() {
+                s.split_whitespace().collect()
+            } else if let Some(sep) = args[0].as_str() {
+                s.split(sep).collect()
+            } else {
+                return Err(PyException::type_error("split() argument must be str"));
+            };
+            Ok(PyObject::list(parts.iter().map(|p| PyObject::str_val(CompactString::from(*p))).collect()))
+        }
+        "rsplit" => {
+            let parts: Vec<&str> = if args.is_empty() {
+                s.rsplit_terminator(char::is_whitespace).collect()
+            } else if let Some(sep) = args[0].as_str() {
+                s.rsplit(sep).collect()
+            } else {
+                return Err(PyException::type_error("rsplit() argument must be str"));
+            };
+            Ok(PyObject::list(parts.iter().map(|p| PyObject::str_val(CompactString::from(*p))).collect()))
+        }
+        "join" => {
+            check_args_min("join", args, 1)?;
+            let items = args[0].to_list()?;
+            let strs: Result<Vec<String>, _> = items.iter()
+                .map(|x| x.as_str().map(String::from).ok_or_else(||
+                    PyException::type_error("sequence item: expected str")))
+                .collect();
+            Ok(PyObject::str_val(CompactString::from(strs?.join(s))))
+        }
+        "replace" => {
+            check_args_min("replace", args, 2)?;
+            let old = args[0].as_str().ok_or_else(|| PyException::type_error("replace() argument 1 must be str"))?;
+            let new = args[1].as_str().ok_or_else(|| PyException::type_error("replace() argument 2 must be str"))?;
+            if args.len() >= 3 {
+                let count = args[2].to_int()? as usize;
+                Ok(PyObject::str_val(CompactString::from(s.replacen(old, new, count))))
+            } else {
+                Ok(PyObject::str_val(CompactString::from(s.replace(old, new))))
+            }
+        }
+        "find" => {
+            check_args_min("find", args, 1)?;
+            let sub = args[0].as_str().ok_or_else(|| PyException::type_error("find() argument must be str"))?;
+            Ok(PyObject::int(s.find(sub).map(|i| i as i64).unwrap_or(-1)))
+        }
+        "rfind" => {
+            check_args_min("rfind", args, 1)?;
+            let sub = args[0].as_str().ok_or_else(|| PyException::type_error("rfind() argument must be str"))?;
+            Ok(PyObject::int(s.rfind(sub).map(|i| i as i64).unwrap_or(-1)))
+        }
+        "index" => {
+            check_args_min("index", args, 1)?;
+            let sub = args[0].as_str().ok_or_else(|| PyException::type_error("index() argument must be str"))?;
+            match s.find(sub) {
+                Some(i) => Ok(PyObject::int(i as i64)),
+                None => Err(PyException::value_error("substring not found")),
+            }
+        }
+        "count" => {
+            check_args_min("count", args, 1)?;
+            let sub = args[0].as_str().ok_or_else(|| PyException::type_error("count() argument must be str"))?;
+            Ok(PyObject::int(s.matches(sub).count() as i64))
+        }
+        "startswith" => {
+            check_args_min("startswith", args, 1)?;
+            let prefix = args[0].as_str().ok_or_else(|| PyException::type_error("startswith() argument must be str"))?;
+            Ok(PyObject::bool_val(s.starts_with(prefix)))
+        }
+        "endswith" => {
+            check_args_min("endswith", args, 1)?;
+            let suffix = args[0].as_str().ok_or_else(|| PyException::type_error("endswith() argument must be str"))?;
+            Ok(PyObject::bool_val(s.ends_with(suffix)))
+        }
+        "isdigit" => Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))),
+        "isalpha" => Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_alphabetic()))),
+        "isalnum" => Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_alphanumeric()))),
+        "isspace" => Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_whitespace()))),
+        "isupper" => Ok(PyObject::bool_val(s.chars().any(|c| c.is_uppercase()) && !s.chars().any(|c| c.is_lowercase()))),
+        "islower" => Ok(PyObject::bool_val(s.chars().any(|c| c.is_lowercase()) && !s.chars().any(|c| c.is_uppercase()))),
+        "title" => {
+            let mut result = String::with_capacity(s.len());
+            let mut prev_alpha = false;
+            for c in s.chars() {
+                if c.is_alphabetic() {
+                    if prev_alpha { result.extend(c.to_lowercase()); }
+                    else { result.extend(c.to_uppercase()); }
+                    prev_alpha = true;
+                } else {
+                    result.push(c);
+                    prev_alpha = false;
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        "capitalize" => {
+            let mut chars = s.chars();
+            let result = match chars.next() {
+                None => String::new(),
+                Some(c) => {
+                    let mut r = c.to_uppercase().to_string();
+                    for c in chars { r.extend(c.to_lowercase()); }
+                    r
+                }
+            };
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        "swapcase" => {
+            let result: String = s.chars().map(|c| {
+                if c.is_uppercase() { c.to_lowercase().to_string() }
+                else if c.is_lowercase() { c.to_uppercase().to_string() }
+                else { c.to_string() }
+            }).collect();
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        "center" => {
+            check_args_min("center", args, 1)?;
+            let width = args[0].to_int()? as usize;
+            let fillchar = if args.len() >= 2 {
+                args[1].as_str().and_then(|s| s.chars().next()).unwrap_or(' ')
+            } else { ' ' };
+            let len = s.chars().count();
+            if width <= len { return Ok(PyObject::str_val(CompactString::from(s))); }
+            let pad = width - len;
+            let left = pad / 2;
+            let right = pad - left;
+            let result = format!("{}{}{}", fillchar.to_string().repeat(left), s, fillchar.to_string().repeat(right));
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        "ljust" => {
+            check_args_min("ljust", args, 1)?;
+            let width = args[0].to_int()? as usize;
+            let fillchar = if args.len() >= 2 {
+                args[1].as_str().and_then(|s| s.chars().next()).unwrap_or(' ')
+            } else { ' ' };
+            let len = s.chars().count();
+            if width <= len { return Ok(PyObject::str_val(CompactString::from(s))); }
+            let result = format!("{}{}", s, fillchar.to_string().repeat(width - len));
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        "rjust" => {
+            check_args_min("rjust", args, 1)?;
+            let width = args[0].to_int()? as usize;
+            let fillchar = if args.len() >= 2 {
+                args[1].as_str().and_then(|s| s.chars().next()).unwrap_or(' ')
+            } else { ' ' };
+            let len = s.chars().count();
+            if width <= len { return Ok(PyObject::str_val(CompactString::from(s))); }
+            let result = format!("{}{}", fillchar.to_string().repeat(width - len), s);
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        "zfill" => {
+            check_args_min("zfill", args, 1)?;
+            let width = args[0].to_int()? as usize;
+            let len = s.len();
+            if width <= len { return Ok(PyObject::str_val(CompactString::from(s))); }
+            let pad = "0".repeat(width - len);
+            if s.starts_with('-') || s.starts_with('+') {
+                Ok(PyObject::str_val(CompactString::from(format!("{}{}{}", &s[..1], pad, &s[1..]))))
+            } else {
+                Ok(PyObject::str_val(CompactString::from(format!("{}{}", pad, s))))
+            }
+        }
+        "encode" => {
+            // Simple UTF-8 encoding
+            Ok(PyObject::bytes(s.as_bytes().to_vec()))
+        }
+        "format" => {
+            // Basic positional format: "{} is {}".format(a, b)
+            let mut result = String::new();
+            let mut chars = s.chars().peekable();
+            let mut arg_idx = 0usize;
+            while let Some(c) = chars.next() {
+                if c == '{' {
+                    if chars.peek() == Some(&'{') {
+                        chars.next();
+                        result.push('{');
+                    } else if chars.peek() == Some(&'}') {
+                        chars.next();
+                        if arg_idx < args.len() {
+                            result.push_str(&args[arg_idx].py_to_string());
+                            arg_idx += 1;
+                        }
+                    } else {
+                        // Collect field name
+                        let mut field = String::new();
+                        for c in chars.by_ref() {
+                            if c == '}' { break; }
+                            field.push(c);
+                        }
+                        if let Ok(idx) = field.parse::<usize>() {
+                            if idx < args.len() {
+                                result.push_str(&args[idx].py_to_string());
+                            }
+                        }
+                    }
+                } else if c == '}' && chars.peek() == Some(&'}') {
+                    chars.next();
+                    result.push('}');
+                } else {
+                    result.push(c);
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        _ => Err(PyException::attribute_error(format!(
+            "'str' object has no attribute '{}'", method
+        ))),
+    }
+}
+
+fn call_list_method(items: &[PyObjectRef], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Note: list methods that mutate need interior mutability.
+    // For now, return new lists for non-mutating methods.
+    match method {
+        "copy" => Ok(PyObject::list(items.to_vec())),
+        "count" => {
+            check_args_min("count", args, 1)?;
+            let target = &args[0];
+            let c = items.iter().filter(|x| x.py_to_string() == target.py_to_string()).count();
+            Ok(PyObject::int(c as i64))
+        }
+        "index" => {
+            check_args_min("index", args, 1)?;
+            let target = &args[0];
+            for (i, x) in items.iter().enumerate() {
+                if x.py_to_string() == target.py_to_string() {
+                    return Ok(PyObject::int(i as i64));
+                }
+            }
+            Err(PyException::value_error("x not in list"))
+        }
+        // append, extend, insert, remove, pop, sort, reverse need mutability
+        // For now, return helpful errors
+        "append" | "extend" | "insert" | "remove" | "pop" | "sort" | "reverse" | "clear" => {
+            Err(PyException::runtime_error(format!(
+                "list.{}() requires mutable list (not yet implemented)", method
+            )))
+        }
+        _ => Err(PyException::attribute_error(format!(
+            "'list' object has no attribute '{}'", method
+        ))),
+    }
+}
+
+fn call_dict_method(map: &IndexMap<HashableKey, PyObjectRef>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match method {
+        "keys" => {
+            let keys: Vec<PyObjectRef> = map.keys().map(|k| k.to_object()).collect();
+            Ok(PyObject::list(keys))
+        }
+        "values" => {
+            let vals: Vec<PyObjectRef> = map.values().cloned().collect();
+            Ok(PyObject::list(vals))
+        }
+        "items" => {
+            let pairs: Vec<PyObjectRef> = map.iter()
+                .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
+                .collect();
+            Ok(PyObject::list(pairs))
+        }
+        "get" => {
+            check_args_min("get", args, 1)?;
+            let key = args[0].to_hashable_key()?;
+            let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+            Ok(map.get(&key).cloned().unwrap_or(default))
+        }
+        "copy" => {
+            Ok(PyObject::dict(map.clone()))
+        }
+        // update, pop, setdefault, clear need mutability
+        "update" | "pop" | "setdefault" | "clear" | "popitem" => {
+            Err(PyException::runtime_error(format!(
+                "dict.{}() requires mutable dict (not yet implemented)", method
+            )))
+        }
+        _ => Err(PyException::attribute_error(format!(
+            "'dict' object has no attribute '{}'", method
+        ))),
+    }
+}
+
+fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match method {
+        "count" => {
+            check_args_min("count", args, 1)?;
+            let target = &args[0];
+            let c = items.iter().filter(|x| x.py_to_string() == target.py_to_string()).count();
+            Ok(PyObject::int(c as i64))
+        }
+        "index" => {
+            check_args_min("index", args, 1)?;
+            let target = &args[0];
+            for (i, x) in items.iter().enumerate() {
+                if x.py_to_string() == target.py_to_string() {
+                    return Ok(PyObject::int(i as i64));
+                }
+            }
+            Err(PyException::value_error("tuple.index(x): x not in tuple"))
+        }
+        _ => Err(PyException::attribute_error(format!(
+            "'tuple' object has no attribute '{}'", method
+        ))),
+    }
+}
+
+fn call_set_method(m: &IndexMap<HashableKey, PyObjectRef>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match method {
+        "copy" => Ok(PyObject::set(m.clone())),
+        "union" | "__or__" => {
+            check_args_min("union", args, 1)?;
+            let mut result = m.clone();
+            let other_list = args[0].to_list()?;
+            for item in other_list {
+                let hk = item.to_hashable_key()?;
+                result.entry(hk).or_insert(item);
+            }
+            Ok(PyObject::set(result))
+        }
+        "intersection" | "__and__" => {
+            check_args_min("intersection", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let result: IndexMap<HashableKey, PyObjectRef> = m.iter()
+                .filter(|(_, v)| other_keys.contains(&v.py_to_string()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(PyObject::set(result))
+        }
+        "issubset" => {
+            check_args_min("issubset", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let all_in = m.values().all(|v| other_keys.contains(&v.py_to_string()));
+            Ok(PyObject::bool_val(all_in))
+        }
+        // add, remove, discard, pop, clear need mutability
+        "add" | "remove" | "discard" | "pop" | "clear" => {
+            Err(PyException::runtime_error(format!(
+                "set.{}() requires mutable set (not yet implemented)", method
+            )))
+        }
+        _ => Err(PyException::attribute_error(format!(
+            "'set' object has no attribute '{}'", method
+        ))),
+    }
+}
+
+fn call_int_method(_receiver: &PyObjectRef, method: &str, _args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match method {
+        "bit_length" => {
+            let n = _receiver.to_int()?;
+            Ok(PyObject::int(if n == 0 { 0 } else { 64 - n.abs().leading_zeros() as i64 }))
+        }
+        _ => Err(PyException::attribute_error(format!(
+            "'int' object has no attribute '{}'", method
+        ))),
+    }
+}
+
+fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match method {
+        "is_integer" => Ok(PyObject::bool_val(f.fract() == 0.0)),
+        "hex" => {
+            // Python's float.hex() format
+            let (mantissa, exponent, sign) = if f == 0.0 {
+                (0u64, 0i32, if f.is_sign_negative() { "-" } else { "" })
+            } else {
+                let bits = f.to_bits();
+                let sign = if bits >> 63 != 0 { "-" } else { "" };
+                let exp = ((bits >> 52) & 0x7ff) as i32 - 1023;
+                let mant = bits & 0x000f_ffff_ffff_ffff;
+                (mant, exp, sign)
+            };
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "{}0x1.{:013x}p{:+}", sign, mantissa, exponent
+            ))))
+        }
+        _ => Err(PyException::attribute_error(format!(
+            "'float' object has no attribute '{}'", method
+        ))),
+    }
+}
+
+fn call_bytes_method(b: &[u8], method: &str, _args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match method {
+        "decode" => {
+            // Simple UTF-8 decode
+            let s = String::from_utf8_lossy(b);
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }
+        "hex" => Ok(PyObject::str_val(CompactString::from(hex::encode(b)))),
+        _ => Err(PyException::attribute_error(format!(
+            "'bytes' object has no attribute '{}'", method
+        ))),
+    }
+}
+
+// Hex encoding helper (avoid external dep)
+mod hex {
+    pub fn encode(data: &[u8]) -> String {
+        data.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+}
