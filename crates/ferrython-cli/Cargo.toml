@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 ferrython-vm = { workspace = true }
 ferrython-core = { workspace = true }
+ferrython-bytecode = { workspace = true }
 ferrython-parser = { workspace = true }
 ferrython-compiler = { workspace = true }
 ferrython-repl = { workspace = true }

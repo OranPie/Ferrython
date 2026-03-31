@@ -79,6 +79,7 @@ dependencies = [
 name = "ferrython-cli"
 version = "0.1.0"
 dependencies = [
+ "ferrython-bytecode",
  "ferrython-compiler",
  "ferrython-core",
  "ferrython-debug",

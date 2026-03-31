@@ -1558,7 +1558,33 @@ impl Parser {
     }
 
     fn parse_test_list_star_expr(&mut self) -> Result<Expression, ParseError> {
-        self.parse_test_or_star()
+        let first = self.parse_test_or_star()?;
+        if !self.check(TokenKind::Comma) {
+            return Ok(first);
+        }
+        // Could be a tuple target or value — use Load context here.
+        // The compiler's compile_store_target handles Store context separately.
+        let loc = first.location;
+        let mut elts = vec![first];
+        while self.check(TokenKind::Comma) {
+            self.advance();
+            if self.check_newline_or_eof()
+                || self.check(TokenKind::Equal)
+                || self.check(TokenKind::RightParen)
+                || self.check(TokenKind::RightBracket)
+                || self.check(TokenKind::RightBrace)
+            {
+                break;
+            }
+            elts.push(self.parse_test_or_star()?);
+        }
+        Ok(Expression::new(
+            ExpressionKind::Tuple {
+                elts,
+                ctx: ExprContext::Load,
+            },
+            loc,
+        ))
     }
 
     fn parse_test_or_star(&mut self) -> Result<Expression, ParseError> {
