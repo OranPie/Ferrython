@@ -83,7 +83,62 @@ impl VirtualMachine {
             let frame = self.call_stack.last_mut().unwrap();
             frame.ip += 1;
 
-            match instr.op {
+            match self.execute_one(instr) {
+                Ok(Some(ret)) => return Ok(ret),
+                Ok(None) => {}
+                Err(exc) => {
+                    if let Some(handler_ip) = self.unwind_except() {
+                        let frame = self.call_stack.last_mut().unwrap();
+                        // CPython pushes (traceback, value, type) — 3 items
+                        let exc_obj = PyObject::str_val(CompactString::from(exc.message.clone()));
+                        frame.push(PyObject::none());     // traceback
+                        frame.push(exc_obj);              // value
+                        frame.push(PyObject::none());     // type
+                        frame.ip = handler_ip;
+                    } else {
+                        return Err(exc);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Find an exception handler on the block stack. Returns handler IP if found.
+    fn unwind_except(&mut self) -> Option<usize> {
+        let frame = self.call_stack.last_mut()?;
+        while let Some(block) = frame.pop_block() {
+            match block.kind {
+                BlockKind::Except | BlockKind::Finally => {
+                    // Unwind value stack to block level
+                    while frame.stack.len() > block.stack_level {
+                        frame.pop();
+                    }
+                    // Push an ExceptHandler block so PopExcept can find it
+                    frame.push_block(BlockKind::ExceptHandler, 0);
+                    return Some(block.handler);
+                }
+                BlockKind::ExceptHandler => {
+                    // Clean up a previous except handler (exception in except body)
+                    while frame.stack.len() > block.stack_level {
+                        frame.pop();
+                    }
+                    continue;
+                }
+                BlockKind::Loop | BlockKind::With => {
+                    while frame.stack.len() > block.stack_level {
+                        frame.pop();
+                    }
+                    continue;
+                }
+            }
+        }
+        None
+    }
+
+    fn execute_one(&mut self, instr: ferrython_bytecode::Instruction) -> Result<Option<PyObjectRef>, PyException> {
+        let frame = self.call_stack.last_mut().unwrap();
+        
+        match instr.op {
                 Opcode::Nop => {}
 
                 // ── Stack operations ──
@@ -283,11 +338,31 @@ impl VirtualMachine {
                     frame.push(obj.get_item(&key)?);
                 }
                 Opcode::StoreSubscr => {
+                    // Stack: TOS = key, TOS1 = obj, TOS2 = value
                     let key = frame.pop();
                     let obj = frame.pop();
-                    let _value = frame.pop();
-                    // TODO: item assignment (needs interior mutability)
-                    let _ = (&obj, &key);
+                    let value = frame.pop();
+                    match &obj.payload {
+                        PyObjectPayload::List(items) => {
+                            let idx = key.to_int()?;
+                            let mut w = items.write();
+                            let len = w.len() as i64;
+                            let actual = if idx < 0 { len + idx } else { idx };
+                            if actual < 0 || actual >= len {
+                                return Err(PyException::index_error("list assignment index out of range"));
+                            }
+                            w[actual as usize] = value;
+                        }
+                        PyObjectPayload::Dict(map) => {
+                            // Dict uses interior mutability via Arc
+                            // For now, we need a mutable dict approach
+                            // This is a limitation — we'll handle it when we make Dict mutable too
+                            let _ = (map, &key, &value);
+                            return Err(PyException::type_error("dict item assignment not yet fully supported"));
+                        }
+                        _ => return Err(PyException::type_error(format!(
+                            "'{}' object does not support item assignment", obj.type_name()))),
+                    }
                 }
 
                 // ── Comparison ──
@@ -444,9 +519,7 @@ impl VirtualMachine {
                     let stack_pos = frame.stack.len() - idx;
                     let list_obj = frame.stack[stack_pos].clone();
                     if let PyObjectPayload::List(items) = &list_obj.payload {
-                        let mut new_items = items.clone();
-                        new_items.push(item);
-                        frame.stack[stack_pos] = PyObject::list(new_items);
+                        items.write().push(item);
                     }
                 }
                 Opcode::SetAdd => {
@@ -582,7 +655,7 @@ impl VirtualMachine {
 
                 Opcode::ReturnValue => {
                     let value = frame.pop();
-                    return Ok(value);
+                    return Ok(Some(value));
                 }
 
                 // ── Import ──
@@ -614,6 +687,16 @@ impl VirtualMachine {
                 }
                 Opcode::PopBlock => { frame.pop_block(); }
                 Opcode::PopExcept => { frame.pop_block(); }
+                Opcode::EndFinally => {
+                    // In CPython, EndFinally checks TOS for re-raise.
+                    // For bare except (no 'as'), we just continue.
+                    // The 3 exception values were already popped by PopTop*3 + PopExcept.
+                    // Nothing to do here for now.
+                }
+                Opcode::BeginFinally => {
+                    // Push None to indicate normal (non-exception) entry into finally
+                    frame.push(PyObject::none());
+                }
                 Opcode::RaiseVarargs => {
                     match instr.arg {
                         0 => return Err(PyException::runtime_error(
@@ -679,7 +762,7 @@ impl VirtualMachine {
                 // ── Yield ──
                 Opcode::YieldValue => {
                     let value = frame.pop();
-                    return Ok(value);
+                    return Ok(Some(value));
                 }
                 Opcode::YieldFrom => {
                     let _value = frame.pop();
@@ -692,7 +775,7 @@ impl VirtualMachine {
                     )));
                 }
             }
-        }
+            Ok(None)
     }
 
     /// Call a Python object (function, builtin, class).

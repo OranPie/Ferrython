@@ -1917,10 +1917,7 @@ impl Compiler {
             format!("{}.{}", qualname_prefix, name)
         };
 
-        // The outermost iterator is evaluated in the enclosing scope
-        self.compile_expression(&generators[0].iter)?;
-        self.emit_op(Opcode::GetIter);
-
+        // First, compile the comprehension function body
         self.push_function_unit(name, child_scope, &qualname)?;
 
         // The comprehension function takes the iterator as its only argument
@@ -1962,6 +1959,7 @@ impl Compiler {
 
         let comp_code = self.pop_function_unit();
 
+        // Now back in the enclosing scope — emit the function creation
         let code_idx = self.add_const(ConstantValue::Code(Box::new(comp_code)));
         self.emit_arg(Opcode::LoadConst, code_idx);
 
@@ -1970,7 +1968,12 @@ impl Compiler {
 
         self.emit_arg(Opcode::MakeFunction, 0);
 
-        // Call with the outermost iterator (already on stack)
+        // NOW compute the outermost iterator in the enclosing scope
+        // Stack: [fn] -> [fn, iter]
+        self.compile_expression(&generators[0].iter)?;
+        self.emit_op(Opcode::GetIter);
+
+        // Call fn(iter)
         self.emit_arg(Opcode::CallFunction, 1);
 
         Ok(())

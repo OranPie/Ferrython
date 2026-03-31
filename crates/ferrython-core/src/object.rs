@@ -30,7 +30,7 @@ pub enum PyObjectPayload {
     Str(CompactString),
     Bytes(Vec<u8>),
     ByteArray(Vec<u8>),
-    List(Vec<PyObjectRef>),
+    List(Arc<RwLock<Vec<PyObjectRef>>>),
     Tuple(Vec<PyObjectRef>),
     Set(IndexMap<HashableKey, PyObjectRef>),
     FrozenSet(IndexMap<HashableKey, PyObjectRef>),
@@ -75,23 +75,29 @@ pub enum IteratorData {
     Str { chars: Vec<char>, index: usize },
 }
 
+// ── Singletons ──
+use std::sync::LazyLock;
+static NONE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::None }));
+static TRUE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Bool(true) }));
+static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Bool(false) }));
+
 // ── PyObject constructors ──
 
 impl PyObject {
     pub fn wrap(payload: PyObjectPayload) -> PyObjectRef {
         Arc::new(PyObject { payload })
     }
-    pub fn none() -> PyObjectRef { Self::wrap(PyObjectPayload::None) }
+    pub fn none() -> PyObjectRef { NONE_SINGLETON.clone() }
     pub fn ellipsis() -> PyObjectRef { Self::wrap(PyObjectPayload::Ellipsis) }
     pub fn not_implemented() -> PyObjectRef { Self::wrap(PyObjectPayload::NotImplemented) }
-    pub fn bool_val(v: bool) -> PyObjectRef { Self::wrap(PyObjectPayload::Bool(v)) }
+    pub fn bool_val(v: bool) -> PyObjectRef { if v { TRUE_SINGLETON.clone() } else { FALSE_SINGLETON.clone() } }
     pub fn int(v: i64) -> PyObjectRef { Self::wrap(PyObjectPayload::Int(PyInt::Small(v))) }
     pub fn big_int(v: BigInt) -> PyObjectRef { Self::wrap(PyObjectPayload::Int(PyInt::Big(Box::new(v)))) }
     pub fn float(v: f64) -> PyObjectRef { Self::wrap(PyObjectPayload::Float(v)) }
     pub fn complex(real: f64, imag: f64) -> PyObjectRef { Self::wrap(PyObjectPayload::Complex { real, imag }) }
     pub fn str_val(v: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::Str(v)) }
     pub fn bytes(v: Vec<u8>) -> PyObjectRef { Self::wrap(PyObjectPayload::Bytes(v)) }
-    pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::List(items)) }
+    pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::List(Arc::new(RwLock::new(items)))) }
     pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Tuple(items)) }
     pub fn set(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Set(items)) }
     pub fn dict(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Dict(items)) }
@@ -206,7 +212,8 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Complex { real, imag } => *real != 0.0 || *imag != 0.0,
             PyObjectPayload::Str(s) => !s.is_empty(),
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => !b.is_empty(),
-            PyObjectPayload::List(v) | PyObjectPayload::Tuple(v) => !v.is_empty(),
+            PyObjectPayload::List(v) => !v.read().is_empty(),
+            PyObjectPayload::Tuple(v) => !v.is_empty(),
             PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) | PyObjectPayload::Dict(m) => !m.is_empty(),
             _ => true,
         }
@@ -232,7 +239,7 @@ impl PyObjectMethods for PyObjectRef {
             }
             PyObjectPayload::Str(s) => s.to_string(),
             PyObjectPayload::Bytes(b) => format!("b{:?}", String::from_utf8_lossy(b)),
-            PyObjectPayload::List(items) => format_collection("[", "]", items),
+            PyObjectPayload::List(items) => format_collection("[", "]", &items.read()),
             PyObjectPayload::Tuple(items) => {
                 if items.len() == 1 { format!("({},)", items[0].repr()) }
                 else { format_collection("(", ")", items) }
@@ -266,7 +273,8 @@ impl PyObjectMethods for PyObjectRef {
 
     fn to_list(&self) -> PyResult<Vec<PyObjectRef>> {
         match &self.payload {
-            PyObjectPayload::List(v) | PyObjectPayload::Tuple(v) => Ok(v.clone()),
+            PyObjectPayload::List(v) => Ok(v.read().clone()),
+            PyObjectPayload::Tuple(v) => Ok(v.clone()),
             PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
             PyObjectPayload::Dict(m) => Ok(m.keys().map(|k| k.to_object()).collect()),
@@ -326,7 +334,7 @@ impl PyObjectMethods for PyObjectRef {
                 Ok(PyObject::str_val(CompactString::from(s)))
             }
             (PyObjectPayload::List(a), PyObjectPayload::List(b)) => {
-                let mut r = a.clone(); r.extend(b.iter().cloned()); Ok(PyObject::list(r))
+                let mut r = a.read().clone(); r.extend(b.read().iter().cloned()); Ok(PyObject::list(r))
             }
             (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
                 let mut r = a.clone(); r.extend(b.iter().cloned()); Ok(PyObject::tuple(r))
@@ -357,8 +365,9 @@ impl PyObjectMethods for PyObjectRef {
             }
             (PyObjectPayload::List(items), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::List(items)) => {
                 let count = n.to_i64().unwrap_or(0).max(0) as usize;
-                let mut result = Vec::with_capacity(items.len() * count);
-                for _ in 0..count { result.extend(items.iter().cloned()); }
+                let read = items.read();
+                let mut result = Vec::with_capacity(read.len() * count);
+                for _ in 0..count { result.extend(read.iter().cloned()); }
                 Ok(PyObject::list(result))
             }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for *: '{}' and '{}'", self.type_name(), other.type_name()))),
@@ -512,15 +521,28 @@ impl PyObjectMethods for PyObjectRef {
         match &self.payload {
             PyObjectPayload::Str(s) => Ok(s.chars().count()),
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok(b.len()),
-            PyObjectPayload::List(v) | PyObjectPayload::Tuple(v) => Ok(v.len()),
+            PyObjectPayload::List(v) => Ok(v.read().len()),
+            PyObjectPayload::Tuple(v) => Ok(v.len()),
             PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) | PyObjectPayload::Dict(m) => Ok(m.len()),
             _ => Err(PyException::type_error(format!("object of type '{}' has no len()", self.type_name()))),
         }
     }
 
     fn get_item(&self, key: &PyObjectRef) -> PyResult<PyObjectRef> {
+        // Check for slice key first
+        if let PyObjectPayload::Slice { start, stop, step } = &key.payload {
+            return get_slice_impl(self, start, stop, step);
+        }
         match &self.payload {
-            PyObjectPayload::List(items) | PyObjectPayload::Tuple(items) => {
+            PyObjectPayload::List(items) => {
+                let items = items.read();
+                let idx = key.to_int()?;
+                let len = items.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len { return Err(PyException::index_error("index out of range")); }
+                Ok(items[actual as usize].clone())
+            }
+            PyObjectPayload::Tuple(items) => {
                 let idx = key.to_int()?;
                 let len = items.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -545,7 +567,11 @@ impl PyObjectMethods for PyObjectRef {
 
     fn contains(&self, item: &PyObjectRef) -> PyResult<bool> {
         match &self.payload {
-            PyObjectPayload::List(v) | PyObjectPayload::Tuple(v) => {
+            PyObjectPayload::List(v) => {
+                let v = v.read();
+                Ok(v.iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
+            }
+            PyObjectPayload::Tuple(v) => {
                 Ok(v.iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
             }
             PyObjectPayload::Str(haystack) => {
@@ -562,7 +588,7 @@ impl PyObjectMethods for PyObjectRef {
 
     fn get_iter(&self) -> PyResult<PyObjectRef> {
         match &self.payload {
-            PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::List { items: items.clone(), index: 0 }))),
+            PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::List { items: items.read().clone(), index: 0 }))),
             PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::Tuple { items: items.clone(), index: 0 }))),
             PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::Str { chars: s.chars().collect(), index: 0 }))),
             PyObjectPayload::Dict(m) => {
@@ -626,6 +652,28 @@ fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ord
         (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a.partial_cmp(b),
         (PyObjectPayload::Bool(a), PyObjectPayload::Int(b)) => PyInt::Small(*a as i64).partial_cmp(b),
         (PyObjectPayload::Int(a), PyObjectPayload::Bool(b)) => a.partial_cmp(&PyInt::Small(*b as i64)),
+        (PyObjectPayload::List(a), PyObjectPayload::List(b)) => {
+            let a = a.read(); let b = b.read();
+            for (x, y) in a.iter().zip(b.iter()) {
+                match partial_cmp_objects(x, y) {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    other => return other,
+                }
+            }
+            a.len().partial_cmp(&b.len())
+        }
+        (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
+            for (x, y) in a.iter().zip(b.iter()) {
+                match partial_cmp_objects(x, y) {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    other => return other,
+                }
+            }
+            a.len().partial_cmp(&b.len())
+        }
+        (PyObjectPayload::BuiltinFunction(a), PyObjectPayload::BuiltinFunction(b)) => {
+            if a == b { Some(std::cmp::Ordering::Equal) } else { None }
+        }
         _ => None,
     }
 }
@@ -643,6 +691,90 @@ fn float_to_str(f: f64) -> String {
 fn python_fmod(a: f64, b: f64) -> f64 {
     let r = a % b;
     if (r != 0.0) && ((r < 0.0) != (b < 0.0)) { r + b } else { r }
+}
+
+/// Resolve slice start/stop/step into actual indices for a sequence of given length.
+fn resolve_slice(
+    start: &Option<PyObjectRef>,
+    stop: &Option<PyObjectRef>,
+    step: &Option<PyObjectRef>,
+    len: i64,
+) -> (i64, i64, i64) {
+    let step_val = step.as_ref()
+        .and_then(|s| if matches!(s.payload, PyObjectPayload::None) { None } else { Some(s) })
+        .and_then(|s| s.as_int())
+        .unwrap_or(1);
+
+    let (default_start, default_stop) = if step_val < 0 { (len - 1, -len - 1) } else { (0, len) };
+
+    let start_val = start.as_ref()
+        .and_then(|s| if matches!(s.payload, PyObjectPayload::None) { None } else { Some(s) })
+        .and_then(|s| s.as_int())
+        .map(|i| {
+            if i < 0 { (len + i).max(if step_val < 0 { -1 } else { 0 }) }
+            else { i.min(len) }
+        })
+        .unwrap_or(default_start);
+
+    let stop_val = stop.as_ref()
+        .and_then(|s| if matches!(s.payload, PyObjectPayload::None) { None } else { Some(s) })
+        .and_then(|s| s.as_int())
+        .map(|i| {
+            if i < 0 { (len + i).max(if step_val < 0 { -1 } else { 0 }) }
+            else { i.min(len) }
+        })
+        .unwrap_or(default_stop);
+
+    (start_val, stop_val, step_val)
+}
+
+fn get_slice_impl(
+    obj: &PyObjectRef,
+    start: &Option<PyObjectRef>,
+    stop: &Option<PyObjectRef>,
+    step: &Option<PyObjectRef>,
+) -> PyResult<PyObjectRef> {
+    match &obj.payload {
+        PyObjectPayload::List(items) => {
+            let items = items.read();
+            let len = items.len() as i64;
+            let (s, e, step) = resolve_slice(start, stop, step, len);
+            let mut result = Vec::new();
+            let mut i = s;
+            if step > 0 {
+                while i < e && i < len { result.push(items[i as usize].clone()); i += step; }
+            } else if step < 0 {
+                while i > e && i >= 0 { result.push(items[i as usize].clone()); i += step; }
+            }
+            Ok(PyObject::list(result))
+        }
+        PyObjectPayload::Tuple(items) => {
+            let len = items.len() as i64;
+            let (s, e, step) = resolve_slice(start, stop, step, len);
+            let mut result = Vec::new();
+            let mut i = s;
+            if step > 0 {
+                while i < e && i < len { result.push(items[i as usize].clone()); i += step; }
+            } else if step < 0 {
+                while i > e && i >= 0 { result.push(items[i as usize].clone()); i += step; }
+            }
+            Ok(PyObject::tuple(result))
+        }
+        PyObjectPayload::Str(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            let len = chars.len() as i64;
+            let (sv, ev, step) = resolve_slice(start, stop, step, len);
+            let mut result = String::new();
+            let mut i = sv;
+            if step > 0 {
+                while i < ev && i < len { result.push(chars[i as usize]); i += step; }
+            } else if step < 0 {
+                while i > ev && i >= 0 { result.push(chars[i as usize]); i += step; }
+            }
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        _ => Err(PyException::type_error(format!("'{}' object is not subscriptable", obj.type_name()))),
+    }
 }
 
 fn format_collection(open: &str, close: &str, items: &[PyObjectRef]) -> String {

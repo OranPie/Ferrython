@@ -7,7 +7,7 @@ use ferrython_core::types::SharedGlobals;
 use indexmap::IndexMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockKind { Loop, Except, Finally, With }
+pub enum BlockKind { Loop, Except, Finally, With, ExceptHandler }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeKind { Module, Function, Class }

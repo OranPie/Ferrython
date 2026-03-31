@@ -3,8 +3,10 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 // ── Builtin registry ──
 
@@ -182,7 +184,15 @@ fn builtin_bool(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("type", args, 1)?;
-    Ok(PyObject::str_val(CompactString::from(args[0].type_name())))
+    let name = args[0].type_name();
+    // Return a BuiltinFunction so type(42) == int works (int is also BuiltinFunction("int"))
+    match &args[0].payload {
+        PyObjectPayload::Instance(inst) => {
+            // For instances, return their class
+            Ok(inst.class.clone())
+        }
+        _ => Ok(PyObject::builtin_function(CompactString::from(name)))
+    }
 }
 
 fn builtin_id(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -285,9 +295,13 @@ fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("isinstance", args, 2)?;
-    let type_name_obj = args[1].py_to_string();
     let obj_type = args[0].type_name();
-    Ok(PyObject::bool_val(obj_type == type_name_obj))
+    let check_type = match &args[1].payload {
+        PyObjectPayload::BuiltinFunction(name) => name.as_str(),
+        PyObjectPayload::Class(cd) => cd.name.as_str(),
+        _ => return Ok(PyObject::bool_val(false)),
+    };
+    Ok(PyObject::bool_val(obj_type == check_type))
 }
 
 fn builtin_callable(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -590,7 +604,7 @@ fn check_args_min(name: &str, args: &[PyObjectRef], min: usize) -> PyResult<()> 
 pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match &receiver.payload {
         PyObjectPayload::Str(s) => call_str_method(s, method, args),
-        PyObjectPayload::List(items) => call_list_method(items, method, args),
+        PyObjectPayload::List(items) => call_list_method(items.clone(), method, args),
         PyObjectPayload::Dict(map) => call_dict_method(map, method, args),
         PyObjectPayload::Int(_) => call_int_method(receiver, method, args),
         PyObjectPayload::Float(f) => call_float_method(*f, method, args),
@@ -820,33 +834,88 @@ fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyOb
     }
 }
 
-fn call_list_method(items: &[PyObjectRef], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // Note: list methods that mutate need interior mutability.
-    // For now, return new lists for non-mutating methods.
+fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
-        "copy" => Ok(PyObject::list(items.to_vec())),
+        "copy" => Ok(PyObject::list(items.read().to_vec())),
         "count" => {
             check_args_min("count", args, 1)?;
             let target = &args[0];
-            let c = items.iter().filter(|x| x.py_to_string() == target.py_to_string()).count();
+            let c = items.read().iter().filter(|x| x.py_to_string() == target.py_to_string()).count();
             Ok(PyObject::int(c as i64))
         }
         "index" => {
             check_args_min("index", args, 1)?;
             let target = &args[0];
-            for (i, x) in items.iter().enumerate() {
+            for (i, x) in items.read().iter().enumerate() {
                 if x.py_to_string() == target.py_to_string() {
                     return Ok(PyObject::int(i as i64));
                 }
             }
             Err(PyException::value_error("x not in list"))
         }
-        // append, extend, insert, remove, pop, sort, reverse need mutability
-        // For now, return helpful errors
-        "append" | "extend" | "insert" | "remove" | "pop" | "sort" | "reverse" | "clear" => {
-            Err(PyException::runtime_error(format!(
-                "list.{}() requires mutable list (not yet implemented)", method
-            )))
+        "append" => {
+            check_args_min("append", args, 1)?;
+            items.write().push(args[0].clone());
+            Ok(PyObject::none())
+        }
+        "extend" => {
+            check_args_min("extend", args, 1)?;
+            let other = args[0].to_list()?;
+            items.write().extend(other);
+            Ok(PyObject::none())
+        }
+        "insert" => {
+            check_args_min("insert", args, 2)?;
+            let idx = args[0].to_int()?;
+            let mut w = items.write();
+            let len = w.len() as i64;
+            let actual = if idx < 0 { (len + idx).max(0) as usize } else { (idx as usize).min(w.len()) };
+            w.insert(actual, args[1].clone());
+            Ok(PyObject::none())
+        }
+        "pop" => {
+            let mut w = items.write();
+            if w.is_empty() {
+                return Err(PyException::index_error("pop from empty list"));
+            }
+            if args.is_empty() {
+                Ok(w.pop().unwrap())
+            } else {
+                let idx = args[0].to_int()?;
+                let len = w.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err(PyException::index_error("pop index out of range"));
+                }
+                Ok(w.remove(actual as usize))
+            }
+        }
+        "remove" => {
+            check_args_min("remove", args, 1)?;
+            let target = &args[0];
+            let mut w = items.write();
+            let pos = w.iter().position(|x| x.py_to_string() == target.py_to_string());
+            match pos {
+                Some(i) => { w.remove(i); Ok(PyObject::none()) }
+                None => Err(PyException::value_error("list.remove(x): x not in list")),
+            }
+        }
+        "reverse" => {
+            items.write().reverse();
+            Ok(PyObject::none())
+        }
+        "sort" => {
+            let mut w = items.write();
+            let mut v: Vec<_> = w.drain(..).collect();
+            v.sort_by(|a, b| {
+                partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            w.extend(v);
+            Ok(PyObject::none())
+        }
+        "clear" => {
+            items.write().clear();
+            Ok(PyObject::none())
         }
         _ => Err(PyException::attribute_error(format!(
             "'list' object has no attribute '{}'", method
@@ -1013,5 +1082,17 @@ fn call_bytes_method(b: &[u8], method: &str, _args: &[PyObjectRef]) -> PyResult<
 mod hex {
     pub fn encode(data: &[u8]) -> String {
         data.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+}
+
+fn partial_cmp_for_sort(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ordering> {
+    match (&a.payload, &b.payload) {
+        (PyObjectPayload::Int(x), PyObjectPayload::Int(y)) => x.partial_cmp(y),
+        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => x.partial_cmp(y),
+        (PyObjectPayload::Int(x), PyObjectPayload::Float(y)) => x.to_f64().partial_cmp(y),
+        (PyObjectPayload::Float(x), PyObjectPayload::Int(y)) => x.partial_cmp(&y.to_f64()),
+        (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => x.partial_cmp(y),
+        (PyObjectPayload::Bool(x), PyObjectPayload::Bool(y)) => x.partial_cmp(y),
+        _ => None,
     }
 }

@@ -1289,7 +1289,7 @@ impl Parser {
         let args = if self.check(TokenKind::Colon) {
             Arguments::empty()
         } else {
-            self.parse_parameters()?
+            self.parse_lambda_params()?
         };
         self.expect(TokenKind::Colon)?;
         let body = self.parse_test()?;
@@ -1300,6 +1300,60 @@ impl Parser {
             },
             loc,
         ))
+    }
+
+    /// Parse lambda parameters (no annotations, no parens).
+    fn parse_lambda_params(&mut self) -> Result<Arguments, ParseError> {
+        let mut args = Arguments::empty();
+        let mut seen_star = false;
+
+        loop {
+            if self.check(TokenKind::Colon) { break; }
+
+            if self.check(TokenKind::Star) {
+                self.advance();
+                seen_star = true;
+                if self.check(TokenKind::Comma) || self.check(TokenKind::Colon) {
+                    // bare * separator
+                } else {
+                    let name = self.expect_name()?;
+                    args.vararg = Some(Arg {
+                        arg: name, annotation: None, type_comment: None,
+                        location: self.current_location(),
+                    });
+                }
+            } else if self.check(TokenKind::DoubleStar) {
+                self.advance();
+                let name = self.expect_name()?;
+                args.kwarg = Some(Arg {
+                    arg: name, annotation: None, type_comment: None,
+                    location: self.current_location(),
+                });
+            } else {
+                let name = self.expect_name()?;
+                let default = if self.check(TokenKind::Equal) {
+                    self.advance();
+                    Some(self.parse_test()?)
+                } else {
+                    None
+                };
+                let arg = Arg {
+                    arg: name, annotation: None, type_comment: None,
+                    location: self.current_location(),
+                };
+                if seen_star {
+                    args.kwonlyargs.push(arg);
+                    args.kw_defaults.push(default);
+                } else {
+                    args.args.push(arg);
+                    if let Some(d) = default { args.defaults.push(d); }
+                }
+            }
+
+            if !self.check(TokenKind::Comma) { break; }
+            self.advance();
+        }
+        Ok(args)
     }
 
     fn parse_subscript(&mut self) -> Result<Expression, ParseError> {
