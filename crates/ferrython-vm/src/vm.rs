@@ -602,7 +602,7 @@ impl VirtualMachine {
                 }
 
                 // ── Binary operations ──
-                Opcode::BinaryAdd | Opcode::InplaceAdd => {
+                Opcode::BinaryAdd => {
                     let b = frame.pop(); let a = frame.pop();
                     if matches!(&a.payload, PyObjectPayload::Instance(_)) {
                         if let Some(m) = a.get_attr("__add__") {
@@ -613,7 +613,18 @@ impl VirtualMachine {
                     }
                     frame.push(a.add(&b)?);
                 }
-                Opcode::BinarySubtract | Opcode::InplaceSubtract => {
+                Opcode::InplaceAdd => {
+                    let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__iadd__").or_else(|| a.get_attr("__add__")) {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
+                    frame.push(a.add(&b)?);
+                }
+                Opcode::BinarySubtract => {
                     let b = frame.pop(); let a = frame.pop();
                     if matches!(&a.payload, PyObjectPayload::Instance(_)) {
                         if let Some(m) = a.get_attr("__sub__") {
@@ -624,7 +635,18 @@ impl VirtualMachine {
                     }
                     frame.push(a.sub(&b)?);
                 }
-                Opcode::BinaryMultiply | Opcode::InplaceMultiply => {
+                Opcode::InplaceSubtract => {
+                    let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__isub__").or_else(|| a.get_attr("__sub__")) {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
+                    frame.push(a.sub(&b)?);
+                }
+                Opcode::BinaryMultiply => {
                     let b = frame.pop(); let a = frame.pop();
                     if matches!(&a.payload, PyObjectPayload::Instance(_)) {
                         if let Some(m) = a.get_attr("__mul__") {
@@ -635,7 +657,18 @@ impl VirtualMachine {
                     }
                     frame.push(a.mul(&b)?);
                 }
-                Opcode::BinaryTrueDivide | Opcode::InplaceTrueDivide => {
+                Opcode::InplaceMultiply => {
+                    let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__imul__").or_else(|| a.get_attr("__mul__")) {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
+                    frame.push(a.mul(&b)?);
+                }
+                Opcode::BinaryTrueDivide => {
                     let b = frame.pop(); let a = frame.pop();
                     if matches!(&a.payload, PyObjectPayload::Instance(_)) {
                         if let Some(m) = a.get_attr("__truediv__") {
@@ -646,7 +679,18 @@ impl VirtualMachine {
                     }
                     frame.push(a.true_div(&b)?);
                 }
-                Opcode::BinaryFloorDivide | Opcode::InplaceFloorDivide => {
+                Opcode::InplaceTrueDivide => {
+                    let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__itruediv__").or_else(|| a.get_attr("__truediv__")) {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
+                    frame.push(a.true_div(&b)?);
+                }
+                Opcode::BinaryFloorDivide => {
                     let b = frame.pop(); let a = frame.pop();
                     if matches!(&a.payload, PyObjectPayload::Instance(_)) {
                         if let Some(m) = a.get_attr("__floordiv__") {
@@ -657,12 +701,37 @@ impl VirtualMachine {
                     }
                     frame.push(a.floor_div(&b)?);
                 }
+                Opcode::InplaceFloorDivide => {
+                    let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__ifloordiv__").or_else(|| a.get_attr("__floordiv__")) {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
+                    frame.push(a.floor_div(&b)?);
+                }
                 Opcode::BinaryModulo | Opcode::InplaceModulo => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__mod__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.modulo(&b)?);
                 }
                 Opcode::BinaryPower | Opcode::InplacePower => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__pow__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.power(&b)?);
                 }
                 Opcode::BinaryLshift | Opcode::InplaceLshift => {
@@ -1391,16 +1460,46 @@ impl VirtualMachine {
 
                 // ── Format ──
                 Opcode::FormatValue => {
-                    if instr.arg & 0x04 != 0 {
-                        let _fmt_spec = frame.pop();
-                    }
+                    let fmt_spec = if instr.arg & 0x04 != 0 {
+                        let spec_obj = frame.pop();
+                        spec_obj.as_str().unwrap_or("").to_string()
+                    } else {
+                        String::new()
+                    };
                     let value = frame.pop();
                     let conversion = (instr.arg & 0x03) as u8;
-                    let formatted = match conversion {
+                    let base_str = match conversion {
                         1 => value.py_to_string(),   // !s
                         2 => value.repr(),            // !r
                         3 => value.py_to_string(),    // !a (ascii)
-                        _ => value.py_to_string(),
+                        _ => {
+                            if !fmt_spec.is_empty() {
+                                // Apply format spec to the value directly
+                                match value.format_value(&fmt_spec) {
+                                    Ok(s) => s,
+                                    Err(_) => value.py_to_string(),
+                                }
+                            } else {
+                                // Check Instance __str__ via VM
+                                if matches!(&value.payload, PyObjectPayload::Instance(_)) {
+                                    if let Some(str_method) = value.get_attr("__str__") {
+                                        drop(frame);
+                                        let r = self.call_object(str_method, vec![])?;
+                                        let s = r.py_to_string();
+                                        push!(PyObject::str_val(CompactString::from(s)));
+                                        return Ok(None);
+                                    }
+                                }
+                                value.py_to_string()
+                            }
+                        }
+                    };
+                    let formatted = if !fmt_spec.is_empty() && conversion != 0 {
+                        // If there's a format spec AND a conversion, apply spec to converted string
+                        use ferrython_core::object::apply_string_format_spec;
+                        apply_string_format_spec(&base_str, &fmt_spec)
+                    } else {
+                        base_str
                     };
                     frame.push(PyObject::str_val(CompactString::from(formatted)));
                 }
@@ -1558,6 +1657,21 @@ impl VirtualMachine {
                 }
                 // VM-aware builtins that need to call user-defined methods
                 match name.as_str() {
+                    "print" => {
+                        let mut parts = Vec::new();
+                        for a in &args {
+                            if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                                if let Some(str_method) = a.get_attr("__str__") {
+                                    let s = self.call_object(str_method, vec![])?;
+                                    parts.push(s.py_to_string());
+                                    continue;
+                                }
+                            }
+                            parts.push(a.py_to_string());
+                        }
+                        println!("{}", parts.join(" "));
+                        return Ok(PyObject::none());
+                    }
                     "str" => {
                         if args.is_empty() {
                             return Ok(PyObject::str_val(CompactString::from("")));

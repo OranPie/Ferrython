@@ -563,6 +563,72 @@ impl PyObjectMethods for PyObjectRef {
                 if *b == 0.0 { return Err(PyException::zero_division_error("float modulo")); }
                 Ok(PyObject::float(python_fmod(*a, *b)))
             }
+            (PyObjectPayload::Str(fmt_str), _) => {
+                // printf-style string formatting: "Hello %s" % "world"
+                let args_list = match &other.payload {
+                    PyObjectPayload::Tuple(items) => items.clone(),
+                    _ => vec![other.clone()],
+                };
+                let mut result = String::new();
+                let mut arg_idx = 0;
+                let chars: Vec<char> = fmt_str.chars().collect();
+                let mut i = 0;
+                while i < chars.len() {
+                    if chars[i] == '%' && i + 1 < chars.len() {
+                        i += 1;
+                        // Parse optional flags, width, precision
+                        let mut spec_chars = String::new();
+                        while i < chars.len() && "-+ #0123456789.".contains(chars[i]) {
+                            spec_chars.push(chars[i]);
+                            i += 1;
+                        }
+                        if i >= chars.len() { break; }
+                        let conv = chars[i];
+                        i += 1;
+                        if conv == '%' {
+                            result.push('%');
+                            continue;
+                        }
+                        if arg_idx >= args_list.len() {
+                            return Err(PyException::type_error("not enough arguments for format string"));
+                        }
+                        let arg = &args_list[arg_idx];
+                        arg_idx += 1;
+                        match conv {
+                            's' => result.push_str(&arg.py_to_string()),
+                            'r' => result.push_str(&arg.repr()),
+                            'd' | 'i' => {
+                                let n = arg.to_int()?;
+                                if spec_chars.is_empty() {
+                                    result.push_str(&n.to_string());
+                                } else {
+                                    result.push_str(&format_int_spec(n, &spec_chars));
+                                }
+                            }
+                            'f' | 'F' => {
+                                let f = arg.to_float()?;
+                                if spec_chars.is_empty() {
+                                    result.push_str(&format!("{:.6}", f));
+                                } else {
+                                    result.push_str(&format_float_spec(f, &spec_chars));
+                                }
+                            }
+                            'x' => result.push_str(&format!("{:x}", arg.to_int()?)),
+                            'X' => result.push_str(&format!("{:X}", arg.to_int()?)),
+                            'o' => result.push_str(&format!("{:o}", arg.to_int()?)),
+                            _ => {
+                                result.push('%');
+                                result.push_str(&spec_chars);
+                                result.push(conv);
+                            }
+                        }
+                    } else {
+                        result.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                Ok(PyObject::str_val(CompactString::from(result)))
+            }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for %: '{}' and '{}'", self.type_name(), other.type_name()))),
         }
     }
@@ -863,7 +929,67 @@ impl PyObjectMethods for PyObjectRef {
         }
     }
 
-    fn format_value(&self, _spec: &str) -> PyResult<String> { Ok(self.py_to_string()) }
+    fn format_value(&self, spec: &str) -> PyResult<String> {
+        if spec.is_empty() {
+            return Ok(self.py_to_string());
+        }
+        // Parse format spec: [[fill]align][sign][#][0][width][grouping_option][.precision][type]
+        let spec_bytes = spec.as_bytes();
+        let len = spec_bytes.len();
+        // Simple parsing for common cases
+        let type_char = spec_bytes[len - 1] as char;
+        match type_char {
+            'd' => {
+                let n = self.to_int()?;
+                let inner_spec = &spec[..len - 1];
+                if inner_spec.is_empty() {
+                    return Ok(n.to_string());
+                }
+                return Ok(apply_string_format_spec(&n.to_string(), inner_spec));
+            }
+            'f' | 'F' => {
+                let f = self.to_float()?;
+                let inner_spec = &spec[..len - 1];
+                if let Some(dot_pos) = inner_spec.rfind('.') {
+                    let prec: usize = inner_spec[dot_pos + 1..].parse().unwrap_or(6);
+                    let num_str = format!("{:.prec$}", f, prec = prec);
+                    let pre_dot = &inner_spec[..dot_pos];
+                    if pre_dot.is_empty() {
+                        return Ok(num_str);
+                    }
+                    return Ok(apply_string_format_spec(&num_str, pre_dot));
+                }
+                return Ok(format!("{:.6}", f));
+            }
+            'e' | 'E' => {
+                let f = self.to_float()?;
+                let inner_spec = &spec[..len - 1];
+                let prec = if let Some(dot_pos) = inner_spec.rfind('.') {
+                    inner_spec[dot_pos + 1..].parse().unwrap_or(6)
+                } else { 6 };
+                if type_char == 'e' {
+                    return Ok(format!("{:.prec$e}", f, prec = prec));
+                } else {
+                    return Ok(format!("{:.prec$E}", f, prec = prec));
+                }
+            }
+            'b' => return Ok(format!("{:b}", self.to_int()?)),
+            'o' => return Ok(format!("{:o}", self.to_int()?)),
+            'x' => return Ok(format!("{:x}", self.to_int()?)),
+            'X' => return Ok(format!("{:X}", self.to_int()?)),
+            's' => {
+                let s = self.py_to_string();
+                let inner_spec = &spec[..len - 1];
+                if inner_spec.is_empty() { return Ok(s); }
+                return Ok(apply_string_format_spec(&s, inner_spec));
+            }
+            _ => {
+                // No type char — treat entire spec as alignment spec
+                let s = self.py_to_string();
+                return Ok(apply_string_format_spec(&s, spec));
+            }
+        }
+    }
 
     fn dir(&self) -> Vec<CompactString> {
         match &self.payload {
@@ -970,6 +1096,80 @@ fn float_to_str(f: f64) -> String {
 fn python_fmod(a: f64, b: f64) -> f64 {
     let r = a % b;
     if (r != 0.0) && ((r < 0.0) != (b < 0.0)) { r + b } else { r }
+}
+
+fn format_int_spec(n: i64, spec: &str) -> String {
+    // Parse width from spec
+    let width: usize = spec.trim_start_matches(|c: char| "- +#0".contains(c))
+        .parse().unwrap_or(0);
+    let zero_pad = spec.starts_with('0');
+    let left_align = spec.starts_with('-');
+    let s = n.to_string();
+    if width == 0 { return s; }
+    if zero_pad && !left_align {
+        if n < 0 {
+            format!("-{:0>width$}", &s[1..], width = width - 1)
+        } else {
+            format!("{:0>width$}", s, width = width)
+        }
+    } else if left_align {
+        format!("{:<width$}", s, width = width)
+    } else {
+        format!("{:>width$}", s, width = width)
+    }
+}
+
+fn format_float_spec(f: f64, spec: &str) -> String {
+    // Parse precision from spec (e.g., ".2")
+    if let Some(dot_pos) = spec.find('.') {
+        let prec_str = &spec[dot_pos + 1..];
+        let prec: usize = prec_str.parse().unwrap_or(6);
+        format!("{:.prec$}", f, prec = prec)
+    } else {
+        format!("{:.6}", f)
+    }
+}
+
+pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
+    if spec.is_empty() { return s.to_string(); }
+    let chars: Vec<char> = spec.chars().collect();
+    let mut i = 0;
+    let mut fill = ' ';
+    let mut align = None;
+    // Check for fill+align
+    if chars.len() >= 2 && "<>^=".contains(chars[1]) {
+        fill = chars[0];
+        align = Some(chars[1]);
+        i = 2;
+    } else if !chars.is_empty() && "<>^".contains(chars[0]) {
+        align = Some(chars[0]);
+        i = 1;
+    }
+    // Check for sign
+    if i < chars.len() && "+-".contains(chars[i]) {
+        i += 1;
+    }
+    // Check for 0 fill (only when no explicit fill+align given)
+    if i < chars.len() && chars[i] == '0' && align.is_none() {
+        fill = '0';
+        align = Some('>');
+        i += 1;
+    }
+    // Parse width
+    let width_str: String = chars[i..].iter().take_while(|c| c.is_ascii_digit()).collect();
+    let width: usize = width_str.parse().unwrap_or(0);
+    if width <= s.len() { return s.to_string(); }
+    let pad_len = width - s.len();
+    match align.unwrap_or('>') {
+        '<' => format!("{}{}", s, std::iter::repeat(fill).take(pad_len).collect::<String>()),
+        '>' | '=' => format!("{}{}", std::iter::repeat(fill).take(pad_len).collect::<String>(), s),
+        '^' => {
+            let left = pad_len / 2;
+            let right = pad_len - left;
+            format!("{}{}{}", std::iter::repeat(fill).take(left).collect::<String>(), s, std::iter::repeat(fill).take(right).collect::<String>())
+        }
+        _ => s.to_string(),
+    }
 }
 
 /// Resolve slice start/stop/step into actual indices for a sequence of given length.
