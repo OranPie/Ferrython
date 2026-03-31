@@ -1,5 +1,6 @@
 //! Main compiler: walks the AST and emits bytecode into `CodeObject`s.
 
+use compact_str::CompactString;
 use ferrython_ast::*;
 use ferrython_bytecode::{CodeFlags, CodeObject, ConstantValue, Instruction, Opcode};
 use rustc_hash::FxHashSet;
@@ -50,6 +51,12 @@ impl CompileUnit {
             code.flags = CodeFlags::empty();
         } else {
             code.flags = CodeFlags::OPTIMIZED | CodeFlags::NEWLOCALS;
+        }
+        // Populate cellvars and freevars from scope analysis
+        code.cellvars = scope.cell_names().iter().map(|s| CompactString::from(*s)).collect();
+        code.freevars = scope.free_names().iter().map(|s| CompactString::from(*s)).collect();
+        if !code.freevars.is_empty() {
+            code.flags |= CodeFlags::NESTED;
         }
         Self {
             code,
@@ -160,7 +167,23 @@ impl Compiler {
 
     fn is_local(&self, name: &str) -> bool {
         if let Some(sym) = self.current_unit().scope.lookup(name) {
-            sym.scope == SymbolScope::Local || sym.scope == SymbolScope::Cell
+            sym.scope == SymbolScope::Local
+        } else {
+            false
+        }
+    }
+
+    fn is_cell(&self, name: &str) -> bool {
+        if let Some(sym) = self.current_unit().scope.lookup(name) {
+            sym.scope == SymbolScope::Cell
+        } else {
+            false
+        }
+    }
+
+    fn is_free(&self, name: &str) -> bool {
+        if let Some(sym) = self.current_unit().scope.lookup(name) {
+            sym.scope == SymbolScope::Free
         } else {
             false
         }
@@ -190,18 +213,42 @@ impl Compiler {
         idx
     }
 
+    /// Get the DEREF index for a cell or free variable.
+    /// Cell vars come first (indices 0..cellvars.len()), then free vars.
+    fn deref_index(&mut self, name: &str) -> u32 {
+        let code = &self.current_unit().code;
+        // Check cellvars first
+        for (i, v) in code.cellvars.iter().enumerate() {
+            if v.as_str() == name {
+                return i as u32;
+            }
+        }
+        // Then freevars (offset by cellvars.len())
+        let offset = code.cellvars.len();
+        for (i, v) in code.freevars.iter().enumerate() {
+            if v.as_str() == name {
+                return (offset + i) as u32;
+            }
+        }
+        // Should not happen if symbol table is correct, but add it as freevar
+        let idx = (offset + code.freevars.len()) as u32;
+        self.current_unit_mut().code.freevars.push(name.into());
+        idx
+    }
+
     /// Emit the correct LOAD instruction for a name.
     fn load_name(&mut self, name: &str) {
         if self.is_function_scope() {
-            if self.is_global(name) {
+            if self.is_cell(name) || self.is_free(name) {
+                let idx = self.deref_index(name);
+                self.emit_arg(Opcode::LoadDeref, idx);
+            } else if self.is_global(name) {
                 let idx = self.add_name(name);
                 self.emit_arg(Opcode::LoadGlobal, idx);
             } else if self.is_local(name) {
                 let idx = self.varname_index(name);
                 self.emit_arg(Opcode::LoadFast, idx);
             } else {
-                // In a function but not explicitly local or global — use LoadGlobal
-                // (catches builtins and truly-global references)
                 let idx = self.add_name(name);
                 self.emit_arg(Opcode::LoadGlobal, idx);
             }
@@ -214,7 +261,10 @@ impl Compiler {
     /// Emit the correct STORE instruction for a name.
     fn store_name(&mut self, name: &str) {
         if self.is_function_scope() {
-            if self.is_global(name) {
+            if self.is_cell(name) || self.is_free(name) {
+                let idx = self.deref_index(name);
+                self.emit_arg(Opcode::StoreDeref, idx);
+            } else if self.is_global(name) {
                 let idx = self.add_name(name);
                 self.emit_arg(Opcode::StoreGlobal, idx);
             } else {
@@ -688,6 +738,17 @@ impl Compiler {
 
         let func_code = self.pop_function_unit();
 
+        // If the function has free variables, emit closure
+        let has_closure = !func_code.freevars.is_empty();
+        if has_closure {
+            for freevar in &func_code.freevars {
+                let idx = self.deref_index(freevar.as_str());
+                self.emit_arg(Opcode::LoadClosure, idx);
+            }
+            let n = func_code.freevars.len() as u32;
+            self.emit_arg(Opcode::BuildTuple, n);
+        }
+
         // Load the code object as a constant
         let code_idx = self.add_const(ConstantValue::Code(Box::new(func_code)));
         self.emit_arg(Opcode::LoadConst, code_idx);
@@ -703,6 +764,9 @@ impl Compiler {
         }
         if has_kw_defaults {
             make_fn_flags |= 0x02;
+        }
+        if has_closure {
+            make_fn_flags |= 0x08;
         }
         self.emit_arg(Opcode::MakeFunction, make_fn_flags);
 
@@ -1884,6 +1948,17 @@ impl Compiler {
 
         let func_code = self.pop_function_unit();
 
+        // If the lambda has free variables, emit closure
+        let has_closure = !func_code.freevars.is_empty();
+        if has_closure {
+            for freevar in &func_code.freevars {
+                let idx = self.deref_index(freevar.as_str());
+                self.emit_arg(Opcode::LoadClosure, idx);
+            }
+            let n = func_code.freevars.len() as u32;
+            self.emit_arg(Opcode::BuildTuple, n);
+        }
+
         let code_idx = self.add_const(ConstantValue::Code(Box::new(func_code)));
         self.emit_arg(Opcode::LoadConst, code_idx);
 
@@ -1893,6 +1968,9 @@ impl Compiler {
         let mut make_fn_flags: u32 = 0;
         if num_defaults > 0 {
             make_fn_flags |= 0x01;
+        }
+        if has_closure {
+            make_fn_flags |= 0x08;
         }
         self.emit_arg(Opcode::MakeFunction, make_fn_flags);
 
@@ -1959,6 +2037,17 @@ impl Compiler {
 
         let comp_code = self.pop_function_unit();
 
+        // If the comprehension has free variables, emit closure
+        let has_closure = !comp_code.freevars.is_empty();
+        if has_closure {
+            for freevar in &comp_code.freevars {
+                let idx = self.deref_index(freevar.as_str());
+                self.emit_arg(Opcode::LoadClosure, idx);
+            }
+            let n = comp_code.freevars.len() as u32;
+            self.emit_arg(Opcode::BuildTuple, n);
+        }
+
         // Now back in the enclosing scope — emit the function creation
         let code_idx = self.add_const(ConstantValue::Code(Box::new(comp_code)));
         self.emit_arg(Opcode::LoadConst, code_idx);
@@ -1966,7 +2055,7 @@ impl Compiler {
         let qname_idx = self.add_const(ConstantValue::Str(qualname.into()));
         self.emit_arg(Opcode::LoadConst, qname_idx);
 
-        self.emit_arg(Opcode::MakeFunction, 0);
+        self.emit_arg(Opcode::MakeFunction, if has_closure { 0x08 } else { 0 });
 
         // NOW compute the outermost iterator in the enclosing scope
         // Stack: [fn] -> [fn, iter]

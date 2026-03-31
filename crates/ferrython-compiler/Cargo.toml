@@ -8,6 +8,7 @@ description = "AST to bytecode compiler for Ferrython"
 [dependencies]
 ferrython-ast = { workspace = true }
 ferrython-bytecode = { workspace = true }
+compact_str = { workspace = true }
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }
 indexmap = { workspace = true }

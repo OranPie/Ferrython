@@ -37,6 +37,54 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
     m.insert(CompactString::from("False"), PyObject::bool_val(false));
     m.insert(CompactString::from("Ellipsis"), PyObject::ellipsis());
     m.insert(CompactString::from("NotImplemented"), PyObject::not_implemented());
+
+    // Exception types
+    use ferrython_core::error::ExceptionKind;
+    let exc_types = [
+        ("BaseException", ExceptionKind::BaseException),
+        ("Exception", ExceptionKind::Exception),
+        ("ArithmeticError", ExceptionKind::ArithmeticError),
+        ("AssertionError", ExceptionKind::AssertionError),
+        ("AttributeError", ExceptionKind::AttributeError),
+        ("EOFError", ExceptionKind::EOFError),
+        ("FileExistsError", ExceptionKind::FileExistsError),
+        ("FileNotFoundError", ExceptionKind::FileNotFoundError),
+        ("FloatingPointError", ExceptionKind::FloatingPointError),
+        ("GeneratorExit", ExceptionKind::GeneratorExit),
+        ("ImportError", ExceptionKind::ImportError),
+        ("ModuleNotFoundError", ExceptionKind::ModuleNotFoundError),
+        ("IndexError", ExceptionKind::IndexError),
+        ("KeyError", ExceptionKind::KeyError),
+        ("KeyboardInterrupt", ExceptionKind::KeyboardInterrupt),
+        ("LookupError", ExceptionKind::LookupError),
+        ("MemoryError", ExceptionKind::MemoryError),
+        ("NameError", ExceptionKind::NameError),
+        ("NotImplementedError", ExceptionKind::NotImplementedError),
+        ("OSError", ExceptionKind::OSError),
+        ("OverflowError", ExceptionKind::OverflowError),
+        ("PermissionError", ExceptionKind::PermissionError),
+        ("RecursionError", ExceptionKind::RecursionError),
+        ("RuntimeError", ExceptionKind::RuntimeError),
+        ("StopIteration", ExceptionKind::StopIteration),
+        ("SyntaxError", ExceptionKind::SyntaxError),
+        ("SystemError", ExceptionKind::SystemError),
+        ("SystemExit", ExceptionKind::SystemExit),
+        ("TypeError", ExceptionKind::TypeError),
+        ("UnboundLocalError", ExceptionKind::UnboundLocalError),
+        ("UnicodeDecodeError", ExceptionKind::UnicodeDecodeError),
+        ("UnicodeEncodeError", ExceptionKind::UnicodeEncodeError),
+        ("UnicodeError", ExceptionKind::UnicodeError),
+        ("ValueError", ExceptionKind::ValueError),
+        ("ZeroDivisionError", ExceptionKind::ZeroDivisionError),
+        ("Warning", ExceptionKind::Warning),
+        ("DeprecationWarning", ExceptionKind::DeprecationWarning),
+        ("RuntimeWarning", ExceptionKind::RuntimeWarning),
+        ("UserWarning", ExceptionKind::UserWarning),
+    ];
+    for (name, kind) in exc_types {
+        m.insert(CompactString::from(name), PyObject::exception_type(kind));
+    }
+
     m
 }
 
@@ -151,6 +199,14 @@ fn builtin_len(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn builtin_repr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("repr", args, 1)?;
+    // Check for user-defined __repr__
+    if let Some(repr_method) = args[0].get_attr("__repr__") {
+        if matches!(&repr_method.payload, PyObjectPayload::BoundMethod { .. }) {
+            // We can't call it here (no VM reference), so use py_to_string on the method
+            // Actually, let's extract the result from the repr method
+            // For now, fall through to default
+        }
+    }
     Ok(PyObject::str_val(CompactString::from(args[0].repr())))
 }
 
@@ -295,13 +351,52 @@ fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("isinstance", args, 2)?;
-    let obj_type = args[0].type_name();
-    let check_type = match &args[1].payload {
-        PyObjectPayload::BuiltinFunction(name) => name.as_str(),
-        PyObjectPayload::Class(cd) => cd.name.as_str(),
-        _ => return Ok(PyObject::bool_val(false)),
-    };
-    Ok(PyObject::bool_val(obj_type == check_type))
+    let obj = &args[0];
+    let cls = &args[1];
+    // Handle tuple of types: isinstance(x, (int, str))
+    if let PyObjectPayload::Tuple(types) = &cls.payload {
+        for t in types {
+            if is_instance_of(obj, t) {
+                return Ok(PyObject::bool_val(true));
+            }
+        }
+        return Ok(PyObject::bool_val(false));
+    }
+    Ok(PyObject::bool_val(is_instance_of(obj, cls)))
+}
+
+/// Check if obj is an instance of cls (including inheritance).
+fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
+    match &cls.payload {
+        PyObjectPayload::BuiltinFunction(type_name) => {
+            // Checking against a builtin type like int, str, float, etc.
+            obj.type_name() == type_name.as_str()
+        }
+        PyObjectPayload::Class(target_cd) => {
+            // User-defined class check: walk the instance's class MRO
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                class_is_subclass_of(&inst.class, &target_cd.name)
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Check if a class (or any of its bases) has the given name.
+fn class_is_subclass_of(cls: &PyObjectRef, target_name: &str) -> bool {
+    if let PyObjectPayload::Class(cd) = &cls.payload {
+        if cd.name.as_str() == target_name {
+            return true;
+        }
+        for base in &cd.bases {
+            if class_is_subclass_of(base, target_name) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn builtin_callable(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -462,7 +557,7 @@ fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     // Simple: copy a dict
     match &args[0].payload {
-        PyObjectPayload::Dict(m) => Ok(PyObject::dict(m.clone())),
+        PyObjectPayload::Dict(m) => Ok(PyObject::dict(m.read().clone())),
         _ => Err(PyException::type_error("dict() argument must be a mapping")),
     }
 }
@@ -923,18 +1018,18 @@ fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &str, args: &[
     }
 }
 
-fn call_dict_method(map: &IndexMap<HashableKey, PyObjectRef>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "keys" => {
-            let keys: Vec<PyObjectRef> = map.keys().map(|k| k.to_object()).collect();
+            let keys: Vec<PyObjectRef> = map.read().keys().map(|k| k.to_object()).collect();
             Ok(PyObject::list(keys))
         }
         "values" => {
-            let vals: Vec<PyObjectRef> = map.values().cloned().collect();
+            let vals: Vec<PyObjectRef> = map.read().values().cloned().collect();
             Ok(PyObject::list(vals))
         }
         "items" => {
-            let pairs: Vec<PyObjectRef> = map.iter()
+            let pairs: Vec<PyObjectRef> = map.read().iter()
                 .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
                 .collect();
             Ok(PyObject::list(pairs))
@@ -943,16 +1038,50 @@ fn call_dict_method(map: &IndexMap<HashableKey, PyObjectRef>, method: &str, args
             check_args_min("get", args, 1)?;
             let key = args[0].to_hashable_key()?;
             let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
-            Ok(map.get(&key).cloned().unwrap_or(default))
+            Ok(map.read().get(&key).cloned().unwrap_or(default))
         }
         "copy" => {
-            Ok(PyObject::dict(map.clone()))
+            Ok(PyObject::dict(map.read().clone()))
         }
-        // update, pop, setdefault, clear need mutability
-        "update" | "pop" | "setdefault" | "clear" | "popitem" => {
-            Err(PyException::runtime_error(format!(
-                "dict.{}() requires mutable dict (not yet implemented)", method
-            )))
+        "update" => {
+            check_args_min("update", args, 1)?;
+            if let PyObjectPayload::Dict(other) = &args[0].payload {
+                let other_items = other.read().clone();
+                let mut w = map.write();
+                for (k, v) in other_items {
+                    w.insert(k, v);
+                }
+            }
+            Ok(PyObject::none())
+        }
+        "pop" => {
+            check_args_min("pop", args, 1)?;
+            let key = args[0].to_hashable_key()?;
+            let default = if args.len() >= 2 { Some(args[1].clone()) } else { None };
+            match map.write().swap_remove(&key) {
+                Some(v) => Ok(v),
+                None => match default {
+                    Some(d) => Ok(d),
+                    None => Err(PyException::key_error(args[0].repr())),
+                },
+            }
+        }
+        "setdefault" => {
+            check_args_min("setdefault", args, 1)?;
+            let key = args[0].to_hashable_key()?;
+            let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+            let mut w = map.write();
+            Ok(w.entry(key).or_insert(default).clone())
+        }
+        "clear" => {
+            map.write().clear();
+            Ok(PyObject::none())
+        }
+        "popitem" => {
+            match map.write().pop() {
+                Some((k, v)) => Ok(PyObject::tuple(vec![k.to_object(), v])),
+                None => Err(PyException::key_error("popitem(): dictionary is empty")),
+            }
         }
         _ => Err(PyException::attribute_error(format!(
             "'dict' object has no attribute '{}'", method

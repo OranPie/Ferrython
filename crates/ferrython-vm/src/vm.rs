@@ -3,9 +3,9 @@
 use crate::builtins;
 use crate::frame::{BlockKind, Frame, ScopeKind};
 use compact_str::CompactString;
-use ferrython_bytecode::code::{CodeObject, ConstantValue};
+use ferrython_bytecode::code::{CodeFlags, CodeObject, ConstantValue};
 use ferrython_bytecode::opcode::Opcode;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -45,14 +45,19 @@ impl VirtualMachine {
         args: Vec<PyObjectRef>,
         defaults: &[PyObjectRef],
         globals: SharedGlobals,
+        closure: &[Arc<RwLock<Option<PyObjectRef>>>],
     ) -> PyResult<PyObjectRef> {
         let mut frame = Frame::new(code.clone(), globals, self.builtins.clone());
         let nparams = code.arg_count as usize;
-        for (i, arg) in args.iter().enumerate() {
-            if i < code.varnames.len() {
-                frame.set_local(i, arg.clone());
-            }
+        let has_varargs = code.flags.contains(CodeFlags::VARARGS);
+        let has_varkw = code.flags.contains(CodeFlags::VARKEYWORDS);
+
+        // Assign positional parameters
+        let positional_count = args.len().min(nparams);
+        for i in 0..positional_count {
+            frame.set_local(i, args[i].clone());
         }
+
         // Fill in defaults for missing positional args
         if args.len() < nparams && !defaults.is_empty() {
             let ndefaults = defaults.len();
@@ -64,6 +69,41 @@ impl VirtualMachine {
                 }
             }
         }
+
+        // Pack extra positional args into *args tuple
+        if has_varargs {
+            let extra: Vec<PyObjectRef> = if args.len() > nparams {
+                args[nparams..].to_vec()
+            } else {
+                Vec::new()
+            };
+            frame.set_local(nparams, PyObject::tuple(extra));
+        }
+
+        // Pack **kwargs into a dict
+        if has_varkw {
+            let kwargs_idx = nparams + if has_varargs { 1 } else { 0 };
+            frame.set_local(kwargs_idx, PyObject::dict(IndexMap::new()));
+        }
+
+        // Install closure cells as free vars in this frame.
+        let n_cell = code.cellvars.len();
+        for (i, cell) in closure.iter().enumerate() {
+            if n_cell + i < frame.cells.len() {
+                frame.cells[n_cell + i] = cell.clone();
+            }
+        }
+        // For cell vars that are also parameters, copy the parameter value into the cell
+        for (cell_idx, cell_name) in code.cellvars.iter().enumerate() {
+            for (var_idx, var_name) in code.varnames.iter().enumerate() {
+                if cell_name == var_name {
+                    if let Some(val) = frame.locals[var_idx].take() {
+                        *frame.cells[cell_idx].write() = Some(val);
+                    }
+                    break;
+                }
+            }
+        }
         frame.scope_kind = ScopeKind::Function;
         self.call_stack.push(frame);
         let result = self.run_frame();
@@ -71,7 +111,136 @@ impl VirtualMachine {
         result
     }
 
-    /// Main evaluation loop.
+    fn call_function_kw(
+        &mut self,
+        code: &CodeObject,
+        pos_args: Vec<PyObjectRef>,
+        kwargs: Vec<(CompactString, PyObjectRef)>,
+        defaults: &[PyObjectRef],
+        globals: SharedGlobals,
+        closure: &[Arc<RwLock<Option<PyObjectRef>>>],
+    ) -> PyResult<PyObjectRef> {
+        let mut frame = Frame::new(code.clone(), globals, self.builtins.clone());
+        let nparams = code.arg_count as usize;
+        let has_varargs = code.flags.contains(CodeFlags::VARARGS);
+        let has_varkw = code.flags.contains(CodeFlags::VARKEYWORDS);
+
+        // Assign positional parameters
+        let positional_count = pos_args.len().min(nparams);
+        for i in 0..positional_count {
+            frame.set_local(i, pos_args[i].clone());
+        }
+
+        // Place keyword args at their correct parameter positions
+        let mut extra_kwargs: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+        for (name, val) in &kwargs {
+            if let Some(idx) = code.varnames.iter().position(|v| v.as_str() == name.as_str()) {
+                if idx < nparams {
+                    frame.set_local(idx, val.clone());
+                    continue;
+                }
+            }
+            // Not a known parameter — goes into **kwargs
+            extra_kwargs.insert(
+                HashableKey::Str(name.clone()),
+                val.clone(),
+            );
+        }
+
+        // Fill in defaults for missing positional args
+        if !defaults.is_empty() {
+            let ndefaults = defaults.len();
+            let first_default_param = nparams - ndefaults;
+            for i in 0..nparams {
+                if frame.locals[i].is_none() && i >= first_default_param {
+                    let default_idx = i - first_default_param;
+                    frame.set_local(i, defaults[default_idx].clone());
+                }
+            }
+        }
+
+        // Pack extra positional args into *args tuple
+        if has_varargs {
+            let extra: Vec<PyObjectRef> = if pos_args.len() > nparams {
+                pos_args[nparams..].to_vec()
+            } else {
+                Vec::new()
+            };
+            frame.set_local(nparams, PyObject::tuple(extra));
+        }
+
+        // Pack **kwargs into a dict
+        if has_varkw {
+            let kwargs_idx = nparams + if has_varargs { 1 } else { 0 };
+            frame.set_local(kwargs_idx, PyObject::dict(extra_kwargs));
+        }
+
+        // Install closure cells
+        let n_cell = code.cellvars.len();
+        for (i, cell) in closure.iter().enumerate() {
+            if n_cell + i < frame.cells.len() {
+                frame.cells[n_cell + i] = cell.clone();
+            }
+        }
+        for (cell_idx, cell_name) in code.cellvars.iter().enumerate() {
+            for (var_idx, var_name) in code.varnames.iter().enumerate() {
+                if cell_name == var_name {
+                    if let Some(val) = frame.locals[var_idx].take() {
+                        *frame.cells[cell_idx].write() = Some(val);
+                    }
+                    break;
+                }
+            }
+        }
+        frame.scope_kind = ScopeKind::Function;
+        self.call_stack.push(frame);
+        let result = self.run_frame();
+        self.call_stack.pop();
+        result
+    }
+
+    fn call_object_kw(
+        &mut self,
+        func: PyObjectRef,
+        pos_args: Vec<PyObjectRef>,
+        kwargs: Vec<(CompactString, PyObjectRef)>,
+    ) -> PyResult<PyObjectRef> {
+        match &func.payload {
+            PyObjectPayload::Function(pyfunc) => {
+                let code = pyfunc.code.clone();
+                let globals = pyfunc.globals.clone();
+                let defaults = pyfunc.defaults.clone();
+                let closure = pyfunc.closure.clone();
+                self.call_function_kw(&code, pos_args, kwargs, &defaults, globals, &closure)
+            }
+            PyObjectPayload::BoundMethod { receiver, method } => {
+                let mut bound_args = vec![receiver.clone()];
+                bound_args.extend(pos_args);
+                self.call_object_kw(method.clone(), bound_args, kwargs)
+            }
+            PyObjectPayload::Class(_class) => {
+                let instance = PyObject::instance(func.clone());
+                if let Some(init) = func.get_attr("__init__") {
+                    let init_fn = match &init.payload {
+                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                        _ => init.clone(),
+                    };
+                    let mut init_args = vec![instance.clone()];
+                    init_args.extend(pos_args);
+                    self.call_object_kw(init_fn, init_args, kwargs)?;
+                }
+                Ok(instance)
+            }
+            _ => {
+                // Fall back to call_object for builtins etc (kwargs ignored)
+                let mut all_args = pos_args;
+                for (_, v) in kwargs {
+                    all_args.push(v);
+                }
+                self.call_object(func, all_args)
+            }
+        }
+    }
     fn run_frame(&mut self) -> PyResult<PyObjectRef> {
         loop {
             let frame = self.call_stack.last().unwrap();
@@ -90,10 +259,11 @@ impl VirtualMachine {
                     if let Some(handler_ip) = self.unwind_except() {
                         let frame = self.call_stack.last_mut().unwrap();
                         // CPython pushes (traceback, value, type) — 3 items
-                        let exc_obj = PyObject::str_val(CompactString::from(exc.message.clone()));
+                        let exc_value = PyObject::exception_instance(exc.kind.clone(), exc.message.clone());
+                        let exc_type = PyObject::exception_type(exc.kind.clone());
                         frame.push(PyObject::none());     // traceback
-                        frame.push(exc_obj);              // value
-                        frame.push(PyObject::none());     // type
+                        frame.push(exc_value);            // value
+                        frame.push(exc_type);             // type
                         frame.ip = handler_ip;
                     } else {
                         return Err(exc);
@@ -200,6 +370,7 @@ impl VirtualMachine {
                 Opcode::DeleteName => {
                     let name = &frame.code.names[instr.arg as usize];
                     frame.local_names.shift_remove(name.as_str());
+                    frame.globals.write().shift_remove(name.as_str());
                 }
                 Opcode::LoadFast => {
                     let idx = instr.arg as usize;
@@ -220,6 +391,37 @@ impl VirtualMachine {
                     let value = frame.pop();
                     frame.set_local(instr.arg as usize, value);
                 }
+                Opcode::LoadDeref => {
+                    let idx = instr.arg as usize;
+                    let val = frame.cells[idx].read().clone();
+                    match val {
+                        Some(v) => {
+                            frame.push(v);
+                        }
+                        None => {
+                            let n_cell = frame.code.cellvars.len();
+                            let name = if idx < n_cell {
+                                frame.code.cellvars[idx].clone()
+                            } else {
+                                frame.code.freevars[idx - n_cell].clone()
+                            };
+                            return Err(PyException::name_error(format!(
+                                "free variable '{}' referenced before assignment in enclosing scope", name
+                            )));
+                        }
+                    }
+                }
+                Opcode::StoreDeref => {
+                    let value = frame.pop();
+                    let idx = instr.arg as usize;
+                    *frame.cells[idx].write() = Some(value);
+                }
+                Opcode::LoadClosure => {
+                    // Push the cell itself (as a Cell object) onto the stack
+                    let idx = instr.arg as usize;
+                    let cell = frame.cells[idx].clone();
+                    frame.push(PyObject::cell(cell));
+                }
                 Opcode::LoadGlobal => {
                     let name = &frame.code.names[instr.arg as usize];
                     let from_globals = frame.globals.read().get(name.as_str()).cloned();
@@ -239,6 +441,14 @@ impl VirtualMachine {
                     let value = frame.pop();
                     frame.globals.write().insert(name, value);
                 }
+                Opcode::DeleteFast => {
+                    let idx = instr.arg as usize;
+                    frame.locals[idx] = None;
+                }
+                Opcode::DeleteGlobal => {
+                    let name = &frame.code.names[instr.arg as usize];
+                    frame.globals.write().shift_remove(name.as_str());
+                }
                 Opcode::LoadAttr => {
                     let name = frame.code.names[instr.arg as usize].clone();
                     let obj = frame.pop();
@@ -256,6 +466,9 @@ impl VirtualMachine {
                     match &obj.payload {
                         PyObjectPayload::Instance(inst) => {
                             inst.attrs.write().insert(name, value);
+                        }
+                        PyObjectPayload::Class(cd) => {
+                            cd.namespace.write().insert(name, value);
                         }
                         _ => {
                             return Err(PyException::attribute_error(format!(
@@ -354,14 +567,37 @@ impl VirtualMachine {
                             w[actual as usize] = value;
                         }
                         PyObjectPayload::Dict(map) => {
-                            // Dict uses interior mutability via Arc
-                            // For now, we need a mutable dict approach
-                            // This is a limitation — we'll handle it when we make Dict mutable too
-                            let _ = (map, &key, &value);
-                            return Err(PyException::type_error("dict item assignment not yet fully supported"));
+                            let hk = key.to_hashable_key()?;
+                            map.write().insert(hk, value);
                         }
                         _ => return Err(PyException::type_error(format!(
                             "'{}' object does not support item assignment", obj.type_name()))),
+                    }
+                }
+
+                Opcode::DeleteSubscr => {
+                    // Stack: TOS = key, TOS1 = obj
+                    let key = frame.pop();
+                    let obj = frame.pop();
+                    match &obj.payload {
+                        PyObjectPayload::List(items) => {
+                            let idx = key.to_int()?;
+                            let mut w = items.write();
+                            let len = w.len() as i64;
+                            let actual = if idx < 0 { len + idx } else { idx };
+                            if actual < 0 || actual >= len {
+                                return Err(PyException::index_error("list assignment index out of range"));
+                            }
+                            w.remove(actual as usize);
+                        }
+                        PyObjectPayload::Dict(map) => {
+                            let hk = key.to_hashable_key()?;
+                            if map.write().swap_remove(&hk).is_none() {
+                                return Err(PyException::key_error(key.repr()));
+                            }
+                        }
+                        _ => return Err(PyException::type_error(format!(
+                            "'{}' object does not support item deletion", obj.type_name()))),
                     }
                 }
 
@@ -380,6 +616,16 @@ impl VirtualMachine {
                         7 => PyObject::bool_val(!b.contains(&a)?),  // not in
                         8 => PyObject::bool_val(a.is_same(&b)),     // is
                         9 => PyObject::bool_val(!a.is_same(&b)),    // is not
+                        10 => {
+                            // exception match: a is exception type on stack, b is type to match
+                            let matched = match (&a.payload, &b.payload) {
+                                (PyObjectPayload::ExceptionType(kind_a), PyObjectPayload::ExceptionType(kind_b)) => {
+                                    exception_kind_matches(kind_a, kind_b)
+                                }
+                                _ => false,
+                            };
+                            PyObject::bool_val(matched)
+                        }
                         _ => return Err(PyException::runtime_error("invalid compare op")),
                     };
                     frame.push(result);
@@ -540,13 +786,11 @@ impl VirtualMachine {
                     let key = frame.pop();
                     let idx = instr.arg as usize;
                     let stack_pos = frame.stack.len() - idx;
-                    let dict_obj = frame.stack[stack_pos].clone();
+                    let dict_obj = &frame.stack[stack_pos];
                     if let PyObjectPayload::Dict(m) = &dict_obj.payload {
-                        let mut new_map = m.clone();
                         if let Ok(hk) = key.to_hashable_key() {
-                            new_map.insert(hk, value);
+                            m.write().insert(hk, value);
                         }
-                        frame.stack[stack_pos] = PyObject::dict(new_map);
                     }
                 }
                 Opcode::BuildSlice => {
@@ -587,13 +831,32 @@ impl VirtualMachine {
                     frame.push(result);
                 }
                 Opcode::CallFunctionKw => {
-                    let _kw_names = frame.pop();
+                    let kw_names_obj = frame.pop();
                     let arg_count = instr.arg as usize;
                     let mut args = Vec::with_capacity(arg_count);
                     for _ in 0..arg_count { args.push(frame.pop()); }
                     args.reverse();
                     let func = frame.pop();
-                    let result = self.call_object(func, args)?;
+                    // Extract keyword names from the tuple
+                    let kw_names: Vec<CompactString> = match &kw_names_obj.payload {
+                        PyObjectPayload::Tuple(items) => {
+                            items.iter().map(|item| {
+                                match &item.payload {
+                                    PyObjectPayload::Str(s) => s.clone(),
+                                    _ => CompactString::from(item.py_to_string()),
+                                }
+                            }).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    let n_kw = kw_names.len();
+                    let n_pos = arg_count - n_kw;
+                    let pos_args = args[..n_pos].to_vec();
+                    let mut kwargs: Vec<(CompactString, PyObjectRef)> = Vec::new();
+                    for (i, name) in kw_names.iter().enumerate() {
+                        kwargs.push((name.clone(), args[n_pos + i].clone()));
+                    }
+                    let result = self.call_object_kw(func, pos_args, kwargs)?;
                     let frame = self.call_stack.last_mut().unwrap();
                     frame.push(result);
                 }
@@ -606,6 +869,37 @@ impl VirtualMachine {
                     let result = self.call_object(method, args)?;
                     let frame = self.call_stack.last_mut().unwrap();
                     frame.push(result);
+                }
+                Opcode::CallFunctionEx => {
+                    // arg bit 0: has **kwargs dict
+                    let has_kwargs = (instr.arg & 1) != 0;
+                    let kwargs_obj = if has_kwargs { Some(frame.pop()) } else { None };
+                    let args_obj = frame.pop();
+                    let func = frame.pop();
+
+                    // Unpack positional args from tuple/list
+                    let pos_args = args_obj.to_list().unwrap_or_default();
+
+                    if let Some(kw_obj) = kwargs_obj {
+                        // Unpack kwargs from dict
+                        let mut kw_vec: Vec<(CompactString, PyObjectRef)> = Vec::new();
+                        if let PyObjectPayload::Dict(map) = &kw_obj.payload {
+                            for (k, v) in map.read().iter() {
+                                let name = match k {
+                                    HashableKey::Str(s) => s.clone(),
+                                    _ => CompactString::from(format!("{:?}", k)),
+                                };
+                                kw_vec.push((name, v.clone()));
+                            }
+                        }
+                        let result = self.call_object_kw(func, pos_args, kw_vec)?;
+                        let frame = self.call_stack.last_mut().unwrap();
+                        frame.push(result);
+                    } else {
+                        let result = self.call_object(func, pos_args)?;
+                        let frame = self.call_stack.last_mut().unwrap();
+                        frame.push(result);
+                    }
                 }
                 Opcode::LoadMethod => {
                     let name = frame.code.names[instr.arg as usize].clone();
@@ -624,7 +918,25 @@ impl VirtualMachine {
                     let code_obj = frame.pop();
                     let flags = instr.arg;
                     // CPython pops: closure(0x08), annotations(0x04), kwdefaults(0x02), defaults(0x01)
-                    if flags & 0x08 != 0 { frame.pop(); } // closure
+                    let closure_cells = if flags & 0x08 != 0 {
+                        let closure_tuple = frame.pop();
+                        // The closure tuple contains PyObjectRef wrapping CellRef objects
+                        // We stored them as a tuple of cell wrapper objects
+                        match &closure_tuple.payload {
+                            PyObjectPayload::Tuple(items) => {
+                                items.iter().map(|item| {
+                                    match &item.payload {
+                                        PyObjectPayload::Cell(cell) => cell.clone(),
+                                        _ => {
+                                            // Shouldn't happen, but wrap as cell
+                                            Arc::new(RwLock::new(Some(item.clone())))
+                                        }
+                                    }
+                                }).collect()
+                            }
+                            _ => Vec::new(),
+                        }
+                    } else { Vec::new() };
                     if flags & 0x04 != 0 { frame.pop(); } // annotations
                     if flags & 0x02 != 0 { frame.pop(); } // kwdefaults
                     let mut defaults = Vec::new();
@@ -647,7 +959,7 @@ impl VirtualMachine {
                         defaults,
                         kw_defaults: IndexMap::new(),
                         globals: frame.globals.clone(),
-                        closure: Vec::new(),
+                        closure: closure_cells,
                         annotations: IndexMap::new(),
                     };
                     frame.push(PyObject::function(func));
@@ -688,10 +1000,31 @@ impl VirtualMachine {
                 Opcode::PopBlock => { frame.pop_block(); }
                 Opcode::PopExcept => { frame.pop_block(); }
                 Opcode::EndFinally => {
-                    // In CPython, EndFinally checks TOS for re-raise.
-                    // For bare except (no 'as'), we just continue.
-                    // The 3 exception values were already popped by PopTop*3 + PopExcept.
-                    // Nothing to do here for now.
+                    // Check TOS: if it's an exception type, re-raise the exception.
+                    // If it's None, the finally block was entered normally — continue.
+                    // If the stack is empty or TOS is something else, just continue.
+                    if !frame.stack.is_empty() {
+                        let tos = frame.peek();
+                        match &tos.payload {
+                            PyObjectPayload::ExceptionType(kind) => {
+                                let kind = kind.clone();
+                                frame.pop(); // type
+                                let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
+                                if !frame.stack.is_empty() { frame.pop(); } // traceback
+                                let msg = match &value.payload {
+                                    PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
+                                    _ => value.py_to_string(),
+                                };
+                                return Err(PyException::new(kind, msg));
+                            }
+                            PyObjectPayload::None => {
+                                frame.pop(); // consume the None
+                            }
+                            _ => {
+                                // Integer or other — just continue
+                            }
+                        }
+                    }
                 }
                 Opcode::BeginFinally => {
                     // Push None to indicate normal (non-exception) entry into finally
@@ -703,12 +1036,28 @@ impl VirtualMachine {
                             "No active exception to re-raise")),
                         1 => {
                             let exc = frame.pop();
-                            return Err(PyException::runtime_error(exc.py_to_string()));
+                            match &exc.payload {
+                                PyObjectPayload::ExceptionInstance { kind, message, .. } => {
+                                    return Err(PyException::new(kind.clone(), message.to_string()));
+                                }
+                                PyObjectPayload::ExceptionType(kind) => {
+                                    return Err(PyException::new(kind.clone(), ""));
+                                }
+                                _ => return Err(PyException::runtime_error(exc.py_to_string())),
+                            }
                         }
                         2 => {
                             let _cause = frame.pop();
                             let exc = frame.pop();
-                            return Err(PyException::runtime_error(exc.py_to_string()));
+                            match &exc.payload {
+                                PyObjectPayload::ExceptionInstance { kind, message, .. } => {
+                                    return Err(PyException::new(kind.clone(), message.to_string()));
+                                }
+                                PyObjectPayload::ExceptionType(kind) => {
+                                    return Err(PyException::new(kind.clone(), ""));
+                                }
+                                _ => return Err(PyException::runtime_error(exc.py_to_string())),
+                            }
                         }
                         _ => return Err(PyException::runtime_error(
                             "bad RAISE_VARARGS arg")),
@@ -789,11 +1138,74 @@ impl VirtualMachine {
                 let code = pyfunc.code.clone();
                 let globals = pyfunc.globals.clone();
                 let defaults = pyfunc.defaults.clone();
-                self.call_function(&code, args, &defaults, globals)
+                let closure = pyfunc.closure.clone();
+                self.call_function(&code, args, &defaults, globals, &closure)
             }
             PyObjectPayload::BuiltinFunction(name) => {
                 if name.as_str() == "__build_class__" {
                     return self.build_class(args);
+                }
+                // VM-aware builtins that need to call user-defined methods
+                match name.as_str() {
+                    "str" => {
+                        if args.is_empty() {
+                            return Ok(PyObject::str_val(CompactString::from("")));
+                        }
+                        // Only check __str__ on class instances, not builtins
+                        if matches!(&args[0].payload, PyObjectPayload::Instance(_)) {
+                            if let Some(str_method) = args[0].get_attr("__str__") {
+                                return self.call_object(str_method, vec![]);
+                            }
+                        }
+                        return Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())));
+                    }
+                    "repr" => {
+                        if args.is_empty() {
+                            return Ok(PyObject::str_val(CompactString::from("")));
+                        }
+                        if matches!(&args[0].payload, PyObjectPayload::Instance(_)) {
+                            if let Some(repr_method) = args[0].get_attr("__repr__") {
+                                return self.call_object(repr_method, vec![]);
+                            }
+                        }
+                        return Ok(PyObject::str_val(CompactString::from(args[0].repr())));
+                    }
+                    "map" => {
+                        if args.len() < 2 {
+                            return Err(PyException::type_error("map() requires at least 2 arguments"));
+                        }
+                        let func_obj = args[0].clone();
+                        let iterable = args[1].to_list()?;
+                        let mut result = Vec::new();
+                        for item in iterable {
+                            result.push(self.call_object(func_obj.clone(), vec![item])?);
+                        }
+                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                            ferrython_core::object::IteratorData::List { items: result, index: 0 }
+                        )));
+                    }
+                    "filter" => {
+                        if args.len() < 2 {
+                            return Err(PyException::type_error("filter() requires at least 2 arguments"));
+                        }
+                        let func_obj = args[0].clone();
+                        let iterable = args[1].to_list()?;
+                        let mut result = Vec::new();
+                        for item in iterable {
+                            let keep = if matches!(func_obj.payload, PyObjectPayload::None) {
+                                item.is_truthy()
+                            } else {
+                                self.call_object(func_obj.clone(), vec![item.clone()])?.is_truthy()
+                            };
+                            if keep {
+                                result.push(item);
+                            }
+                        }
+                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                            ferrython_core::object::IteratorData::List { items: result, index: 0 }
+                        )));
+                    }
+                    _ => {}
                 }
                 match builtins::get_builtin_fn(name.as_str()) {
                     Some(f) => f(&args),
@@ -802,12 +1214,17 @@ impl VirtualMachine {
                     ))),
                 }
             }
-            PyObjectPayload::Class(class) => {
+            PyObjectPayload::Class(_class) => {
                 let instance = PyObject::instance(func.clone());
-                if let Some(init) = class.namespace.get("__init__") {
+                // Look up __init__ through MRO (supports inheritance)
+                if let Some(init) = func.get_attr("__init__") {
+                    let init_fn = match &init.payload {
+                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                        _ => init.clone(),
+                    };
                     let mut init_args = vec![instance.clone()];
                     init_args.extend(args);
-                    self.call_object(init.clone(), init_args)?;
+                    self.call_object(init_fn, init_args)?;
                 }
                 Ok(instance)
             }
@@ -818,6 +1235,15 @@ impl VirtualMachine {
             }
             PyObjectPayload::BuiltinBoundMethod { receiver, method_name } => {
                 builtins::call_method(receiver, method_name.as_str(), &args)
+            }
+            PyObjectPayload::ExceptionType(kind) => {
+                // Calling an exception type creates an exception instance
+                let msg = if args.is_empty() {
+                    String::new()
+                } else {
+                    args[0].py_to_string()
+                };
+                Ok(PyObject::exception_instance(kind.clone(), msg))
             }
             _ => Err(PyException::type_error(format!(
                 "'{}' object is not callable", func.type_name()
@@ -889,5 +1315,47 @@ fn constant_to_object(constant: &ConstantValue) -> PyObjectRef {
 impl Default for VirtualMachine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Check if `actual` exception kind matches `expected` (including inheritance).
+fn exception_kind_matches(actual: &ExceptionKind, expected: &ExceptionKind) -> bool {
+    if std::mem::discriminant(actual) == std::mem::discriminant(expected) {
+        return true;
+    }
+    // Walk the exception hierarchy
+    match expected {
+        ExceptionKind::BaseException => true, // catches everything
+        ExceptionKind::Exception => !matches!(actual,
+            ExceptionKind::SystemExit | ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit
+        ),
+        ExceptionKind::ArithmeticError => matches!(actual,
+            ExceptionKind::ArithmeticError | ExceptionKind::FloatingPointError |
+            ExceptionKind::OverflowError | ExceptionKind::ZeroDivisionError
+        ),
+        ExceptionKind::LookupError => matches!(actual,
+            ExceptionKind::LookupError | ExceptionKind::IndexError | ExceptionKind::KeyError
+        ),
+        ExceptionKind::OSError => matches!(actual,
+            ExceptionKind::OSError | ExceptionKind::BlockingIOError |
+            ExceptionKind::BrokenPipeError | ExceptionKind::FileExistsError |
+            ExceptionKind::FileNotFoundError | ExceptionKind::PermissionError
+        ),
+        ExceptionKind::UnicodeError => matches!(actual,
+            ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
+            ExceptionKind::UnicodeEncodeError
+        ),
+        ExceptionKind::ValueError => matches!(actual,
+            ExceptionKind::ValueError | ExceptionKind::UnicodeError |
+            ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError
+        ),
+        ExceptionKind::Warning => matches!(actual,
+            ExceptionKind::Warning | ExceptionKind::DeprecationWarning |
+            ExceptionKind::RuntimeWarning | ExceptionKind::UserWarning
+        ),
+        ExceptionKind::ImportError => matches!(actual,
+            ExceptionKind::ImportError | ExceptionKind::ModuleNotFoundError
+        ),
+        _ => false,
     }
 }

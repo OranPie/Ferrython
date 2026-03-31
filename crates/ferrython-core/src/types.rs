@@ -175,7 +175,8 @@ pub struct PyFunction {
     pub defaults: Vec<PyObjectRef>,
     pub kw_defaults: IndexMap<CompactString, PyObjectRef>,
     pub globals: SharedGlobals,
-    pub closure: Vec<PyObjectRef>,
+    /// Closure cells: Vec of shared cell references from enclosing scope.
+    pub closure: Vec<Arc<RwLock<Option<PyObjectRef>>>>,
     pub annotations: IndexMap<CompactString, PyObjectRef>,
 }
 

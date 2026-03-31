@@ -1,6 +1,6 @@
 //! The Python object model — `PyObject`, `PyObjectRef`, `PyObjectPayload`.
 
-use crate::error::{PyException, PyResult};
+use crate::error::{ExceptionKind, PyException, PyResult};
 use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
@@ -34,7 +34,7 @@ pub enum PyObjectPayload {
     Tuple(Vec<PyObjectRef>),
     Set(IndexMap<HashableKey, PyObjectRef>),
     FrozenSet(IndexMap<HashableKey, PyObjectRef>),
-    Dict(IndexMap<HashableKey, PyObjectRef>),
+    Dict(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     Function(PyFunction),
     BuiltinFunction(CompactString),
     BoundMethod { receiver: PyObjectRef, method: PyObjectRef },
@@ -45,13 +45,19 @@ pub enum PyObjectPayload {
     Module(ModuleData),
     Iterator(IteratorData),
     Slice { start: Option<PyObjectRef>, stop: Option<PyObjectRef>, step: Option<PyObjectRef> },
+    /// A cell object wrapping a shared mutable reference (for closures).
+    Cell(Arc<RwLock<Option<PyObjectRef>>>),
+    /// Exception type object (e.g. ValueError, TypeError)
+    ExceptionType(ExceptionKind),
+    /// Exception instance (raised exception with kind, message, and optional args)
+    ExceptionInstance { kind: ExceptionKind, message: CompactString, args: Vec<PyObjectRef> },
 }
 
 #[derive(Debug, Clone)]
 pub struct ClassData {
     pub name: CompactString,
     pub bases: Vec<PyObjectRef>,
-    pub namespace: IndexMap<CompactString, PyObjectRef>,
+    pub namespace: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
     pub mro: Vec<PyObjectRef>,
 }
 
@@ -100,12 +106,12 @@ impl PyObject {
     pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::List(Arc::new(RwLock::new(items)))) }
     pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Tuple(items)) }
     pub fn set(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Set(items)) }
-    pub fn dict(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Dict(items)) }
+    pub fn dict(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(items)))) }
     pub fn function(func: PyFunction) -> PyObjectRef { Self::wrap(PyObjectPayload::Function(func)) }
     pub fn builtin_function(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinFunction(name)) }
     pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef { Self::wrap(PyObjectPayload::Code(Box::new(code))) }
     pub fn class(name: CompactString, bases: Vec<PyObjectRef>, namespace: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Class(ClassData { name, bases, namespace, mro: Vec::new() }))
+        Self::wrap(PyObjectPayload::Class(ClassData { name, bases, namespace: Arc::new(RwLock::new(namespace)), mro: Vec::new() }))
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(IndexMap::new())) }))
@@ -121,6 +127,20 @@ impl PyObject {
     }
     pub fn range(start: i64, stop: i64, step: i64) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Iterator(IteratorData::Range { current: start, stop, step }))
+    }
+    pub fn cell(cell: Arc<RwLock<Option<PyObjectRef>>>) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::Cell(cell))
+    }
+    pub fn exception_type(kind: ExceptionKind) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::ExceptionType(kind))
+    }
+    pub fn exception_instance(kind: ExceptionKind, message: impl Into<String>) -> PyObjectRef {
+        let msg: String = message.into();
+        Self::wrap(PyObjectPayload::ExceptionInstance {
+            kind,
+            message: CompactString::from(msg),
+            args: vec![],
+        })
     }
 }
 
@@ -168,6 +188,21 @@ pub trait PyObjectMethods {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareOp { Lt, Le, Eq, Ne, Gt, Ge }
 
+/// Walk a class and its base classes (MRO) to find an attribute.
+fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+    if let PyObjectPayload::Class(cd) = &class.payload {
+        if let Some(v) = cd.namespace.read().get(name).cloned() {
+            return Some(v);
+        }
+        for base in &cd.bases {
+            if let Some(v) = lookup_in_class_mro(base, name) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 impl PyObjectMethods for PyObjectRef {
     fn type_name(&self) -> &'static str {
         match &self.payload {
@@ -200,6 +235,9 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Module(_) => "module",
             PyObjectPayload::Iterator(_) => "iterator",
             PyObjectPayload::Slice { .. } => "slice",
+            PyObjectPayload::Cell(_) => "cell",
+            PyObjectPayload::ExceptionType(_) => "type",
+            PyObjectPayload::ExceptionInstance { .. } => "exception",
         }
     }
 
@@ -214,14 +252,16 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => !b.is_empty(),
             PyObjectPayload::List(v) => !v.read().is_empty(),
             PyObjectPayload::Tuple(v) => !v.is_empty(),
-            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) | PyObjectPayload::Dict(m) => !m.is_empty(),
+            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => !m.is_empty(),
+            PyObjectPayload::Dict(m) => !m.read().is_empty(),
             _ => true,
         }
     }
 
     fn is_callable(&self) -> bool {
         matches!(&self.payload, PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
-            | PyObjectPayload::BoundMethod { .. } | PyObjectPayload::Class(_))
+            | PyObjectPayload::BoundMethod { .. } | PyObjectPayload::Class(_)
+            | PyObjectPayload::ExceptionType(_))
     }
 
     fn is_same(&self, other: &Self) -> bool { Arc::ptr_eq(self, other) }
@@ -246,7 +286,7 @@ impl PyObjectMethods for PyObjectRef {
             }
             PyObjectPayload::Set(m) if m.is_empty() => "set()".into(),
             PyObjectPayload::Set(m) => format_set("{", "}", m),
-            PyObjectPayload::Dict(m) => format_dict(m),
+            PyObjectPayload::Dict(m) => format_dict(&m.read()),
             PyObjectPayload::Ellipsis => "Ellipsis".into(),
             PyObjectPayload::NotImplemented => "NotImplemented".into(),
             PyObjectPayload::Function(f) => format!("<function {}>", f.name),
@@ -260,6 +300,14 @@ impl PyObjectMethods for PyObjectRef {
             }
             PyObjectPayload::Module(m) => format!("<module '{}'>", m.name),
             PyObjectPayload::Iterator(_) => "<iterator>".into(),
+            PyObjectPayload::ExceptionType(kind) => format!("<class '{}'>", kind),
+            PyObjectPayload::ExceptionInstance { kind, message, .. } => {
+                if message.is_empty() {
+                    format!("{}()", kind)
+                } else {
+                    format!("{}('{}')", kind, message)
+                }
+            }
             _ => format!("<{}>", self.type_name()),
         }
     }
@@ -277,7 +325,25 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Tuple(v) => Ok(v.clone()),
             PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
-            PyObjectPayload::Dict(m) => Ok(m.keys().map(|k| k.to_object()).collect()),
+            PyObjectPayload::Dict(m) => Ok(m.read().keys().map(|k| k.to_object()).collect()),
+            PyObjectPayload::Iterator(iter_data) => {
+                match iter_data {
+                    IteratorData::List { items, index } => Ok(items[*index..].to_vec()),
+                    IteratorData::Tuple { items, index } => Ok(items[*index..].to_vec()),
+                    IteratorData::Range { current, stop, step } => {
+                        let mut result = Vec::new();
+                        let mut val = *current;
+                        while (step > &0 && val < *stop) || (step < &0 && val > *stop) {
+                            result.push(PyObject::int(val));
+                            val += step;
+                        }
+                        Ok(result)
+                    }
+                    IteratorData::Str { chars, index } => {
+                        Ok(chars[*index..].iter().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect())
+                    }
+                }
+            }
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", self.type_name()))),
         }
     }
@@ -481,24 +547,28 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Instance(inst) => {
                 // Instance attributes take priority
                 if let Some(v) = inst.attrs.read().get(name) { return Some(v.clone()); }
-                // Then check class namespace
-                if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                    if let Some(v) = cd.namespace.get(name) {
-                        // If it's a function, return a BoundMethod (auto-pass self)
-                        if matches!(&v.payload, PyObjectPayload::Function(_)) {
-                            return Some(Arc::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: self.clone(),
-                                    method: v.clone(),
-                                }
-                            }));
-                        }
-                        return Some(v.clone());
+                // Walk the MRO (class + bases chain) for methods/class attrs
+                if let Some(v) = lookup_in_class_mro(&inst.class, name) {
+                    if matches!(&v.payload, PyObjectPayload::Function(_)) {
+                        return Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: self.clone(),
+                                method: v.clone(),
+                            }
+                        }));
                     }
+                    return Some(v.clone());
                 }
                 None
             }
-            PyObjectPayload::Class(cd) => cd.namespace.get(name).cloned(),
+            PyObjectPayload::Class(cd) => {
+                // Check own namespace first, then bases
+                if let Some(v) = cd.namespace.read().get(name).cloned() { return Some(v); }
+                for base in &cd.bases {
+                    if let Some(v) = base.get_attr(name) { return Some(v); }
+                }
+                None
+            }
             PyObjectPayload::Module(m) => m.attrs.get(name).cloned(),
             // Built-in type methods — return bound method names
             PyObjectPayload::Str(_) | PyObjectPayload::List(_) |
@@ -523,7 +593,8 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok(b.len()),
             PyObjectPayload::List(v) => Ok(v.read().len()),
             PyObjectPayload::Tuple(v) => Ok(v.len()),
-            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) | PyObjectPayload::Dict(m) => Ok(m.len()),
+            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => Ok(m.len()),
+            PyObjectPayload::Dict(m) => Ok(m.read().len()),
             _ => Err(PyException::type_error(format!("object of type '{}' has no len()", self.type_name()))),
         }
     }
@@ -551,7 +622,7 @@ impl PyObjectMethods for PyObjectRef {
             }
             PyObjectPayload::Dict(map) => {
                 let hk = key.to_hashable_key()?;
-                map.get(&hk).cloned().ok_or_else(|| PyException::key_error(key.repr()))
+                map.read().get(&hk).cloned().ok_or_else(|| PyException::key_error(key.repr()))
             }
             PyObjectPayload::Str(s) => {
                 let idx = key.to_int()?;
@@ -578,9 +649,13 @@ impl PyObjectMethods for PyObjectRef {
                 if let Some(needle) = item.as_str() { Ok(haystack.contains(needle)) }
                 else { Err(PyException::type_error("'in <string>' requires string as left operand")) }
             }
-            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) | PyObjectPayload::Dict(m) => {
+            PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => {
                 let hk = item.to_hashable_key()?;
                 Ok(m.contains_key(&hk))
+            }
+            PyObjectPayload::Dict(m) => {
+                let hk = item.to_hashable_key()?;
+                Ok(m.read().contains_key(&hk))
             }
             _ => Err(PyException::type_error(format!("argument of type '{}' is not iterable", self.type_name()))),
         }
@@ -592,7 +667,7 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::Tuple { items: items.clone(), index: 0 }))),
             PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::Str { chars: s.chars().collect(), index: 0 }))),
             PyObjectPayload::Dict(m) => {
-                let keys: Vec<PyObjectRef> = m.keys().map(|k| k.to_object()).collect();
+                let keys: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::List { items: keys, index: 0 })))
             }
             PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => {
@@ -611,11 +686,11 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Instance(inst) => {
                 let mut names: Vec<CompactString> = inst.attrs.read().keys().cloned().collect();
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                    names.extend(cd.namespace.keys().cloned());
+                    names.extend(cd.namespace.read().keys().cloned());
                 }
                 names.sort(); names.dedup(); names
             }
-            PyObjectPayload::Class(cd) => { let mut n: Vec<_> = cd.namespace.keys().cloned().collect(); n.sort(); n }
+            PyObjectPayload::Class(cd) => { let mut n: Vec<_> = cd.namespace.read().keys().cloned().collect(); n.sort(); n }
             PyObjectPayload::Module(m) => { let mut n: Vec<_> = m.attrs.keys().cloned().collect(); n.sort(); n }
             _ => vec![],
         }

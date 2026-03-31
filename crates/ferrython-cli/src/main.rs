@@ -132,6 +132,12 @@ fn dis_code(code: &ferrython_bytecode::code::CodeObject, indent: usize) {
     println!("{}=== Code: {} ===", pad, code.name);
     println!("{}  names: {:?}", pad, code.names);
     println!("{}  varnames: {:?}", pad, code.varnames);
+    if !code.cellvars.is_empty() {
+        println!("{}  cellvars: {:?}", pad, code.cellvars);
+    }
+    if !code.freevars.is_empty() {
+        println!("{}  freevars: {:?}", pad, code.freevars);
+    }
     println!("{}  consts: {} items", pad, code.constants.len());
     for (i, c) in code.constants.iter().enumerate() {
         let desc = match c {

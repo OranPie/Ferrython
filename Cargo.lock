@@ -99,6 +99,7 @@ dependencies = [
 name = "ferrython-compiler"
 version = "0.1.0"
 dependencies = [
+ "compact_str",
  "ferrython-ast",
  "ferrython-bytecode",
  "indexmap",
