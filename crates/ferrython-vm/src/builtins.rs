@@ -1536,10 +1536,13 @@ fn file_close(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::none())
 }
 
-fn file_enter(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // __enter__ returns self — but we don't have self here
-    // Return None for now; the with statement handles the value
-    Ok(PyObject::none())
+fn file_enter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // __enter__ returns self (the file object)
+    if let Some(self_obj) = args.first() {
+        Ok(self_obj.clone())
+    } else {
+        Ok(PyObject::none())
+    }
 }
 
 fn file_exit(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

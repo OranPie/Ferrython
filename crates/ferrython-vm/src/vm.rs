@@ -30,9 +30,19 @@ impl VirtualMachine {
         }
     }
 
+    /// Create a new empty shared globals map.
+    pub fn new_globals() -> SharedGlobals {
+        Arc::new(RwLock::new(IndexMap::new()))
+    }
+
     /// Execute a code object (module-level).
     pub fn execute(&mut self, code: CodeObject) -> PyResult<PyObjectRef> {
         let globals = Arc::new(RwLock::new(IndexMap::new()));
+        self.execute_with_globals(code, globals)
+    }
+
+    /// Execute a code object with shared globals (for REPL).
+    pub fn execute_with_globals(&mut self, code: CodeObject, globals: SharedGlobals) -> PyResult<PyObjectRef> {
         let frame = Frame::new(code, globals, self.builtins.clone());
         self.call_stack.push(frame);
         let result = self.run_frame();
@@ -535,10 +545,26 @@ impl VirtualMachine {
                 // ── Unary operations ──
                 Opcode::UnaryPositive => {
                     let v = frame.pop();
+                    if let PyObjectPayload::Instance(_) = &v.payload {
+                        if let Some(method) = v.get_attr("__pos__") {
+                            drop(frame);
+                            let result = self.call_object(method, vec![])?;
+                            push!(result);
+                            return Ok(None);
+                        }
+                    }
                     frame.push(v.positive()?);
                 }
                 Opcode::UnaryNegative => {
                     let v = frame.pop();
+                    if let PyObjectPayload::Instance(_) = &v.payload {
+                        if let Some(method) = v.get_attr("__neg__") {
+                            drop(frame);
+                            let result = self.call_object(method, vec![])?;
+                            push!(result);
+                            return Ok(None);
+                        }
+                    }
                     frame.push(v.negate()?);
                 }
                 Opcode::UnaryNot => {
@@ -564,6 +590,14 @@ impl VirtualMachine {
                 }
                 Opcode::UnaryInvert => {
                     let v = frame.pop();
+                    if let PyObjectPayload::Instance(_) = &v.payload {
+                        if let Some(method) = v.get_attr("__invert__") {
+                            drop(frame);
+                            let result = self.call_object(method, vec![])?;
+                            push!(result);
+                            return Ok(None);
+                        }
+                    }
                     frame.push(v.invert()?);
                 }
 
@@ -1209,15 +1243,20 @@ impl VirtualMachine {
                     let _fromlist = frame.pop();
                     let _level = frame.pop();
                     let name = frame.code.names[instr.arg as usize].clone();
+                    let filename = frame.code.filename.clone();
                     // Check module cache first
                     if let Some(module) = self.modules.get(&name) {
                         frame.push(module.clone());
                     } else {
-                        // Try to load a builtin module
-                        let module = self.load_builtin_module(&name)?;
+                        // Try builtin module first, then filesystem
+                        drop(frame);
+                        let module = match self.load_builtin_module(&name) {
+                            Ok(m) => m,
+                            Err(_) => self.load_file_module(&name, &filename)?
+                        };
                         self.modules.insert(name, module.clone());
-                        let frame = self.call_stack.last_mut().unwrap();
-                        frame.push(module);
+                        push!(module);
+                        return Ok(None);
                     }
                 }
                 Opcode::ImportFrom => {
@@ -1312,10 +1351,15 @@ impl VirtualMachine {
                     let exit_method = ctx_mgr.get_attr("__exit__").ok_or_else(||
                         PyException::attribute_error("__exit__"))?;
                     frame.push(exit_method);
-                    // Call __enter__
+                    // Call __enter__, passing ctx_mgr as self for non-bound methods
                     let enter_method = ctx_mgr.get_attr("__enter__").ok_or_else(||
                         PyException::attribute_error("__enter__"))?;
-                    let enter_result = self.call_object(enter_method, vec![])?;
+                    let enter_args = if matches!(&enter_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                        vec![]
+                    } else {
+                        vec![ctx_mgr.clone()]
+                    };
+                    let enter_result = self.call_object(enter_method, enter_args)?;
                     let frame = self.call_stack.last_mut().unwrap();
                     // Setup the With block (points to cleanup handler)
                     frame.push_block(BlockKind::With, instr.arg as usize);
@@ -1371,8 +1415,65 @@ impl VirtualMachine {
                     return Ok(Some(value));
                 }
                 Opcode::YieldFrom => {
-                    let _value = frame.pop();
-                    frame.push(PyObject::none());
+                    // yield from <iterable>: delegate to sub-iterator
+                    // TOS = send_value (from .send()), TOS1 = sub-iterator
+                    let send_val = frame.pop();
+                    let sub_iter = frame.peek().clone();
+
+                    if let PyObjectPayload::Generator(ref gen_arc) = sub_iter.payload {
+                        let gen_arc = gen_arc.clone();
+                        drop(frame);
+                        match self.resume_generator(&gen_arc, send_val) {
+                            Ok(yielded) => {
+                                let frame = self.call_stack.last_mut().unwrap();
+                                frame.yielded = true;
+                                frame.ip -= 1; // re-enter YieldFrom next time
+                                return Ok(Some(yielded));
+                            }
+                            Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                let frame = self.call_stack.last_mut().unwrap();
+                                frame.pop(); // remove exhausted sub-generator
+                                frame.push(PyObject::none());
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    } else if matches!(&sub_iter.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(next_method) = sub_iter.get_attr("__next__") {
+                            drop(frame);
+                            match self.call_object(next_method, vec![]) {
+                                Ok(val) => {
+                                    let frame = self.call_stack.last_mut().unwrap();
+                                    frame.yielded = true;
+                                    frame.ip -= 1;
+                                    return Ok(Some(val));
+                                }
+                                Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                    let frame = self.call_stack.last_mut().unwrap();
+                                    frame.pop();
+                                    frame.push(PyObject::none());
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        } else {
+                            frame.pop();
+                            frame.push(PyObject::none());
+                        }
+                    } else {
+                        // Regular iterator (IteratorData)
+                        match builtins::iter_advance(&sub_iter)? {
+                            Some((new_iter, value)) => {
+                                frame.pop(); // remove old iterator
+                                frame.push(new_iter); // push advanced iterator
+                                frame.yielded = true;
+                                frame.ip -= 1;
+                                return Ok(Some(value));
+                            }
+                            None => {
+                                frame.pop(); // exhausted
+                                frame.push(PyObject::none());
+                            }
+                        }
+                    }
                 }
 
                 // ── With cleanup ──
@@ -1607,6 +1708,24 @@ impl VirtualMachine {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
                                 if let Some(method) = args[0].get_attr("__len__") {
                                     return self.call_object(method, vec![args[0].clone()]);
+                                }
+                            }
+                        }
+                    }
+                    "abs" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__abs__") {
+                                    return self.call_object(method, vec![]);
+                                }
+                            }
+                        }
+                    }
+                    "hash" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__hash__") {
+                                    return self.call_object(method, vec![]);
                                 }
                             }
                         }
@@ -1853,33 +1972,40 @@ impl VirtualMachine {
             "io" => Ok(builtins::create_io_module()),
             "re" => Ok(builtins::create_re_module()),
             "hashlib" => Ok(builtins::create_hashlib_module()),
-            _ => {
-                // Try to load from filesystem
-                self.load_file_module(name)
-            }
+            _ => Err(PyException::import_error(format!("No module named '{}'", name))),
         }
     }
 
-    fn load_file_module(&self, name: &str) -> PyResult<PyObjectRef> {
-        // Convert module name to file path (e.g., "foo.bar" -> "foo/bar.py")
-        let path = name.replace('.', "/");
-        let candidates = [
-            format!("{}.py", path),
-            format!("{}/__init__.py", path),
-        ];
-        for candidate in &candidates {
-            if std::path::Path::new(candidate).exists() {
-                let source = std::fs::read_to_string(candidate)
-                    .map_err(|e| PyException::import_error(format!("cannot read '{}': {}", candidate, e)))?;
-                let ast = ferrython_parser::parse(&source, candidate)
-                    .map_err(|e| PyException::import_error(format!("syntax error in '{}': {}", candidate, e)))?;
-                let code = ferrython_compiler::compile(&ast, candidate)
-                    .map_err(|e| PyException::import_error(format!("compilation error in '{}': {}", candidate, e)))?;
-                let mut vm = VirtualMachine::new();
-                let _result = vm.execute(code)?;
-                // Collect module globals
-                // This is simplified — real import is more complex
-                return Err(PyException::import_error(format!("No module named '{}'", name)));
+    fn load_file_module(&mut self, name: &str, importer_filename: &str) -> PyResult<PyObjectRef> {
+        let module_path = name.replace('.', "/");
+        // Search relative to importer's directory, then cwd
+        let importer_dir = std::path::Path::new(importer_filename)
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
+        let search_dirs = [importer_dir.to_path_buf(), std::path::PathBuf::from(".")];
+        for dir in &search_dirs {
+            let candidates = [
+                dir.join(format!("{}.py", module_path)),
+                dir.join(format!("{}/__init__.py", module_path)),
+            ];
+            for candidate in &candidates {
+                if candidate.exists() {
+                    let candidate_str = candidate.to_string_lossy().to_string();
+                    let source = std::fs::read_to_string(candidate)
+                        .map_err(|e| PyException::import_error(format!("cannot read '{}': {}", candidate_str, e)))?;
+                    let ast = ferrython_parser::parse(&source, &candidate_str)
+                        .map_err(|e| PyException::import_error(format!("syntax error in '{}': {}", candidate_str, e)))?;
+                    let code = ferrython_compiler::compile(&ast, &candidate_str)
+                        .map_err(|e| PyException::import_error(format!("compile error in '{}': {}", candidate_str, e)))?;
+                    // Execute module code and collect its globals as module attributes
+                    let mod_globals = Arc::new(RwLock::new(IndexMap::new()));
+                    let frame = Frame::new(code, mod_globals.clone(), self.builtins.clone());
+                    self.call_stack.push(frame);
+                    let _ = self.run_frame();
+                    self.call_stack.pop();
+                    let attrs = mod_globals.read().clone();
+                    return Ok(PyObject::module_with_attrs(CompactString::from(name), attrs));
+                }
             }
         }
         Err(PyException::import_error(format!("No module named '{}'", name)))
