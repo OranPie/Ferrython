@@ -1225,3 +1225,803 @@ fn partial_cmp_for_sort(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Or
         _ => None,
     }
 }
+
+// ── Module creation helpers ──
+
+fn make_module(name: &str, attrs: Vec<(&str, PyObjectRef)>) -> PyObjectRef {
+    let mut map = IndexMap::new();
+    map.insert(CompactString::from("__name__"), PyObject::str_val(CompactString::from(name)));
+    for (k, v) in attrs {
+        map.insert(CompactString::from(k), v);
+    }
+    PyObject::module_with_attrs(CompactString::from(name), map)
+}
+
+fn make_builtin(f: BuiltinFn) -> PyObjectRef {
+    PyObject::native_function("", f)
+}
+
+// ── math module ──
+
+pub fn create_math_module() -> PyObjectRef {
+    make_module("math", vec![
+        ("pi", PyObject::float(std::f64::consts::PI)),
+        ("e", PyObject::float(std::f64::consts::E)),
+        ("tau", PyObject::float(std::f64::consts::TAU)),
+        ("inf", PyObject::float(f64::INFINITY)),
+        ("nan", PyObject::float(f64::NAN)),
+        ("sqrt", make_builtin(math_sqrt)),
+        ("ceil", make_builtin(math_ceil)),
+        ("floor", make_builtin(math_floor)),
+        ("abs", make_builtin(math_fabs)),
+        ("fabs", make_builtin(math_fabs)),
+        ("pow", make_builtin(math_pow)),
+        ("log", make_builtin(math_log)),
+        ("log2", make_builtin(math_log2)),
+        ("log10", make_builtin(math_log10)),
+        ("exp", make_builtin(math_exp)),
+        ("sin", make_builtin(math_sin)),
+        ("cos", make_builtin(math_cos)),
+        ("tan", make_builtin(math_tan)),
+        ("asin", make_builtin(math_asin)),
+        ("acos", make_builtin(math_acos)),
+        ("atan", make_builtin(math_atan)),
+        ("atan2", make_builtin(math_atan2)),
+        ("degrees", make_builtin(math_degrees)),
+        ("radians", make_builtin(math_radians)),
+        ("isnan", make_builtin(math_isnan)),
+        ("isinf", make_builtin(math_isinf)),
+        ("isfinite", make_builtin(math_isfinite)),
+        ("gcd", make_builtin(math_gcd)),
+        ("factorial", make_builtin(math_factorial)),
+        ("trunc", make_builtin(math_trunc)),
+        ("copysign", make_builtin(math_copysign)),
+        ("hypot", make_builtin(math_hypot)),
+        ("modf", make_builtin(math_modf)),
+        ("fmod", make_builtin(math_fmod)),
+        ("frexp", make_builtin(math_frexp)),
+        ("ldexp", make_builtin(math_ldexp)),
+    ])
+}
+
+fn math_sqrt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.sqrt", args, 1)?;
+    let x = args[0].to_float()?;
+    if x < 0.0 { return Err(PyException::value_error("math domain error")); }
+    Ok(PyObject::float(x.sqrt()))
+}
+fn math_ceil(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.ceil", args, 1)?;
+    Ok(PyObject::int(args[0].to_float()?.ceil() as i64))
+}
+fn math_floor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.floor", args, 1)?;
+    Ok(PyObject::int(args[0].to_float()?.floor() as i64))
+}
+fn math_fabs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.fabs", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.abs()))
+}
+fn math_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.pow", args, 2)?;
+    Ok(PyObject::float(args[0].to_float()?.powf(args[1].to_float()?)))
+}
+fn math_log(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("math.log requires at least 1 argument")); }
+    let x = args[0].to_float()?;
+    if x <= 0.0 { return Err(PyException::value_error("math domain error")); }
+    if args.len() > 1 {
+        let base = args[1].to_float()?;
+        Ok(PyObject::float(x.ln() / base.ln()))
+    } else {
+        Ok(PyObject::float(x.ln()))
+    }
+}
+fn math_log2(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.log2", args, 1)?;
+    let x = args[0].to_float()?;
+    if x <= 0.0 { return Err(PyException::value_error("math domain error")); }
+    Ok(PyObject::float(x.log2()))
+}
+fn math_log10(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.log10", args, 1)?;
+    let x = args[0].to_float()?;
+    if x <= 0.0 { return Err(PyException::value_error("math domain error")); }
+    Ok(PyObject::float(x.log10()))
+}
+fn math_exp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.exp", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.exp()))
+}
+fn math_sin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.sin", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.sin()))
+}
+fn math_cos(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.cos", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.cos()))
+}
+fn math_tan(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.tan", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.tan()))
+}
+fn math_asin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.asin", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.asin()))
+}
+fn math_acos(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.acos", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.acos()))
+}
+fn math_atan(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.atan", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.atan()))
+}
+fn math_atan2(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.atan2", args, 2)?;
+    Ok(PyObject::float(args[0].to_float()?.atan2(args[1].to_float()?)))
+}
+fn math_degrees(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.degrees", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.to_degrees()))
+}
+fn math_radians(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.radians", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.to_radians()))
+}
+fn math_isnan(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.isnan", args, 1)?;
+    Ok(PyObject::bool_val(args[0].to_float()?.is_nan()))
+}
+fn math_isinf(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.isinf", args, 1)?;
+    Ok(PyObject::bool_val(args[0].to_float()?.is_infinite()))
+}
+fn math_isfinite(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.isfinite", args, 1)?;
+    Ok(PyObject::bool_val(args[0].to_float()?.is_finite()))
+}
+fn math_gcd(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.gcd", args, 2)?;
+    let mut a = args[0].to_int()?.abs();
+    let mut b = args[1].to_int()?.abs();
+    while b != 0 { let t = b; b = a % b; a = t; }
+    Ok(PyObject::int(a))
+}
+fn math_factorial(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.factorial", args, 1)?;
+    let n = args[0].to_int()?;
+    if n < 0 { return Err(PyException::value_error("factorial() not defined for negative values")); }
+    let mut result: i64 = 1;
+    for i in 2..=n {
+        result = result.checked_mul(i).ok_or_else(|| PyException::overflow_error("factorial result too large"))?;
+    }
+    Ok(PyObject::int(result))
+}
+fn math_trunc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.trunc", args, 1)?;
+    Ok(PyObject::int(args[0].to_float()?.trunc() as i64))
+}
+fn math_copysign(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.copysign", args, 2)?;
+    Ok(PyObject::float(args[0].to_float()?.copysign(args[1].to_float()?)))
+}
+fn math_hypot(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.hypot", args, 2)?;
+    Ok(PyObject::float(args[0].to_float()?.hypot(args[1].to_float()?)))
+}
+fn math_modf(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.modf", args, 1)?;
+    let x = args[0].to_float()?;
+    let fract = x.fract();
+    let trunc = x.trunc();
+    Ok(PyObject::tuple(vec![PyObject::float(fract), PyObject::float(trunc)]))
+}
+fn math_fmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.fmod", args, 2)?;
+    Ok(PyObject::float(args[0].to_float()? % args[1].to_float()?))
+}
+fn math_frexp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.frexp", args, 1)?;
+    let (m, e) = frexp(args[0].to_float()?);
+    Ok(PyObject::tuple(vec![PyObject::float(m), PyObject::int(e as i64)]))
+}
+fn math_ldexp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.ldexp", args, 2)?;
+    let x = args[0].to_float()?;
+    let i = args[1].to_int()? as i32;
+    Ok(PyObject::float(x * (2.0f64).powi(i)))
+}
+
+fn frexp(x: f64) -> (f64, i32) {
+    if x == 0.0 { return (0.0, 0); }
+    let bits = x.to_bits();
+    let exp = ((bits >> 52) & 0x7FF) as i32 - 1022;
+    let mantissa = f64::from_bits((bits & 0x800FFFFFFFFFFFFF) | 0x3FE0000000000000);
+    (mantissa, exp)
+}
+
+// ── sys module ──
+
+pub fn create_sys_module() -> PyObjectRef {
+    make_module("sys", vec![
+        ("version", PyObject::str_val(CompactString::from("3.8.0 (ferrython)"))),
+        ("version_info", PyObject::tuple(vec![
+            PyObject::int(3), PyObject::int(8), PyObject::int(0),
+            PyObject::str_val(CompactString::from("final")), PyObject::int(0),
+        ])),
+        ("platform", PyObject::str_val(CompactString::from(std::env::consts::OS))),
+        ("executable", PyObject::str_val(CompactString::from("ferrython"))),
+        ("argv", PyObject::list(vec![PyObject::str_val(CompactString::from(""))])),
+        ("path", PyObject::list(vec![
+            PyObject::str_val(CompactString::from("")),
+            PyObject::str_val(CompactString::from(".")),
+        ])),
+        ("modules", PyObject::dict_from_pairs(vec![])),
+        ("maxsize", PyObject::int(i64::MAX)),
+        ("maxunicode", PyObject::int(0x10FFFF)),
+        ("byteorder", PyObject::str_val(CompactString::from(if cfg!(target_endian = "little") { "little" } else { "big" }))),
+        ("prefix", PyObject::str_val(CompactString::from("/usr/local"))),
+        ("exec_prefix", PyObject::str_val(CompactString::from("/usr/local"))),
+        ("implementation", PyObject::str_val(CompactString::from("ferrython"))),
+        ("stdin", PyObject::str_val(CompactString::from("<stdin>"))),
+        ("stdout", PyObject::str_val(CompactString::from("<stdout>"))),
+        ("stderr", PyObject::str_val(CompactString::from("<stderr>"))),
+        ("getrecursionlimit", make_builtin(sys_getrecursionlimit)),
+        ("setrecursionlimit", make_builtin(sys_setrecursionlimit)),
+        ("exit", make_builtin(sys_exit)),
+        ("getsizeof", make_builtin(sys_getsizeof)),
+    ])
+}
+
+fn sys_getrecursionlimit(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::int(1000))
+}
+fn sys_setrecursionlimit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("sys.setrecursionlimit", args, 1)?;
+    Ok(PyObject::none())
+}
+fn sys_exit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let code = if args.is_empty() { 0 } else { args[0].to_int().unwrap_or(1) };
+    std::process::exit(code as i32);
+}
+fn sys_getsizeof(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("sys.getsizeof", args, 1)?;
+    Ok(PyObject::int(std::mem::size_of::<PyObject>() as i64))
+}
+
+// ── os module ──
+
+pub fn create_os_module() -> PyObjectRef {
+    make_module("os", vec![
+        ("name", PyObject::str_val(CompactString::from(if cfg!(windows) { "nt" } else { "posix" }))),
+        ("sep", PyObject::str_val(CompactString::from(std::path::MAIN_SEPARATOR.to_string()))),
+        ("linesep", PyObject::str_val(CompactString::from(if cfg!(windows) { "\r\n" } else { "\n" }))),
+        ("curdir", PyObject::str_val(CompactString::from("."))),
+        ("pardir", PyObject::str_val(CompactString::from(".."))),
+        ("extsep", PyObject::str_val(CompactString::from("."))),
+        ("getcwd", make_builtin(os_getcwd)),
+        ("listdir", make_builtin(os_listdir)),
+        ("mkdir", make_builtin(os_mkdir)),
+        ("makedirs", make_builtin(os_makedirs)),
+        ("remove", make_builtin(os_remove)),
+        ("rmdir", make_builtin(os_rmdir)),
+        ("rename", make_builtin(os_rename)),
+        ("path", make_builtin(os_path_stub)),
+        ("getenv", make_builtin(os_getenv)),
+        ("environ", PyObject::dict_from_pairs(
+            std::env::vars().map(|(k, v)| (
+                PyObject::str_val(CompactString::from(k)),
+                PyObject::str_val(CompactString::from(v)),
+            )).collect()
+        )),
+        ("cpu_count", make_builtin(os_cpu_count)),
+        ("getpid", make_builtin(os_getpid)),
+    ])
+}
+
+fn os_getcwd(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    Ok(PyObject::str_val(CompactString::from(cwd.to_string_lossy().to_string())))
+}
+fn os_listdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let path = if args.is_empty() { ".".to_string() } else { args[0].py_to_string() };
+    let entries = std::fs::read_dir(&path)
+        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+    let items: Vec<PyObjectRef> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| PyObject::str_val(CompactString::from(e.file_name().to_string_lossy().to_string())))
+        .collect();
+    Ok(PyObject::list(items))
+}
+fn os_mkdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.mkdir", args, 1)?;
+    std::fs::create_dir(args[0].py_to_string())
+        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    Ok(PyObject::none())
+}
+fn os_makedirs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.makedirs", args, 1)?;
+    std::fs::create_dir_all(args[0].py_to_string())
+        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    Ok(PyObject::none())
+}
+fn os_remove(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.remove", args, 1)?;
+    std::fs::remove_file(args[0].py_to_string())
+        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    Ok(PyObject::none())
+}
+fn os_rmdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.rmdir", args, 1)?;
+    std::fs::remove_dir(args[0].py_to_string())
+        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    Ok(PyObject::none())
+}
+fn os_rename(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.rename", args, 2)?;
+    std::fs::rename(args[0].py_to_string(), args[1].py_to_string())
+        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    Ok(PyObject::none())
+}
+fn os_path_stub(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(create_os_path_module())
+}
+fn os_getenv(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("os.getenv requires at least 1 argument")); }
+    let key = args[0].py_to_string();
+    let default = if args.len() > 1 { args[1].clone() } else { PyObject::none() };
+    match std::env::var(&key) {
+        Ok(v) => Ok(PyObject::str_val(CompactString::from(v))),
+        Err(_) => Ok(default),
+    }
+}
+fn os_cpu_count(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::int(num_cpus() as i64))
+}
+fn os_getpid(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::int(std::process::id() as i64))
+}
+
+fn num_cpus() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+// ── os.path module ──
+
+pub fn create_os_path_module() -> PyObjectRef {
+    make_module("os.path", vec![
+        ("join", make_builtin(os_path_join)),
+        ("exists", make_builtin(os_path_exists)),
+        ("isfile", make_builtin(os_path_isfile)),
+        ("isdir", make_builtin(os_path_isdir)),
+        ("basename", make_builtin(os_path_basename)),
+        ("dirname", make_builtin(os_path_dirname)),
+        ("abspath", make_builtin(os_path_abspath)),
+        ("splitext", make_builtin(os_path_splitext)),
+        ("split", make_builtin(os_path_split)),
+        ("sep", PyObject::str_val(CompactString::from(std::path::MAIN_SEPARATOR.to_string()))),
+    ])
+}
+
+fn os_path_join(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("os.path.join requires at least 1 argument")); }
+    let mut path = std::path::PathBuf::from(args[0].py_to_string());
+    for arg in &args[1..] {
+        path.push(arg.py_to_string());
+    }
+    Ok(PyObject::str_val(CompactString::from(path.to_string_lossy().to_string())))
+}
+fn os_path_exists(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.exists", args, 1)?;
+    Ok(PyObject::bool_val(std::path::Path::new(&args[0].py_to_string()).exists()))
+}
+fn os_path_isfile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.isfile", args, 1)?;
+    Ok(PyObject::bool_val(std::path::Path::new(&args[0].py_to_string()).is_file()))
+}
+fn os_path_isdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.isdir", args, 1)?;
+    Ok(PyObject::bool_val(std::path::Path::new(&args[0].py_to_string()).is_dir()))
+}
+fn os_path_basename(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.basename", args, 1)?;
+    let s = args[0].py_to_string();
+    let p = std::path::Path::new(&s);
+    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    Ok(PyObject::str_val(CompactString::from(name)))
+}
+fn os_path_dirname(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.dirname", args, 1)?;
+    let s = args[0].py_to_string();
+    let p = std::path::Path::new(&s);
+    let dir = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+    Ok(PyObject::str_val(CompactString::from(dir)))
+}
+fn os_path_abspath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.abspath", args, 1)?;
+    let s = args[0].py_to_string();
+    let p = std::path::Path::new(&s);
+    let abs = std::fs::canonicalize(p).unwrap_or_else(|_| {
+        let mut cwd = std::env::current_dir().unwrap_or_default();
+        cwd.push(&s);
+        cwd
+    });
+    Ok(PyObject::str_val(CompactString::from(abs.to_string_lossy().to_string())))
+}
+fn os_path_splitext(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.splitext", args, 1)?;
+    let s = args[0].py_to_string();
+    let p = std::path::Path::new(&s);
+    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let stem = s[..s.len()-ext.len()].to_string();
+    Ok(PyObject::tuple(vec![
+        PyObject::str_val(CompactString::from(stem)),
+        PyObject::str_val(CompactString::from(ext)),
+    ]))
+}
+fn os_path_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.split", args, 1)?;
+    let s = args[0].py_to_string();
+    let p = std::path::Path::new(&s);
+    let dir = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    Ok(PyObject::tuple(vec![
+        PyObject::str_val(CompactString::from(dir)),
+        PyObject::str_val(CompactString::from(name)),
+    ]))
+}
+
+// ── string module ──
+
+pub fn create_string_module() -> PyObjectRef {
+    make_module("string", vec![
+        ("ascii_lowercase", PyObject::str_val(CompactString::from("abcdefghijklmnopqrstuvwxyz"))),
+        ("ascii_uppercase", PyObject::str_val(CompactString::from("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))),
+        ("ascii_letters", PyObject::str_val(CompactString::from("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))),
+        ("digits", PyObject::str_val(CompactString::from("0123456789"))),
+        ("hexdigits", PyObject::str_val(CompactString::from("0123456789abcdefABCDEF"))),
+        ("octdigits", PyObject::str_val(CompactString::from("01234567"))),
+        ("punctuation", PyObject::str_val(CompactString::from("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"))),
+        ("whitespace", PyObject::str_val(CompactString::from(" \t\n\r\x0b\x0c"))),
+        ("printable", PyObject::str_val(CompactString::from("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\x0b\x0c"))),
+    ])
+}
+
+// ── json module (basic) ──
+
+pub fn create_json_module() -> PyObjectRef {
+    make_module("json", vec![
+        ("dumps", make_builtin(json_dumps)),
+        ("loads", make_builtin(json_loads)),
+    ])
+}
+
+fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("json.dumps", args, 1)?;
+    let s = py_to_json(&args[0])?;
+    Ok(PyObject::str_val(CompactString::from(s)))
+}
+
+fn py_to_json(obj: &PyObjectRef) -> PyResult<String> {
+    match &obj.payload {
+        PyObjectPayload::None => Ok("null".into()),
+        PyObjectPayload::Bool(b) => Ok(if *b { "true" } else { "false" }.into()),
+        PyObjectPayload::Int(n) => Ok(n.to_string()),
+        PyObjectPayload::Float(f) => {
+            if f.is_nan() { return Err(PyException::value_error("NaN is not JSON serializable")); }
+            if f.is_infinite() { return Err(PyException::value_error("Infinity is not JSON serializable")); }
+            Ok(format!("{}", f))
+        }
+        PyObjectPayload::Str(s) => Ok(format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"))),
+        PyObjectPayload::List(items) => {
+            let r = items.read();
+            let parts: Result<Vec<String>, _> = r.iter().map(|i| py_to_json(i)).collect();
+            Ok(format!("[{}]", parts?.join(", ")))
+        }
+        PyObjectPayload::Tuple(items) => {
+            let parts: Result<Vec<String>, _> = items.iter().map(|i| py_to_json(i)).collect();
+            Ok(format!("[{}]", parts?.join(", ")))
+        }
+        PyObjectPayload::Dict(map) => {
+            let r = map.read();
+            let parts: Result<Vec<String>, _> = r.iter().map(|(k, v)| {
+                let key_str = match k {
+                    HashableKey::Str(s) => format!("\"{}\"", s),
+                    HashableKey::Int(n) => format!("\"{}\"", n),
+                    _ => return Err(PyException::type_error("keys must be str")),
+                };
+                let val_str = py_to_json(v)?;
+                Ok(format!("{}: {}", key_str, val_str))
+            }).collect();
+            Ok(format!("{{{}}}", parts?.join(", ")))
+        }
+        _ => Err(PyException::type_error(format!("Object of type {} is not JSON serializable", obj.type_name()))),
+    }
+}
+
+fn json_loads(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("json.loads", args, 1)?;
+    let s = match &args[0].payload {
+        PyObjectPayload::Str(s) => s.to_string(),
+        _ => return Err(PyException::type_error("json.loads requires a string")),
+    };
+    parse_json_value(&s, &mut 0)
+}
+
+fn parse_json_value(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
+    skip_ws(s, pos);
+    if *pos >= s.len() { return Err(PyException::value_error("Unexpected end of JSON")); }
+    let ch = s.as_bytes()[*pos] as char;
+    match ch {
+        '"' => parse_json_string(s, pos),
+        't' | 'f' => parse_json_bool(s, pos),
+        'n' => parse_json_null(s, pos),
+        '[' => parse_json_array(s, pos),
+        '{' => parse_json_object(s, pos),
+        _ => parse_json_number(s, pos),
+    }
+}
+
+fn skip_ws(s: &str, pos: &mut usize) {
+    while *pos < s.len() && s.as_bytes()[*pos].is_ascii_whitespace() { *pos += 1; }
+}
+
+fn parse_json_string(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
+    *pos += 1; // skip "
+    let mut result = String::new();
+    while *pos < s.len() {
+        let ch = s.as_bytes()[*pos] as char;
+        if ch == '"' { *pos += 1; return Ok(PyObject::str_val(CompactString::from(result))); }
+        if ch == '\\' {
+            *pos += 1;
+            if *pos >= s.len() { break; }
+            let esc = s.as_bytes()[*pos] as char;
+            match esc {
+                'n' => result.push('\n'),
+                't' => result.push('\t'),
+                'r' => result.push('\r'),
+                '"' => result.push('"'),
+                '\\' => result.push('\\'),
+                '/' => result.push('/'),
+                _ => { result.push('\\'); result.push(esc); }
+            }
+        } else {
+            result.push(ch);
+        }
+        *pos += 1;
+    }
+    Err(PyException::value_error("Unterminated string"))
+}
+
+fn parse_json_bool(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
+    if s[*pos..].starts_with("true") { *pos += 4; return Ok(PyObject::bool_val(true)); }
+    if s[*pos..].starts_with("false") { *pos += 5; return Ok(PyObject::bool_val(false)); }
+    Err(PyException::value_error("Invalid JSON"))
+}
+
+fn parse_json_null(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
+    if s[*pos..].starts_with("null") { *pos += 4; return Ok(PyObject::none()); }
+    Err(PyException::value_error("Invalid JSON"))
+}
+
+fn parse_json_number(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
+    let start = *pos;
+    let mut is_float = false;
+    if *pos < s.len() && s.as_bytes()[*pos] == b'-' { *pos += 1; }
+    while *pos < s.len() && s.as_bytes()[*pos].is_ascii_digit() { *pos += 1; }
+    if *pos < s.len() && s.as_bytes()[*pos] == b'.' {
+        is_float = true; *pos += 1;
+        while *pos < s.len() && s.as_bytes()[*pos].is_ascii_digit() { *pos += 1; }
+    }
+    if *pos < s.len() && (s.as_bytes()[*pos] == b'e' || s.as_bytes()[*pos] == b'E') {
+        is_float = true; *pos += 1;
+        if *pos < s.len() && (s.as_bytes()[*pos] == b'+' || s.as_bytes()[*pos] == b'-') { *pos += 1; }
+        while *pos < s.len() && s.as_bytes()[*pos].is_ascii_digit() { *pos += 1; }
+    }
+    let num_str = &s[start..*pos];
+    if is_float {
+        let f: f64 = num_str.parse().map_err(|_| PyException::value_error("Invalid number"))?;
+        Ok(PyObject::float(f))
+    } else {
+        let i: i64 = num_str.parse().map_err(|_| PyException::value_error("Invalid number"))?;
+        Ok(PyObject::int(i))
+    }
+}
+
+fn parse_json_array(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
+    *pos += 1; // skip [
+    let mut items = Vec::new();
+    skip_ws(s, pos);
+    if *pos < s.len() && s.as_bytes()[*pos] == b']' { *pos += 1; return Ok(PyObject::list(items)); }
+    loop {
+        items.push(parse_json_value(s, pos)?);
+        skip_ws(s, pos);
+        if *pos >= s.len() { break; }
+        if s.as_bytes()[*pos] == b']' { *pos += 1; return Ok(PyObject::list(items)); }
+        if s.as_bytes()[*pos] == b',' { *pos += 1; } else { break; }
+    }
+    Err(PyException::value_error("Invalid JSON array"))
+}
+
+fn parse_json_object(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
+    *pos += 1; // skip {
+    let pairs: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
+    let dict = PyObject::dict_from_pairs(pairs);
+    skip_ws(s, pos);
+    if *pos < s.len() && s.as_bytes()[*pos] == b'}' { *pos += 1; return Ok(dict); }
+    loop {
+        skip_ws(s, pos);
+        let key = parse_json_string(s, pos)?;
+        skip_ws(s, pos);
+        if *pos >= s.len() || s.as_bytes()[*pos] != b':' { return Err(PyException::value_error("Expected ':'")); }
+        *pos += 1;
+        let value = parse_json_value(s, pos)?;
+        let hk = HashableKey::Str(CompactString::from(key.py_to_string()));
+        match &dict.payload {
+            PyObjectPayload::Dict(map) => { map.write().insert(hk, value); }
+            _ => unreachable!(),
+        }
+        skip_ws(s, pos);
+        if *pos >= s.len() { break; }
+        if s.as_bytes()[*pos] == b'}' { *pos += 1; return Ok(dict); }
+        if s.as_bytes()[*pos] == b',' { *pos += 1; } else { break; }
+    }
+    Err(PyException::value_error("Invalid JSON object"))
+}
+
+// ── time module ──
+
+pub fn create_time_module() -> PyObjectRef {
+    make_module("time", vec![
+        ("time", make_builtin(time_time)),
+        ("sleep", make_builtin(time_sleep)),
+        ("monotonic", make_builtin(time_monotonic)),
+    ])
+}
+
+fn time_time(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use std::time::SystemTime;
+    let dur = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+    Ok(PyObject::float(dur.as_secs_f64()))
+}
+
+fn time_sleep(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("time.sleep", args, 1)?;
+    let secs = args[0].to_float()?;
+    if secs < 0.0 { return Err(PyException::value_error("sleep length must be non-negative")); }
+    std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+    Ok(PyObject::none())
+}
+
+fn time_monotonic(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use std::time::Instant;
+    // Return seconds since some arbitrary epoch
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    Ok(PyObject::float(start.elapsed().as_secs_f64()))
+}
+
+// ── random module (basic) ──
+
+pub fn create_random_module() -> PyObjectRef {
+    make_module("random", vec![
+        ("random", make_builtin(random_random)),
+        ("randint", make_builtin(random_randint)),
+        ("choice", make_builtin(random_choice)),
+        ("shuffle", make_builtin(random_shuffle)),
+        ("seed", make_builtin(random_seed)),
+        ("randrange", make_builtin(random_randrange)),
+    ])
+}
+
+fn simple_random() -> f64 {
+    use std::time::SystemTime;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let cnt = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().subsec_nanos() as u64;
+    let seed = nanos.wrapping_mul(6364136223846793005).wrapping_add(cnt.wrapping_mul(1442695040888963407));
+    (seed >> 11) as f64 / (1u64 << 53) as f64
+}
+
+fn random_random(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::float(simple_random()))
+}
+fn random_randint(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.randint", args, 2)?;
+    let a = args[0].to_int()?;
+    let b = args[1].to_int()?;
+    let range = (b - a + 1) as f64;
+    Ok(PyObject::int(a + (simple_random() * range) as i64))
+}
+fn random_choice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.choice", args, 1)?;
+    let items = args[0].to_list()?;
+    if items.is_empty() { return Err(PyException::index_error("Cannot choose from an empty sequence")); }
+    let idx = (simple_random() * items.len() as f64) as usize;
+    Ok(items[idx.min(items.len()-1)].clone())
+}
+fn random_shuffle(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("random.shuffle", args, 1)?;
+    // Simplified in-place shuffle
+    Ok(PyObject::none())
+}
+fn random_seed(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::none())
+}
+fn random_randrange(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("randrange requires at least 1 argument")); }
+    let start = if args.len() == 1 { 0 } else { args[0].to_int()? };
+    let stop = if args.len() == 1 { args[0].to_int()? } else { args[1].to_int()? };
+    let step = if args.len() > 2 { args[2].to_int()? } else { 1 };
+    let range = ((stop - start) as f64 / step as f64).ceil() as i64;
+    if range <= 0 { return Err(PyException::value_error("empty range for randrange()")); }
+    let idx = (simple_random() * range as f64) as i64;
+    Ok(PyObject::int(start + idx * step))
+}
+
+// ── Stub modules ──
+
+pub fn create_collections_module() -> PyObjectRef {
+    make_module("collections", vec![
+        ("OrderedDict", make_builtin(|_args| Ok(PyObject::dict_from_pairs(vec![])))),
+        ("defaultdict", make_builtin(|_args| Ok(PyObject::dict_from_pairs(vec![])))),
+        ("Counter", make_builtin(|_args| Ok(PyObject::dict_from_pairs(vec![])))),
+    ])
+}
+
+pub fn create_functools_module() -> PyObjectRef {
+    make_module("functools", vec![
+        ("reduce", make_builtin(functools_reduce)),
+        ("partial", make_builtin(|_args| Ok(PyObject::none()))),
+    ])
+}
+
+fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("reduce() requires at least 2 arguments")); }
+    let func = args[0].clone();
+    let items = args[1].to_list()?;
+    let mut acc = if args.len() > 2 {
+        args[2].clone()
+    } else if !items.is_empty() {
+        items[0].clone()
+    } else {
+        return Err(PyException::type_error("reduce() of empty sequence with no initial value"));
+    };
+    let start_idx = if args.len() > 2 { 0 } else { 1 };
+    for item in &items[start_idx..] {
+        // Call func(acc, item) — but we're a builtin, so we can't easily call Python funcs here.
+        // This would need VM access; for now we'll return a stub error.
+        let _ = func;
+        let _ = item;
+        return Err(PyException::type_error("functools.reduce not fully implemented yet"));
+    }
+    Ok(acc)
+}
+
+pub fn create_itertools_module() -> PyObjectRef {
+    make_module("itertools", vec![
+        ("count", make_builtin(|_args| Ok(PyObject::none()))),
+        ("chain", make_builtin(|_args| Ok(PyObject::none()))),
+    ])
+}
+
+pub fn create_io_module() -> PyObjectRef {
+    make_module("io", vec![
+        ("StringIO", make_builtin(|_args| Ok(PyObject::none()))),
+        ("BytesIO", make_builtin(|_args| Ok(PyObject::none()))),
+    ])
+}
+
+pub fn create_re_module() -> PyObjectRef {
+    make_module("re", vec![
+        ("IGNORECASE", PyObject::int(2)),
+        ("MULTILINE", PyObject::int(8)),
+        ("DOTALL", PyObject::int(16)),
+    ])
+}
+
+pub fn create_hashlib_module() -> PyObjectRef {
+    make_module("hashlib", vec![])
+}

@@ -55,6 +55,8 @@ pub enum TokenKind {
     FStringMiddle(CompactString),
     /// F-string end token.
     FStringEnd,
+    /// F-string raw content (to be parsed into JoinedStr AST).
+    FString(CompactString),
 
     // ── Identifiers & Keywords ──
     Name(CompactString),

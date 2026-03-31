@@ -112,21 +112,21 @@ impl<'src> Lexer<'src> {
             return self.lex_number();
         }
 
-        // Identifiers and keywords
-        if c == '_' || c.is_alphabetic() || is_id_start(c) {
-            return self.lex_identifier();
-        }
-
-        // String literals
+        // String literals (bare quotes)
         if c == '\'' || c == '"' {
             return self.lex_string(false, false);
         }
 
-        // String prefixes
+        // String prefixes (must come BEFORE identifier lexing)
         if matches!(c, 'r' | 'R' | 'b' | 'B' | 'u' | 'U' | 'f' | 'F') {
             if let Some(tok) = self.try_lex_string_prefix()? {
                 return Ok(tok);
             }
+        }
+
+        // Identifiers and keywords
+        if c == '_' || c.is_alphabetic() || is_id_start(c) {
+            return self.lex_identifier();
         }
 
         // Ellipsis
@@ -481,7 +481,78 @@ impl<'src> Lexer<'src> {
         }
 
         // Now lex the string
-        self.lex_string(is_raw, is_bytes).map(Some)
+        if is_fstring {
+            self.lex_fstring(is_raw).map(Some)
+        } else {
+            self.lex_string(is_raw, is_bytes).map(Some)
+        }
+    }
+
+    fn lex_fstring(&mut self, is_raw: bool) -> Result<Token, ParseError> {
+        let start = (self.line, self.col);
+        let quote = self.peek_char();
+        self.advance();
+
+        let triple = if !self.is_at_end()
+            && self.peek_char() == quote
+            && self.peek_char_at(1) == Some(quote)
+        {
+            self.advance();
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        // Read the raw f-string content, preserving {expr} blocks
+        let mut content = String::new();
+        loop {
+            if self.is_at_end() {
+                return Err(ParseError::new(
+                    ParseErrorKind::UnterminatedString,
+                    self.span_from(start),
+                ));
+            }
+            let c = self.peek_char();
+            if c == quote {
+                if triple {
+                    if self.peek_char_at(1) == Some(quote)
+                        && self.peek_char_at(2) == Some(quote)
+                    {
+                        self.advance(); self.advance(); self.advance();
+                        break;
+                    }
+                } else {
+                    self.advance();
+                    break;
+                }
+            }
+            if c == '\\' && !is_raw {
+                self.advance();
+                if !self.is_at_end() {
+                    let esc = self.peek_char();
+                    self.advance();
+                    match esc {
+                        'n' => content.push('\n'),
+                        't' => content.push('\t'),
+                        'r' => content.push('\r'),
+                        '\\' => content.push('\\'),
+                        '\'' => content.push('\''),
+                        '"' => content.push('"'),
+                        '{' => content.push('{'),
+                        '}' => content.push('}'),
+                        _ => { content.push('\\'); content.push(esc); }
+                    }
+                }
+                continue;
+            }
+            content.push(c);
+            self.advance();
+        }
+        Ok(Token {
+            kind: TokenKind::FString(CompactString::from(content)),
+            span: self.span_from(start),
+        })
     }
 
     fn lex_string(&mut self, is_raw: bool, is_bytes: bool) -> Result<Token, ParseError> {

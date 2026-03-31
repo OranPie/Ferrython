@@ -631,6 +631,11 @@ impl Parser {
     }
 
     fn parse_test(&mut self) -> Result<Expression, ParseError> {
+        // Handle yield expression
+        if self.check(TokenKind::Yield) {
+            return self.parse_yield_expr();
+        }
+
         // Handle lambda
         if self.check(TokenKind::Lambda) {
             return self.parse_lambda();
@@ -1091,6 +1096,11 @@ impl Parser {
                 }
                 Ok(Expression::constant(Constant::Bytes(result), loc))
             }
+            TokenKind::FString(raw) => {
+                let raw = raw.clone();
+                self.advance();
+                self.parse_fstring_content(&raw, loc)
+            }
             TokenKind::True => {
                 self.advance();
                 Ok(Expression::constant(Constant::Bool(true), loc))
@@ -1281,6 +1291,157 @@ impl Parser {
                 tok.span,
             )),
         }
+    }
+
+    fn parse_yield_expr(&mut self) -> Result<Expression, ParseError> {
+        let loc = self.current_location();
+        self.expect(TokenKind::Yield)?;
+
+        // Check for `yield from expr`
+        if self.check(TokenKind::From) {
+            self.advance();
+            let value = self.parse_test()?;
+            return Ok(Expression::new(
+                ExpressionKind::YieldFrom { value: Box::new(value) },
+                loc,
+            ));
+        }
+
+        // Check if there's a value after yield (not at end of statement/expression)
+        if self.at_expression_start() {
+            let value = self.parse_test_list()?;
+            Ok(Expression::new(
+                ExpressionKind::Yield { value: Some(Box::new(value)) },
+                loc,
+            ))
+        } else {
+            Ok(Expression::new(
+                ExpressionKind::Yield { value: None },
+                loc,
+            ))
+        }
+    }
+
+    /// Check if the current token could start an expression.
+    fn at_expression_start(&self) -> bool {
+        matches!(self.peek().kind,
+            TokenKind::Name(_) | TokenKind::Int(_) | TokenKind::Float(_) |
+            TokenKind::String(_) | TokenKind::Bytes(_) |
+            TokenKind::True | TokenKind::False | TokenKind::None |
+            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace |
+            TokenKind::Minus | TokenKind::Plus | TokenKind::Tilde | TokenKind::Not |
+            TokenKind::Lambda | TokenKind::Yield | TokenKind::Ellipsis
+        )
+    }
+
+    /// Parse f-string content into a JoinedStr AST node.
+    /// Splits on `{expr}` and `{{`/`}}` escapes.
+    fn parse_fstring_content(
+        &mut self,
+        raw: &str,
+        loc: SourceLocation,
+    ) -> Result<Expression, ParseError> {
+        let mut values: Vec<Expression> = Vec::new();
+        let chars: Vec<char> = raw.chars().collect();
+        let mut i = 0;
+        let mut text_buf = String::new();
+
+        while i < chars.len() {
+            if chars[i] == '{' {
+                if i + 1 < chars.len() && chars[i + 1] == '{' {
+                    // Escaped {{ → literal {
+                    text_buf.push('{');
+                    i += 2;
+                    continue;
+                }
+                // Flush text buffer
+                if !text_buf.is_empty() {
+                    values.push(Expression::constant(
+                        Constant::Str(CompactString::from(&text_buf)), loc,
+                    ));
+                    text_buf.clear();
+                }
+                // Extract expression text between { and }
+                i += 1; // skip {
+                let mut depth = 1;
+                let mut expr_text = String::new();
+                let mut conversion: Option<char> = None;
+                let mut format_spec = String::new();
+                let mut in_format_spec = false;
+                while i < chars.len() && depth > 0 {
+                    let c = chars[i];
+                    if c == '{' { depth += 1; }
+                    if c == '}' {
+                        depth -= 1;
+                        if depth == 0 { i += 1; break; }
+                    }
+                    if c == '!' && depth == 1 && !in_format_spec {
+                        // Check for conversion: !s, !r, !a
+                        if i + 1 < chars.len() && (chars[i+1] == 's' || chars[i+1] == 'r' || chars[i+1] == 'a') {
+                            if i + 2 < chars.len() && (chars[i+2] == '}' || chars[i+2] == ':') {
+                                conversion = Some(chars[i+1]);
+                                i += 2;
+                                continue;
+                            }
+                        }
+                    }
+                    if c == ':' && depth == 1 && !in_format_spec {
+                        in_format_spec = true;
+                        i += 1;
+                        continue;
+                    }
+                    if in_format_spec {
+                        format_spec.push(c);
+                    } else {
+                        expr_text.push(c);
+                    }
+                    i += 1;
+                }
+                // Parse the expression text
+                let expr = parse_expression_text(&expr_text, loc)?;
+                values.push(Expression::new(
+                    ExpressionKind::FormattedValue {
+                        value: Box::new(expr),
+                        conversion,
+                        format_spec: if format_spec.is_empty() {
+                            None
+                        } else {
+                            Some(Box::new(Expression::constant(
+                                Constant::Str(CompactString::from(format_spec)),
+                                loc,
+                            )))
+                        },
+                    },
+                    loc,
+                ));
+            } else if chars[i] == '}' {
+                if i + 1 < chars.len() && chars[i + 1] == '}' {
+                    text_buf.push('}');
+                    i += 2;
+                } else {
+                    text_buf.push('}');
+                    i += 1;
+                }
+            } else {
+                text_buf.push(chars[i]);
+                i += 1;
+            }
+        }
+        // Flush remaining text
+        if !text_buf.is_empty() {
+            values.push(Expression::constant(
+                Constant::Str(CompactString::from(&text_buf)), loc,
+            ));
+        }
+
+        // If only one element and it's a constant string, just return it
+        if values.len() == 1 {
+            if let ExpressionKind::Constant { value: Constant::Str(_), .. } = &values[0].node {
+                return Ok(values.into_iter().next().unwrap());
+            }
+        }
+
+        Ok(Expression::new(ExpressionKind::JoinedStr { values }, loc))
     }
 
     fn parse_lambda(&mut self) -> Result<Expression, ParseError> {
@@ -1547,6 +1708,18 @@ impl Parser {
                 ));
             } else {
                 let expr = self.parse_test()?;
+                // Check for generator expression: func(expr for x in iter)
+                if self.check(TokenKind::For) && args.is_empty() && keywords.is_empty() {
+                    let generators = self.parse_comp_for()?;
+                    args.push(Expression::new(
+                        ExpressionKind::GeneratorExp {
+                            elt: Box::new(expr),
+                            generators,
+                        },
+                        self.current_location(),
+                    ));
+                    break; // generator expression is always the sole argument
+                }
                 // Check if this is a keyword argument: name=value
                 if self.check(TokenKind::Equal) {
                     if let ExpressionKind::Name { id, .. } = &expr.node {
@@ -1848,4 +2021,13 @@ impl Parser {
         let span = self.peek().span;
         SourceLocation::new(span.start_line, span.start_col)
     }
+}
+
+/// Parse a Python expression from a string (used for f-string interpolation).
+fn parse_expression_text(text: &str, loc: SourceLocation) -> Result<Expression, ParseError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Expression::constant(Constant::Str(CompactString::from("")), loc));
+    }
+    parse_expression(text, "<fstring>")
 }

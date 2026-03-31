@@ -7,7 +7,7 @@ use ferrython_bytecode::code::{CodeFlags, CodeObject, ConstantValue};
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    CompareOp, GeneratorState, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyFunction, SharedGlobals};
 use indexmap::IndexMap;
@@ -18,6 +18,7 @@ use std::sync::Arc;
 pub struct VirtualMachine {
     call_stack: Vec<Frame>,
     builtins: IndexMap<CompactString, PyObjectRef>,
+    modules: IndexMap<CompactString, PyObjectRef>,
 }
 
 impl VirtualMachine {
@@ -25,6 +26,7 @@ impl VirtualMachine {
         Self {
             call_stack: Vec::new(),
             builtins: builtins::init_builtins(),
+            modules: IndexMap::new(),
         }
     }
 
@@ -105,6 +107,13 @@ impl VirtualMachine {
             }
         }
         frame.scope_kind = ScopeKind::Function;
+
+        // If the function is a generator, return a Generator object without executing
+        if code.flags.contains(CodeFlags::GENERATOR) {
+            let name = CompactString::from(code.name.as_str());
+            return Ok(PyObject::generator(name, Box::new(frame)));
+        }
+
         self.call_stack.push(frame);
         let result = self.run_frame();
         self.call_stack.pop();
@@ -193,6 +202,13 @@ impl VirtualMachine {
             }
         }
         frame.scope_kind = ScopeKind::Function;
+
+        // If the function is a generator, return a Generator object without executing
+        if code.flags.contains(CodeFlags::GENERATOR) {
+            let name = CompactString::from(code.name.as_str());
+            return Ok(PyObject::generator(name, Box::new(frame)));
+        }
+
         self.call_stack.push(frame);
         let result = self.run_frame();
         self.call_stack.pop();
@@ -294,11 +310,19 @@ impl VirtualMachine {
                     }
                     continue;
                 }
-                BlockKind::Loop | BlockKind::With => {
+                BlockKind::Loop => {
                     while frame.stack.len() > block.stack_level {
                         frame.pop();
                     }
                     continue;
+                }
+                BlockKind::With => {
+                    // With block exception — jump to cleanup handler which will
+                    // call __exit__ with exception info
+                    while frame.stack.len() > block.stack_level {
+                        frame.pop();
+                    }
+                    return Some(block.handler);
                 }
             }
         }
@@ -679,16 +703,33 @@ impl VirtualMachine {
                 }
                 Opcode::ForIter => {
                     let iter = frame.peek().clone();
-                    match builtins::iter_advance(&iter)? {
-                        Some((new_iter, value)) => {
-                            frame.pop();
-                            frame.push(new_iter);
-                            frame.push(value);
+                    // Handle generator objects specially — need VM access for resumption
+                    if let PyObjectPayload::Generator(ref gen_arc) = iter.payload {
+                        let gen_arc = gen_arc.clone();
+                        match self.resume_generator(&gen_arc, PyObject::none()) {
+                            Ok(value) => {
+                                let frame = self.call_stack.last_mut().unwrap();
+                                frame.push(value);
+                            }
+                            Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                let frame = self.call_stack.last_mut().unwrap();
+                                frame.pop(); // remove exhausted generator
+                                frame.ip = instr.arg as usize;
+                            }
+                            Err(e) => return Err(e),
                         }
-                        None => {
-                            frame.pop(); // remove exhausted iterator
-                            let frame = self.call_stack.last_mut().unwrap();
-                            frame.ip = instr.arg as usize;
+                    } else {
+                        match builtins::iter_advance(&iter)? {
+                            Some((new_iter, value)) => {
+                                frame.pop();
+                                frame.push(new_iter);
+                                frame.push(value);
+                            }
+                            None => {
+                                frame.pop(); // remove exhausted iterator
+                                let frame = self.call_stack.last_mut().unwrap();
+                                frame.ip = instr.arg as usize;
+                            }
                         }
                     }
                 }
@@ -816,6 +857,35 @@ impl VirtualMachine {
                     }
                     for item in items.into_iter().rev() {
                         frame.push(item);
+                    }
+                }
+
+                Opcode::UnpackEx => {
+                    let seq = frame.pop();
+                    let items = seq.to_list()?;
+                    let before = (instr.arg & 0xFF) as usize;
+                    let after = ((instr.arg >> 8) & 0xFF) as usize;
+                    let total_fixed = before + after;
+                    if items.len() < total_fixed {
+                        return Err(PyException::value_error(format!(
+                            "not enough values to unpack (expected at least {}, got {})",
+                            total_fixed, items.len()
+                        )));
+                    }
+                    // Push in reverse order: after_items (reversed), starred list, before_items (reversed)
+                    // Stack after: before_0, before_1, ..., starred_list, after_0, after_1, ...
+                    let star_count = items.len() - total_fixed;
+                    // Push after items in reverse
+                    for i in (0..after).rev() {
+                        let idx = before + star_count + i;
+                        frame.push(items[idx].clone());
+                    }
+                    // Push starred list
+                    let starred: Vec<PyObjectRef> = items[before..before + star_count].to_vec();
+                    frame.push(PyObject::list(starred));
+                    // Push before items in reverse
+                    for i in (0..before).rev() {
+                        frame.push(items[i].clone());
                     }
                 }
 
@@ -974,9 +1044,17 @@ impl VirtualMachine {
                 Opcode::ImportName => {
                     let _fromlist = frame.pop();
                     let _level = frame.pop();
-                    let name = &frame.code.names[instr.arg as usize];
-                    let module = PyObject::module(name.clone());
-                    frame.push(module);
+                    let name = frame.code.names[instr.arg as usize].clone();
+                    // Check module cache first
+                    if let Some(module) = self.modules.get(&name) {
+                        frame.push(module.clone());
+                    } else {
+                        // Try to load a builtin module
+                        let module = self.load_builtin_module(&name)?;
+                        self.modules.insert(name, module.clone());
+                        let frame = self.call_stack.last_mut().unwrap();
+                        frame.push(module);
+                    }
                 }
                 Opcode::ImportFrom => {
                     let name = &frame.code.names[instr.arg as usize];
@@ -1064,7 +1142,21 @@ impl VirtualMachine {
                     }
                 }
                 Opcode::SetupWith => {
+                    // TOS is the context manager
+                    let ctx_mgr = frame.pop();
+                    // Get __exit__ method and save it on the stack
+                    let exit_method = ctx_mgr.get_attr("__exit__").ok_or_else(||
+                        PyException::attribute_error("__exit__"))?;
+                    frame.push(exit_method);
+                    // Call __enter__
+                    let enter_method = ctx_mgr.get_attr("__enter__").ok_or_else(||
+                        PyException::attribute_error("__enter__"))?;
+                    let enter_result = self.call_object(enter_method, vec![])?;
+                    let frame = self.call_stack.last_mut().unwrap();
+                    // Setup the With block (points to cleanup handler)
                     frame.push_block(BlockKind::With, instr.arg as usize);
+                    // Push the __enter__ result (to be stored by `as` or popped)
+                    frame.push(enter_result);
                 }
 
                 // ── Print (interactive mode) ──
@@ -1111,11 +1203,65 @@ impl VirtualMachine {
                 // ── Yield ──
                 Opcode::YieldValue => {
                     let value = frame.pop();
+                    frame.yielded = true;
                     return Ok(Some(value));
                 }
                 Opcode::YieldFrom => {
                     let _value = frame.pop();
                     frame.push(PyObject::none());
+                }
+
+                // ── With cleanup ──
+                Opcode::WithCleanupStart => {
+                    // Stack at this point (from top): exception info or None (from BeginFinally)
+                    // Below that: __exit__ method
+                    // If TOS is None, it's a normal exit — call __exit__(None, None, None)
+                    // If TOS is an exception type, call __exit__(type, value, traceback)
+                    let tos = frame.peek().clone();
+                    if matches!(tos.payload, PyObjectPayload::None) {
+                        // Normal exit: pop None, get __exit__, call it
+                        frame.pop(); // pop None
+                        let exit_fn = frame.pop();
+                        let result = self.call_object(exit_fn, vec![
+                            PyObject::none(), PyObject::none(), PyObject::none()
+                        ])?;
+                        let frame = self.call_stack.last_mut().unwrap();
+                        frame.push(PyObject::none()); // indicate normal flow
+                        frame.push(result); // __exit__ return value
+                    } else if matches!(tos.payload, PyObjectPayload::ExceptionType(_)) {
+                        // Exception exit: pop type, value, traceback; get __exit__; call it
+                        let exc_type = frame.pop();
+                        let exc_val = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
+                        let exc_tb = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
+                        let exit_fn = frame.pop();
+                        let result = self.call_object(exit_fn, vec![
+                            exc_type.clone(), exc_val, exc_tb
+                        ])?;
+                        let frame = self.call_stack.last_mut().unwrap();
+                        frame.push(exc_type); // re-push exception type for EndFinally
+                        frame.push(result); // __exit__ return value
+                    } else {
+                        // Fallback: treat as normal
+                        frame.pop();
+                        let exit_fn = frame.pop();
+                        let result = self.call_object(exit_fn, vec![
+                            PyObject::none(), PyObject::none(), PyObject::none()
+                        ])?;
+                        let frame = self.call_stack.last_mut().unwrap();
+                        frame.push(PyObject::none());
+                        frame.push(result);
+                    }
+                }
+                Opcode::WithCleanupFinish => {
+                    let exit_result = frame.pop(); // __exit__ return value
+                    let exc_or_none = frame.pop();
+                    // If there was an exception and __exit__ returned truthy,
+                    // the exception is suppressed — push None for EndFinally
+                    if !matches!(exc_or_none.payload, PyObjectPayload::None) && exit_result.is_truthy() {
+                        frame.push(PyObject::none()); // suppress exception
+                    } else {
+                        frame.push(exc_or_none); // re-push for EndFinally
+                    }
                 }
 
                 _ => {
@@ -1205,6 +1351,76 @@ impl VirtualMachine {
                             ferrython_core::object::IteratorData::List { items: result, index: 0 }
                         )));
                     }
+                    "next" => {
+                        if args.is_empty() {
+                            return Err(PyException::type_error("next() requires at least 1 argument"));
+                        }
+                        if let PyObjectPayload::Generator(ref gen_arc) = args[0].payload {
+                            let gen_arc = gen_arc.clone();
+                            return match self.resume_generator(&gen_arc, PyObject::none()) {
+                                Ok(value) => Ok(value),
+                                Err(e) if e.kind == ExceptionKind::StopIteration && args.len() > 1 => {
+                                    Ok(args[1].clone()) // default value
+                                }
+                                Err(e) => Err(e),
+                            };
+                        }
+                        // Fall through to regular next() for iterators
+                    }
+                    "list" => {
+                        if args.is_empty() {
+                            return Ok(PyObject::list(vec![]));
+                        }
+                        // Handle generators by draining them
+                        if let PyObjectPayload::Generator(ref gen_arc) = args[0].payload {
+                            let gen_arc = gen_arc.clone();
+                            let mut items = Vec::new();
+                            loop {
+                                match self.resume_generator(&gen_arc, PyObject::none()) {
+                                    Ok(value) => items.push(value),
+                                    Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            return Ok(PyObject::list(items));
+                        }
+                        // Fall through to regular list() for other iterables
+                    }
+                    "tuple" => {
+                        if args.is_empty() {
+                            return Ok(PyObject::tuple(vec![]));
+                        }
+                        if let PyObjectPayload::Generator(ref gen_arc) = args[0].payload {
+                            let gen_arc = gen_arc.clone();
+                            let mut items = Vec::new();
+                            loop {
+                                match self.resume_generator(&gen_arc, PyObject::none()) {
+                                    Ok(value) => items.push(value),
+                                    Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            return Ok(PyObject::tuple(items));
+                        }
+                    }
+                    "sum" => {
+                        if args.is_empty() {
+                            return Err(PyException::type_error("sum() requires at least 1 argument"));
+                        }
+                        if let PyObjectPayload::Generator(ref gen_arc) = args[0].payload {
+                            let gen_arc = gen_arc.clone();
+                            let start = if args.len() > 1 { args[1].clone() } else { PyObject::int(0) };
+                            let mut total = start;
+                            loop {
+                                match self.resume_generator(&gen_arc, PyObject::none()) {
+                                    Ok(value) => total = total.add(&value)?,
+                                    Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            return Ok(total);
+                        }
+                    }
                     _ => {}
                 }
                 match builtins::get_builtin_fn(name.as_str()) {
@@ -1245,6 +1461,9 @@ impl VirtualMachine {
                 };
                 Ok(PyObject::exception_instance(kind.clone(), msg))
             }
+            PyObjectPayload::NativeFunction { func, .. } => {
+                func(&args)
+            }
             _ => Err(PyException::type_error(format!(
                 "'{}' object is not callable", func.type_name()
             ))),
@@ -1279,6 +1498,98 @@ impl VirtualMachine {
         };
 
         Ok(PyObject::class(class_name, bases, namespace))
+    }
+
+    /// Resume a generator, pushing the given `send_value` onto its stack and running
+    /// until the next `YieldValue` or `ReturnValue`.
+    /// Returns `Ok(value)` for yielded values, or `Err(StopIteration)` when done.
+    fn resume_generator(
+        &mut self,
+        gen_arc: &Arc<RwLock<GeneratorState>>,
+        send_value: PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        let mut gen = gen_arc.write();
+        if gen.finished {
+            return Err(PyException::new(ExceptionKind::StopIteration, ""));
+        }
+        let mut frame = match gen.frame.take() {
+            Some(f) => *f.downcast::<Frame>().expect("generator frame downcast"),
+            None => return Err(PyException::runtime_error("generator already executing")),
+        };
+
+        // If generator was already started, push the send value onto the frame's stack
+        // (it becomes the result of the `yield` expression)
+        if gen.started {
+            frame.push(send_value);
+        }
+        gen.started = true;
+        drop(gen); // release lock before executing
+
+        self.call_stack.push(frame);
+        let result = self.run_frame();
+        let frame = self.call_stack.pop().unwrap();
+
+        let mut gen = gen_arc.write();
+        if frame.yielded {
+            // Generator yielded — save frame for later resumption
+            let mut saved_frame = frame;
+            saved_frame.yielded = false;
+            gen.frame = Some(Box::new(saved_frame));
+            result // Ok(yielded_value)
+        } else {
+            // Generator returned — mark finished, raise StopIteration
+            gen.finished = true;
+            gen.frame = None;
+            Err(PyException::new(ExceptionKind::StopIteration, ""))
+        }
+    }
+
+    fn load_builtin_module(&self, name: &str) -> PyResult<PyObjectRef> {
+        match name {
+            "math" => Ok(builtins::create_math_module()),
+            "sys" => Ok(builtins::create_sys_module()),
+            "os" => Ok(builtins::create_os_module()),
+            "os.path" => Ok(builtins::create_os_path_module()),
+            "string" => Ok(builtins::create_string_module()),
+            "json" => Ok(builtins::create_json_module()),
+            "time" => Ok(builtins::create_time_module()),
+            "random" => Ok(builtins::create_random_module()),
+            "collections" => Ok(builtins::create_collections_module()),
+            "functools" => Ok(builtins::create_functools_module()),
+            "itertools" => Ok(builtins::create_itertools_module()),
+            "io" => Ok(builtins::create_io_module()),
+            "re" => Ok(builtins::create_re_module()),
+            "hashlib" => Ok(builtins::create_hashlib_module()),
+            _ => {
+                // Try to load from filesystem
+                self.load_file_module(name)
+            }
+        }
+    }
+
+    fn load_file_module(&self, name: &str) -> PyResult<PyObjectRef> {
+        // Convert module name to file path (e.g., "foo.bar" -> "foo/bar.py")
+        let path = name.replace('.', "/");
+        let candidates = [
+            format!("{}.py", path),
+            format!("{}/__init__.py", path),
+        ];
+        for candidate in &candidates {
+            if std::path::Path::new(candidate).exists() {
+                let source = std::fs::read_to_string(candidate)
+                    .map_err(|e| PyException::import_error(format!("cannot read '{}': {}", candidate, e)))?;
+                let ast = ferrython_parser::parse(&source, candidate)
+                    .map_err(|e| PyException::import_error(format!("syntax error in '{}': {}", candidate, e)))?;
+                let code = ferrython_compiler::compile(&ast, candidate)
+                    .map_err(|e| PyException::import_error(format!("compilation error in '{}': {}", candidate, e)))?;
+                let mut vm = VirtualMachine::new();
+                let _result = vm.execute(code)?;
+                // Collect module globals
+                // This is simplified — real import is more complex
+                return Err(PyException::import_error(format!("No module named '{}'", name)));
+            }
+        }
+        Err(PyException::import_error(format!("No module named '{}'", name)))
     }
 }
 

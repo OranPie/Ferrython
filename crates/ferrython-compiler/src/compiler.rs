@@ -731,6 +731,11 @@ impl Compiler {
         // Compile the function body
         self.compile_body(body)?;
 
+        // Check if the function body contains yield — if so, mark as generator
+        if body_contains_yield(body) {
+            self.current_unit_mut().code.flags |= CodeFlags::GENERATOR;
+        }
+
         // Ensure function returns None if no explicit return
         let none_idx = self.add_const(ConstantValue::None);
         self.emit_arg(Opcode::LoadConst, none_idx);
@@ -2183,5 +2188,72 @@ fn compare_op_arg(op: CompareOperator) -> u32 {
         CompareOperator::NotIn => 7,
         CompareOperator::Is => 8,
         CompareOperator::IsNot => 9,
+    }
+}
+
+/// Check if a function body (list of statements) contains any `yield` or `yield from` expressions.
+/// Only checks the direct body — does NOT recurse into nested function/class defs.
+fn body_contains_yield(stmts: &[Statement]) -> bool {
+    for stmt in stmts {
+        if stmt_contains_yield(stmt) { return true; }
+    }
+    false
+}
+
+fn stmt_contains_yield(stmt: &Statement) -> bool {
+    match &stmt.node {
+        StatementKind::Expr { value } => expr_contains_yield(value),
+        StatementKind::Return { value } => value.as_ref().map_or(false, |v| expr_contains_yield(v)),
+        StatementKind::Assign { value, .. } => expr_contains_yield(value),
+        StatementKind::AugAssign { value, .. } => expr_contains_yield(value),
+        StatementKind::If { test, body, orelse } => {
+            expr_contains_yield(test) || body_contains_yield(body) || body_contains_yield(orelse)
+        }
+        StatementKind::While { test, body, orelse } => {
+            expr_contains_yield(test) || body_contains_yield(body) || body_contains_yield(orelse)
+        }
+        StatementKind::For { body, orelse, iter, .. } => {
+            expr_contains_yield(iter) || body_contains_yield(body) || body_contains_yield(orelse)
+        }
+        StatementKind::Try { body, handlers, orelse, finalbody } => {
+            body_contains_yield(body) || body_contains_yield(orelse) || body_contains_yield(finalbody)
+            || handlers.iter().any(|h| body_contains_yield(&h.body))
+        }
+        StatementKind::With { body, .. } => body_contains_yield(body),
+        // Do NOT recurse into nested function/class definitions
+        StatementKind::FunctionDef { .. } | StatementKind::ClassDef { .. } => false,
+        _ => false,
+    }
+}
+
+fn expr_contains_yield(expr: &Expression) -> bool {
+    match &expr.node {
+        ExpressionKind::Yield { .. } | ExpressionKind::YieldFrom { .. } => true,
+        ExpressionKind::BinOp { left, right, .. } => {
+            expr_contains_yield(left) || expr_contains_yield(right)
+        }
+        ExpressionKind::UnaryOp { operand, .. } => expr_contains_yield(operand),
+        ExpressionKind::BoolOp { values, .. } => values.iter().any(|v| expr_contains_yield(v)),
+        ExpressionKind::Call { func, args, keywords } => {
+            expr_contains_yield(func) || args.iter().any(|a| expr_contains_yield(a))
+            || keywords.iter().any(|k| expr_contains_yield(&k.value))
+        }
+        ExpressionKind::IfExp { test, body, orelse } => {
+            expr_contains_yield(test) || expr_contains_yield(body) || expr_contains_yield(orelse)
+        }
+        ExpressionKind::Tuple { elts, .. } | ExpressionKind::List { elts, .. } | ExpressionKind::Set { elts } => {
+            elts.iter().any(|e| expr_contains_yield(e))
+        }
+        ExpressionKind::Dict { keys, values } => {
+            keys.iter().any(|k| k.as_ref().map_or(false, |k| expr_contains_yield(k))) || values.iter().any(|v| expr_contains_yield(v))
+        }
+        ExpressionKind::Attribute { value, .. } => expr_contains_yield(value),
+        ExpressionKind::Subscript { value, slice, .. } => {
+            expr_contains_yield(value) || expr_contains_yield(slice)
+        }
+        ExpressionKind::Compare { left, comparators, .. } => {
+            expr_contains_yield(left) || comparators.iter().any(|c| expr_contains_yield(c))
+        }
+        _ => false,
     }
 }

@@ -37,6 +37,8 @@ pub struct Frame {
     /// cellvars.len()..cellvars.len()+freevars.len() are free vars.
     pub cells: Vec<CellRef>,
     pub scope_kind: ScopeKind,
+    /// Set to true when a YieldValue instruction is executed.
+    pub yielded: bool,
 }
 
 impl Frame {
@@ -58,6 +60,7 @@ impl Frame {
             builtins,
             cells,
             scope_kind: ScopeKind::Module,
+            yielded: false,
         }
     }
     #[inline] pub fn push(&mut self, v: PyObjectRef) { self.stack.push(v); }

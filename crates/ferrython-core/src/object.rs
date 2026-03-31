@@ -6,6 +6,8 @@ use compact_str::CompactString;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use parking_lot::RwLock;
+use std::any::Any;
+use std::fmt;
 use std::sync::Arc;
 
 /// A reference-counted handle to a Python object.
@@ -51,6 +53,39 @@ pub enum PyObjectPayload {
     ExceptionType(ExceptionKind),
     /// Exception instance (raised exception with kind, message, and optional args)
     ExceptionInstance { kind: ExceptionKind, message: CompactString, args: Vec<PyObjectRef> },
+    /// Generator object (suspended coroutine with opaque frame storage)
+    Generator(Arc<RwLock<GeneratorState>>),
+    /// Native Rust function callable from Python (for module functions)
+    NativeFunction {
+        name: CompactString,
+        func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>,
+    },
+}
+
+/// Opaque generator state. The actual frame is stored as `Box<dyn Any>` and
+/// downcast by the VM crate which owns the Frame type.
+pub struct GeneratorState {
+    pub name: CompactString,
+    pub frame: Option<Box<dyn Any + Send + Sync>>,
+    pub started: bool,
+    pub finished: bool,
+}
+
+impl fmt::Debug for GeneratorState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GeneratorState")
+            .field("name", &self.name)
+            .field("started", &self.started)
+            .field("finished", &self.finished)
+            .finish()
+    }
+}
+
+impl Clone for GeneratorState {
+    fn clone(&self) -> Self {
+        // Generators are not truly clonable; this is a placeholder for the derive requirement
+        Self { name: self.name.clone(), frame: None, started: self.started, finished: self.finished }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +154,21 @@ impl PyObject {
     pub fn module(name: CompactString) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: IndexMap::new() }))
     }
+    pub fn module_with_attrs(name: CompactString, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs }))
+    }
+    pub fn native_function(name: &str, func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::NativeFunction { name: CompactString::from(name), func })
+    }
+    pub fn dict_from_pairs(pairs: Vec<(PyObjectRef, PyObjectRef)>) -> PyObjectRef {
+        let mut map = IndexMap::new();
+        for (k, v) in pairs {
+            if let Ok(hk) = k.to_hashable_key() {
+                map.insert(hk, v);
+            }
+        }
+        Self::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(map))))
+    }
     pub fn slice(start: Option<PyObjectRef>, stop: Option<PyObjectRef>, step: Option<PyObjectRef>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Slice { start, stop, step })
     }
@@ -141,6 +191,14 @@ impl PyObject {
             message: CompactString::from(msg),
             args: vec![],
         })
+    }
+    pub fn generator(name: CompactString, frame: Box<dyn Any + Send + Sync>) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::Generator(Arc::new(RwLock::new(GeneratorState {
+            name,
+            frame: Some(frame),
+            started: false,
+            finished: false,
+        }))))
     }
 }
 
@@ -238,6 +296,8 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Cell(_) => "cell",
             PyObjectPayload::ExceptionType(_) => "type",
             PyObjectPayload::ExceptionInstance { .. } => "exception",
+            PyObjectPayload::Generator(_) => "generator",
+            PyObjectPayload::NativeFunction { .. } => "builtin_function_or_method",
         }
     }
 
@@ -261,7 +321,7 @@ impl PyObjectMethods for PyObjectRef {
     fn is_callable(&self) -> bool {
         matches!(&self.payload, PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
             | PyObjectPayload::BoundMethod { .. } | PyObjectPayload::Class(_)
-            | PyObjectPayload::ExceptionType(_))
+            | PyObjectPayload::ExceptionType(_) | PyObjectPayload::NativeFunction { .. })
     }
 
     fn is_same(&self, other: &Self) -> bool { Arc::ptr_eq(self, other) }
@@ -302,10 +362,11 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Iterator(_) => "<iterator>".into(),
             PyObjectPayload::ExceptionType(kind) => format!("<class '{}'>", kind),
             PyObjectPayload::ExceptionInstance { kind, message, .. } => {
+                // str(exception) returns just the message, like CPython
                 if message.is_empty() {
-                    format!("{}()", kind)
+                    String::new()
                 } else {
-                    format!("{}('{}')", kind, message)
+                    message.to_string()
                 }
             }
             _ => format!("<{}>", self.type_name()),
@@ -315,6 +376,13 @@ impl PyObjectMethods for PyObjectRef {
     fn repr(&self) -> String {
         match &self.payload {
             PyObjectPayload::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
+            PyObjectPayload::ExceptionInstance { kind, message, .. } => {
+                if message.is_empty() {
+                    format!("{}()", kind)
+                } else {
+                    format!("{}('{}')", kind, message)
+                }
+            }
             _ => self.py_to_string(),
         }
     }
@@ -675,6 +743,7 @@ impl PyObjectMethods for PyObjectRef {
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::List { items: vals, index: 0 })))
             }
             PyObjectPayload::Iterator(_) => Ok(self.clone()),
+            PyObjectPayload::Generator(_) => Ok(self.clone()), // generators are their own iterators
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", self.type_name()))),
         }
     }
