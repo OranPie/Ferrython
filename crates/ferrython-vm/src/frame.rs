@@ -3,6 +3,7 @@
 use compact_str::CompactString;
 use ferrython_bytecode::CodeObject;
 use ferrython_core::object::PyObjectRef;
+use ferrython_core::types::SharedGlobals;
 use indexmap::IndexMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +23,7 @@ pub struct Frame {
     pub block_stack: Vec<Block>,
     pub locals: Vec<Option<PyObjectRef>>,
     pub local_names: IndexMap<CompactString, PyObjectRef>,
-    pub globals: IndexMap<CompactString, PyObjectRef>,
+    pub globals: SharedGlobals,
     pub builtins: IndexMap<CompactString, PyObjectRef>,
     pub cells: Vec<Option<PyObjectRef>>,
 }
@@ -30,7 +31,7 @@ pub struct Frame {
 impl Frame {
     pub fn new(
         code: CodeObject,
-        globals: IndexMap<CompactString, PyObjectRef>,
+        globals: SharedGlobals,
         builtins: IndexMap<CompactString, PyObjectRef>,
     ) -> Self {
         let nl = code.varnames.len();
@@ -57,8 +58,10 @@ impl Frame {
     pub fn pop_block(&mut self) -> Option<Block> { self.block_stack.pop() }
     pub fn load_name(&self, name: &str) -> Option<PyObjectRef> {
         self.local_names.get(name).cloned()
-            .or_else(|| self.globals.get(name).cloned())
+            .or_else(|| self.globals.read().get(name).cloned())
             .or_else(|| self.builtins.get(name).cloned())
     }
-    pub fn store_name(&mut self, name: CompactString, value: PyObjectRef) { self.local_names.insert(name, value); }
+    pub fn store_name(&mut self, name: CompactString, value: PyObjectRef) {
+        self.local_names.insert(name, value);
+    }
 }

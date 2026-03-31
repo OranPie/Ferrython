@@ -218,6 +218,7 @@ dependencies = [
  "indexmap",
  "num-bigint",
  "num-traits",
+ "parking_lot",
  "rustc-hash",
  "thiserror",
  "tracing",

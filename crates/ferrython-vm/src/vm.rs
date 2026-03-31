@@ -9,8 +9,10 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::{HashableKey, PyFunction};
+use ferrython_core::types::{HashableKey, PyFunction, SharedGlobals};
 use indexmap::IndexMap;
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 /// The Ferrython virtual machine.
 pub struct VirtualMachine {
@@ -28,7 +30,7 @@ impl VirtualMachine {
 
     /// Execute a code object (module-level).
     pub fn execute(&mut self, code: CodeObject) -> PyResult<PyObjectRef> {
-        let globals = IndexMap::new();
+        let globals = Arc::new(RwLock::new(IndexMap::new()));
         let frame = Frame::new(code, globals, self.builtins.clone());
         self.call_stack.push(frame);
         let result = self.run_frame();
@@ -41,7 +43,7 @@ impl VirtualMachine {
         &mut self,
         code: &CodeObject,
         args: Vec<PyObjectRef>,
-        globals: IndexMap<CompactString, PyObjectRef>,
+        globals: SharedGlobals,
     ) -> PyResult<PyObjectRef> {
         let mut frame = Frame::new(code.clone(), globals, self.builtins.clone());
         for (i, arg) in args.into_iter().enumerate() {
@@ -110,10 +112,9 @@ impl VirtualMachine {
                 Opcode::StoreName => {
                     let name = frame.code.names[instr.arg as usize].clone();
                     let value = frame.pop();
-                    // At module level, locals == globals in CPython.
-                    // Store to both so MAKE_FUNCTION captures all module names.
-                    frame.globals.insert(name.clone(), value.clone());
-                    frame.store_name(name, value);
+                    // At module level, locals == globals. Write to shared globals
+                    // so that function mutations via STORE_GLOBAL are visible.
+                    frame.globals.write().insert(name, value);
                 }
                 Opcode::DeleteName => {
                     let name = &frame.code.names[instr.arg as usize];
@@ -140,8 +141,8 @@ impl VirtualMachine {
                 }
                 Opcode::LoadGlobal => {
                     let name = &frame.code.names[instr.arg as usize];
-                    if let Some(v) = frame.globals.get(name.as_str()) {
-                        let v = v.clone();
+                    let from_globals = frame.globals.read().get(name.as_str()).cloned();
+                    if let Some(v) = from_globals {
                         frame.push(v);
                     } else if let Some(v) = frame.builtins.get(name.as_str()) {
                         let v = v.clone();
@@ -155,7 +156,7 @@ impl VirtualMachine {
                 Opcode::StoreGlobal => {
                     let name = frame.code.names[instr.arg as usize].clone();
                     let value = frame.pop();
-                    frame.globals.insert(name, value);
+                    frame.globals.write().insert(name, value);
                 }
                 Opcode::LoadAttr => {
                     let name = frame.code.names[instr.arg as usize].clone();
@@ -667,20 +668,9 @@ impl VirtualMachine {
         match &func.payload {
             PyObjectPayload::Function(pyfunc) => {
                 let code = pyfunc.code.clone();
-                // Merge: start with function's captured globals, then overlay
-                // with the current caller's globals so that names defined after
-                // the function was created (including the function itself for
-                // recursion) are visible.
-                let mut globals = pyfunc.globals.clone();
-                if let Some(caller) = self.call_stack.last() {
-                    for (k, v) in &caller.globals {
-                        globals.insert(k.clone(), v.clone());
-                    }
-                    // Also include caller's local_names (module-level names)
-                    for (k, v) in &caller.local_names {
-                        globals.insert(k.clone(), v.clone());
-                    }
-                }
+                // SharedGlobals is Arc — clone just bumps refcount.
+                // All functions from the same module share the same globals dict.
+                let globals = pyfunc.globals.clone();
                 self.call_function(&code, args, globals)
             }
             PyObjectPayload::BuiltinFunction(name) => {

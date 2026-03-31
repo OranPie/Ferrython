@@ -7,7 +7,13 @@ use ferrython_bytecode::CodeObject;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
+use parking_lot::RwLock;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+/// Shared globals dictionary — all functions defined in the same module share
+/// one instance so that `global` mutations are visible across calls.
+pub type SharedGlobals = Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>;
 
 // ── PyInt ──
 
@@ -168,7 +174,7 @@ pub struct PyFunction {
     pub code: CodeObject,
     pub defaults: Vec<PyObjectRef>,
     pub kw_defaults: IndexMap<CompactString, PyObjectRef>,
-    pub globals: IndexMap<CompactString, PyObjectRef>,
+    pub globals: SharedGlobals,
     pub closure: Vec<PyObjectRef>,
     pub annotations: IndexMap<CompactString, PyObjectRef>,
 }
@@ -178,7 +184,8 @@ impl PyFunction {
         Self {
             qualname: name.clone(), name, code,
             defaults: Vec::new(), kw_defaults: IndexMap::new(),
-            globals: IndexMap::new(), closure: Vec::new(), annotations: IndexMap::new(),
+            globals: Arc::new(RwLock::new(IndexMap::new())),
+            closure: Vec::new(), annotations: IndexMap::new(),
         }
     }
 }
