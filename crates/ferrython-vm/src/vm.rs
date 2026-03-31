@@ -1771,7 +1771,7 @@ impl VirtualMachine {
                             result.push(self.call_object(func_obj.clone(), vec![item])?);
                         }
                         return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                            ferrython_core::object::IteratorData::List { items: result, index: 0 }
+                            Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
                         )));
                     }
                     "filter" => {
@@ -1792,7 +1792,7 @@ impl VirtualMachine {
                             }
                         }
                         return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                            ferrython_core::object::IteratorData::List { items: result, index: 0 }
+                            Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
                         )));
                     }
                     "next" => {

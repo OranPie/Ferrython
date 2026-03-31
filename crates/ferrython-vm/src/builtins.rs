@@ -164,36 +164,37 @@ pub fn dispatch(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// Advance an iterator by one step. Returns (new_iterator, value) or None if exhausted.
 pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyObjectRef)>> {
     match &iter_obj.payload {
-        PyObjectPayload::Iterator(data) => {
+        PyObjectPayload::Iterator(iter_data) => {
             use ferrython_core::object::IteratorData;
-            match data {
+            let mut data = iter_data.lock().unwrap();
+            match &mut *data {
                 IteratorData::List { items, index } => {
                     if *index < items.len() {
                         let v = items[*index].clone();
-                        let d = IteratorData::List { items: items.clone(), index: index + 1 };
-                        Ok(Some((PyObject::wrap(PyObjectPayload::Iterator(d)), v)))
+                        *index += 1;
+                        Ok(Some((iter_obj.clone(), v)))
                     } else { Ok(None) }
                 }
                 IteratorData::Tuple { items, index } => {
                     if *index < items.len() {
                         let v = items[*index].clone();
-                        let d = IteratorData::Tuple { items: items.clone(), index: index + 1 };
-                        Ok(Some((PyObject::wrap(PyObjectPayload::Iterator(d)), v)))
+                        *index += 1;
+                        Ok(Some((iter_obj.clone(), v)))
                     } else { Ok(None) }
                 }
                 IteratorData::Range { current, stop, step } => {
                     let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
                     if done { Ok(None) } else {
                         let v = PyObject::int(*current);
-                        let d = IteratorData::Range { current: current + step, stop: *stop, step: *step };
-                        Ok(Some((PyObject::wrap(PyObjectPayload::Iterator(d)), v)))
+                        *current += *step;
+                        Ok(Some((iter_obj.clone(), v)))
                     }
                 }
                 IteratorData::Str { chars, index } => {
                     if *index < chars.len() {
                         let v = PyObject::str_val(CompactString::from(chars[*index].to_string()));
-                        let d = IteratorData::Str { chars: chars.clone(), index: index + 1 };
-                        Ok(Some((PyObject::wrap(PyObjectPayload::Iterator(d)), v)))
+                        *index += 1;
+                        Ok(Some((iter_obj.clone(), v)))
                     } else { Ok(None) }
                 }
             }
@@ -332,16 +333,29 @@ fn builtin_sum(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("round", args, 1)?;
+    let ndigits = if args.len() >= 2 { Some(args[1].to_int()?) } else { None };
     match &args[0].payload {
         PyObjectPayload::Int(_) => Ok(args[0].clone()),
-        PyObjectPayload::Float(f) => Ok(PyObject::int(f.round() as i64)),
+        PyObjectPayload::Float(f) => {
+            if let Some(n) = ndigits {
+                let factor = 10f64.powi(n as i32);
+                Ok(PyObject::float((f * factor).round() / factor))
+            } else {
+                Ok(PyObject::int(f.round() as i64))
+            }
+        }
         _ => Err(PyException::type_error("type has no round()")),
     }
 }
 
 fn builtin_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("pow", args, 2)?;
-    args[0].power(&args[1])
+    let result = args[0].power(&args[1])?;
+    if args.len() >= 3 {
+        result.modulo(&args[2])
+    } else {
+        Ok(result)
+    }
 }
 
 fn builtin_divmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

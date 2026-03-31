@@ -45,7 +45,7 @@ pub enum PyObjectPayload {
     Class(ClassData),
     Instance(InstanceData),
     Module(ModuleData),
-    Iterator(IteratorData),
+    Iterator(Arc<std::sync::Mutex<IteratorData>>),
     Slice { start: Option<PyObjectRef>, stop: Option<PyObjectRef>, step: Option<PyObjectRef> },
     /// A cell object wrapping a shared mutable reference (for closures).
     Cell(Arc<RwLock<Option<PyObjectRef>>>),
@@ -184,7 +184,7 @@ impl PyObject {
         Self::wrap(PyObjectPayload::FrozenSet(items))
     }
     pub fn range(start: i64, stop: i64, step: i64) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Iterator(IteratorData::Range { current: start, stop, step }))
+        Self::wrap(PyObjectPayload::Iterator(Arc::new(std::sync::Mutex::new(IteratorData::Range { current: start, stop, step }))))
     }
     pub fn cell(cell: Arc<RwLock<Option<PyObjectRef>>>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Cell(cell))
@@ -419,13 +419,14 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
             PyObjectPayload::Dict(m) => Ok(m.read().keys().map(|k| k.to_object()).collect()),
             PyObjectPayload::Iterator(iter_data) => {
-                match iter_data {
+                let data = iter_data.lock().unwrap();
+                match &*data {
                     IteratorData::List { items, index } => Ok(items[*index..].to_vec()),
                     IteratorData::Tuple { items, index } => Ok(items[*index..].to_vec()),
                     IteratorData::Range { current, stop, step } => {
                         let mut result = Vec::new();
                         let mut val = *current;
-                        while (step > &0 && val < *stop) || (step < &0 && val > *stop) {
+                        while (*step > 0 && val < *stop) || (*step < 0 && val > *stop) {
                             result.push(PyObject::int(val));
                             val += step;
                         }
@@ -924,17 +925,18 @@ impl PyObjectMethods for PyObjectRef {
     }
 
     fn get_iter(&self) -> PyResult<PyObjectRef> {
+        use std::sync::Mutex;
         match &self.payload {
-            PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::List { items: items.read().clone(), index: 0 }))),
-            PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::Tuple { items: items.clone(), index: 0 }))),
-            PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::Str { chars: s.chars().collect(), index: 0 }))),
+            PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: items.read().clone(), index: 0 }))))),
+            PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 }))))),
+            PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
             PyObjectPayload::Dict(m) => {
                 let keys: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::List { items: keys, index: 0 })))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
             }
             PyObjectPayload::Set(m) | PyObjectPayload::FrozenSet(m) => {
                 let vals: Vec<PyObjectRef> = m.values().cloned().collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(IteratorData::List { items: vals, index: 0 })))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: vals, index: 0 })))))
             }
             PyObjectPayload::Iterator(_) => Ok(self.clone()),
             PyObjectPayload::Generator(_) => Ok(self.clone()), // generators are their own iterators
