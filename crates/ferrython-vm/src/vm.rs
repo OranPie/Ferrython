@@ -7,7 +7,8 @@ use ferrython_bytecode::code::{CodeFlags, CodeObject, ConstantValue};
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    ClassData, CompareOp, GeneratorState, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    lookup_in_class_mro, ClassData, CompareOp, GeneratorState, PyObject, PyObjectMethods,
+    PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyFunction, SharedGlobals};
 use indexmap::IndexMap;
@@ -379,6 +380,12 @@ impl VirtualMachine {
                     let v = frame.peek().clone();
                     frame.push(v);
                 }
+                Opcode::DupTopTwo => {
+                    let top = frame.stack[frame.stack.len() - 1].clone();
+                    let second = frame.stack[frame.stack.len() - 2].clone();
+                    frame.push(second);
+                    frame.push(top);
+                }
 
                 // ── Load/Store ──
                 Opcode::LoadConst => {
@@ -518,15 +525,44 @@ impl VirtualMachine {
                                 frame.push(v);
                             }
                         }
-                        None => return Err(PyException::attribute_error(format!(
-                            "'{}' object has no attribute '{}'", obj.type_name(), name
-                        ))),
+                        None => {
+                            // Try __getattr__ fallback for instances
+                            if let PyObjectPayload::Instance(_) = &obj.payload {
+                                if let Some(ga) = obj.get_attr("__getattr__") {
+                                    let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
+                                    drop(frame);
+                                    let result = self.call_object(ga, vec![name_arg])?;
+                                    push!(result);
+                                    return Ok(None);
+                                }
+                            }
+                            return Err(PyException::attribute_error(format!(
+                                "'{}' object has no attribute '{}'", obj.type_name(), name
+                            )));
+                        }
                     }
                 }
                 Opcode::StoreAttr => {
                     let name = frame.code.names[instr.arg as usize].clone();
                     let obj = frame.pop();   // TOS: the object
                     let value = frame.pop(); // TOS1: the value
+                    // Check for __setattr__ dunder in class MRO (not instance dict)
+                    if let PyObjectPayload::Instance(inst) = &obj.payload {
+                        if let Some(sa) = lookup_in_class_mro(&inst.class, "__setattr__") {
+                            if matches!(&sa.payload, PyObjectPayload::Function(_)) {
+                                let method = Arc::new(PyObject {
+                                    payload: PyObjectPayload::BoundMethod {
+                                        receiver: obj.clone(),
+                                        method: sa,
+                                    }
+                                });
+                                let name_arg = PyObject::str_val(name);
+                                drop(frame);
+                                self.call_object(method, vec![name_arg, value])?;
+                                return Ok(None);
+                            }
+                        }
+                    }
                     match &obj.payload {
                         PyObjectPayload::Instance(inst) => {
                             inst.attrs.write().insert(name, value);
@@ -822,8 +858,37 @@ impl VirtualMachine {
                                 return Err(PyException::key_error(key.repr()));
                             }
                         }
+                        PyObjectPayload::Instance(_) => {
+                            if let Some(method) = obj.get_attr("__delitem__") {
+                                drop(frame);
+                                self.call_object(method, vec![key])?;
+                                return Ok(None);
+                            }
+                            return Err(PyException::type_error(format!(
+                                "'{}' object does not support item deletion", obj.type_name())));
+                        }
                         _ => return Err(PyException::type_error(format!(
                             "'{}' object does not support item deletion", obj.type_name()))),
+                    }
+                }
+                Opcode::DeleteAttr => {
+                    let name = frame.code.names[instr.arg as usize].clone();
+                    let obj = frame.pop();
+                    match &obj.payload {
+                        PyObjectPayload::Instance(inst) => {
+                            if inst.attrs.write().swap_remove(name.as_str()).is_none() {
+                                return Err(PyException::attribute_error(format!(
+                                    "'{}' object has no attribute '{}'", obj.type_name(), name)));
+                            }
+                        }
+                        PyObjectPayload::Class(cd) => {
+                            if cd.namespace.write().swap_remove(name.as_str()).is_none() {
+                                return Err(PyException::attribute_error(format!(
+                                    "type object has no attribute '{}'", name)));
+                            }
+                        }
+                        _ => return Err(PyException::attribute_error(format!(
+                            "'{}' object does not support attribute deletion", obj.type_name()))),
                     }
                 }
 
@@ -1966,6 +2031,46 @@ impl VirtualMachine {
                 self.call_object(method.clone(), bound_args)
             }
             PyObjectPayload::BuiltinBoundMethod { receiver, method_name } => {
+                // Generator methods need VM access
+                if let PyObjectPayload::Generator(gen_arc) = &receiver.payload {
+                    match method_name.as_str() {
+                        "send" => {
+                            let val = if args.is_empty() { PyObject::none() } else { args[0].clone() };
+                            return self.resume_generator(gen_arc, val);
+                        }
+                        "throw" => {
+                            // throw(type, value=None) — inject exception into generator
+                            let msg = if args.len() >= 2 { args[1].py_to_string() } else { String::new() };
+                            let kind = if !args.is_empty() {
+                                if let PyObjectPayload::ExceptionType(k) = &args[0].payload {
+                                    k.clone()
+                                } else {
+                                    ExceptionKind::RuntimeError
+                                }
+                            } else {
+                                ExceptionKind::RuntimeError
+                            };
+                            // Throw the exception into the generator
+                            let mut gen = gen_arc.write();
+                            if gen.finished {
+                                return Err(PyException::new(kind, msg));
+                            }
+                            gen.finished = true;
+                            gen.frame = None;
+                            return Err(PyException::new(kind, msg));
+                        }
+                        "close" => {
+                            let mut gen = gen_arc.write();
+                            gen.finished = true;
+                            gen.frame = None;
+                            return Ok(PyObject::none());
+                        }
+                        "__next__" => {
+                            return self.resume_generator(gen_arc, PyObject::none());
+                        }
+                        _ => {}
+                    }
+                }
                 builtins::call_method(receiver, method_name.as_str(), &args)
             }
             PyObjectPayload::ExceptionType(kind) => {

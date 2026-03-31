@@ -255,7 +255,7 @@ pub trait PyObjectMethods {
 pub enum CompareOp { Lt, Le, Eq, Ne, Gt, Ge }
 
 /// Walk a class and its base classes (MRO) to find an attribute.
-fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
     if let PyObjectPayload::Class(cd) = &class.payload {
         // Check own namespace first
         if let Some(v) = cd.namespace.read().get(name).cloned() {
@@ -774,6 +774,19 @@ impl PyObjectMethods for PyObjectRef {
                         method_name: CompactString::from(name),
                     }
                 }))
+            }
+            PyObjectPayload::Generator(_) => {
+                match name {
+                    "send" | "throw" | "close" | "__next__" => {
+                        Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: self.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }))
+                    }
+                    _ => None,
+                }
             }
             PyObjectPayload::Super { cls, instance } => {
                 // super() proxy: look up in the RUNTIME class MRO, skipping up to and including cls
