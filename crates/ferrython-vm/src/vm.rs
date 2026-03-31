@@ -259,6 +259,55 @@ impl VirtualMachine {
                 Ok(instance)
             }
             _ => {
+                // For BuiltinBoundMethod on str.format, pass kwargs as a dict
+                if let PyObjectPayload::BuiltinBoundMethod { receiver, method_name } = &func.payload {
+                    if method_name.as_str() == "format" && !kwargs.is_empty() {
+                        if let PyObjectPayload::Str(s) = &receiver.payload {
+                            // Handle str.format() with named args
+                            let mut result = String::new();
+                            let mut chars = s.chars().peekable();
+                            let mut arg_idx = 0usize;
+                            while let Some(c) = chars.next() {
+                                if c == '{' {
+                                    if chars.peek() == Some(&'{') {
+                                        chars.next();
+                                        result.push('{');
+                                    } else if chars.peek() == Some(&'}') {
+                                        chars.next();
+                                        if arg_idx < pos_args.len() {
+                                            result.push_str(&pos_args[arg_idx].py_to_string());
+                                            arg_idx += 1;
+                                        }
+                                    } else {
+                                        let mut field = String::new();
+                                        for c in chars.by_ref() {
+                                            if c == '}' { break; }
+                                            field.push(c);
+                                        }
+                                        // Try numeric index first
+                                        if let Ok(idx) = field.parse::<usize>() {
+                                            if idx < pos_args.len() {
+                                                result.push_str(&pos_args[idx].py_to_string());
+                                            }
+                                        } else {
+                                            // Named arg lookup
+                                            let found = kwargs.iter().find(|(k, _)| k.as_str() == field);
+                                            if let Some((_, v)) = found {
+                                                result.push_str(&v.py_to_string());
+                                            }
+                                        }
+                                    }
+                                } else if c == '}' && chars.peek() == Some(&'}') {
+                                    chars.next();
+                                    result.push('}');
+                                } else {
+                                    result.push(c);
+                                }
+                            }
+                            return Ok(PyObject::str_val(CompactString::from(result)));
+                        }
+                    }
+                }
                 // Fall back to call_object for builtins etc (kwargs ignored)
                 let mut all_args = pos_args;
                 for (_, v) in kwargs {
@@ -2219,6 +2268,31 @@ impl VirtualMachine {
             PyObjectPayload::Instance(_) => {
                 if let Some(iter_method) = obj.get_attr("__iter__") {
                     let iter_obj = self.call_object(iter_method, vec![])?;
+                    // If __iter__ returned a builtin Iterator, use iter_advance
+                    if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_)) {
+                        let mut items = Vec::new();
+                        loop {
+                            match builtins::iter_advance(&iter_obj)? {
+                                Some((_new_iter, value)) => items.push(value),
+                                None => break,
+                            }
+                        }
+                        return Ok(items);
+                    }
+                    // If it returned a generator, collect from it
+                    if let PyObjectPayload::Generator(gen_arc) = &iter_obj.payload {
+                        let gen_arc = gen_arc.clone();
+                        let mut items = Vec::new();
+                        loop {
+                            match self.resume_generator(&gen_arc, PyObject::none()) {
+                                Ok(value) => items.push(value),
+                                Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        return Ok(items);
+                    }
+                    // Otherwise, it's an instance with __next__
                     let mut items = Vec::new();
                     loop {
                         if let Some(next_method) = iter_obj.get_attr("__next__") {
