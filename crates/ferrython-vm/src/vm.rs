@@ -7,7 +7,7 @@ use ferrython_bytecode::code::{CodeFlags, CodeObject, ConstantValue};
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    CompareOp, GeneratorState, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    ClassData, CompareOp, GeneratorState, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyFunction, SharedGlobals};
 use indexmap::IndexMap;
@@ -330,6 +330,20 @@ impl VirtualMachine {
     }
 
     fn execute_one(&mut self, instr: ferrython_bytecode::Instruction) -> Result<Option<PyObjectRef>, PyException> {
+        // Helper: pop two values from the current frame
+        macro_rules! pop2 {
+            () => {{
+                let f = self.call_stack.last_mut().unwrap();
+                let b = f.pop();
+                let a = f.pop();
+                (a, b)
+            }};
+        }
+        macro_rules! push {
+            ($val:expr) => {{
+                self.call_stack.last_mut().unwrap().push($val);
+            }};
+        }
         let frame = self.call_stack.last_mut().unwrap();
         
         match instr.op {
@@ -477,7 +491,23 @@ impl VirtualMachine {
                     let name = frame.code.names[instr.arg as usize].clone();
                     let obj = frame.pop();
                     match obj.get_attr(&name) {
-                        Some(v) => frame.push(v),
+                        Some(v) => {
+                            // Handle property descriptor — call fget(obj)
+                            if let PyObjectPayload::Property { fget, .. } = &v.payload {
+                                if let Some(getter) = fget {
+                                    let getter = getter.clone();
+                                    let result = self.call_object(getter, vec![obj])?;
+                                    let frame = self.call_stack.last_mut().unwrap();
+                                    frame.push(result);
+                                } else {
+                                    return Err(PyException::attribute_error(format!(
+                                        "unreadable attribute '{}'", name
+                                    )));
+                                }
+                            } else {
+                                frame.push(v);
+                            }
+                        }
                         None => return Err(PyException::attribute_error(format!(
                             "'{}' object has no attribute '{}'", obj.type_name(), name
                         ))),
@@ -513,6 +543,23 @@ impl VirtualMachine {
                 }
                 Opcode::UnaryNot => {
                     let v = frame.pop();
+                    // Check __bool__ dunder on instances
+                    if let PyObjectPayload::Instance(_) = &v.payload {
+                        if let Some(bool_method) = v.get_attr("__bool__") {
+                            drop(frame);
+                            let result = self.call_object(bool_method, vec![])?;
+                            let truthy = result.is_truthy();
+                            push!(PyObject::bool_val(!truthy));
+                            return Ok(None);
+                        }
+                        if let Some(len_method) = v.get_attr("__len__") {
+                            drop(frame);
+                            let result = self.call_object(len_method, vec![])?;
+                            let truthy = result.is_truthy();
+                            push!(PyObject::bool_val(!truthy));
+                            return Ok(None);
+                        }
+                    }
                     frame.push(PyObject::bool_val(!v.is_truthy()));
                 }
                 Opcode::UnaryInvert => {
@@ -523,22 +570,57 @@ impl VirtualMachine {
                 // ── Binary operations ──
                 Opcode::BinaryAdd | Opcode::InplaceAdd => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__add__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.add(&b)?);
                 }
                 Opcode::BinarySubtract | Opcode::InplaceSubtract => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__sub__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.sub(&b)?);
                 }
                 Opcode::BinaryMultiply | Opcode::InplaceMultiply => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__mul__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.mul(&b)?);
                 }
                 Opcode::BinaryTrueDivide | Opcode::InplaceTrueDivide => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__truediv__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.true_div(&b)?);
                 }
                 Opcode::BinaryFloorDivide | Opcode::InplaceFloorDivide => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__floordiv__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.floor_div(&b)?);
                 }
                 Opcode::BinaryModulo | Opcode::InplaceModulo => {
@@ -572,6 +654,13 @@ impl VirtualMachine {
                 Opcode::BinarySubscr => {
                     let key = frame.pop();
                     let obj = frame.pop();
+                    if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = obj.get_attr("__getitem__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![key])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(obj.get_item(&key)?);
                 }
                 Opcode::StoreSubscr => {
@@ -593,6 +682,16 @@ impl VirtualMachine {
                         PyObjectPayload::Dict(map) => {
                             let hk = key.to_hashable_key()?;
                             map.write().insert(hk, value);
+                        }
+                        PyObjectPayload::Instance(_) => {
+                            if let Some(m) = obj.get_attr("__setitem__") {
+                                drop(frame);
+                                self.call_object(m, vec![key, value])?;
+                                return Ok(None);
+                            } else {
+                                return Err(PyException::type_error(format!(
+                                    "'{}' object does not support item assignment", obj.type_name())));
+                            }
                         }
                         _ => return Err(PyException::type_error(format!(
                             "'{}' object does not support item assignment", obj.type_name()))),
@@ -629,6 +728,32 @@ impl VirtualMachine {
                 Opcode::CompareOp => {
                     let b = frame.pop();
                     let a = frame.pop();
+                    // Check for dunder compare methods on instances — need to drop frame
+                    if let op @ 0..=5 = instr.arg {
+                        let dunder = match op {
+                            0 => "__lt__", 1 => "__le__", 2 => "__eq__",
+                            3 => "__ne__", 4 => "__gt__", 5 => "__ge__",
+                            _ => unreachable!()
+                        };
+                        if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                            if let Some(method) = a.get_attr(dunder) {
+                                drop(frame);
+                                let r = self.call_object(method, vec![b])?;
+                                push!(r); return Ok(None);
+                            }
+                        }
+                    }
+                    // 'in' / 'not in' with __contains__
+                    if instr.arg == 6 || instr.arg == 7 {
+                        if matches!(&b.payload, PyObjectPayload::Instance(_)) {
+                            if let Some(method) = b.get_attr("__contains__") {
+                                drop(frame);
+                                let r = self.call_object(method, vec![a])?;
+                                let val = if instr.arg == 6 { r.is_truthy() } else { !r.is_truthy() };
+                                push!(PyObject::bool_val(val)); return Ok(None);
+                            }
+                        }
+                    }
                     let result = match instr.arg {
                         0 => a.compare(&b, CompareOp::Lt)?,
                         1 => a.compare(&b, CompareOp::Le)?,
@@ -636,15 +761,29 @@ impl VirtualMachine {
                         3 => a.compare(&b, CompareOp::Ne)?,
                         4 => a.compare(&b, CompareOp::Gt)?,
                         5 => a.compare(&b, CompareOp::Ge)?,
-                        6 => PyObject::bool_val(b.contains(&a)?),   // in
-                        7 => PyObject::bool_val(!b.contains(&a)?),  // not in
+                        6 => PyObject::bool_val(b.contains(&a)?),
+                        7 => PyObject::bool_val(!b.contains(&a)?),
                         8 => PyObject::bool_val(a.is_same(&b)),     // is
                         9 => PyObject::bool_val(!a.is_same(&b)),    // is not
                         10 => {
                             // exception match: a is exception type on stack, b is type to match
-                            let matched = match (&a.payload, &b.payload) {
-                                (PyObjectPayload::ExceptionType(kind_a), PyObjectPayload::ExceptionType(kind_b)) => {
+                            // b can be a single ExceptionType or a Tuple of ExceptionTypes
+                            let kind_a = match &a.payload {
+                                PyObjectPayload::ExceptionType(k) => k,
+                                _ => return Err(PyException::runtime_error("expected exception type on stack")),
+                            };
+                            let matched = match &b.payload {
+                                PyObjectPayload::ExceptionType(kind_b) => {
                                     exception_kind_matches(kind_a, kind_b)
+                                }
+                                PyObjectPayload::Tuple(items) => {
+                                    items.iter().any(|item| {
+                                        if let PyObjectPayload::ExceptionType(kind_b) = &item.payload {
+                                            exception_kind_matches(kind_a, kind_b)
+                                        } else {
+                                            false
+                                        }
+                                    })
                                 }
                                 _ => false,
                             };
@@ -698,8 +837,14 @@ impl VirtualMachine {
                 // ── Iterator operations ──
                 Opcode::GetIter => {
                     let obj = frame.pop();
-                    let iter = obj.get_iter()?;
-                    frame.push(iter);
+                    if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = obj.get_attr("__iter__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
+                    frame.push(obj.get_iter()?);
                 }
                 Opcode::ForIter => {
                     let iter = frame.peek().clone();
@@ -717,6 +862,25 @@ impl VirtualMachine {
                                 frame.ip = instr.arg as usize;
                             }
                             Err(e) => return Err(e),
+                        }
+                    } else if matches!(&iter.payload, PyObjectPayload::Instance(_)) {
+                        // Custom iterator with __next__
+                        if let Some(next_method) = iter.get_attr("__next__") {
+                            drop(frame);
+                            match self.call_object(next_method, vec![]) {
+                                Ok(value) => {
+                                    push!(value);
+                                }
+                                Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                    let f = self.call_stack.last_mut().unwrap();
+                                    f.pop();
+                                    f.ip = instr.arg as usize;
+                                }
+                                Err(e) => return Err(e),
+                            }
+                            return Ok(None);
+                        } else {
+                            return Err(PyException::type_error("iterator has no __next__ method"));
                         }
                     } else {
                         match builtins::iter_advance(&iter)? {
@@ -1384,6 +1548,23 @@ impl VirtualMachine {
                             }
                             return Ok(PyObject::list(items));
                         }
+                        // Handle custom iterators (Instance with __iter__)
+                        if matches!(&args[0].payload, PyObjectPayload::Instance(_)) {
+                            if let Some(iter_method) = args[0].get_attr("__iter__") {
+                                let iter_obj = self.call_object(iter_method, vec![])?;
+                                let mut items = Vec::new();
+                                loop {
+                                    if let Some(next_method) = iter_obj.get_attr("__next__") {
+                                        match self.call_object(next_method.clone(), vec![]) {
+                                            Ok(value) => items.push(value),
+                                            Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                                            Err(e) => return Err(e),
+                                        }
+                                    } else { break; }
+                                }
+                                return Ok(PyObject::list(items));
+                            }
+                        }
                         // Fall through to regular list() for other iterables
                     }
                     "tuple" => {
@@ -1419,6 +1600,72 @@ impl VirtualMachine {
                                 }
                             }
                             return Ok(total);
+                        }
+                    }
+                    "len" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__len__") {
+                                    return self.call_object(method, vec![args[0].clone()]);
+                                }
+                            }
+                        }
+                    }
+                    "bool" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__bool__") {
+                                    let result = self.call_object(method, vec![args[0].clone()])?;
+                                    return Ok(PyObject::bool_val(result.is_truthy()));
+                                }
+                            }
+                        }
+                    }
+                    "super" => {
+                        // super() with 0 args: find class and self from calling frame
+                        if args.is_empty() {
+                            let frame = self.call_stack.last().unwrap();
+                            if let Some(self_obj) = frame.locals.first().cloned().flatten() {
+                                if let PyObjectPayload::Instance(inst) = &self_obj.payload {
+                                    // Find the DEFINING class by matching frame's qualname
+                                    // e.g. qualname "B.greet" → defining class is "B"
+                                    let qualname = frame.code.qualname.as_str();
+                                    let defining_class_name = qualname.rsplit_once('.')
+                                        .map(|(cls_part, _)| {
+                                            // Handle nested: "Outer.B.greet" → "B"
+                                            cls_part.rsplit_once('.').map(|(_, c)| c).unwrap_or(cls_part)
+                                        });
+                                    let runtime_cls = &inst.class;
+                                    let mut cls = runtime_cls.clone();
+                                    if let Some(def_name) = defining_class_name {
+                                        if let PyObjectPayload::Class(cd) = &runtime_cls.payload {
+                                            // Walk MRO: [B, A] for class C(B(A))
+                                            let mro = if cd.mro.is_empty() {
+                                                vec![runtime_cls.clone()]
+                                            } else {
+                                                cd.mro.clone()
+                                            };
+                                            for m in &mro {
+                                                if let PyObjectPayload::Class(mc) = &m.payload {
+                                                    if mc.name.as_str() == def_name {
+                                                        cls = m.clone();
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    return Ok(Arc::new(PyObject {
+                                        payload: PyObjectPayload::Super { cls, instance: self_obj.clone() }
+                                    }));
+                                }
+                            }
+                            return Err(PyException::runtime_error("super(): no current class"));
+                        } else if args.len() == 2 {
+                            // super(cls, instance)
+                            return Ok(Arc::new(PyObject {
+                                payload: PyObjectPayload::Super { cls: args[0].clone(), instance: args[1].clone() }
+                            }));
                         }
                     }
                     _ => {}
@@ -1464,6 +1711,16 @@ impl VirtualMachine {
             PyObjectPayload::NativeFunction { func, .. } => {
                 func(&args)
             }
+            PyObjectPayload::Instance(_) => {
+                // Callable instances: check for __call__
+                if let Some(method) = func.get_attr("__call__") {
+                    self.call_object(method, args)
+                } else {
+                    Err(PyException::type_error(format!(
+                        "'{}' object is not callable", func.type_name()
+                    )))
+                }
+            }
             _ => Err(PyException::type_error(format!(
                 "'{}' object is not callable", func.type_name()
             ))),
@@ -1489,6 +1746,14 @@ impl VirtualMachine {
                 let globals = pyfunc.globals.clone();
                 let mut frame = Frame::new(code, globals, self.builtins.clone());
                 frame.scope_kind = ScopeKind::Class;
+                // Wire up closure cells from the captured function
+                let n_cell = frame.code.cellvars.len();
+                for (i, cell) in pyfunc.closure.iter().enumerate() {
+                    let free_idx = n_cell + i;
+                    if free_idx < frame.cells.len() {
+                        frame.cells[free_idx] = cell.clone();
+                    }
+                }
                 self.call_stack.push(frame);
                 let _ = self.run_frame();
                 let frame = self.call_stack.pop().unwrap();
@@ -1497,7 +1762,35 @@ impl VirtualMachine {
             _ => IndexMap::new(),
         };
 
-        Ok(PyObject::class(class_name, bases, namespace))
+        // Build MRO: [self_class, ...linearized_parents, object]
+        // Simple C3-like: for single inheritance just chain; for multiple use bases order
+        let mro = Self::compute_mro(&bases);
+        let cls = PyObject::wrap(PyObjectPayload::Class(ClassData {
+            name: class_name, bases, namespace: Arc::new(RwLock::new(namespace)), mro,
+        }));
+        Ok(cls)
+    }
+
+    /// Compute a simple MRO from bases (includes bases and their ancestors, NOT self).
+    fn compute_mro(bases: &[PyObjectRef]) -> Vec<PyObjectRef> {
+        let mut mro = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for base in bases {
+            Self::collect_mro(base, &mut mro, &mut seen);
+        }
+        mro
+    }
+
+    fn collect_mro(cls: &PyObjectRef, mro: &mut Vec<PyObjectRef>, seen: &mut std::collections::HashSet<*const PyObject>) {
+        let ptr = Arc::as_ptr(cls);
+        if seen.contains(&ptr) { return; }
+        seen.insert(ptr);
+        mro.push(cls.clone());
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            for base in &cd.bases {
+                Self::collect_mro(base, mro, seen);
+            }
+        }
     }
 
     /// Resume a generator, pushing the given `send_value` onto its stack and running

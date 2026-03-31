@@ -792,7 +792,8 @@ impl Compiler {
         scope: Scope,
         qualname: &str,
     ) -> Result<()> {
-        let unit = CompileUnit::new(name, &self.filename, scope, true, qualname.to_string());
+        let mut unit = CompileUnit::new(name, &self.filename, scope, true, qualname.to_string());
+        unit.code.qualname = CompactString::from(qualname);
         self.unit_stack.push(unit);
         Ok(())
     }
@@ -853,6 +854,28 @@ impl Compiler {
 
         let class_code = self.pop_function_unit();
 
+        // Check if the class body needs closure cells
+        let has_freevars = !class_code.freevars.is_empty();
+        let num_freevars = class_code.freevars.len();
+
+        // Emit closure cells BEFORE loading code/qualname (push order matters)
+        if has_freevars {
+            // For each freevar in the class code, emit LoadClosure from the parent scope
+            for freevar_name in &class_code.freevars.clone() {
+                // Find the cell index in the current (parent) scope
+                let unit = self.current_unit();
+                let cell_idx = unit.code.cellvars.iter().position(|v| v == freevar_name)
+                    .or_else(|| {
+                        unit.code.freevars.iter().position(|v| v == freevar_name)
+                            .map(|i| i + unit.code.cellvars.len())
+                    });
+                if let Some(idx) = cell_idx {
+                    self.emit_arg(Opcode::LoadClosure, idx as u32);
+                }
+            }
+            self.emit_arg(Opcode::BuildTuple, num_freevars as u32);
+        }
+
         // Load the class body code object
         let code_idx = self.add_const(ConstantValue::Code(Box::new(class_code)));
         self.emit_arg(Opcode::LoadConst, code_idx);
@@ -861,8 +884,9 @@ impl Compiler {
         let qname_const = self.add_const(ConstantValue::Str(qualname.into()));
         self.emit_arg(Opcode::LoadConst, qname_const);
 
-        // MAKE_FUNCTION (no defaults/closures for class body)
-        self.emit_arg(Opcode::MakeFunction, 0);
+        // MAKE_FUNCTION with closure flag if needed
+        let make_fn_flags = if has_freevars { 0x08 } else { 0 };
+        self.emit_arg(Opcode::MakeFunction, make_fn_flags);
 
         // Load class name as string arg
         let name_idx = self.add_const(ConstantValue::Str(name.into()));

@@ -60,6 +60,14 @@ pub enum PyObjectPayload {
         name: CompactString,
         func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>,
     },
+    /// Property descriptor
+    Property { fget: Option<PyObjectRef>, fset: Option<PyObjectRef>, fdel: Option<PyObjectRef> },
+    /// Static method wrapper
+    StaticMethod(PyObjectRef),
+    /// Class method wrapper  
+    ClassMethod(PyObjectRef),
+    /// super() proxy — wraps (class, instance) for parent method dispatch
+    Super { cls: PyObjectRef, instance: PyObjectRef },
 }
 
 /// Opaque generator state. The actual frame is stored as `Box<dyn Any>` and
@@ -249,12 +257,24 @@ pub enum CompareOp { Lt, Le, Eq, Ne, Gt, Ge }
 /// Walk a class and its base classes (MRO) to find an attribute.
 fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
     if let PyObjectPayload::Class(cd) = &class.payload {
+        // Check own namespace first
         if let Some(v) = cd.namespace.read().get(name).cloned() {
             return Some(v);
         }
-        for base in &cd.bases {
-            if let Some(v) = lookup_in_class_mro(base, name) {
-                return Some(v);
+        // Use computed MRO if available, otherwise walk bases recursively
+        if !cd.mro.is_empty() {
+            for base in &cd.mro {
+                if let PyObjectPayload::Class(bcd) = &base.payload {
+                    if let Some(v) = bcd.namespace.read().get(name).cloned() {
+                        return Some(v);
+                    }
+                }
+            }
+        } else {
+            for base in &cd.bases {
+                if let Some(v) = lookup_in_class_mro(base, name) {
+                    return Some(v);
+                }
             }
         }
     }
@@ -298,6 +318,10 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::ExceptionInstance { .. } => "exception",
             PyObjectPayload::Generator(_) => "generator",
             PyObjectPayload::NativeFunction { .. } => "builtin_function_or_method",
+            PyObjectPayload::Property { .. } => "property",
+            PyObjectPayload::StaticMethod(_) => "staticmethod",
+            PyObjectPayload::ClassMethod(_) => "classmethod",
+            PyObjectPayload::Super { .. } => "super",
         }
     }
 
@@ -613,9 +637,30 @@ impl PyObjectMethods for PyObjectRef {
     fn get_attr(&self, name: &str) -> Option<PyObjectRef> {
         match &self.payload {
             PyObjectPayload::Instance(inst) => {
-                // Instance attributes take priority
+                // Check class MRO for data descriptors (Property) first
+                if let Some(v) = lookup_in_class_mro(&inst.class, name) {
+                    match &v.payload {
+                        PyObjectPayload::Property { .. } => {
+                            // Return the property descriptor — VM will call fget
+                            return Some(v.clone());
+                        }
+                        PyObjectPayload::StaticMethod(func) => {
+                            return Some(func.clone());
+                        }
+                        PyObjectPayload::ClassMethod(func) => {
+                            return Some(Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: inst.class.clone(),
+                                    method: func.clone(),
+                                }
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                // Instance attributes
                 if let Some(v) = inst.attrs.read().get(name) { return Some(v.clone()); }
-                // Walk the MRO (class + bases chain) for methods/class attrs
+                // Walk the MRO for methods/class attrs
                 if let Some(v) = lookup_in_class_mro(&inst.class, name) {
                     if matches!(&v.payload, PyObjectPayload::Function(_)) {
                         return Some(Arc::new(PyObject {
@@ -631,7 +676,20 @@ impl PyObjectMethods for PyObjectRef {
             }
             PyObjectPayload::Class(cd) => {
                 // Check own namespace first, then bases
-                if let Some(v) = cd.namespace.read().get(name).cloned() { return Some(v); }
+                if let Some(v) = cd.namespace.read().get(name).cloned() {
+                    match &v.payload {
+                        PyObjectPayload::StaticMethod(func) => return Some(func.clone()),
+                        PyObjectPayload::ClassMethod(func) => {
+                            return Some(Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: self.clone(),
+                                    method: func.clone(),
+                                }
+                            }));
+                        }
+                        _ => return Some(v),
+                    }
+                }
                 for base in &cd.bases {
                     if let Some(v) = base.get_attr(name) { return Some(v); }
                 }
@@ -650,6 +708,63 @@ impl PyObjectMethods for PyObjectRef {
                         method_name: CompactString::from(name),
                     }
                 }))
+            }
+            PyObjectPayload::Super { cls, instance } => {
+                // super() proxy: look up in the RUNTIME class MRO, skipping up to and including cls
+                let runtime_cls = if let PyObjectPayload::Instance(inst) = &instance.payload {
+                    Some(&inst.class)
+                } else {
+                    None
+                };
+                if let Some(rt_cls) = runtime_cls {
+                    if let PyObjectPayload::Class(cd) = &rt_cls.payload {
+                        let mro = &cd.mro;
+                        let mut found_cls = false;
+                        for base in mro {
+                            if !found_cls {
+                                if std::sync::Arc::ptr_eq(base, cls) {
+                                    found_cls = true;
+                                }
+                                continue;
+                            }
+                            // Look in this base's namespace directly
+                            if let PyObjectPayload::Class(bcd) = &base.payload {
+                                if let Some(v) = bcd.namespace.read().get(name) {
+                                    if matches!(&v.payload, PyObjectPayload::Function(_)) {
+                                        return Some(Arc::new(PyObject {
+                                            payload: PyObjectPayload::BoundMethod {
+                                                receiver: instance.clone(),
+                                                method: v.clone(),
+                                            }
+                                        }));
+                                    }
+                                    return Some(v.clone());
+                                }
+                            }
+                        }
+                        // Fallback: if cls not found in MRO, look in cls's own bases
+                        if !found_cls {
+                            if let PyObjectPayload::Class(ccd) = &cls.payload {
+                                for base in &ccd.bases {
+                                    if let PyObjectPayload::Class(bcd) = &base.payload {
+                                        if let Some(v) = bcd.namespace.read().get(name) {
+                                            if matches!(&v.payload, PyObjectPayload::Function(_)) {
+                                                return Some(Arc::new(PyObject {
+                                                    payload: PyObjectPayload::BoundMethod {
+                                                        receiver: instance.clone(),
+                                                        method: v.clone(),
+                                                    }
+                                                }));
+                                            }
+                                            return Some(v.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                None
             }
             _ => None,
         }
@@ -817,6 +932,26 @@ fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ord
         }
         (PyObjectPayload::BuiltinFunction(a), PyObjectPayload::BuiltinFunction(b)) => {
             if a == b { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) |
+        (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
+            // Set equality: same keys
+            if a.len() != b.len() { return None; }
+            for k in a.keys() {
+                if !b.contains_key(k) { return None; }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
+        (PyObjectPayload::Dict(a), PyObjectPayload::Dict(b)) => {
+            let a = a.read(); let b = b.read();
+            if a.len() != b.len() { return None; }
+            for (k, v1) in a.iter() {
+                match b.get(k) {
+                    Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
+                    _ => return None,
+                }
+            }
+            Some(std::cmp::Ordering::Equal)
         }
         _ => None,
     }

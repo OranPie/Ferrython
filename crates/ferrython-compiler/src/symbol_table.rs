@@ -202,7 +202,8 @@ fn resolve_free_vars(scope: &mut Scope) {
 fn resolve_top_down(scope: &mut Scope, available: &FxHashSet<String>) {
     // For each implicit-Global symbol in this scope, check if it's available
     // from an enclosing function scope
-    if scope.scope_type == ScopeType::Function || scope.scope_type == ScopeType::Comprehension {
+    if scope.scope_type == ScopeType::Function || scope.scope_type == ScopeType::Comprehension
+       || scope.scope_type == ScopeType::Class {
         for (_name, sym) in &mut scope.symbols {
             if sym.scope == SymbolScope::Global && !sym.is_explicit_global_or_nonlocal {
                 if available.contains(&sym.name) {
@@ -217,6 +218,13 @@ fn resolve_top_down(scope: &mut Scope, available: &FxHashSet<String>) {
     if scope.scope_type == ScopeType::Function || scope.scope_type == ScopeType::Comprehension {
         for (name, sym) in &scope.symbols {
             if sym.scope == SymbolScope::Local || sym.scope == SymbolScope::Free {
+                child_available.insert(name.clone());
+            }
+        }
+    } else if scope.scope_type == ScopeType::Class {
+        // Class scopes pass through free variables from enclosing scopes
+        for (name, sym) in &scope.symbols {
+            if sym.scope == SymbolScope::Free {
                 child_available.insert(name.clone());
             }
         }
@@ -250,7 +258,8 @@ fn resolve_bottom_up(scope: &mut Scope) {
             if sym.scope == SymbolScope::Local {
                 sym.scope = SymbolScope::Cell;
             }
-        } else if scope.scope_type == ScopeType::Function || scope.scope_type == ScopeType::Comprehension {
+        } else if scope.scope_type == ScopeType::Function || scope.scope_type == ScopeType::Comprehension
+                  || scope.scope_type == ScopeType::Class {
             // Not in our scope — add as Free so our parent provides it
             scope.symbols.insert(name.clone(), Symbol {
                 name: name.clone(),
