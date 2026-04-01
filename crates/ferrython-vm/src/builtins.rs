@@ -679,7 +679,11 @@ fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Ok(PyObject::dict(IndexMap::new()));
     }
     match &args[0].payload {
-        PyObjectPayload::Dict(m) => Ok(PyObject::dict(m.read().clone())),
+        PyObjectPayload::Dict(m) => {
+            let mut new_map = m.read().clone();
+            new_map.swap_remove(&HashableKey::Str(CompactString::from("__defaultdict_factory__")));
+            Ok(PyObject::dict(new_map))
+        },
         // dict from iterable of (key, value) pairs
         PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::Set(_) => {
             let pairs = args[0].to_list()?;
@@ -1685,15 +1689,21 @@ fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &str, args: &[
 fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "keys" => {
-            let keys: Vec<PyObjectRef> = map.read().keys().map(|k| k.to_object()).collect();
+            let keys: Vec<PyObjectRef> = map.read().keys()
+                .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__"))
+                .map(|k| k.to_object()).collect();
             Ok(PyObject::list(keys))
         }
         "values" => {
-            let vals: Vec<PyObjectRef> = map.read().values().cloned().collect();
+            let r = map.read();
+            let vals: Vec<PyObjectRef> = r.iter()
+                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__"))
+                .map(|(_, v)| v.clone()).collect();
             Ok(PyObject::list(vals))
         }
         "items" => {
             let pairs: Vec<PyObjectRef> = map.read().iter()
+                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__"))
                 .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
                 .collect();
             Ok(PyObject::list(pairs))
@@ -3261,22 +3271,31 @@ fn collections_ordered_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn collections_defaultdict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // Simplified: just return a regular dict
+    let factory = if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::None) {
+        Some(args[0].clone())
+    } else {
+        None
+    };
+    
+    let mut map = IndexMap::new();
+    // Store factory as a special key
+    if let Some(f) = factory {
+        map.insert(
+            HashableKey::Str(CompactString::from("__defaultdict_factory__")),
+            f,
+        );
+    }
+    
+    // If initial data provided
     if args.len() >= 2 {
-        // defaultdict(factory, initial_dict)
-        let items = args[1].to_list()?;
-        let mut pairs = Vec::new();
-        for item in items {
-            if let PyObjectPayload::Tuple(t) = &item.payload {
-                if t.len() == 2 {
-                    pairs.push((t[0].clone(), t[1].clone()));
-                }
+        if let PyObjectPayload::Dict(src) = &args[1].payload {
+            for (k, v) in src.read().iter() {
+                map.insert(k.clone(), v.clone());
             }
         }
-        Ok(PyObject::dict_from_pairs(pairs))
-    } else {
-        Ok(PyObject::dict_from_pairs(vec![]))
     }
+    
+    Ok(PyObject::dict(map))
 }
 
 fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -3345,9 +3364,29 @@ pub fn create_functools_module() -> PyObjectRef {
         ("reduce", PyObject::native_function("functools.reduce", functools_reduce)),
         ("partial", make_builtin(functools_partial)),
         ("lru_cache", make_builtin(|args| {
-            // Simple pass-through — just return the function unmodified
-            if args.is_empty() { return Ok(PyObject::none()); }
-            Ok(args[0].clone())
+            // lru_cache(func) — bare decorator: return func unchanged
+            // lru_cache(maxsize=N) — called with int arg: return identity decorator
+            if args.is_empty() { 
+                // @lru_cache() with no args — return identity decorator
+                return Ok(make_builtin(|args| {
+                    if args.is_empty() { return Ok(PyObject::none()); }
+                    Ok(args[0].clone())
+                }));
+            }
+            // If first arg is a callable (function), apply directly
+            match &args[0].payload {
+                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } 
+                | PyObjectPayload::BuiltinFunction(_) => {
+                    Ok(args[0].clone())
+                }
+                _ => {
+                    // Called with maxsize parameter — return identity decorator
+                    Ok(make_builtin(|args| {
+                        if args.is_empty() { return Ok(PyObject::none()); }
+                        Ok(args[0].clone())
+                    }))
+                }
+            }
         })),
         ("wraps", make_builtin(|args| {
             // Simple pass-through decorator — return identity
@@ -4206,8 +4245,9 @@ pub fn create_contextlib_module() -> PyObjectRef {
 }
 
 fn contextlib_contextmanager(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // contextmanager decorator — returns the function as-is
-    // (full generator-based CM needs VM-level support)
+    // contextmanager decorator — returns the function unchanged.
+    // The function is a generator function. When called, it returns a Generator.
+    // The VM's SetupWith handles Generator objects as context managers directly.
     if args.is_empty() { return Err(PyException::type_error("contextmanager requires 1 argument")); }
     Ok(args[0].clone())
 }
@@ -4253,10 +4293,50 @@ pub fn create_dataclasses_module() -> PyObjectRef {
 }
 
 fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // dataclass(cls) — just return the class unchanged for now
-    // A full implementation would add __init__, __repr__, __eq__ etc.
     if args.is_empty() { return Err(PyException::type_error("dataclass requires 1 argument")); }
-    Ok(args[0].clone())
+    let cls = &args[0];
+    
+    // Get annotations to discover fields
+    let mut field_names: Vec<CompactString> = Vec::new();
+    let mut field_defaults: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+    
+    if let PyObjectPayload::Class(cd) = &cls.payload {
+        let ns = cd.namespace.read();
+        if let Some(annotations) = ns.get("__annotations__") {
+            if let PyObjectPayload::Dict(ann_map) = &annotations.payload {
+                for (k, _v) in ann_map.read().iter() {
+                    if let HashableKey::Str(name) = k {
+                        field_names.push(name.clone());
+                        // Check for default value in class namespace
+                        if let Some(default) = ns.get(name.as_str()) {
+                            field_defaults.insert(name.clone(), default.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Store __dataclass_fields__ as a tuple of (name, has_default, default_val) tuples
+    let fields_info: Vec<PyObjectRef> = field_names.iter().map(|name| {
+        let has_default = field_defaults.contains_key(name.as_str());
+        let default_val = field_defaults.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
+        PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from(name.as_str())),
+            PyObject::bool_val(has_default),
+            default_val,
+        ])
+    }).collect();
+    
+    // Store on the class
+    if let PyObjectPayload::Class(cd) = &cls.payload {
+        let mut ns = cd.namespace.write();
+        ns.insert(CompactString::from("__dataclass_fields__"), PyObject::tuple(fields_info));
+        // Mark it as a dataclass
+        ns.insert(CompactString::from("__dataclass__"), PyObject::bool_val(true));
+    }
+    
+    Ok(cls.clone())
 }
 
 // ── struct module ──

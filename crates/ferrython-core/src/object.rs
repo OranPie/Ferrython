@@ -1188,7 +1188,11 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Tuple(v) => Ok(v.len()),
             PyObjectPayload::Set(m) => Ok(m.read().len()),
             PyObjectPayload::FrozenSet(m) => Ok(m.len()),
-            PyObjectPayload::Dict(m) => Ok(m.read().len()),
+            PyObjectPayload::Dict(m) => {
+                let map = m.read();
+                let hidden = if map.contains_key(&HashableKey::Str(CompactString::from("__defaultdict_factory__"))) { 1 } else { 0 };
+                Ok(map.len() - hidden)
+            },
             PyObjectPayload::Iterator(iter_data) => {
                 let data = iter_data.lock().unwrap();
                 match &*data {
@@ -1763,6 +1767,11 @@ fn format_set(open: &str, close: &str, map: &IndexMap<HashableKey, PyObjectRef>)
 }
 
 fn format_dict(map: &IndexMap<HashableKey, PyObjectRef>) -> String {
-    let inner: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr())).collect();
+    let inner: Vec<String> = map.iter()
+        .filter(|(k, _)| {
+            // Hide internal defaultdict factory key
+            if let HashableKey::Str(s) = k { s.as_str() != "__defaultdict_factory__" } else { true }
+        })
+        .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr())).collect();
     format!("{{{}}}", inner.join(", "))
 }

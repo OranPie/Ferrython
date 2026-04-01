@@ -369,12 +369,20 @@ impl Compiler {
                 self.compile_aug_assign(target, *op, value)?;
             }
 
-            StatementKind::AnnAssign { target, value, .. } => {
+            StatementKind::AnnAssign { target, annotation, value, .. } => {
                 if let Some(val) = value {
                     self.compile_expression(val)?;
                     self.compile_store_target(target)?;
                 }
-                // annotation itself is not compiled at runtime (just for type checkers)
+                // Store annotation in __annotations__ dict: __annotations__[name] = annotation
+                if let ExpressionKind::Name { id: name, .. } = &target.node {
+                    // Stack needs: value(annotation), obj(__annotations__), key(name_str)
+                    self.compile_expression(annotation)?;  // push annotation value
+                    self.load_name("__annotations__");      // push __annotations__ dict
+                    let name_idx = self.add_const(ConstantValue::Str(CompactString::from(name.as_str())));
+                    self.emit_arg(Opcode::LoadConst, name_idx);  // push key
+                    self.emit_op(Opcode::StoreSubscr);
+                }
             }
 
             StatementKind::Return { value } => {
@@ -843,6 +851,9 @@ impl Compiler {
         let qname_idx = self.add_const(ConstantValue::Str(qualname.clone().into()));
         self.emit_arg(Opcode::LoadConst, qname_idx);
         self.store_name("__qualname__");
+
+        // Setup annotations dict for the class body
+        self.emit_op(Opcode::SetupAnnotations);
 
         // Compile the class body
         self.compile_body(body)?;

@@ -252,7 +252,44 @@ impl VirtualMachine {
             }
             PyObjectPayload::Class(_class) => {
                 let instance = PyObject::instance(func.clone());
-                if let Some(init) = func.get_attr("__init__") {
+                
+                let is_dataclass = func.get_attr("__dataclass__").is_some();
+                let has_user_init = func.get_attr("__init__").is_some();
+                
+                if is_dataclass && !has_user_init {
+                    // Auto-generate __init__ for dataclass with kwargs support
+                    if let Some(fields) = func.get_attr("__dataclass_fields__") {
+                        if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                            let mut arg_idx = 0;
+                            for ft in field_tuples {
+                                if let PyObjectPayload::Tuple(info) = &ft.payload {
+                                    let name = info[0].py_to_string();
+                                    let has_default = info[1].is_truthy();
+                                    let default_val = &info[2];
+                                    
+                                    // Check kwargs first, then positional
+                                    let value = if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
+                                        v.clone()
+                                    } else if arg_idx < pos_args.len() {
+                                        let v = pos_args[arg_idx].clone();
+                                        arg_idx += 1;
+                                        v
+                                    } else if has_default {
+                                        default_val.clone()
+                                    } else {
+                                        return Err(PyException::type_error(format!(
+                                            "__init__() missing required argument: '{}'", name
+                                        )));
+                                    };
+                                    
+                                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                                        inst.attrs.write().insert(CompactString::from(name.as_str()), value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(init) = func.get_attr("__init__") {
                     let init_fn = match &init.payload {
                         PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                         _ => init.clone(),
@@ -1091,7 +1128,28 @@ impl VirtualMachine {
                             push!(r); return Ok(None);
                         }
                     }
-                    frame.push(obj.get_item(&key)?);
+                    // Handle defaultdict: on KeyError, check for factory
+                    if let PyObjectPayload::Dict(map) = &obj.payload {
+                        let hk = key.to_hashable_key()?;
+                        let existing = map.read().get(&hk).cloned();
+                        if let Some(val) = existing {
+                            frame.push(val);
+                        } else {
+                            let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+                            let factory = map.read().get(&factory_key).cloned();
+                            if let Some(factory) = factory {
+                                drop(frame);
+                                let default = self.call_object(factory, vec![])?;
+                                map.write().insert(hk, default.clone());
+                                push!(default);
+                                return Ok(None);
+                            } else {
+                                return Err(PyException::key_error(key.py_to_string()));
+                            }
+                        }
+                    } else {
+                        frame.push(obj.get_item(&key)?);
+                    }
                 }
                 Opcode::StoreSubscr => {
                     // Stack: TOS = key, TOS1 = obj, TOS2 = value
@@ -1229,6 +1287,39 @@ impl VirtualMachine {
                                 drop(frame);
                                 let r = self.call_object(method, vec![b])?;
                                 push!(r); return Ok(None);
+                            }
+                            // Dataclass auto-equality
+                            if op == 2 || op == 3 {
+                                if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
+                                    let cls_a = &inst_a.class;
+                                    if cls_a.get_attr("__dataclass__").is_some() {
+                                        if let Some(fields) = cls_a.get_attr("__dataclass_fields__") {
+                                            if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                                                let attrs_a = inst_a.attrs.read();
+                                                let attrs_b = inst_b.attrs.read();
+                                                let mut eq = true;
+                                                for ft in field_tuples {
+                                                    if let PyObjectPayload::Tuple(info) = &ft.payload {
+                                                        let name = info[0].py_to_string();
+                                                        let va = attrs_a.get(name.as_str());
+                                                        let vb = attrs_b.get(name.as_str());
+                                                        match (va, vb) {
+                                                            (Some(x), Some(y)) => {
+                                                                if let Ok(r) = x.compare(y, CompareOp::Eq) {
+                                                                    if !r.is_truthy() { eq = false; break; }
+                                                                } else { eq = false; break; }
+                                                            }
+                                                            _ => { eq = false; break; }
+                                                        }
+                                                    }
+                                                }
+                                                let result = if op == 2 { eq } else { !eq };
+                                                push!(PyObject::bool_val(result));
+                                                return Ok(None);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1973,24 +2064,41 @@ impl VirtualMachine {
                 Opcode::SetupWith => {
                     // TOS is the context manager
                     let ctx_mgr = frame.pop();
-                    // Get __exit__ method and save it on the stack
-                    let exit_method = ctx_mgr.get_attr("__exit__").ok_or_else(||
-                        PyException::attribute_error("__exit__"))?;
-                    frame.push(exit_method);
-                    // Call __enter__, passing ctx_mgr as self for non-bound methods
-                    let enter_method = ctx_mgr.get_attr("__enter__").ok_or_else(||
-                        PyException::attribute_error("__enter__"))?;
-                    let enter_args = if matches!(&enter_method.payload, PyObjectPayload::BoundMethod { .. }) {
-                        vec![]
+                    
+                    // Handle generator-based context managers (@contextmanager)
+                    if let PyObjectPayload::Generator(gen_arc) = &ctx_mgr.payload {
+                        // __enter__: resume generator to get yielded value
+                        drop(frame);
+                        let enter_result = match self.resume_generator(gen_arc, PyObject::none()) {
+                            Ok(val) => val,
+                            Err(e) if e.kind == ExceptionKind::StopIteration => PyObject::none(),
+                            Err(e) => return Err(e),
+                        };
+                        let frame = self.call_stack.last_mut().unwrap();
+                        // Save the generator as the "exit" handler
+                        frame.push(ctx_mgr.clone());
+                        frame.push_block(BlockKind::With, instr.arg as usize);
+                        frame.push(enter_result);
                     } else {
-                        vec![ctx_mgr.clone()]
-                    };
-                    let enter_result = self.call_object(enter_method, enter_args)?;
-                    let frame = self.call_stack.last_mut().unwrap();
-                    // Setup the With block (points to cleanup handler)
-                    frame.push_block(BlockKind::With, instr.arg as usize);
-                    // Push the __enter__ result (to be stored by `as` or popped)
-                    frame.push(enter_result);
+                        // Standard context manager protocol
+                        let exit_method = ctx_mgr.get_attr("__exit__").ok_or_else(||
+                            PyException::attribute_error("__exit__"))?;
+                        frame.push(exit_method);
+                        // Call __enter__, passing ctx_mgr as self for non-bound methods
+                        let enter_method = ctx_mgr.get_attr("__enter__").ok_or_else(||
+                            PyException::attribute_error("__enter__"))?;
+                        let enter_args = if matches!(&enter_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                            vec![]
+                        } else {
+                            vec![ctx_mgr.clone()]
+                        };
+                        let enter_result = self.call_object(enter_method, enter_args)?;
+                        let frame = self.call_stack.last_mut().unwrap();
+                        // Setup the With block (points to cleanup handler)
+                        frame.push_block(BlockKind::With, instr.arg as usize);
+                        // Push the __enter__ result (to be stored by `as` or popped)
+                        frame.push(enter_result);
+                    }
                 }
 
                 // ── Print (interactive mode) ──
@@ -2134,43 +2242,74 @@ impl VirtualMachine {
 
                 // ── With cleanup ──
                 Opcode::WithCleanupStart => {
-                    // Stack at this point (from top): exception info or None (from BeginFinally)
-                    // Below that: __exit__ method
-                    // If TOS is None, it's a normal exit — call __exit__(None, None, None)
-                    // If TOS is an exception type, call __exit__(type, value, traceback)
                     let tos = frame.peek().clone();
                     if matches!(tos.payload, PyObjectPayload::None) {
-                        // Normal exit: pop None, get __exit__, call it
                         frame.pop(); // pop None
                         let exit_fn = frame.pop();
-                        let result = self.call_object(exit_fn, vec![
-                            PyObject::none(), PyObject::none(), PyObject::none()
-                        ])?;
-                        let frame = self.call_stack.last_mut().unwrap();
-                        frame.push(PyObject::none()); // indicate normal flow
-                        frame.push(result); // __exit__ return value
+                        // Handle generator-based context manager exit
+                        if let PyObjectPayload::Generator(gen_arc) = &exit_fn.payload {
+                            drop(frame);
+                            // Resume generator to run cleanup code
+                            match self.resume_generator(gen_arc, PyObject::none()) {
+                                Ok(_) => {} // generator yielded again (shouldn't happen)
+                                Err(e) if e.kind == ExceptionKind::StopIteration => {} // normal
+                                Err(e) => return Err(e),
+                            }
+                            let frame = self.call_stack.last_mut().unwrap();
+                            frame.push(PyObject::none());
+                            frame.push(PyObject::none());
+                        } else {
+                            let result = self.call_object(exit_fn, vec![
+                                PyObject::none(), PyObject::none(), PyObject::none()
+                            ])?;
+                            let frame = self.call_stack.last_mut().unwrap();
+                            frame.push(PyObject::none());
+                            frame.push(result);
+                        }
                     } else if matches!(tos.payload, PyObjectPayload::ExceptionType(_)) {
-                        // Exception exit: pop type, value, traceback; get __exit__; call it
                         let exc_type = frame.pop();
                         let exc_val = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
                         let exc_tb = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
                         let exit_fn = frame.pop();
-                        let result = self.call_object(exit_fn, vec![
-                            exc_type.clone(), exc_val, exc_tb
-                        ])?;
-                        let frame = self.call_stack.last_mut().unwrap();
-                        frame.push(exc_type); // re-push exception type for EndFinally
-                        frame.push(result); // __exit__ return value
+                        if let PyObjectPayload::Generator(gen_arc) = &exit_fn.payload {
+                            drop(frame);
+                            match self.resume_generator(gen_arc, PyObject::none()) {
+                                Ok(_) => {}
+                                Err(e) if e.kind == ExceptionKind::StopIteration => {}
+                                Err(e) => return Err(e),
+                            }
+                            let frame = self.call_stack.last_mut().unwrap();
+                            frame.push(exc_type.clone());
+                            frame.push(PyObject::none());
+                        } else {
+                            let result = self.call_object(exit_fn, vec![
+                                exc_type.clone(), exc_val, exc_tb
+                            ])?;
+                            let frame = self.call_stack.last_mut().unwrap();
+                            frame.push(exc_type);
+                            frame.push(result);
+                        }
                     } else {
-                        // Fallback: treat as normal
                         frame.pop();
                         let exit_fn = frame.pop();
-                        let result = self.call_object(exit_fn, vec![
-                            PyObject::none(), PyObject::none(), PyObject::none()
-                        ])?;
-                        let frame = self.call_stack.last_mut().unwrap();
-                        frame.push(PyObject::none());
-                        frame.push(result);
+                        if let PyObjectPayload::Generator(gen_arc) = &exit_fn.payload {
+                            drop(frame);
+                            match self.resume_generator(gen_arc, PyObject::none()) {
+                                Ok(_) => {}
+                                Err(e) if e.kind == ExceptionKind::StopIteration => {}
+                                Err(e) => return Err(e),
+                            }
+                            let frame = self.call_stack.last_mut().unwrap();
+                            frame.push(PyObject::none());
+                            frame.push(PyObject::none());
+                        } else {
+                            let result = self.call_object(exit_fn, vec![
+                                PyObject::none(), PyObject::none(), PyObject::none()
+                            ])?;
+                            let frame = self.call_stack.last_mut().unwrap();
+                            frame.push(PyObject::none());
+                            frame.push(result);
+                        }
                     }
                 }
                 Opcode::WithCleanupFinish => {
@@ -2295,10 +2434,33 @@ impl VirtualMachine {
     /// Produce a repr string for an object, dispatching __repr__ on instances.
     fn vm_repr(&mut self, obj: &PyObjectRef) -> PyResult<String> {
         match &obj.payload {
-            PyObjectPayload::Instance(_) => {
+            PyObjectPayload::Instance(inst) => {
                 if let Some(repr_method) = obj.get_attr("__repr__") {
                     let result = self.call_object(repr_method, vec![])?;
                     return Ok(result.py_to_string());
+                }
+                // Dataclass auto-repr
+                let class = &inst.class;
+                if class.get_attr("__dataclass__").is_some() {
+                    if let Some(fields) = class.get_attr("__dataclass_fields__") {
+                        if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                            let class_name = if let PyObjectPayload::Class(cd) = &class.payload {
+                                cd.name.to_string()
+                            } else { "?".to_string() };
+                            let mut parts = Vec::new();
+                            let attrs = inst.attrs.read();
+                            for ft in field_tuples {
+                                if let PyObjectPayload::Tuple(info) = &ft.payload {
+                                    let name = info[0].py_to_string();
+                                    if let Some(val) = attrs.get(name.as_str()) {
+                                        let val_repr = self.vm_repr(val)?;
+                                        parts.push(format!("{}={}", name, val_repr));
+                                    }
+                                }
+                            }
+                            return Ok(format!("{}({})", class_name, parts.join(", ")));
+                        }
+                    }
                 }
                 Ok(obj.repr())
             }
@@ -2325,6 +2487,10 @@ impl VirtualMachine {
                 let m = m.read().clone();
                 let mut parts = Vec::new();
                 for (k, v) in &m {
+                    // Hide defaultdict internal factory key
+                    if let HashableKey::Str(s) = k {
+                        if s.as_str() == "__defaultdict_factory__" { continue; }
+                    }
                     let kr = self.vm_repr(&k.to_object())?;
                     let vr = self.vm_repr(v)?;
                     parts.push(format!("{}: {}", kr, vr));
@@ -3031,9 +3197,41 @@ impl VirtualMachine {
             }
             PyObjectPayload::Class(_class) => {
                 let instance = PyObject::instance(func.clone());
-                // Look up __init__ through MRO (supports inheritance)
-                let has_custom_init = func.get_attr("__init__").is_some();
-                if let Some(init) = func.get_attr("__init__") {
+                
+                // Check for dataclass auto-init
+                let is_dataclass = func.get_attr("__dataclass__").is_some();
+                let has_user_init = func.get_attr("__init__").is_some();
+                
+                if is_dataclass && !has_user_init {
+                    // Auto-generate __init__ for dataclass
+                    if let Some(fields) = func.get_attr("__dataclass_fields__") {
+                        if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                            let mut arg_idx = 0;
+                            for ft in field_tuples {
+                                if let PyObjectPayload::Tuple(info) = &ft.payload {
+                                    let name = info[0].py_to_string();
+                                    let has_default = info[1].is_truthy();
+                                    let default_val = &info[2];
+                                    
+                                    let value = if arg_idx < args.len() {
+                                        args[arg_idx].clone()
+                                    } else if has_default {
+                                        default_val.clone()
+                                    } else {
+                                        return Err(PyException::type_error(format!(
+                                            "__init__() missing required argument: '{}'", name
+                                        )));
+                                    };
+                                    
+                                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                                        inst.attrs.write().insert(CompactString::from(name.as_str()), value);
+                                    }
+                                    arg_idx += 1;
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(init) = func.get_attr("__init__") {
                     let init_fn = match &init.payload {
                         PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                         _ => init.clone(),
