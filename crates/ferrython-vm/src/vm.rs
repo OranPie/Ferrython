@@ -3445,6 +3445,27 @@ impl VirtualMachine {
                             _ => {}
                         }
                     }
+                    // Hash object methods (hashlib)
+                    let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.to_string() } else { String::new() };
+                    if matches!(class_name.as_str(), "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
+                        match method_name.as_str() {
+                            "hexdigest" => {
+                                let attrs = inst.attrs.read();
+                                if let Some(hd) = attrs.get("_hexdigest") {
+                                    return Ok(hd.clone());
+                                }
+                                return Ok(PyObject::str_val(CompactString::from("")));
+                            }
+                            "digest" => {
+                                let attrs = inst.attrs.read();
+                                if let Some(d) = attrs.get("_digest") {
+                                    return Ok(d.clone());
+                                }
+                                return Ok(PyObject::bytes(vec![]));
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 builtins::call_method(receiver, method_name.as_str(), &args)
             }
@@ -3761,6 +3782,12 @@ impl VirtualMachine {
             "base64" => Ok(builtins::create_base64_module()),
             "pprint" => Ok(builtins::create_pprint_module()),
             "argparse" => Ok(builtins::create_argparse_module()),
+            "datetime" => Ok(builtins::create_datetime_module()),
+            "weakref" => Ok(builtins::create_weakref_module()),
+            "abc" => Ok(builtins::create_abc_module()),
+            "numbers" => Ok(builtins::create_numbers_module()),
+            "decimal" => Ok(builtins::create_decimal_module()),
+            "textwrap" => Ok(builtins::create_textwrap_module()),
             _ => Err(PyException::import_error(format!("No module named '{}'", name))),
         }
     }

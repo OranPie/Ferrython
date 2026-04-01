@@ -61,6 +61,10 @@ static_assertions = "1"
 regex = "1"
 compact_str = "0.8"
 phf = { version = "0.11", features = ["macros"] }
+md-5 = "0.10"
+sha2 = "0.10"
+sha1 = "0.10"
+digest = "0.10"
 
 [profile.release]
 opt-level = 3

@@ -2690,7 +2690,7 @@ pub fn create_os_module() -> PyObjectRef {
         ("remove", make_builtin(os_remove)),
         ("rmdir", make_builtin(os_rmdir)),
         ("rename", make_builtin(os_rename)),
-        ("path", make_builtin(os_path_stub)),
+        ("path", create_os_path_module()),
         ("getenv", make_builtin(os_getenv)),
         ("environ", PyObject::dict_from_pairs(
             std::env::vars().map(|(k, v)| (
@@ -4157,7 +4157,118 @@ fn re_escape(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub fn create_hashlib_module() -> PyObjectRef {
-    make_module("hashlib", vec![])
+    make_module("hashlib", vec![
+        ("md5", make_builtin(hashlib_md5)),
+        ("sha1", make_builtin(hashlib_sha1)),
+        ("sha256", make_builtin(hashlib_sha256)),
+        ("sha512", make_builtin(hashlib_sha512)),
+        ("sha224", make_builtin(hashlib_sha224)),
+        ("sha384", make_builtin(hashlib_sha384)),
+        ("new", make_builtin(hashlib_new)),
+    ])
+}
+
+fn make_hash_object(name: &str, digest_hex: String, digest_bytes: Vec<u8>, block_size: i64, digest_size: i64) -> PyObjectRef {
+    let class = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
+    let attrs = IndexMap::new();
+    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class: class.clone(),
+        attrs: Arc::new(RwLock::new(attrs)),
+    }));
+    {
+        let a = if let PyObjectPayload::Instance(ref d) = inst.payload { d.attrs.clone() } else { unreachable!() };
+        let mut w = a.write();
+        w.insert(CompactString::from("_hexdigest"), PyObject::str_val(CompactString::from(&digest_hex)));
+        w.insert(CompactString::from("_digest"), PyObject::bytes(digest_bytes));
+        w.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name)));
+        w.insert(CompactString::from("block_size"), PyObject::int(block_size));
+        w.insert(CompactString::from("digest_size"), PyObject::int(digest_size));
+    }
+    inst
+}
+
+fn hashlib_md5(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use md5::Md5;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Md5::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("md5", hex, result.to_vec(), 64, 16))
+}
+
+fn hashlib_sha1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use sha1::Sha1;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Sha1::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("sha1", hex, result.to_vec(), 64, 20))
+}
+
+fn hashlib_sha256(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use sha2::Sha256;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("sha256", hex, result.to_vec(), 64, 32))
+}
+
+fn hashlib_sha224(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use sha2::Sha224;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Sha224::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("sha224", hex, result.to_vec(), 64, 28))
+}
+
+fn hashlib_sha384(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use sha2::Sha384;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Sha384::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("sha384", hex, result.to_vec(), 128, 48))
+}
+
+fn hashlib_sha512(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use sha2::Sha512;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Sha512::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("sha512", hex, result.to_vec(), 128, 64))
+}
+
+fn hashlib_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("hashlib.new() requires algorithm name")); }
+    let name = match &args[0].payload {
+        PyObjectPayload::Str(s) => s.to_string(),
+        _ => return Err(PyException::type_error("algorithm name must be a string")),
+    };
+    let data_args = if args.len() > 1 { &args[1..] } else { &[] as &[PyObjectRef] };
+    match name.as_str() {
+        "md5" => hashlib_md5(data_args),
+        "sha1" => hashlib_sha1(data_args),
+        "sha256" => hashlib_sha256(data_args),
+        "sha224" => hashlib_sha224(data_args),
+        "sha384" => hashlib_sha384(data_args),
+        "sha512" => hashlib_sha512(data_args),
+        _ => Err(PyException::value_error(format!("unsupported hash type {}", name))),
+    }
 }
 
 // ── copy module ──
@@ -5629,3 +5740,172 @@ pub fn create_argparse_module() -> PyObjectRef {
         ("Action", make_builtin(|_| Ok(PyObject::none()))),
     ])
 }
+
+// ── datetime module ──
+
+pub fn create_datetime_module() -> PyObjectRef {
+    let datetime_cls = make_module("datetime", vec![
+        ("now", make_builtin(datetime_now)),
+        ("today", make_builtin(datetime_now)),
+        ("utcnow", make_builtin(datetime_now)),
+        ("fromisoformat", make_builtin(datetime_fromisoformat)),
+    ]);
+    let date_cls = make_module("date", vec![
+        ("today", make_builtin(date_today)),
+        ("fromisoformat", make_builtin(datetime_fromisoformat)),
+    ]);
+    make_module("datetime", vec![
+        ("datetime", datetime_cls),
+        ("date", date_cls),
+        ("time", make_builtin(datetime_time_obj)),
+        ("timedelta", make_builtin(datetime_timedelta)),
+        ("MINYEAR", PyObject::int(1)),
+        ("MAXYEAR", PyObject::int(9999)),
+    ])
+}
+
+fn datetime_now(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let secs = now.as_secs();
+    let micros = now.subsec_micros();
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hour = (time_of_day / 3600) as i64;
+    let minute = ((time_of_day % 3600) / 60) as i64;
+    let second = (time_of_day % 60) as i64;
+    let (year, month, day) = days_to_ymd(days as i64 + 719468);
+    Ok(make_datetime_instance(year, month, day, hour, minute, second, micros as i64))
+}
+
+fn date_today(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let days = now.as_secs() / 86400;
+    let (year, month, day) = days_to_ymd(days as i64 + 719468);
+    let class = PyObject::class(CompactString::from("date"), vec![], IndexMap::new());
+    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class,
+        attrs: Arc::new(RwLock::new(IndexMap::new())),
+    }));
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("year"), PyObject::int(year));
+        w.insert(CompactString::from("month"), PyObject::int(month));
+        w.insert(CompactString::from("day"), PyObject::int(day));
+    }
+    Ok(inst)
+}
+
+fn datetime_fromisoformat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("fromisoformat", args, 1)?;
+    let s = args[0].py_to_string();
+    // Parse ISO format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
+    let parts: Vec<&str> = s.split('T').collect();
+    let date_parts: Vec<&str> = parts[0].split('-').collect();
+    if date_parts.len() < 3 { return Err(PyException::value_error("Invalid isoformat")); }
+    let year: i64 = date_parts[0].parse().map_err(|_| PyException::value_error("Invalid year"))?;
+    let month: i64 = date_parts[1].parse().map_err(|_| PyException::value_error("Invalid month"))?;
+    let day: i64 = date_parts[2].parse().map_err(|_| PyException::value_error("Invalid day"))?;
+    let (hour, minute, second) = if parts.len() > 1 {
+        let time_parts: Vec<&str> = parts[1].split(':').collect();
+        let h: i64 = time_parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let m: i64 = time_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let sec: i64 = time_parts.get(2).and_then(|s| s.split('.').next().unwrap_or("0").parse().ok()).unwrap_or(0);
+        (h, m, sec)
+    } else { (0, 0, 0) };
+    Ok(make_datetime_instance(year, month, day, hour, minute, second, 0))
+}
+
+fn days_to_ymd(days: i64) -> (i64, i64, i64) {
+    // Civil days from epoch to Y-M-D (algorithm from Howard Hinnant)
+    let z = days;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365*yoe + yoe/4 - yoe/100);
+    let mp = (5*doy + 2) / 153;
+    let d = doy - (153*mp + 2)/5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, microsecond: i64) -> PyObjectRef {
+    let class = PyObject::class(CompactString::from("datetime"), vec![], IndexMap::new());
+    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class,
+        attrs: Arc::new(RwLock::new(IndexMap::new())),
+    }));
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("year"), PyObject::int(year));
+        w.insert(CompactString::from("month"), PyObject::int(month));
+        w.insert(CompactString::from("day"), PyObject::int(day));
+        w.insert(CompactString::from("hour"), PyObject::int(hour));
+        w.insert(CompactString::from("minute"), PyObject::int(minute));
+        w.insert(CompactString::from("second"), PyObject::int(second));
+        w.insert(CompactString::from("microsecond"), PyObject::int(microsecond));
+    }
+    inst
+}
+
+fn datetime_time_obj(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let hour = if !args.is_empty() { args[0].to_int()? } else { 0 };
+    let minute = if args.len() > 1 { args[1].to_int()? } else { 0 };
+    let second = if args.len() > 2 { args[2].to_int()? } else { 0 };
+    let microsecond = if args.len() > 3 { args[3].to_int()? } else { 0 };
+    let class = PyObject::class(CompactString::from("time"), vec![], IndexMap::new());
+    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class,
+        attrs: Arc::new(RwLock::new(IndexMap::new())),
+    }));
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("hour"), PyObject::int(hour));
+        w.insert(CompactString::from("minute"), PyObject::int(minute));
+        w.insert(CompactString::from("second"), PyObject::int(second));
+        w.insert(CompactString::from("microsecond"), PyObject::int(microsecond));
+    }
+    Ok(inst)
+}
+
+fn datetime_timedelta(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let days = if !args.is_empty() { args[0].to_int()? } else { 0 };
+    let seconds = if args.len() > 1 { args[1].to_int()? } else { 0 };
+    let microseconds = if args.len() > 2 { args[2].to_int()? } else { 0 };
+    let total_seconds = days * 86400 + seconds;
+    let class = PyObject::class(CompactString::from("timedelta"), vec![], IndexMap::new());
+    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class,
+        attrs: Arc::new(RwLock::new(IndexMap::new())),
+    }));
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("days"), PyObject::int(days));
+        w.insert(CompactString::from("seconds"), PyObject::int(seconds));
+        w.insert(CompactString::from("microseconds"), PyObject::int(microseconds));
+        w.insert(CompactString::from("total_seconds"), PyObject::float(total_seconds as f64 + microseconds as f64 / 1_000_000.0));
+    }
+    Ok(inst)
+}
+
+// ── weakref module ──
+
+pub fn create_weakref_module() -> PyObjectRef {
+    make_module("weakref", vec![
+        ("ref", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("ref requires 1 argument")); }
+            Ok(args[0].clone())
+        })),
+        ("proxy", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("proxy requires 1 argument")); }
+            Ok(args[0].clone())
+        })),
+        ("WeakValueDictionary", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
+        ("WeakKeyDictionary", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
+        ("WeakSet", make_builtin(|_| Ok(PyObject::set(IndexMap::new())))),
+    ])
+}
+

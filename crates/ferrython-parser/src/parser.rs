@@ -1555,6 +1555,19 @@ impl Parser {
             Some(Box::new(self.parse_test()?))
         };
         if !self.check(TokenKind::Colon) {
+            // Check for tuple subscript: a[1, 2] → a[(1, 2)]
+            if self.check(TokenKind::Comma) {
+                let mut elements = vec![*lower.unwrap()];
+                while self.check(TokenKind::Comma) {
+                    self.advance();
+                    if self.check(TokenKind::RightBracket) { break; }
+                    elements.push(self.parse_test()?);
+                }
+                return Ok(Expression::new(
+                    ExpressionKind::Tuple { elts: elements, ctx: ExprContext::Load },
+                    loc,
+                ));
+            }
             return Ok(*lower.unwrap());
         }
         self.advance(); // skip ':'

@@ -19,3 +19,7 @@ indexmap = { workspace = true }
 parking_lot = { workspace = true }
 rustc-hash = { workspace = true }
 regex = { workspace = true }
+md-5 = { workspace = true }
+sha2 = { workspace = true }
+sha1 = { workspace = true }
+digest = { workspace = true }

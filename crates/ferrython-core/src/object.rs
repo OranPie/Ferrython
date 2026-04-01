@@ -946,6 +946,21 @@ impl PyObjectMethods for PyObjectRef {
                         }));
                     }
                 }
+                // hashlib hash object methods
+                let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.as_str() } else { "" };
+                if matches!(class_name, "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
+                    if name == "hexdigest" || name == "digest" || name == "update" || name == "copy" {
+                        return Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: self.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }));
+                    }
+                    if let Some(v) = inst.attrs.read().get(name) {
+                        return Some(v.clone());
+                    }
+                }
                 None
             }
             PyObjectPayload::Class(cd) => {
