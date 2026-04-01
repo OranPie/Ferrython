@@ -451,8 +451,21 @@ impl VirtualMachine {
                     if let Some(handler_ip) = self.unwind_except() {
                         let frame = self.call_stack.last_mut().unwrap();
                         // CPython pushes (traceback, value, type) — 3 items
-                        let exc_value = PyObject::exception_instance(exc.kind.clone(), exc.message.clone());
-                        let exc_type = PyObject::exception_type(exc.kind.clone());
+                        // If the exception has an original Instance, use it as the value
+                        // and push its class as the type (for proper class-based matching)
+                        let (exc_value, exc_type) = if let Some(orig) = &exc.original {
+                            let cls = if let PyObjectPayload::Instance(inst) = &orig.payload {
+                                inst.class.clone()
+                            } else {
+                                PyObject::exception_type(exc.kind.clone())
+                            };
+                            (orig.clone(), cls)
+                        } else {
+                            (
+                                PyObject::exception_instance(exc.kind.clone(), exc.message.clone()),
+                                PyObject::exception_type(exc.kind.clone()),
+                            )
+                        };
                         frame.push(PyObject::none());     // traceback
                         frame.push(exc_value);            // value
                         frame.push(exc_type);             // type
@@ -1216,25 +1229,68 @@ impl VirtualMachine {
                         9 => PyObject::bool_val(!a.is_same(&b)),    // is not
                         10 => {
                             // exception match: a is exception type on stack, b is type to match
-                            // b can be a single ExceptionType or a Tuple of ExceptionTypes
-                            let kind_a = match &a.payload {
-                                PyObjectPayload::ExceptionType(k) => k,
-                                _ => return Err(PyException::runtime_error("expected exception type on stack")),
+                            // a can be ExceptionType or Class (for custom exceptions)
+                            // b can be ExceptionType, Class, or Tuple of types
+                            let match_one = |a_item: &PyObjectRef, b_item: &PyObjectRef| -> bool {
+                                // Case 1: both are Class — check class identity/inheritance
+                                if let PyObjectPayload::Class(cls_a) = &a_item.payload {
+                                    if let PyObjectPayload::Class(cls_b) = &b_item.payload {
+                                        // Check if a is b or a inherits from b
+                                        if cls_a.name == cls_b.name {
+                                            return true;
+                                        }
+                                        // Check MRO of a for b
+                                        for base in &cls_a.mro {
+                                            if let PyObjectPayload::Class(bc) = &base.payload {
+                                                if bc.name == cls_b.name {
+                                                    return true;
+                                                }
+                                            }
+                                        }
+                                        // Check bases
+                                        for base in &cls_a.bases {
+                                            if let PyObjectPayload::Class(bc) = &base.payload {
+                                                if bc.name == cls_b.name {
+                                                    return true;
+                                                }
+                                            }
+                                        }
+                                        return false;
+                                    }
+                                    // a is Class, b is ExceptionType — check if a inherits from that exception
+                                    if let PyObjectPayload::ExceptionType(kind_b) = &b_item.payload {
+                                        let kind_a = Self::find_exception_kind(a_item);
+                                        return exception_kind_matches(&kind_a, kind_b);
+                                    }
+                                    return false;
+                                }
+                                // Case 2: a is ExceptionType
+                                if let PyObjectPayload::ExceptionType(kind_a) = &a_item.payload {
+                                    return match &b_item.payload {
+                                        PyObjectPayload::ExceptionType(kind_b) => {
+                                            exception_kind_matches(kind_a, kind_b)
+                                        }
+                                        PyObjectPayload::Class(_) => {
+                                            let kind_b = Self::find_exception_kind(b_item);
+                                            exception_kind_matches(kind_a, &kind_b)
+                                        }
+                                        PyObjectPayload::BuiltinType(name) => {
+                                            if let Some(kind_b) = ExceptionKind::from_name(name) {
+                                                exception_kind_matches(kind_a, &kind_b)
+                                            } else {
+                                                false
+                                            }
+                                        }
+                                        _ => false,
+                                    };
+                                }
+                                false
                             };
                             let matched = match &b.payload {
-                                PyObjectPayload::ExceptionType(kind_b) => {
-                                    exception_kind_matches(kind_a, kind_b)
-                                }
                                 PyObjectPayload::Tuple(items) => {
-                                    items.iter().any(|item| {
-                                        if let PyObjectPayload::ExceptionType(kind_b) = &item.payload {
-                                            exception_kind_matches(kind_a, kind_b)
-                                        } else {
-                                            false
-                                        }
-                                    })
+                                    items.iter().any(|item| match_one(&a, item))
                                 }
-                                _ => false,
+                                _ => match_one(&a, &b),
                             };
                             PyObject::bool_val(matched)
                         }
@@ -1816,33 +1872,43 @@ impl VirtualMachine {
                     frame.push(PyObject::none());
                 }
                 Opcode::RaiseVarargs => {
+                    let raise_exc = |exc: &PyObjectRef| -> PyException {
+                        match &exc.payload {
+                            PyObjectPayload::ExceptionInstance { kind, message, .. } => {
+                                PyException::new(kind.clone(), message.to_string())
+                            }
+                            PyObjectPayload::ExceptionType(kind) => {
+                                PyException::new(kind.clone(), "")
+                            }
+                            PyObjectPayload::Instance(inst) => {
+                                // Check if class inherits from Exception
+                                let kind = Self::find_exception_kind(&inst.class);
+                                let msg = if let Some(m) = exc.get_attr("message") {
+                                    m.py_to_string()
+                                } else {
+                                    exc.py_to_string()
+                                };
+                                PyException::with_original(kind, msg, exc.clone())
+                            }
+                            PyObjectPayload::Class(_) => {
+                                // Raising a class directly (not an instance)
+                                let kind = Self::find_exception_kind(exc);
+                                PyException::new(kind, "")
+                            }
+                            _ => PyException::runtime_error(exc.py_to_string()),
+                        }
+                    };
                     match instr.arg {
                         0 => return Err(PyException::runtime_error(
                             "No active exception to re-raise")),
                         1 => {
                             let exc = frame.pop();
-                            match &exc.payload {
-                                PyObjectPayload::ExceptionInstance { kind, message, .. } => {
-                                    return Err(PyException::new(kind.clone(), message.to_string()));
-                                }
-                                PyObjectPayload::ExceptionType(kind) => {
-                                    return Err(PyException::new(kind.clone(), ""));
-                                }
-                                _ => return Err(PyException::runtime_error(exc.py_to_string())),
-                            }
+                            return Err(raise_exc(&exc));
                         }
                         2 => {
                             let _cause = frame.pop();
                             let exc = frame.pop();
-                            match &exc.payload {
-                                PyObjectPayload::ExceptionInstance { kind, message, .. } => {
-                                    return Err(PyException::new(kind.clone(), message.to_string()));
-                                }
-                                PyObjectPayload::ExceptionType(kind) => {
-                                    return Err(PyException::new(kind.clone(), ""));
-                                }
-                                _ => return Err(PyException::runtime_error(exc.py_to_string())),
-                            }
+                            return Err(raise_exc(&exc));
                         }
                         _ => return Err(PyException::runtime_error(
                             "bad RAISE_VARARGS arg")),
@@ -2073,6 +2139,36 @@ impl VirtualMachine {
     }
 
     /// Truthiness test that dispatches __bool__/__len__ on instances.
+    /// Walk a class hierarchy to find if it inherits from an ExceptionType
+    fn find_exception_kind(cls: &PyObjectRef) -> ExceptionKind {
+        match &cls.payload {
+            PyObjectPayload::ExceptionType(kind) => kind.clone(),
+            PyObjectPayload::BuiltinType(name) => {
+                ExceptionKind::from_name(name).unwrap_or(ExceptionKind::RuntimeError)
+            }
+            PyObjectPayload::Class(cd) => {
+                for base in &cd.bases {
+                    let kind = Self::find_exception_kind(base);
+                    if !matches!(kind, ExceptionKind::RuntimeError) {
+                        return kind;
+                    }
+                    // Also check if base IS the exception type
+                    if let PyObjectPayload::ExceptionType(k) = &base.payload {
+                        return k.clone();
+                    }
+                }
+                // Check MRO
+                for base in &cd.mro {
+                    if let PyObjectPayload::ExceptionType(k) = &base.payload {
+                        return k.clone();
+                    }
+                }
+                ExceptionKind::RuntimeError
+            }
+            _ => ExceptionKind::RuntimeError,
+        }
+    }
+
     fn vm_is_truthy(&mut self, obj: &PyObjectRef) -> PyResult<bool> {
         if let PyObjectPayload::Instance(_) = &obj.payload {
             if let Some(bool_method) = obj.get_attr("__bool__") {

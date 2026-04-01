@@ -2,11 +2,11 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData};
+use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData, IteratorData};
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // ── Builtin registry ──
 
@@ -1960,6 +1960,25 @@ pub(crate) fn partial_cmp_for_sort(a: &PyObjectRef, b: &PyObjectRef) -> Option<s
         (PyObjectPayload::Float(x), PyObjectPayload::Int(y)) => x.partial_cmp(&y.to_f64()),
         (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => x.partial_cmp(y),
         (PyObjectPayload::Bool(x), PyObjectPayload::Bool(y)) => x.partial_cmp(y),
+        (PyObjectPayload::Tuple(x), PyObjectPayload::Tuple(y)) => {
+            for (a_item, b_item) in x.iter().zip(y.iter()) {
+                match partial_cmp_for_sort(a_item, b_item) {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    other => return other,
+                }
+            }
+            x.len().partial_cmp(&y.len())
+        }
+        (PyObjectPayload::List(x), PyObjectPayload::List(y)) => {
+            let x = x.read(); let y = y.read();
+            for (a_item, b_item) in x.iter().zip(y.iter()) {
+                match partial_cmp_for_sort(a_item, b_item) {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    other => return other,
+                }
+            }
+            x.len().partial_cmp(&y.len())
+        }
         _ => None,
     }
 }
@@ -2016,8 +2035,6 @@ fn builtin_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     
     Ok(PyObject::module_with_attrs(CompactString::from("_file"), all_attrs))
 }
-
-use std::sync::Mutex;
 
 static FILE_STATES: std::sync::LazyLock<Mutex<IndexMap<usize, Arc<RwLock<FileState>>>>> = 
     std::sync::LazyLock::new(|| Mutex::new(IndexMap::new()));
@@ -2903,10 +2920,105 @@ fn random_randrange(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub fn create_collections_module() -> PyObjectRef {
     make_module("collections", vec![
-        ("OrderedDict", make_builtin(|_args| Ok(PyObject::dict_from_pairs(vec![])))),
-        ("defaultdict", make_builtin(|_args| Ok(PyObject::dict_from_pairs(vec![])))),
-        ("Counter", make_builtin(|_args| Ok(PyObject::dict_from_pairs(vec![])))),
+        ("OrderedDict", make_builtin(collections_ordered_dict)),
+        ("defaultdict", make_builtin(collections_defaultdict)),
+        ("Counter", make_builtin(collections_counter)),
+        ("namedtuple", make_builtin(collections_namedtuple)),
+        ("deque", make_builtin(collections_deque)),
     ])
+}
+
+fn collections_ordered_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // OrderedDict is just a regular dict in Python 3.7+
+    if args.is_empty() {
+        Ok(PyObject::dict_from_pairs(vec![]))
+    } else {
+        let items = args[0].to_list()?;
+        let mut pairs = Vec::new();
+        for item in items {
+            if let PyObjectPayload::Tuple(t) = &item.payload {
+                if t.len() == 2 {
+                    pairs.push((t[0].clone(), t[1].clone()));
+                }
+            }
+        }
+        Ok(PyObject::dict_from_pairs(pairs))
+    }
+}
+
+fn collections_defaultdict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Simplified: just return a regular dict
+    if args.len() >= 2 {
+        // defaultdict(factory, initial_dict)
+        let items = args[1].to_list()?;
+        let mut pairs = Vec::new();
+        for item in items {
+            if let PyObjectPayload::Tuple(t) = &item.payload {
+                if t.len() == 2 {
+                    pairs.push((t[0].clone(), t[1].clone()));
+                }
+            }
+        }
+        Ok(PyObject::dict_from_pairs(pairs))
+    } else {
+        Ok(PyObject::dict_from_pairs(vec![]))
+    }
+}
+
+fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Ok(PyObject::dict_from_pairs(vec![]));
+    }
+    let items = args[0].to_list()?;
+    let mut counts: IndexMap<HashableKey, i64> = IndexMap::new();
+    for item in &items {
+        let key = item.to_hashable_key()?;
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    let pairs: Vec<(PyObjectRef, PyObjectRef)> = counts.into_iter()
+        .map(|(k, v)| {
+            let key_obj = match k {
+                HashableKey::Str(s) => PyObject::str_val(s),
+                HashableKey::Int(i) => {
+                    match i {
+                        PyInt::Small(n) => PyObject::int(n),
+                        PyInt::Big(b) => PyObject::big_int(*b),
+                    }
+                }
+                HashableKey::Float(f) => PyObject::float(f.0),
+                HashableKey::Bool(b) => PyObject::bool_val(b),
+                HashableKey::None => PyObject::none(),
+                HashableKey::Bytes(b) => PyObject::bytes(b),
+                HashableKey::Tuple(items) => PyObject::tuple(
+                    items.into_iter().map(|_| PyObject::none()).collect()
+                ),
+            };
+            (key_obj, PyObject::int(v))
+        })
+        .collect();
+    Ok(PyObject::dict_from_pairs(pairs))
+}
+
+fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Simplified namedtuple — returns a class that creates tuples with named access
+    if args.len() < 2 {
+        return Err(PyException::type_error("namedtuple requires typename and field_names"));
+    }
+    let _typename = args[0].py_to_string();
+    // For now, return a simple tuple constructor
+    Ok(make_builtin(|args| {
+        Ok(PyObject::tuple(args.to_vec()))
+    }))
+}
+
+fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Simplified deque — just a list
+    if args.is_empty() {
+        Ok(PyObject::list(vec![]))
+    } else {
+        let items = args[0].to_list()?;
+        Ok(PyObject::list(items))
+    }
 }
 
 pub fn create_functools_module() -> PyObjectRef {
@@ -2940,9 +3052,142 @@ fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub fn create_itertools_module() -> PyObjectRef {
     make_module("itertools", vec![
-        ("count", make_builtin(|_args| Ok(PyObject::none()))),
-        ("chain", make_builtin(|_args| Ok(PyObject::none()))),
+        ("count", make_builtin(itertools_count)),
+        ("chain", make_builtin(itertools_chain)),
+        ("repeat", make_builtin(itertools_repeat)),
+        ("cycle", make_builtin(itertools_cycle)),
+        ("islice", make_builtin(itertools_islice)),
+        ("zip_longest", make_builtin(itertools_zip_longest)),
+        ("product", make_builtin(itertools_product)),
+        ("starmap", make_builtin(|_args| Ok(PyObject::none()))),
     ])
+}
+
+fn itertools_count(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let start = if args.is_empty() { 0i64 } else { args[0].to_int()? };
+    let step = if args.len() >= 2 { args[1].to_int()? } else { 1 };
+    // Return a list-based iterator with a large range (lazy would be better, but this works)
+    let items: Vec<PyObjectRef> = (0..1000).map(|i| PyObject::int(start + i * step)).collect();
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        IteratorData::List { items, index: 0 }
+    )))))
+}
+
+fn itertools_chain(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let mut all_items = Vec::new();
+    for arg in args {
+        let items = arg.to_list()?;
+        all_items.extend(items);
+    }
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        IteratorData::List { items: all_items, index: 0 }
+    )))))
+}
+
+fn itertools_repeat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("repeat() missing required argument"));
+    }
+    let item = args[0].clone();
+    let count = if args.len() >= 2 { args[1].to_int()? as usize } else { 100 };
+    let items: Vec<PyObjectRef> = std::iter::repeat(item).take(count).collect();
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        IteratorData::List { items, index: 0 }
+    )))))
+}
+
+fn itertools_cycle(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("cycle() missing required argument"));
+    }
+    let base = args[0].to_list()?;
+    if base.is_empty() {
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            IteratorData::List { items: vec![], index: 0 }
+        )))));
+    }
+    // Materialize a reasonable number of cycles
+    let mut items = Vec::new();
+    for _ in 0..1000 {
+        items.extend(base.iter().cloned());
+    }
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        IteratorData::List { items, index: 0 }
+    )))))
+}
+
+fn itertools_islice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("islice() requires at least 2 arguments"));
+    }
+    let items = args[0].to_list()?;
+    let (start, stop, step) = if args.len() == 2 {
+        (0usize, args[1].to_int()? as usize, 1usize)
+    } else if args.len() == 3 {
+        let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
+        (s, args[2].to_int()? as usize, 1usize)
+    } else {
+        let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
+        let step = if matches!(&args[3].payload, PyObjectPayload::None) { 1 } else { args[3].to_int()? as usize };
+        (s, args[2].to_int()? as usize, step)
+    };
+    let result: Vec<PyObjectRef> = items.into_iter()
+        .skip(start)
+        .take(stop - start)
+        .step_by(step.max(1))
+        .collect();
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        IteratorData::List { items: result, index: 0 }
+    )))))
+}
+
+fn itertools_zip_longest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("zip_longest requires at least 2 arguments"));
+    }
+    let lists: Vec<Vec<PyObjectRef>> = args.iter()
+        .map(|a| a.to_list())
+        .collect::<Result<Vec<_>, _>>()?;
+    let max_len = lists.iter().map(|l| l.len()).max().unwrap_or(0);
+    let mut result = Vec::new();
+    for i in 0..max_len {
+        let tuple: Vec<PyObjectRef> = lists.iter()
+            .map(|l| l.get(i).cloned().unwrap_or_else(PyObject::none))
+            .collect();
+        result.push(PyObject::tuple(tuple));
+    }
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        IteratorData::List { items: result, index: 0 }
+    )))))
+}
+
+fn itertools_product(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            IteratorData::List { items: vec![PyObject::tuple(vec![])], index: 0 }
+        )))));
+    }
+    let lists: Vec<Vec<PyObjectRef>> = args.iter()
+        .map(|a| a.to_list())
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut result = vec![vec![]];
+    for lst in &lists {
+        let mut new_result = Vec::new();
+        for prefix in &result {
+            for item in lst {
+                let mut combo = prefix.clone();
+                combo.push(item.clone());
+                new_result.push(combo);
+            }
+        }
+        result = new_result;
+    }
+    let items: Vec<PyObjectRef> = result.into_iter()
+        .map(|combo| PyObject::tuple(combo))
+        .collect();
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        IteratorData::List { items, index: 0 }
+    )))))
 }
 
 pub fn create_io_module() -> PyObjectRef {

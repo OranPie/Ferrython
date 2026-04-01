@@ -1959,6 +1959,12 @@ impl Parser {
     // ─── Block parsing ──────────────────────────────────────────────
 
     fn parse_block(&mut self) -> Result<Vec<Statement>, ParseError> {
+        // Check for inline body (e.g., `def f(): return 1`)
+        // If next token is NOT a newline, parse a single simple statement
+        if !self.check(TokenKind::Newline) && !self.is_at_end() {
+            let stmt = self.parse_statement()?;
+            return Ok(vec![stmt]);
+        }
         self.expect_newline()?;
         self.expect(TokenKind::Indent)?;
         let mut stmts = Vec::new();
