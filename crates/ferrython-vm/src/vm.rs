@@ -2044,14 +2044,28 @@ impl VirtualMachine {
                             return Err(PyException::type_error("map() requires at least 2 arguments"));
                         }
                         let func_obj = args[0].clone();
-                        let iterable = self.collect_iterable(&args[1])?;
-                        let mut result = Vec::new();
-                        for item in iterable {
-                            result.push(self.call_object(func_obj.clone(), vec![item])?);
+                        if args.len() == 2 {
+                            let iterable = self.collect_iterable(&args[1])?;
+                            let mut result = Vec::new();
+                            for item in iterable {
+                                result.push(self.call_object(func_obj.clone(), vec![item])?);
+                            }
+                            return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                                Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+                            )));
+                        } else {
+                            let mut iters: Vec<Vec<PyObjectRef>> = Vec::new();
+                            for a in &args[1..] { iters.push(self.collect_iterable(a)?); }
+                            let min_len = iters.iter().map(|v| v.len()).min().unwrap_or(0);
+                            let mut result = Vec::new();
+                            for i in 0..min_len {
+                                let call_args: Vec<PyObjectRef> = iters.iter().map(|v| v[i].clone()).collect();
+                                result.push(self.call_object(func_obj.clone(), call_args)?);
+                            }
+                            return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                                Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+                            )));
                         }
-                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                            Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
-                        )));
                     }
                     "filter" => {
                         if args.len() < 2 {
@@ -2325,14 +2339,28 @@ impl VirtualMachine {
                             return Err(PyException::type_error("map() requires at least 2 arguments"));
                         }
                         let func_obj = args[0].clone();
-                        let iterable = self.collect_iterable(&args[1])?;
-                        let mut result = Vec::new();
-                        for item in iterable {
-                            result.push(self.call_object(func_obj.clone(), vec![item])?);
+                        if args.len() == 2 {
+                            let iterable = self.collect_iterable(&args[1])?;
+                            let mut result = Vec::new();
+                            for item in iterable {
+                                result.push(self.call_object(func_obj.clone(), vec![item])?);
+                            }
+                            return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                                Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+                            )));
+                        } else {
+                            let mut iters: Vec<Vec<PyObjectRef>> = Vec::new();
+                            for a in &args[1..] { iters.push(self.collect_iterable(a)?); }
+                            let min_len = iters.iter().map(|v| v.len()).min().unwrap_or(0);
+                            let mut result = Vec::new();
+                            for i in 0..min_len {
+                                let call_args: Vec<PyObjectRef> = iters.iter().map(|v| v[i].clone()).collect();
+                                result.push(self.call_object(func_obj.clone(), call_args)?);
+                            }
+                            return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                                Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+                            )));
                         }
-                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                            Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
-                        )));
                     }
                     "filter" => {
                         if args.len() < 2 {

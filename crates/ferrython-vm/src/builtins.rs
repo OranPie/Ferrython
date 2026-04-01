@@ -1192,6 +1192,123 @@ fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyOb
             // Simple UTF-8 encoding
             Ok(PyObject::bytes(s.as_bytes().to_vec()))
         }
+        "partition" => {
+            check_args_min("partition", args, 1)?;
+            let sep = args[0].py_to_string();
+            if let Some(idx) = s.find(&sep) {
+                Ok(PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from(&s[..idx])),
+                    PyObject::str_val(CompactString::from(&sep)),
+                    PyObject::str_val(CompactString::from(&s[idx + sep.len()..])),
+                ]))
+            } else {
+                Ok(PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from(s)),
+                    PyObject::str_val(CompactString::from("")),
+                    PyObject::str_val(CompactString::from("")),
+                ]))
+            }
+        }
+        "rpartition" => {
+            check_args_min("rpartition", args, 1)?;
+            let sep = args[0].py_to_string();
+            if let Some(idx) = s.rfind(&sep) {
+                Ok(PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from(&s[..idx])),
+                    PyObject::str_val(CompactString::from(&sep)),
+                    PyObject::str_val(CompactString::from(&s[idx + sep.len()..])),
+                ]))
+            } else {
+                Ok(PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from("")),
+                    PyObject::str_val(CompactString::from("")),
+                    PyObject::str_val(CompactString::from(s)),
+                ]))
+            }
+        }
+        "casefold" => {
+            Ok(PyObject::str_val(CompactString::from(s.to_lowercase())))
+        }
+        "removeprefix" => {
+            check_args_min("removeprefix", args, 1)?;
+            let prefix = args[0].py_to_string();
+            if s.starts_with(&prefix) {
+                Ok(PyObject::str_val(CompactString::from(&s[prefix.len()..])))
+            } else {
+                Ok(PyObject::str_val(CompactString::from(s)))
+            }
+        }
+        "removesuffix" => {
+            check_args_min("removesuffix", args, 1)?;
+            let suffix = args[0].py_to_string();
+            if s.ends_with(&suffix) {
+                Ok(PyObject::str_val(CompactString::from(&s[..s.len() - suffix.len()])))
+            } else {
+                Ok(PyObject::str_val(CompactString::from(s)))
+            }
+        }
+        "splitlines" => {
+            let keepends = !args.is_empty() && args[0].is_truthy();
+            let mut lines = Vec::new();
+            let mut start = 0;
+            let bytes = s.as_bytes();
+            let len = bytes.len();
+            let mut i = 0;
+            while i < len {
+                if bytes[i] == b'\r' && i + 1 < len && bytes[i + 1] == b'\n' {
+                    if keepends { lines.push(PyObject::str_val(CompactString::from(&s[start..i + 2]))); }
+                    else { lines.push(PyObject::str_val(CompactString::from(&s[start..i]))); }
+                    i += 2; start = i;
+                } else if bytes[i] == b'\n' || bytes[i] == b'\r' {
+                    if keepends { lines.push(PyObject::str_val(CompactString::from(&s[start..i + 1]))); }
+                    else { lines.push(PyObject::str_val(CompactString::from(&s[start..i]))); }
+                    i += 1; start = i;
+                } else {
+                    i += 1;
+                }
+            }
+            if start < len {
+                lines.push(PyObject::str_val(CompactString::from(&s[start..])));
+            }
+            Ok(PyObject::list(lines))
+        }
+        "istitle" => {
+            let mut prev_cased = false;
+            let mut is_title = false;
+            for c in s.chars() {
+                if c.is_uppercase() {
+                    if prev_cased { return Ok(PyObject::bool_val(false)); }
+                    prev_cased = true;
+                    is_title = true;
+                } else if c.is_lowercase() {
+                    if !prev_cased { return Ok(PyObject::bool_val(false)); }
+                    prev_cased = true;
+                } else {
+                    prev_cased = false;
+                }
+            }
+            Ok(PyObject::bool_val(is_title))
+        }
+        "isprintable" => {
+            Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| !c.is_control() || c == ' ')))
+        }
+        "isidentifier" => {
+            let mut chars = s.chars();
+            let valid = match chars.next() {
+                Some(c) if c == '_' || c.is_alphabetic() => chars.all(|c| c == '_' || c.is_alphanumeric()),
+                _ => false,
+            };
+            Ok(PyObject::bool_val(valid))
+        }
+        "isascii" => {
+            Ok(PyObject::bool_val(s.is_ascii()))
+        }
+        "isdecimal" => {
+            Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_ascii_digit())))
+        }
+        "isnumeric" => {
+            Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_numeric())))
+        }
         "format" => {
             // Basic positional format: "{} is {}".format(a, b)
             let mut result = String::new();
@@ -1592,7 +1709,7 @@ fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> PyResult<Py
     }
 }
 
-fn call_bytes_method(b: &[u8], method: &str, _args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "decode" => {
             // Simple UTF-8 decode
@@ -1600,6 +1717,130 @@ fn call_bytes_method(b: &[u8], method: &str, _args: &[PyObjectRef]) -> PyResult<
             Ok(PyObject::str_val(CompactString::from(s)))
         }
         "hex" => Ok(PyObject::str_val(CompactString::from(hex::encode(b)))),
+        "count" => {
+            if args.is_empty() { return Err(PyException::type_error("count requires an argument")); }
+            match &args[0].payload {
+                PyObjectPayload::Int(n) => {
+                    let byte = n.to_i64().unwrap_or(-1);
+                    if byte < 0 || byte > 255 { return Ok(PyObject::int(0)); }
+                    Ok(PyObject::int(b.iter().filter(|&&x| x == byte as u8).count() as i64))
+                }
+                PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) => {
+                    if needle.is_empty() { return Ok(PyObject::int(b.len() as i64 + 1)); }
+                    let mut count = 0i64;
+                    let mut start = 0;
+                    while start + needle.len() <= b.len() {
+                        if &b[start..start + needle.len()] == needle.as_slice() {
+                            count += 1;
+                            start += needle.len();
+                        } else {
+                            start += 1;
+                        }
+                    }
+                    Ok(PyObject::int(count))
+                }
+                _ => Err(PyException::type_error("a bytes-like object is required")),
+            }
+        }
+        "find" => {
+            if args.is_empty() { return Err(PyException::type_error("find requires an argument")); }
+            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) = &args[0].payload {
+                let pos = b.windows(needle.len()).position(|w| w == needle.as_slice());
+                Ok(PyObject::int(pos.map(|p| p as i64).unwrap_or(-1)))
+            } else if let Some(n) = args[0].as_int() {
+                let byte = n as u8;
+                Ok(PyObject::int(b.iter().position(|&x| x == byte).map(|p| p as i64).unwrap_or(-1)))
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "startswith" => {
+            if args.is_empty() { return Err(PyException::type_error("startswith requires an argument")); }
+            if let PyObjectPayload::Bytes(prefix) | PyObjectPayload::ByteArray(prefix) = &args[0].payload {
+                Ok(PyObject::bool_val(b.starts_with(prefix)))
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "endswith" => {
+            if args.is_empty() { return Err(PyException::type_error("endswith requires an argument")); }
+            if let PyObjectPayload::Bytes(suffix) | PyObjectPayload::ByteArray(suffix) = &args[0].payload {
+                Ok(PyObject::bool_val(b.ends_with(suffix)))
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "upper" => Ok(PyObject::bytes(b.to_ascii_uppercase())),
+        "lower" => Ok(PyObject::bytes(b.to_ascii_lowercase())),
+        "strip" => {
+            let stripped = b.iter().copied()
+                .skip_while(|c| c.is_ascii_whitespace())
+                .collect::<Vec<u8>>();
+            let stripped: Vec<u8> = stripped.into_iter().rev()
+                .skip_while(|c| c.is_ascii_whitespace())
+                .collect::<Vec<u8>>().into_iter().rev().collect();
+            Ok(PyObject::bytes(stripped))
+        }
+        "split" => {
+            if args.is_empty() {
+                // Split on whitespace
+                let parts: Vec<PyObjectRef> = String::from_utf8_lossy(b)
+                    .split_whitespace()
+                    .map(|s| PyObject::bytes(s.as_bytes().to_vec()))
+                    .collect();
+                Ok(PyObject::list(parts))
+            } else if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload {
+                let mut parts = Vec::new();
+                let mut start = 0;
+                while start <= b.len() {
+                    if let Some(pos) = b[start..].windows(sep.len()).position(|w| w == sep.as_slice()) {
+                        parts.push(PyObject::bytes(b[start..start + pos].to_vec()));
+                        start = start + pos + sep.len();
+                    } else {
+                        parts.push(PyObject::bytes(b[start..].to_vec()));
+                        break;
+                    }
+                }
+                Ok(PyObject::list(parts))
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "join" => {
+            if args.is_empty() { return Err(PyException::type_error("join requires an argument")); }
+            // TODO: would need VM-level collect_iterable; simple list case for now
+            if let PyObjectPayload::List(items) = &args[0].payload {
+                let items = items.read();
+                let mut result = Vec::new();
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 { result.extend_from_slice(b); }
+                    if let PyObjectPayload::Bytes(ib) | PyObjectPayload::ByteArray(ib) = &item.payload {
+                        result.extend_from_slice(ib);
+                    } else {
+                        return Err(PyException::type_error("sequence item: expected a bytes-like object"));
+                    }
+                }
+                Ok(PyObject::bytes(result))
+            } else {
+                Err(PyException::type_error("can only join an iterable"))
+            }
+        }
+        "replace" => {
+            if args.len() < 2 { return Err(PyException::type_error("replace requires 2 arguments")); }
+            if let (PyObjectPayload::Bytes(old) | PyObjectPayload::ByteArray(old),
+                    PyObjectPayload::Bytes(new) | PyObjectPayload::ByteArray(new)) = (&args[0].payload, &args[1].payload) {
+                let s = String::from_utf8_lossy(b);
+                let old_s = String::from_utf8_lossy(old);
+                let new_s = String::from_utf8_lossy(new);
+                Ok(PyObject::bytes(s.replace(old_s.as_ref(), new_s.as_ref()).into_bytes()))
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "isdigit" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_digit()))),
+        "isalpha" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_alphabetic()))),
+        "isalnum" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_alphanumeric()))),
+        "isspace" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_whitespace()))),
         _ => Err(PyException::attribute_error(format!(
             "'bytes' object has no attribute '{}'", method
         ))),

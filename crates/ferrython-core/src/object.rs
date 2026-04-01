@@ -570,6 +570,18 @@ impl PyObjectMethods for PyObjectRef {
             (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a * b)),
             (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.to_f64() * b)),
             (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => Ok(PyObject::float(a * b.to_f64())),
+            (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
+                Ok(PyObject::complex(ar * br - ai * bi, ar * bi + ai * br))
+            }
+            (PyObjectPayload::Int(a), PyObjectPayload::Complex { real, imag }) |
+            (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Int(a)) => {
+                let af = a.to_f64();
+                Ok(PyObject::complex(af * real, af * imag))
+            }
+            (PyObjectPayload::Float(a), PyObjectPayload::Complex { real, imag }) |
+            (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Float(a)) => {
+                Ok(PyObject::complex(a * real, a * imag))
+            }
             (PyObjectPayload::Str(s), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::Str(s)) => {
                 let count = n.to_i64().unwrap_or(0).max(0) as usize;
                 Ok(PyObject::str_val(CompactString::from(s.repeat(count))))
@@ -580,6 +592,12 @@ impl PyObjectMethods for PyObjectRef {
                 let mut result = Vec::with_capacity(read.len() * count);
                 for _ in 0..count { result.extend(read.iter().cloned()); }
                 Ok(PyObject::list(result))
+            }
+            (PyObjectPayload::Tuple(items), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::Tuple(items)) => {
+                let count = n.to_i64().unwrap_or(0).max(0) as usize;
+                let mut result = Vec::with_capacity(items.len() * count);
+                for _ in 0..count { result.extend(items.iter().cloned()); }
+                Ok(PyObject::tuple(result))
             }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for *: '{}' and '{}'", self.type_name(), other.type_name()))),
         }
@@ -600,6 +618,35 @@ impl PyObjectMethods for PyObjectRef {
     }
 
     fn true_div(&self, other: &Self) -> PyResult<PyObjectRef> {
+        // Complex division
+        match (&self.payload, &other.payload) {
+            (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
+                let denom = br * br + bi * bi;
+                if denom == 0.0 { return Err(PyException::zero_division_error("complex division by zero")); }
+                return Ok(PyObject::complex((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom));
+            }
+            (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Int(b)) => {
+                let bf = b.to_f64();
+                if bf == 0.0 { return Err(PyException::zero_division_error("complex division by zero")); }
+                return Ok(PyObject::complex(real / bf, imag / bf));
+            }
+            (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Float(b)) => {
+                if *b == 0.0 { return Err(PyException::zero_division_error("complex division by zero")); }
+                return Ok(PyObject::complex(real / b, imag / b));
+            }
+            (PyObjectPayload::Int(a), PyObjectPayload::Complex { real: br, imag: bi }) => {
+                let af = a.to_f64();
+                let denom = br * br + bi * bi;
+                if denom == 0.0 { return Err(PyException::zero_division_error("complex division by zero")); }
+                return Ok(PyObject::complex((af * br) / denom, (-af * bi) / denom));
+            }
+            (PyObjectPayload::Float(a), PyObjectPayload::Complex { real: br, imag: bi }) => {
+                let denom = br * br + bi * bi;
+                if denom == 0.0 { return Err(PyException::zero_division_error("complex division by zero")); }
+                return Ok(PyObject::complex((a * br) / denom, (-a * bi) / denom));
+            }
+            _ => {}
+        }
         let a = coerce_to_f64(self)?;
         let b = coerce_to_f64(other)?;
         if b == 0.0 { return Err(PyException::zero_division_error("division by zero")); }
@@ -743,13 +790,15 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Int(n) => Ok(n.negate().to_object()),
             PyObjectPayload::Float(f) => Ok(PyObject::float(-f)),
             PyObjectPayload::Bool(b) => Ok(PyObject::int(-(*b as i64))),
+            PyObjectPayload::Complex { real, imag } => Ok(PyObject::complex(-real, -imag)),
             _ => Err(PyException::type_error(format!("bad operand type for unary -: '{}'", self.type_name()))),
         }
     }
 
     fn positive(&self) -> PyResult<PyObjectRef> {
         match &self.payload {
-            PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Bool(_) => Ok(self.clone()),
+            PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Bool(_) |
+            PyObjectPayload::Complex { .. } => Ok(self.clone()),
             _ => Err(PyException::type_error(format!("bad operand type for unary +: '{}'", self.type_name()))),
         }
     }
@@ -1113,6 +1162,21 @@ impl PyObjectMethods for PyObjectRef {
                 let hk = item.to_hashable_key()?;
                 Ok(m.read().contains_key(&hk))
             }
+            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                // Support: int in bytes (single byte) or bytes in bytes (subsequence)
+                match &item.payload {
+                    PyObjectPayload::Int(n) => {
+                        let val = n.to_i64().unwrap_or(-1);
+                        if val < 0 || val > 255 { return Ok(false); }
+                        Ok(b.contains(&(val as u8)))
+                    }
+                    PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) => {
+                        if needle.is_empty() { return Ok(true); }
+                        Ok(b.windows(needle.len()).any(|w| w == needle.as_slice()))
+                    }
+                    _ => Err(PyException::type_error("a bytes-like object is required")),
+                }
+            }
             _ => Err(PyException::type_error(format!("argument of type '{}' is not iterable", self.type_name()))),
         }
     }
@@ -1137,6 +1201,10 @@ impl PyObjectMethods for PyObjectRef {
             }
             PyObjectPayload::Iterator(_) => Ok(self.clone()),
             PyObjectPayload::Generator(_) => Ok(self.clone()), // generators are their own iterators
+            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                let items: Vec<PyObjectRef> = b.iter().map(|byte| PyObject::int(*byte as i64)).collect();
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items, index: 0 })))))
+            }
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", self.type_name()))),
         }
     }
