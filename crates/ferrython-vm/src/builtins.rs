@@ -4549,12 +4549,40 @@ pub fn create_abc_module() -> PyObjectRef {
 // ── enum module (stub) ──
 
 pub fn create_enum_module() -> PyObjectRef {
+    // Create Enum as a base class marker
+    let enum_class = PyObject::class(
+        CompactString::from("Enum"),
+        vec![],
+        IndexMap::new(),
+    );
+    // Mark it as enum base
+    if let PyObjectPayload::Class(ref cd) = enum_class.payload {
+        cd.namespace.write().insert(CompactString::from("__enum__"), PyObject::bool_val(true));
+    }
+    let int_enum = PyObject::class(
+        CompactString::from("IntEnum"),
+        vec![enum_class.clone()],
+        IndexMap::new(),
+    );
+    if let PyObjectPayload::Class(ref cd) = int_enum.payload {
+        cd.namespace.write().insert(CompactString::from("__enum__"), PyObject::bool_val(true));
+    }
+    
+    // auto() counter
+    static AUTO_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+    
     make_module("enum", vec![
-        ("Enum", PyObject::none()),
-        ("IntEnum", PyObject::none()),
+        ("Enum", enum_class),
+        ("IntEnum", int_enum),
         ("Flag", PyObject::none()),
         ("IntFlag", PyObject::none()),
-        ("auto", make_builtin(|_| Ok(PyObject::none()))),
+        ("auto", make_builtin(|_| {
+            let val = AUTO_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(PyObject::int(val))
+        })),
+        ("unique", make_builtin(|args| {
+            if args.is_empty() { Ok(PyObject::none()) } else { Ok(args[0].clone()) }
+        })),
     ])
 }
 

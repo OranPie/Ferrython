@@ -2164,14 +2164,31 @@ impl VirtualMachine {
                         3 => value.py_to_string(),    // !a (ascii)
                         _ => {
                             if !fmt_spec.is_empty() {
+                                // Check for __format__ on Instance
+                                if matches!(&value.payload, PyObjectPayload::Instance(_)) {
+                                    if let Some(format_method) = value.get_attr("__format__") {
+                                        drop(frame);
+                                        let spec = PyObject::str_val(CompactString::from(&fmt_spec));
+                                        let r = self.call_object(format_method, vec![spec])?;
+                                        push!(PyObject::str_val(CompactString::from(r.py_to_string())));
+                                        return Ok(None);
+                                    }
+                                }
                                 // Apply format spec to the value directly
                                 match value.format_value(&fmt_spec) {
                                     Ok(s) => s,
                                     Err(_) => value.py_to_string(),
                                 }
                             } else {
-                                // Check Instance __str__ via VM
+                                // Check Instance __format__ first, then __str__ via VM
                                 if matches!(&value.payload, PyObjectPayload::Instance(_)) {
+                                    if let Some(format_method) = value.get_attr("__format__") {
+                                        drop(frame);
+                                        let spec = PyObject::str_val(CompactString::from(""));
+                                        let r = self.call_object(format_method, vec![spec])?;
+                                        push!(PyObject::str_val(CompactString::from(r.py_to_string())));
+                                        return Ok(None);
+                                    }
                                     if let Some(str_method) = value.get_attr("__str__") {
                                         drop(frame);
                                         let r = self.call_object(str_method, vec![])?;
