@@ -338,25 +338,19 @@ impl VirtualMachine {
         match instr.op {
             Opcode::UnaryPositive => {
                 let v = self.vm_pop();
-                if let PyObjectPayload::Instance(_) = &v.payload {
-                    if let Some(method) = v.get_attr("__pos__") {
-                        let result = self.call_object(method, vec![])?;
-                        self.vm_push(result);
-                        return Ok(None);
-                    }
+                if let Some(r) = self.try_call_dunder(&v, "__pos__", vec![])? {
+                    self.vm_push(r);
+                } else {
+                    self.vm_push(v.positive()?);
                 }
-                self.vm_push(v.positive()?);
             }
             Opcode::UnaryNegative => {
                 let v = self.vm_pop();
-                if let PyObjectPayload::Instance(_) = &v.payload {
-                    if let Some(method) = v.get_attr("__neg__") {
-                        let result = self.call_object(method, vec![])?;
-                        self.vm_push(result);
-                        return Ok(None);
-                    }
+                if let Some(r) = self.try_call_dunder(&v, "__neg__", vec![])? {
+                    self.vm_push(r);
+                } else {
+                    self.vm_push(v.negate()?);
                 }
-                self.vm_push(v.negate()?);
             }
             Opcode::UnaryNot => {
                 let v = self.vm_pop();
@@ -365,14 +359,11 @@ impl VirtualMachine {
             }
             Opcode::UnaryInvert => {
                 let v = self.vm_pop();
-                if let PyObjectPayload::Instance(_) = &v.payload {
-                    if let Some(method) = v.get_attr("__invert__") {
-                        let result = self.call_object(method, vec![])?;
-                        self.vm_push(result);
-                        return Ok(None);
-                    }
+                if let Some(r) = self.try_call_dunder(&v, "__invert__", vec![])? {
+                    self.vm_push(r);
+                } else {
+                    self.vm_push(v.invert()?);
                 }
-                self.vm_push(v.invert()?);
             }
             _ => unreachable!(),
         }
@@ -500,12 +491,11 @@ impl VirtualMachine {
             Opcode::BinarySubscr => {
                 let key = self.vm_pop();
                 let obj = self.vm_pop();
+                if let Some(r) = self.try_call_dunder(&obj, "__getitem__", vec![key.clone()])? {
+                    self.vm_push(r);
+                    return Ok(None);
+                }
                 if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
-                    if let Some(m) = obj.get_attr("__getitem__") {
-                        let r = self.call_object(m, vec![key])?;
-                        self.vm_push(r);
-                        return Ok(None);
-                    }
                     if let Some(tup) = obj.get_attr("_tuple") {
                         self.vm_push(tup.get_item(&key)?);
                         return Ok(None);
@@ -792,14 +782,11 @@ impl VirtualMachine {
         match instr.op {
             Opcode::GetIter => {
                 let obj = self.vm_pop();
-                if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
-                    if let Some(m) = obj.get_attr("__iter__") {
-                        let r = self.call_object(m, vec![])?;
-                        self.vm_push(r);
-                        return Ok(None);
-                    }
+                if let Some(r) = self.try_call_dunder(&obj, "__iter__", vec![])? {
+                    self.vm_push(r);
+                } else {
+                    self.vm_push(obj.get_iter()?);
                 }
-                self.vm_push(obj.get_iter()?);
             }
             Opcode::ForIter => {
                 let iter = self.vm_frame().peek().clone();

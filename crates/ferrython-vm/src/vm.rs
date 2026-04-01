@@ -868,6 +868,19 @@ impl VirtualMachine {
         Ok(obj.is_truthy())
     }
 
+    /// Try to call a dunder method on an instance. Returns None if the object
+    /// is not an Instance or doesn't have the named dunder.
+    pub(crate) fn try_call_dunder(
+        &mut self, obj: &PyObjectRef, dunder: &str, args: Vec<PyObjectRef>,
+    ) -> Result<Option<PyObjectRef>, PyException> {
+        if let PyObjectPayload::Instance(_) = &obj.payload {
+            if let Some(method) = obj.get_attr(dunder) {
+                return Ok(Some(self.call_object(method, args)?));
+            }
+        }
+        Ok(None)
+    }
+
     /// Produce a str() string for an object, dispatching __str__ on instances.
     /// For containers, uses vm_repr for elements (like CPython).
     /// Check if a class object inherits from Exception (via MRO or ExceptionType bases)
