@@ -2224,6 +2224,11 @@ impl VirtualMachine {
                     let result = self.call_object(str_method, vec![])?;
                     return Ok(result.py_to_string());
                 }
+                // Fall back to __repr__ if no __str__
+                if let Some(repr_method) = obj.get_attr("__repr__") {
+                    let result = self.call_object(repr_method, vec![])?;
+                    return Ok(result.py_to_string());
+                }
                 Ok(obj.py_to_string())
             }
             // For containers, str() is same as repr() (elements use repr)
@@ -2695,14 +2700,7 @@ impl VirtualMachine {
                     "print" => {
                         let mut parts = Vec::new();
                         for a in &args {
-                            if matches!(&a.payload, PyObjectPayload::Instance(_)) {
-                                if let Some(str_method) = a.get_attr("__str__") {
-                                    let s = self.call_object(str_method, vec![])?;
-                                    parts.push(s.py_to_string());
-                                    continue;
-                                }
-                            }
-                            parts.push(a.py_to_string());
+                            parts.push(self.vm_str(a)?);
                         }
                         println!("{}", parts.join(" "));
                         return Ok(PyObject::none());
@@ -2711,12 +2709,7 @@ impl VirtualMachine {
                         if args.is_empty() {
                             return Ok(PyObject::str_val(CompactString::from("")));
                         }
-                        if matches!(&args[0].payload, PyObjectPayload::Instance(_)) {
-                            if let Some(str_method) = args[0].get_attr("__str__") {
-                                return self.call_object(str_method, vec![]);
-                            }
-                        }
-                        return Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())));
+                        return self.vm_str(&args[0]).map(|s| PyObject::str_val(CompactString::from(s)));
                     }
                     "repr" => {
                         if args.is_empty() {
@@ -3098,6 +3091,15 @@ impl VirtualMachine {
                     return self.vm_functools_reduce(&args);
                 }
                 func(&args)
+            }
+            PyObjectPayload::Partial { func: partial_func, args: partial_args, kwargs: partial_kwargs } => {
+                let partial_func = partial_func.clone();
+                let mut combined_args = partial_args.clone();
+                combined_args.extend(args);
+                // If there are kwargs, we'd need to handle them through CALL_FUNCTION_KW path
+                // For now, just call with combined positional args
+                let _ = partial_kwargs;
+                self.call_object(partial_func, combined_args)
             }
             PyObjectPayload::Instance(_) => {
                 // Callable instances: check for __call__

@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData, IteratorData, CompareOp};
+use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData, IteratorData, CompareOp, InstanceData};
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -3087,8 +3087,46 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub fn create_functools_module() -> PyObjectRef {
     make_module("functools", vec![
         ("reduce", PyObject::native_function("functools.reduce", functools_reduce)),
-        ("partial", make_builtin(|_args| Ok(PyObject::none()))),
+        ("partial", make_builtin(functools_partial)),
+        ("lru_cache", make_builtin(|args| {
+            // Simple pass-through — just return the function unmodified
+            if args.is_empty() { return Ok(PyObject::none()); }
+            Ok(args[0].clone())
+        })),
+        ("wraps", make_builtin(|args| {
+            // Simple pass-through decorator — return identity
+            if args.is_empty() { return Ok(PyObject::none()); }
+            Ok(make_builtin(|args| {
+                if args.is_empty() { return Ok(PyObject::none()); }
+                Ok(args[0].clone())
+            }))
+        })),
+        ("cached_property", make_builtin(|args| {
+            // Stub — just wrap the function in a property-like
+            if args.is_empty() { return Err(PyException::type_error("cached_property requires 1 argument")); }
+            Ok(PyObject::wrap(PyObjectPayload::Property {
+                fget: Some(args[0].clone()),
+                fset: None,
+                fdel: None,
+            }))
+        })),
+        ("total_ordering", make_builtin(|args| {
+            // Stub — just return the class unchanged
+            if args.is_empty() { return Err(PyException::type_error("total_ordering requires 1 argument")); }
+            Ok(args[0].clone())
+        })),
     ])
+}
+
+fn functools_partial(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("partial() requires at least 1 argument")); }
+    let func = args[0].clone();
+    let partial_args = if args.len() > 1 { args[1..].to_vec() } else { vec![] };
+    Ok(PyObject::wrap(PyObjectPayload::Partial {
+        func,
+        args: partial_args,
+        kwargs: vec![],
+    }))
 }
 
 fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -3629,8 +3667,13 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         PyObjectPayload::Tuple(items) => Ok(PyObject::tuple(items.clone())),
         PyObjectPayload::List(items) => Ok(PyObject::list(items.read().clone())),
         PyObjectPayload::Dict(map) => Ok(PyObject::dict(map.read().clone())),
-        PyObjectPayload::Set(set) => {
-            Ok(PyObject::set(set.read().clone()))
+        PyObjectPayload::Set(set) => Ok(PyObject::set(set.read().clone())),
+        PyObjectPayload::Instance(inst) => {
+            // Create new instance with same class, shallow copy of attrs
+            Ok(PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+                class: inst.class.clone(),
+                attrs: Arc::new(RwLock::new(inst.attrs.read().clone())),
+            })))
         }
         _ => Ok(obj.clone()),
     }

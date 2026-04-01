@@ -62,6 +62,12 @@ pub enum PyObjectPayload {
         name: CompactString,
         func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>,
     },
+    /// Partial application (functools.partial)
+    Partial {
+        func: PyObjectRef,
+        args: Vec<PyObjectRef>,
+        kwargs: Vec<(CompactString, PyObjectRef)>,
+    },
     /// Property descriptor
     Property { fget: Option<PyObjectRef>, fset: Option<PyObjectRef>, fdel: Option<PyObjectRef> },
     /// Static method wrapper
@@ -326,6 +332,7 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::StaticMethod(_) => "staticmethod",
             PyObjectPayload::ClassMethod(_) => "classmethod",
             PyObjectPayload::Super { .. } => "super",
+            PyObjectPayload::Partial { .. } => "functools.partial",
         }
     }
 
@@ -352,7 +359,7 @@ impl PyObjectMethods for PyObjectRef {
             | PyObjectPayload::BuiltinType(_) | PyObjectPayload::BoundMethod { .. }
             | PyObjectPayload::BuiltinBoundMethod { .. }
             | PyObjectPayload::Class(_) | PyObjectPayload::ExceptionType(_)
-            | PyObjectPayload::NativeFunction { .. })
+            | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::Partial { .. })
             || (matches!(&self.payload, PyObjectPayload::Instance(_)) && self.get_attr("__call__").is_some())
     }
 
