@@ -251,13 +251,23 @@ impl VirtualMachine {
                 self.call_object_kw(method.clone(), bound_args, kwargs)
             }
             PyObjectPayload::Class(_class) => {
-                let instance = PyObject::instance(func.clone());
+                // Check for __new__ before creating instance
+                let instance = if let Some(new_method) = func.get_attr("__new__") {
+                    let new_fn = match &new_method.payload {
+                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                        _ => new_method.clone(),
+                    };
+                    let mut new_args = vec![func.clone()];
+                    new_args.extend(pos_args.clone());
+                    self.call_object(new_fn, new_args)?
+                } else {
+                    PyObject::instance(func.clone())
+                };
                 
                 let is_dataclass = func.get_attr("__dataclass__").is_some();
                 let has_user_init = func.get_attr("__init__").is_some();
                 
                 if is_dataclass && !has_user_init {
-                    // Auto-generate __init__ for dataclass with kwargs support
                     if let Some(fields) = func.get_attr("__dataclass_fields__") {
                         if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
                             let mut arg_idx = 0;
@@ -2850,39 +2860,47 @@ impl VirtualMachine {
                         if args.is_empty() {
                             let frame = self.call_stack.last().unwrap();
                             if let Some(self_obj) = frame.locals.first().cloned().flatten() {
-                                if let PyObjectPayload::Instance(inst) = &self_obj.payload {
-                                    // Find the DEFINING class by matching frame's qualname
-                                    // e.g. qualname "B.greet" → defining class is "B"
-                                    let qualname = frame.code.qualname.as_str();
-                                    let defining_class_name = qualname.rsplit_once('.')
-                                        .map(|(cls_part, _)| {
-                                            // Handle nested: "Outer.B.greet" → "B"
-                                            cls_part.rsplit_once('.').map(|(_, c)| c).unwrap_or(cls_part)
-                                        });
-                                    let runtime_cls = &inst.class;
-                                    let mut cls = runtime_cls.clone();
-                                    if let Some(def_name) = defining_class_name {
-                                        if let PyObjectPayload::Class(cd) = &runtime_cls.payload {
-                                            // Walk MRO: [B, A] for class C(B(A))
-                                            let mro = if cd.mro.is_empty() {
-                                                vec![runtime_cls.clone()]
-                                            } else {
-                                                cd.mro.clone()
-                                            };
-                                            for m in &mro {
-                                                if let PyObjectPayload::Class(mc) = &m.payload {
-                                                    if mc.name.as_str() == def_name {
-                                                        cls = m.clone();
-                                                        break;
-                                                    }
+                                let qualname = frame.code.qualname.as_str();
+                                let defining_class_name = qualname.rsplit_once('.')
+                                    .map(|(cls_part, _)| {
+                                        cls_part.rsplit_once('.').map(|(_, c)| c).unwrap_or(cls_part)
+                                    });
+                                
+                                // Handle both Instance (normal methods) and Class (__new__)
+                                let (runtime_cls, instance_for_super) = match &self_obj.payload {
+                                    PyObjectPayload::Instance(inst) => {
+                                        (inst.class.clone(), self_obj.clone())
+                                    }
+                                    PyObjectPayload::Class(_) => {
+                                        // In __new__(cls, ...), cls is a Class
+                                        (self_obj.clone(), self_obj.clone())
+                                    }
+                                    _ => {
+                                        return Err(PyException::runtime_error("super(): no current class"));
+                                    }
+                                };
+                                
+                                let mut cls = runtime_cls.clone();
+                                if let Some(def_name) = defining_class_name {
+                                    if let PyObjectPayload::Class(cd) = &runtime_cls.payload {
+                                        let mro = if cd.mro.is_empty() {
+                                            vec![runtime_cls.clone()]
+                                        } else {
+                                            cd.mro.clone()
+                                        };
+                                        for m in &mro {
+                                            if let PyObjectPayload::Class(mc) = &m.payload {
+                                                if mc.name.as_str() == def_name {
+                                                    cls = m.clone();
+                                                    break;
                                                 }
                                             }
                                         }
                                     }
-                                    return Ok(Arc::new(PyObject {
-                                        payload: PyObjectPayload::Super { cls, instance: self_obj.clone() }
-                                    }));
                                 }
+                                return Ok(Arc::new(PyObject {
+                                    payload: PyObjectPayload::Super { cls, instance: instance_for_super }
+                                }));
                             }
                             return Err(PyException::runtime_error("super(): no current class"));
                         } else if args.len() == 2 {
@@ -3128,35 +3146,45 @@ impl VirtualMachine {
                         if args.is_empty() {
                             let frame = self.call_stack.last().unwrap();
                             if let Some(self_obj) = frame.locals.first().cloned().flatten() {
-                                if let PyObjectPayload::Instance(inst) = &self_obj.payload {
-                                    let qualname = frame.code.qualname.as_str();
-                                    let defining_class_name = qualname.rsplit_once('.')
-                                        .map(|(cls_part, _)| {
-                                            cls_part.rsplit_once('.').map(|(_, c)| c).unwrap_or(cls_part)
-                                        });
-                                    let runtime_cls = &inst.class;
-                                    let mut cls = runtime_cls.clone();
-                                    if let Some(def_name) = defining_class_name {
-                                        if let PyObjectPayload::Class(cd) = &runtime_cls.payload {
-                                            let mro = if cd.mro.is_empty() {
-                                                vec![runtime_cls.clone()]
-                                            } else {
-                                                cd.mro.clone()
-                                            };
-                                            for m in &mro {
-                                                if let PyObjectPayload::Class(mc) = &m.payload {
-                                                    if mc.name.as_str() == def_name {
-                                                        cls = m.clone();
-                                                        break;
-                                                    }
+                                let qualname = frame.code.qualname.as_str();
+                                let defining_class_name = qualname.rsplit_once('.')
+                                    .map(|(cls_part, _)| {
+                                        cls_part.rsplit_once('.').map(|(_, c)| c).unwrap_or(cls_part)
+                                    });
+                                
+                                let (runtime_cls, instance_for_super) = match &self_obj.payload {
+                                    PyObjectPayload::Instance(inst) => {
+                                        (inst.class.clone(), self_obj.clone())
+                                    }
+                                    PyObjectPayload::Class(_) => {
+                                        (self_obj.clone(), self_obj.clone())
+                                    }
+                                    _ => {
+                                        return Err(PyException::runtime_error("super(): no current class"));
+                                    }
+                                };
+                                
+                                let mut cls = runtime_cls.clone();
+                                if let Some(def_name) = defining_class_name {
+                                    if let PyObjectPayload::Class(cd) = &runtime_cls.payload {
+                                        let mro = if cd.mro.is_empty() {
+                                            vec![runtime_cls.clone()]
+                                        } else {
+                                            cd.mro.clone()
+                                        };
+                                        for m in &mro {
+                                            if let PyObjectPayload::Class(mc) = &m.payload {
+                                                if mc.name.as_str() == def_name {
+                                                    cls = m.clone();
+                                                    break;
                                                 }
                                             }
                                         }
                                     }
-                                    return Ok(Arc::new(PyObject {
-                                        payload: PyObjectPayload::Super { cls, instance: self_obj.clone() }
-                                    }));
                                 }
+                                return Ok(Arc::new(PyObject {
+                                    payload: PyObjectPayload::Super { cls, instance: instance_for_super }
+                                }));
                             }
                             return Err(PyException::runtime_error("super(): no current class"));
                         } else if args.len() == 2 {
@@ -3259,7 +3287,18 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::Class(_class) => {
-                let instance = PyObject::instance(func.clone());
+                // Check for __new__ before creating instance
+                let instance = if let Some(new_method) = func.get_attr("__new__") {
+                    let new_fn = match &new_method.payload {
+                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                        _ => new_method.clone(),
+                    };
+                    let mut new_args = vec![func.clone()];
+                    new_args.extend(args.clone());
+                    self.call_object(new_fn, new_args)?
+                } else {
+                    PyObject::instance(func.clone())
+                };
                 
                 // Check for dataclass auto-init
                 let is_dataclass = func.get_attr("__dataclass__").is_some();

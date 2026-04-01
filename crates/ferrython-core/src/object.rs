@@ -1151,10 +1151,10 @@ impl PyObjectMethods for PyObjectRef {
             }
             PyObjectPayload::Super { cls, instance } => {
                 // super() proxy: look up in the RUNTIME class MRO, skipping up to and including cls
-                let runtime_cls = if let PyObjectPayload::Instance(inst) = &instance.payload {
-                    Some(&inst.class)
-                } else {
-                    None
+                let runtime_cls = match &instance.payload {
+                    PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
+                    PyObjectPayload::Class(_) => Some(instance.clone()),
+                    _ => None,
                 };
                 if let Some(rt_cls) = runtime_cls {
                     if let PyObjectPayload::Class(cd) = &rt_cls.payload {
@@ -1201,6 +1201,13 @@ impl PyObjectMethods for PyObjectRef {
                                     }
                                 }
                             }
+                        }
+                        // Builtin __new__: object.__new__(cls) creates a new instance
+                        if name == "__new__" {
+                            return Some(PyObject::native_function("__new__", |args| {
+                                if args.is_empty() { return Err(PyException::type_error("__new__ requires cls")); }
+                                Ok(PyObject::instance(args[0].clone()))
+                            }));
                         }
                     }
                 }
