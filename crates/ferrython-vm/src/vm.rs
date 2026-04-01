@@ -488,8 +488,7 @@ impl VirtualMachine {
                 // Fall back to call_object for builtins etc
                 // Handle builtins with keyword args
                 let builtin_name = match &func.payload {
-                    PyObjectPayload::BuiltinFunction(name) => Some(name.clone()),
-                    PyObjectPayload::BuiltinType(name) => Some(name.clone()),
+                    PyObjectPayload::BuiltinFunction(name) | PyObjectPayload::BuiltinType(name) => Some(name.clone()),
                     _ => None,
                 };
                 if let Some(name) = builtin_name {
@@ -829,7 +828,7 @@ impl VirtualMachine {
     pub(crate) fn find_exception_kind(cls: &PyObjectRef) -> ExceptionKind {
         match &cls.payload {
             PyObjectPayload::ExceptionType(kind) => kind.clone(),
-            PyObjectPayload::BuiltinType(name) => {
+            PyObjectPayload::BuiltinType(name) | PyObjectPayload::BuiltinFunction(name) => {
                 ExceptionKind::from_name(name).unwrap_or(ExceptionKind::RuntimeError)
             }
             PyObjectPayload::Class(cd) => {
@@ -1036,7 +1035,7 @@ impl VirtualMachine {
                 let closure = pyfunc.closure.clone();
                 self.call_function(&code, args, &defaults, globals, &closure)
             }
-            PyObjectPayload::BuiltinFunction(name) => {
+            PyObjectPayload::BuiltinFunction(name) | PyObjectPayload::BuiltinType(name) => {
                 if name.as_str() == "__build_class__" {
                     return self.build_class(args);
                 }
@@ -1380,11 +1379,6 @@ impl VirtualMachine {
                         "'{}' is not callable", name
                     ))),
                 }
-            }
-            PyObjectPayload::BuiltinType(name) => {
-                // BuiltinType uses same dispatch as BuiltinFunction
-                let func_equiv = PyObject::wrap(PyObjectPayload::BuiltinFunction(name.clone()));
-                return self.call_object(func_equiv, args);
             }
             PyObjectPayload::Class(_class) => {
                 self.instantiate_class(&func, args, vec![])
