@@ -7,5 +7,14 @@ description = "Standard library modules for Ferrython"
 
 [dependencies]
 ferrython-core = { workspace = true }
-ferrython-vm = { workspace = true }
+compact_str = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
+regex = { workspace = true }
+md-5 = { workspace = true }
+sha2 = { workspace = true }
+sha1 = { workspace = true }
+digest = { workspace = true }
 thiserror = { workspace = true }

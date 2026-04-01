@@ -250,8 +250,17 @@ dependencies = [
 name = "ferrython-stdlib"
 version = "0.1.0"
 dependencies = [
+ "compact_str",
+ "digest",
  "ferrython-core",
- "ferrython-vm",
+ "indexmap",
+ "md-5",
+ "num-bigint",
+ "num-traits",
+ "parking_lot",
+ "regex",
+ "sha1",
+ "sha2",
  "thiserror",
 ]
 
@@ -265,6 +274,7 @@ dependencies = [
  "ferrython-compiler",
  "ferrython-core",
  "ferrython-parser",
+ "ferrython-stdlib",
  "indexmap",
  "md-5",
  "num-bigint",

@@ -1,8 +1,5 @@
 //! Built-in functions available in Python's builtins module.
 
-mod modules;
-pub use modules::*;
-
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData, IteratorData, CompareOp, InstanceData};
@@ -1105,23 +1102,9 @@ fn builtin_super(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::none())
 }
 
-// ── Argument checking helpers ──
+// ── Argument checking helpers (re-exported from core) ──
 
-pub(crate) fn check_args(name: &str, args: &[PyObjectRef], expected: usize) -> PyResult<()> {
-    if args.len() != expected {
-        Err(PyException::type_error(format!(
-            "{}() takes exactly {} argument(s) ({} given)", name, expected, args.len()
-        )))
-    } else { Ok(()) }
-}
-
-pub(crate) fn check_args_min(name: &str, args: &[PyObjectRef], min: usize) -> PyResult<()> {
-    if args.len() < min {
-        Err(PyException::type_error(format!(
-            "{}() takes at least {} argument(s) ({} given)", name, min, args.len()
-        )))
-    } else { Ok(()) }
-}
+pub(crate) use ferrython_core::object::{check_args, check_args_min, make_module, make_builtin};
 
 // ── Built-in type method dispatch ──
 
@@ -2574,19 +2557,3 @@ fn file_exit(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     file_close(&[])?;
     Ok(PyObject::bool_val(false))
 }
-
-// ── Module creation helpers ──
-
-pub(crate) fn make_module(name: &str, attrs: Vec<(&str, PyObjectRef)>) -> PyObjectRef {
-    let mut map = IndexMap::new();
-    map.insert(CompactString::from("__name__"), PyObject::str_val(CompactString::from(name)));
-    for (k, v) in attrs {
-        map.insert(CompactString::from(k), v);
-    }
-    PyObject::module_with_attrs(CompactString::from(name), map)
-}
-
-pub(crate) fn make_builtin(f: BuiltinFn) -> PyObjectRef {
-    PyObject::native_function("", f)
-}
-

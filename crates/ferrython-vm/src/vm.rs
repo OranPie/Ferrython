@@ -3446,56 +3446,8 @@ impl VirtualMachine {
     }
 
     fn load_builtin_module(&self, name: &str) -> PyResult<PyObjectRef> {
-        match name {
-            "math" => Ok(builtins::create_math_module()),
-            "sys" => Ok(builtins::create_sys_module()),
-            "os" => Ok(builtins::create_os_module()),
-            "os.path" => Ok(builtins::create_os_path_module()),
-            "string" => Ok(builtins::create_string_module()),
-            "json" => Ok(builtins::create_json_module()),
-            "time" => Ok(builtins::create_time_module()),
-            "random" => Ok(builtins::create_random_module()),
-            "collections" => Ok(builtins::create_collections_module()),
-            "functools" => Ok(builtins::create_functools_module()),
-            "itertools" => Ok(builtins::create_itertools_module()),
-            "io" => Ok(builtins::create_io_module()),
-            "re" => Ok(builtins::create_re_module()),
-            "hashlib" => Ok(builtins::create_hashlib_module()),
-            "copy" => Ok(builtins::create_copy_module()),
-            "operator" => Ok(builtins::create_operator_module()),
-            "typing" => Ok(builtins::create_typing_module()),
-            "abc" => Ok(builtins::create_abc_module()),
-            "enum" => Ok(builtins::create_enum_module()),
-            "contextlib" => Ok(builtins::create_contextlib_module()),
-            "dataclasses" => Ok(builtins::create_dataclasses_module()),
-            "struct" => Ok(builtins::create_struct_module()),
-            "textwrap" => Ok(builtins::create_textwrap_module()),
-            "traceback" => Ok(builtins::create_traceback_module()),
-            "warnings" => Ok(builtins::create_warnings_module()),
-            "decimal" => Ok(builtins::create_decimal_module()),
-            "statistics" => Ok(builtins::create_statistics_module()),
-            "numbers" => Ok(builtins::create_numbers_module()),
-            "platform" => Ok(builtins::create_platform_module()),
-            "locale" => Ok(builtins::create_locale_module()),
-            "inspect" => Ok(builtins::create_inspect_module()),
-            "dis" => Ok(builtins::create_dis_module()),
-            "logging" => Ok(builtins::create_logging_module()),
-            "subprocess" => Ok(builtins::create_subprocess_module()),
-            "pathlib" => Ok(builtins::create_pathlib_module()),
-            "unittest" => Ok(builtins::create_unittest_module()),
-            "threading" => Ok(builtins::create_threading_module()),
-            "csv" => Ok(builtins::create_csv_module()),
-            "shutil" => Ok(builtins::create_shutil_module()),
-            "glob" => Ok(builtins::create_glob_module()),
-            "tempfile" => Ok(builtins::create_tempfile_module()),
-            "fnmatch" => Ok(builtins::create_fnmatch_module()),
-            "base64" => Ok(builtins::create_base64_module()),
-            "pprint" => Ok(builtins::create_pprint_module()),
-            "argparse" => Ok(builtins::create_argparse_module()),
-            "datetime" => Ok(builtins::create_datetime_module()),
-            "weakref" => Ok(builtins::create_weakref_module()),
-            _ => Err(PyException::import_error(format!("No module named '{}'", name))),
-        }
+        ferrython_stdlib::load_module(name)
+            .ok_or_else(|| PyException::import_error(format!("No module named '{}'", name)))
     }
 
     fn load_file_module(&mut self, name: &str, importer_filename: &str) -> PyResult<PyObjectRef> {

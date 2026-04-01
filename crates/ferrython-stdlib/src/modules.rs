@@ -2,13 +2,15 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData, IteratorData, CompareOp, InstanceData};
+use ferrython_core::object::{
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData,
+    IteratorData, CompareOp, InstanceData,
+    make_module, make_builtin, check_args, check_args_min,
+};
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::{Arc, Mutex};
-
-use super::{make_module, make_builtin, check_args, check_args_min, builtin_abs, builtin_dir};
 
 // ── math module ──
 
@@ -2111,7 +2113,8 @@ pub fn create_operator_module() -> PyObjectRef {
         })),
         ("abs", make_builtin(|args| {
             check_args_min("abs", args, 1)?;
-            builtin_abs(args)
+            check_args("abs", args, 1)?;
+            args[0].py_abs()
         })),
         ("contains", make_builtin(|args| {
             check_args_min("contains", args, 2)?;
@@ -2822,7 +2825,9 @@ pub fn create_inspect_module() -> PyObjectRef {
         })),
         ("getmembers", make_builtin(|args| {
             check_args("inspect.getmembers", args, 1)?;
-            let names = builtin_dir(args)?;
+            let dir_names = args[0].dir();
+            let dir_list: Vec<PyObjectRef> = dir_names.into_iter().map(|n| PyObject::str_val(n)).collect();
+            let names = PyObject::list(dir_list);
             let mut result = Vec::new();
             if let PyObjectPayload::List(items) = &names.payload {
                 for item in items.read().iter() {

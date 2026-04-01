@@ -1832,3 +1832,41 @@ fn format_dict(map: &IndexMap<HashableKey, PyObjectRef>) -> String {
         .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr())).collect();
     format!("{{{}}}", inner.join(", "))
 }
+
+// ── Module-building utilities (used by ferrython-stdlib and ferrython-vm) ──
+
+/// The function pointer type for built-in functions.
+pub type BuiltinFn = fn(&[PyObjectRef]) -> PyResult<PyObjectRef>;
+
+/// Create a module object with named attributes.
+pub fn make_module(name: &str, attrs: Vec<(&str, PyObjectRef)>) -> PyObjectRef {
+    let mut map = IndexMap::new();
+    map.insert(CompactString::from("__name__"), PyObject::str_val(CompactString::from(name)));
+    for (k, v) in attrs {
+        map.insert(CompactString::from(k), v);
+    }
+    PyObject::module_with_attrs(CompactString::from(name), map)
+}
+
+/// Wrap a bare function pointer as a NativeFunction object.
+pub fn make_builtin(f: BuiltinFn) -> PyObjectRef {
+    PyObject::native_function("", f)
+}
+
+/// Check that exactly `expected` arguments were provided.
+pub fn check_args(name: &str, args: &[PyObjectRef], expected: usize) -> PyResult<()> {
+    if args.len() != expected {
+        Err(PyException::type_error(format!(
+            "{}() takes exactly {} argument(s) ({} given)", name, expected, args.len()
+        )))
+    } else { Ok(()) }
+}
+
+/// Check that at least `min` arguments were provided.
+pub fn check_args_min(name: &str, args: &[PyObjectRef], min: usize) -> PyResult<()> {
+    if args.len() < min {
+        Err(PyException::type_error(format!(
+            "{}() takes at least {} argument(s) ({} given)", name, min, args.len()
+        )))
+    } else { Ok(()) }
+}
