@@ -3926,3 +3926,480 @@ pub fn create_enum_module() -> PyObjectRef {
         ("auto", make_builtin(|_| Ok(PyObject::none()))),
     ])
 }
+
+// ── contextlib module ──
+
+pub fn create_contextlib_module() -> PyObjectRef {
+    make_module("contextlib", vec![
+        ("contextmanager", make_builtin(contextlib_contextmanager)),
+        ("suppress", make_builtin(|_args| {
+            // Stub: returns a no-op context manager
+            Ok(make_module("suppress_cm", vec![
+                ("__enter__", make_builtin(|_| Ok(PyObject::none()))),
+                ("__exit__", make_builtin(|_| Ok(PyObject::bool_val(true)))),
+            ]))
+        })),
+        ("closing", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("closing requires 1 argument")); }
+            Ok(args[0].clone())
+        })),
+        ("ExitStack", make_builtin(|_| Ok(PyObject::none()))),
+        ("redirect_stdout", make_builtin(|_| Ok(PyObject::none()))),
+        ("redirect_stderr", make_builtin(|_| Ok(PyObject::none()))),
+    ])
+}
+
+fn contextlib_contextmanager(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // contextmanager decorator — returns the function as-is
+    // (full generator-based CM needs VM-level support)
+    if args.is_empty() { return Err(PyException::type_error("contextmanager requires 1 argument")); }
+    Ok(args[0].clone())
+}
+
+// ── dataclasses module ──
+
+pub fn create_dataclasses_module() -> PyObjectRef {
+    make_module("dataclasses", vec![
+        ("dataclass", make_builtin(dataclass_decorator)),
+        ("field", make_builtin(|args| {
+            // Return a sentinel field object
+            let default = if args.is_empty() { PyObject::none() } else { args[0].clone() };
+            Ok(default)
+        })),
+        ("asdict", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("asdict requires 1 argument")); }
+            // Convert instance attrs to dict
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                let attrs = inst.attrs.read();
+                let mut map = IndexMap::new();
+                for (k, v) in attrs.iter() {
+                    if !k.starts_with('_') {
+                        map.insert(HashableKey::Str(k.clone()), v.clone());
+                    }
+                }
+                Ok(PyObject::dict(map))
+            } else {
+                Err(PyException::type_error("asdict() should be called on dataclass instances"))
+            }
+        })),
+        ("astuple", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("astuple requires 1 argument")); }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                let attrs = inst.attrs.read();
+                let items: Vec<_> = attrs.values().cloned().collect();
+                Ok(PyObject::tuple(items))
+            } else {
+                Err(PyException::type_error("astuple() should be called on dataclass instances"))
+            }
+        })),
+        ("fields", make_builtin(|_| Ok(PyObject::tuple(vec![])))),
+    ])
+}
+
+fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // dataclass(cls) — just return the class unchanged for now
+    // A full implementation would add __init__, __repr__, __eq__ etc.
+    if args.is_empty() { return Err(PyException::type_error("dataclass requires 1 argument")); }
+    Ok(args[0].clone())
+}
+
+// ── struct module ──
+
+pub fn create_struct_module() -> PyObjectRef {
+    make_module("struct", vec![
+        ("pack", make_builtin(struct_pack)),
+        ("unpack", make_builtin(struct_unpack)),
+        ("calcsize", make_builtin(struct_calcsize)),
+    ])
+}
+
+fn struct_calcsize(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("calcsize requires format string")); }
+    let fmt = args[0].py_to_string();
+    let mut size = 0usize;
+    let mut chars = fmt.chars().peekable();
+    // Skip byte order
+    if let Some(&c) = chars.peek() {
+        if "<>!=@".contains(c) { chars.next(); }
+    }
+    while let Some(c) = chars.next() {
+        let count = if c.is_ascii_digit() {
+            let mut n = (c as u8 - b'0') as usize;
+            while let Some(&d) = chars.peek() {
+                if d.is_ascii_digit() { n = n * 10 + (d as u8 - b'0') as usize; chars.next(); } else { break; }
+            }
+            let fc = chars.next().unwrap_or('x');
+            size += n * format_char_size(fc);
+            continue;
+        } else { 1 };
+        size += count * format_char_size(c);
+    }
+    Ok(PyObject::int(size as i64))
+}
+
+fn format_char_size(c: char) -> usize {
+    match c {
+        'x' | 'c' | 'b' | 'B' | '?' => 1,
+        'h' | 'H' => 2,
+        'i' | 'I' | 'l' | 'L' | 'f' => 4,
+        'q' | 'Q' | 'd' => 8,
+        'n' | 'N' | 'P' => std::mem::size_of::<usize>(),
+        's' | 'p' => 1,
+        _ => 0,
+    }
+}
+
+fn struct_pack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("pack requires format string")); }
+    let fmt = args[0].py_to_string();
+    let mut result = Vec::new();
+    let mut arg_idx = 1;
+    let mut chars = fmt.chars().peekable();
+    let little_endian = match chars.peek() {
+        Some('<') => { chars.next(); true }
+        Some('>') | Some('!') => { chars.next(); false }
+        Some('=') | Some('@') => { chars.next(); cfg!(target_endian = "little") }
+        _ => cfg!(target_endian = "little"),
+    };
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit() { continue; } // count handling simplified
+        match c {
+            'b' | 'B' => {
+                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[arg_idx].to_int()? as u8;
+                result.push(val);
+                arg_idx += 1;
+            }
+            'h' | 'H' => {
+                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[arg_idx].to_int()? as u16;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                arg_idx += 1;
+            }
+            'i' | 'I' | 'l' | 'L' => {
+                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[arg_idx].to_int()? as u32;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                arg_idx += 1;
+            }
+            'q' | 'Q' => {
+                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[arg_idx].to_int()? as u64;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                arg_idx += 1;
+            }
+            'f' => {
+                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[arg_idx].to_float()? as f32;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                arg_idx += 1;
+            }
+            'd' => {
+                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[arg_idx].to_float()?;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                arg_idx += 1;
+            }
+            '?' => {
+                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                result.push(if args[arg_idx].is_truthy() { 1 } else { 0 });
+                arg_idx += 1;
+            }
+            'x' => result.push(0),
+            _ => {}
+        }
+    }
+    Ok(PyObject::bytes(result))
+}
+
+fn struct_unpack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("unpack requires format string and bytes")); }
+    let fmt = args[0].py_to_string();
+    let data = match &args[1].payload {
+        PyObjectPayload::Bytes(b) => b.clone(),
+        _ => return Err(PyException::type_error("unpack requires bytes argument")),
+    };
+    let mut result = Vec::new();
+    let mut offset = 0;
+    let mut chars = fmt.chars().peekable();
+    let little_endian = match chars.peek() {
+        Some('<') => { chars.next(); true }
+        Some('>') | Some('!') => { chars.next(); false }
+        Some('=') | Some('@') => { chars.next(); cfg!(target_endian = "little") }
+        _ => cfg!(target_endian = "little"),
+    };
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit() { continue; }
+        match c {
+            'b' => {
+                if offset >= data.len() { break; }
+                result.push(PyObject::int(data[offset] as i8 as i64));
+                offset += 1;
+            }
+            'B' => {
+                if offset >= data.len() { break; }
+                result.push(PyObject::int(data[offset] as i64));
+                offset += 1;
+            }
+            'h' => {
+                if offset + 2 > data.len() { break; }
+                let bytes: [u8; 2] = [data[offset], data[offset + 1]];
+                let val = if little_endian { i16::from_le_bytes(bytes) } else { i16::from_be_bytes(bytes) };
+                result.push(PyObject::int(val as i64));
+                offset += 2;
+            }
+            'H' => {
+                if offset + 2 > data.len() { break; }
+                let bytes: [u8; 2] = [data[offset], data[offset + 1]];
+                let val = if little_endian { u16::from_le_bytes(bytes) } else { u16::from_be_bytes(bytes) };
+                result.push(PyObject::int(val as i64));
+                offset += 2;
+            }
+            'i' | 'l' => {
+                if offset + 4 > data.len() { break; }
+                let bytes: [u8; 4] = [data[offset], data[offset+1], data[offset+2], data[offset+3]];
+                let val = if little_endian { i32::from_le_bytes(bytes) } else { i32::from_be_bytes(bytes) };
+                result.push(PyObject::int(val as i64));
+                offset += 4;
+            }
+            'I' | 'L' => {
+                if offset + 4 > data.len() { break; }
+                let bytes: [u8; 4] = [data[offset], data[offset+1], data[offset+2], data[offset+3]];
+                let val = if little_endian { u32::from_le_bytes(bytes) } else { u32::from_be_bytes(bytes) };
+                result.push(PyObject::int(val as i64));
+                offset += 4;
+            }
+            'q' => {
+                if offset + 8 > data.len() { break; }
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&data[offset..offset+8]);
+                let val = if little_endian { i64::from_le_bytes(bytes) } else { i64::from_be_bytes(bytes) };
+                result.push(PyObject::int(val));
+                offset += 8;
+            }
+            'Q' => {
+                if offset + 8 > data.len() { break; }
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&data[offset..offset+8]);
+                let val = if little_endian { u64::from_le_bytes(bytes) } else { u64::from_be_bytes(bytes) };
+                result.push(PyObject::int(val as i64));
+                offset += 8;
+            }
+            'f' => {
+                if offset + 4 > data.len() { break; }
+                let bytes: [u8; 4] = [data[offset], data[offset+1], data[offset+2], data[offset+3]];
+                let val = if little_endian { f32::from_le_bytes(bytes) } else { f32::from_be_bytes(bytes) };
+                result.push(PyObject::float(val as f64));
+                offset += 4;
+            }
+            'd' => {
+                if offset + 8 > data.len() { break; }
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&data[offset..offset+8]);
+                let val = if little_endian { f64::from_le_bytes(bytes) } else { f64::from_be_bytes(bytes) };
+                result.push(PyObject::float(val));
+                offset += 8;
+            }
+            '?' => {
+                if offset >= data.len() { break; }
+                result.push(PyObject::bool_val(data[offset] != 0));
+                offset += 1;
+            }
+            'x' => { offset += 1; }
+            _ => {}
+        }
+    }
+    Ok(PyObject::tuple(result))
+}
+
+// ── textwrap module ──
+
+pub fn create_textwrap_module() -> PyObjectRef {
+    make_module("textwrap", vec![
+        ("dedent", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("dedent requires 1 argument")); }
+            let text = args[0].py_to_string();
+            // Find minimum indentation of non-empty lines
+            let mut min_indent = usize::MAX;
+            for line in text.lines() {
+                if line.trim().is_empty() { continue; }
+                let indent = line.len() - line.trim_start().len();
+                if indent < min_indent { min_indent = indent; }
+            }
+            if min_indent == usize::MAX { return Ok(args[0].clone()); }
+            let result: Vec<&str> = text.lines().map(|line| {
+                if line.trim().is_empty() { line.trim() }
+                else if line.len() >= min_indent { &line[min_indent..] }
+                else { line }
+            }).collect();
+            Ok(PyObject::str_val(CompactString::from(result.join("\n"))))
+        })),
+        ("indent", make_builtin(|args| {
+            check_args_min("indent", args, 2)?;
+            let text = args[0].py_to_string();
+            let prefix = args[1].py_to_string();
+            let result: Vec<String> = text.lines().map(|line| {
+                if line.trim().is_empty() { line.to_string() }
+                else { format!("{}{}", prefix, line) }
+            }).collect();
+            Ok(PyObject::str_val(CompactString::from(result.join("\n"))))
+        })),
+        ("wrap", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("wrap requires 1 argument")); }
+            let text = args[0].py_to_string();
+            let width = if args.len() >= 2 { args[1].to_int().unwrap_or(70) as usize } else { 70 };
+            let words: Vec<&str> = text.split_whitespace().collect();
+            let mut lines = Vec::new();
+            let mut current = String::new();
+            for word in words {
+                if current.is_empty() {
+                    current = word.to_string();
+                } else if current.len() + 1 + word.len() <= width {
+                    current.push(' ');
+                    current.push_str(word);
+                } else {
+                    lines.push(PyObject::str_val(CompactString::from(current)));
+                    current = word.to_string();
+                }
+            }
+            if !current.is_empty() {
+                lines.push(PyObject::str_val(CompactString::from(current)));
+            }
+            Ok(PyObject::list(lines))
+        })),
+        ("fill", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("fill requires 1 argument")); }
+            let text = args[0].py_to_string();
+            let width = if args.len() >= 2 { args[1].to_int().unwrap_or(70) as usize } else { 70 };
+            let words: Vec<&str> = text.split_whitespace().collect();
+            let mut lines = Vec::new();
+            let mut current = String::new();
+            for word in words {
+                if current.is_empty() {
+                    current = word.to_string();
+                } else if current.len() + 1 + word.len() <= width {
+                    current.push(' ');
+                    current.push_str(word);
+                } else {
+                    lines.push(current);
+                    current = word.to_string();
+                }
+            }
+            if !current.is_empty() { lines.push(current); }
+            Ok(PyObject::str_val(CompactString::from(lines.join("\n"))))
+        })),
+    ])
+}
+
+// ── traceback module (stub) ──
+
+pub fn create_traceback_module() -> PyObjectRef {
+    make_module("traceback", vec![
+        ("format_exc", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(""))))),
+        ("print_exc", make_builtin(|_| Ok(PyObject::none()))),
+        ("format_exception", make_builtin(|_| Ok(PyObject::list(vec![])))),
+        ("print_stack", make_builtin(|_| Ok(PyObject::none()))),
+    ])
+}
+
+// ── warnings module (stub) ──
+
+pub fn create_warnings_module() -> PyObjectRef {
+    make_module("warnings", vec![
+        ("warn", make_builtin(|_| Ok(PyObject::none()))),
+        ("filterwarnings", make_builtin(|_| Ok(PyObject::none()))),
+        ("simplefilter", make_builtin(|_| Ok(PyObject::none()))),
+        ("resetwarnings", make_builtin(|_| Ok(PyObject::none()))),
+    ])
+}
+
+// ── decimal module (stub) ──
+
+pub fn create_decimal_module() -> PyObjectRef {
+    make_module("decimal", vec![
+        ("Decimal", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::float(0.0)); }
+            let s = args[0].py_to_string();
+            match s.parse::<f64>() {
+                Ok(f) => Ok(PyObject::float(f)),
+                Err(_) => Err(PyException::value_error(format!("Invalid literal for Decimal: '{}'", s))),
+            }
+        })),
+        ("ROUND_HALF_UP", PyObject::str_val(CompactString::from("ROUND_HALF_UP"))),
+        ("ROUND_HALF_DOWN", PyObject::str_val(CompactString::from("ROUND_HALF_DOWN"))),
+        ("ROUND_CEILING", PyObject::str_val(CompactString::from("ROUND_CEILING"))),
+        ("ROUND_FLOOR", PyObject::str_val(CompactString::from("ROUND_FLOOR"))),
+        ("getcontext", make_builtin(|_| Ok(PyObject::none()))),
+    ])
+}
+
+// ── statistics module ──
+
+pub fn create_statistics_module() -> PyObjectRef {
+    make_module("statistics", vec![
+        ("mean", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("mean requires 1 argument")); }
+            let items = args[0].to_list()?;
+            if items.is_empty() { return Err(PyException::value_error("mean requires a non-empty dataset")); }
+            let sum: f64 = items.iter().map(|x| x.to_float().unwrap_or(0.0)).sum();
+            Ok(PyObject::float(sum / items.len() as f64))
+        })),
+        ("median", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("median requires 1 argument")); }
+            let items = args[0].to_list()?;
+            if items.is_empty() { return Err(PyException::value_error("median requires a non-empty dataset")); }
+            let mut vals: Vec<f64> = items.iter().map(|x| x.to_float().unwrap_or(0.0)).collect();
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = vals.len();
+            if n % 2 == 1 { Ok(PyObject::float(vals[n / 2])) }
+            else { Ok(PyObject::float((vals[n / 2 - 1] + vals[n / 2]) / 2.0)) }
+        })),
+        ("stdev", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("stdev requires 1 argument")); }
+            let items = args[0].to_list()?;
+            if items.len() < 2 { return Err(PyException::value_error("stdev requires at least 2 data points")); }
+            let vals: Vec<f64> = items.iter().map(|x| x.to_float().unwrap_or(0.0)).collect();
+            let mean: f64 = vals.iter().sum::<f64>() / vals.len() as f64;
+            let variance: f64 = vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (vals.len() - 1) as f64;
+            Ok(PyObject::float(variance.sqrt()))
+        })),
+        ("variance", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("variance requires 1 argument")); }
+            let items = args[0].to_list()?;
+            if items.len() < 2 { return Err(PyException::value_error("variance requires at least 2 data points")); }
+            let vals: Vec<f64> = items.iter().map(|x| x.to_float().unwrap_or(0.0)).collect();
+            let mean: f64 = vals.iter().sum::<f64>() / vals.len() as f64;
+            let variance: f64 = vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (vals.len() - 1) as f64;
+            Ok(PyObject::float(variance))
+        })),
+        ("mode", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("mode requires 1 argument")); }
+            let items = args[0].to_list()?;
+            if items.is_empty() { return Err(PyException::value_error("mode requires a non-empty dataset")); }
+            let mut counts: IndexMap<String, (PyObjectRef, usize)> = IndexMap::new();
+            for item in &items {
+                let key = item.py_to_string();
+                counts.entry(key).or_insert_with(|| (item.clone(), 0)).1 += 1;
+            }
+            let max = counts.values().max_by_key(|v| v.1).unwrap();
+            Ok(max.0.clone())
+        })),
+    ])
+}
+
+// ── numbers module (stub) ──
+
+pub fn create_numbers_module() -> PyObjectRef {
+    make_module("numbers", vec![
+        ("Number", PyObject::none()),
+        ("Complex", PyObject::none()),
+        ("Real", PyObject::none()),
+        ("Rational", PyObject::none()),
+        ("Integral", PyObject::none()),
+    ])
+}

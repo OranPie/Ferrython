@@ -3363,6 +3363,15 @@ impl VirtualMachine {
             "typing" => Ok(builtins::create_typing_module()),
             "abc" => Ok(builtins::create_abc_module()),
             "enum" => Ok(builtins::create_enum_module()),
+            "contextlib" => Ok(builtins::create_contextlib_module()),
+            "dataclasses" => Ok(builtins::create_dataclasses_module()),
+            "struct" => Ok(builtins::create_struct_module()),
+            "textwrap" => Ok(builtins::create_textwrap_module()),
+            "traceback" => Ok(builtins::create_traceback_module()),
+            "warnings" => Ok(builtins::create_warnings_module()),
+            "decimal" => Ok(builtins::create_decimal_module()),
+            "statistics" => Ok(builtins::create_statistics_module()),
+            "numbers" => Ok(builtins::create_numbers_module()),
             _ => Err(PyException::import_error(format!("No module named '{}'", name))),
         }
     }
