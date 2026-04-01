@@ -2,6 +2,7 @@
 
 pub mod builtins;
 pub mod frame;
+mod opcodes;
 pub mod vm;
 
 pub use frame::Frame;
