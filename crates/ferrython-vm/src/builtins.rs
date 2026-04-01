@@ -160,6 +160,9 @@ pub fn get_builtin_fn(name: &str) -> Option<BuiltinFn> {
         "object" => Some(builtin_object),
         "super" => Some(builtin_super),
         "slice" => Some(builtin_slice),
+        "bytes" => Some(builtin_bytes),
+        "bytearray" => Some(builtin_bytearray),
+        "complex" => Some(builtin_complex),
         _ => None,
     }
 }
@@ -440,6 +443,7 @@ fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         HashableKey::Float(f) => f.0.to_bits() as i64,
         HashableKey::None => 0,
         HashableKey::Tuple(_) => 0,
+        HashableKey::FrozenSet(_) => 0,
         HashableKey::Bytes(b) => { let mut h: u64 = 5381; for x in b { h = h.wrapping_mul(33).wrapping_add(x as u64); } h as i64 }
     };
     Ok(PyObject::int(h))
@@ -908,6 +912,83 @@ fn builtin_slice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         2 => Ok(PyObject::slice(to_opt(&args[0]), to_opt(&args[1]), None)),
         _ => Ok(PyObject::slice(to_opt(&args[0]), to_opt(&args[1]), to_opt(&args[2]))),
     }
+}
+
+fn builtin_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Ok(PyObject::bytes(vec![]));
+    }
+    match &args[0].payload {
+        PyObjectPayload::Bytes(b) => Ok(PyObject::bytes(b.clone())),
+        PyObjectPayload::ByteArray(b) => Ok(PyObject::bytes(b.clone())),
+        PyObjectPayload::Str(s) => {
+            // bytes(string, encoding) — require encoding argument
+            if args.len() >= 2 {
+                Ok(PyObject::bytes(s.as_bytes().to_vec()))
+            } else {
+                Err(PyException::type_error("string argument without an encoding"))
+            }
+        }
+        PyObjectPayload::Int(n) => {
+            let size = n.to_i64().unwrap_or(0) as usize;
+            Ok(PyObject::bytes(vec![0u8; size]))
+        }
+        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
+            let items = args[0].to_list()?;
+            let mut result = Vec::with_capacity(items.len());
+            for item in items {
+                let v = item.to_int().map_err(|_| PyException::type_error("an integer is required"))?;
+                if v < 0 || v > 255 {
+                    return Err(PyException::value_error("bytes must be in range(0, 256)"));
+                }
+                result.push(v as u8);
+            }
+            Ok(PyObject::bytes(result))
+        }
+        _ => Err(PyException::type_error("cannot convert to bytes")),
+    }
+}
+
+fn builtin_bytearray(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Ok(PyObject::bytearray(vec![]));
+    }
+    match &args[0].payload {
+        PyObjectPayload::Bytes(b) => Ok(PyObject::bytearray(b.clone())),
+        PyObjectPayload::ByteArray(b) => Ok(PyObject::bytearray(b.clone())),
+        PyObjectPayload::Str(s) => {
+            if args.len() >= 2 {
+                Ok(PyObject::bytearray(s.as_bytes().to_vec()))
+            } else {
+                Err(PyException::type_error("string argument without an encoding"))
+            }
+        }
+        PyObjectPayload::Int(n) => {
+            let size = n.to_i64().unwrap_or(0) as usize;
+            Ok(PyObject::bytearray(vec![0u8; size]))
+        }
+        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
+            let items = args[0].to_list()?;
+            let mut result = Vec::with_capacity(items.len());
+            for item in items {
+                let v = item.to_int().map_err(|_| PyException::type_error("an integer is required"))?;
+                if v < 0 || v > 255 {
+                    return Err(PyException::value_error("bytes must be in range(0, 256)"));
+                }
+                result.push(v as u8);
+            }
+            Ok(PyObject::bytearray(result))
+        }
+        _ => Err(PyException::type_error("cannot convert to bytearray")),
+    }
+}
+
+fn builtin_complex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Stub: complex(real, imag) → just return float for now
+    let real = if !args.is_empty() { args[0].to_float().unwrap_or(0.0) } else { 0.0 };
+    let _imag = if args.len() > 1 { args[1].to_float().unwrap_or(0.0) } else { 0.0 };
+    // TODO: proper complex type
+    Ok(PyObject::float(real))
 }
 
 fn builtin_issubclass(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -3055,6 +3136,11 @@ fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 HashableKey::Tuple(items) => PyObject::tuple(
                     items.into_iter().map(|_| PyObject::none()).collect()
                 ),
+                HashableKey::FrozenSet(items) => {
+                    let mut map = indexmap::IndexMap::new();
+                    for k in items { map.insert(k.clone(), k.to_object()); }
+                    PyObject::frozenset(map)
+                },
             };
             (key_obj, PyObject::int(v))
         })

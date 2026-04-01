@@ -202,6 +202,7 @@ pub enum HashableKey {
     Str(CompactString),
     Bytes(Vec<u8>),
     Tuple(Vec<HashableKey>),
+    FrozenSet(Vec<HashableKey>),
 }
 
 impl HashableKey {
@@ -219,6 +220,12 @@ impl HashableKey {
                 for item in items { keys.push(HashableKey::from_object(item)?); }
                 Ok(HashableKey::Tuple(keys))
             }
+            PyObjectPayload::FrozenSet(m) => {
+                let mut keys: Vec<HashableKey> = Vec::with_capacity(m.len());
+                for (k, _) in m { keys.push(k.clone()); }
+                keys.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
+                Ok(HashableKey::FrozenSet(keys))
+            }
             PyObjectPayload::Ellipsis => Ok(HashableKey::Str(CompactString::from("Ellipsis"))),
             _ => Err(PyException::type_error(format!("unhashable type: '{}'", obj.type_name()))),
         }
@@ -232,6 +239,11 @@ impl HashableKey {
             HashableKey::Str(s) => PyObject::str_val(s.clone()),
             HashableKey::Bytes(b) => PyObject::bytes(b.clone()),
             HashableKey::Tuple(keys) => PyObject::tuple(keys.iter().map(|k| k.to_object()).collect()),
+            HashableKey::FrozenSet(keys) => {
+                let mut map = indexmap::IndexMap::new();
+                for k in keys { map.insert(k.clone(), k.to_object()); }
+                PyObject::frozenset(map)
+            },
         }
     }
 }
@@ -246,6 +258,7 @@ impl PartialEq for HashableKey {
             (HashableKey::Str(a), HashableKey::Str(b)) => a == b,
             (HashableKey::Bytes(a), HashableKey::Bytes(b)) => a == b,
             (HashableKey::Tuple(a), HashableKey::Tuple(b)) => a == b,
+            (HashableKey::FrozenSet(a), HashableKey::FrozenSet(b)) => a == b,
             (HashableKey::Bool(b), HashableKey::Int(n)) | (HashableKey::Int(n), HashableKey::Bool(b)) => {
                 *n == PyInt::Small(*b as i64)
             }
@@ -265,6 +278,7 @@ impl Hash for HashableKey {
             HashableKey::Str(s) => s.hash(state),
             HashableKey::Bytes(b) => b.hash(state),
             HashableKey::Tuple(items) => items.hash(state),
+            HashableKey::FrozenSet(items) => items.hash(state),
         }
     }
 }

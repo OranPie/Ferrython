@@ -1839,8 +1839,21 @@ impl VirtualMachine {
                     }
                 }
                 Opcode::ImportStar => {
-                    let _module = frame.pop();
-                    // TODO: copy all names from module to local scope
+                    let module = frame.pop();
+                    // Copy all public names from module to local scope
+                    if let PyObjectPayload::Module(mod_data) = &module.payload {
+                        let all_names: Option<Vec<String>> = mod_data.attrs.get("__all__").and_then(|v| {
+                            v.to_list().ok().map(|items| items.iter().map(|x| x.py_to_string()).collect())
+                        });
+                        let mut globals = frame.globals.write();
+                        for (k, v) in &mod_data.attrs {
+                            if k.starts_with('_') && all_names.is_none() { continue; }
+                            if let Some(ref names) = all_names {
+                                if !names.contains(&k.to_string()) { continue; }
+                            }
+                            globals.insert(k.clone(), v.clone());
+                        }
+                    }
                 }
 
                 // ── Exception handling ──
