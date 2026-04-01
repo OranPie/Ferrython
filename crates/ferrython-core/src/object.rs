@@ -429,6 +429,9 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
             PyObjectPayload::Dict(m) => Ok(m.read().keys().map(|k| k.to_object()).collect()),
+            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                Ok(b.iter().map(|byte| PyObject::int(*byte as i64)).collect())
+            }
             PyObjectPayload::Iterator(iter_data) => {
                 let data = iter_data.lock().unwrap();
                 match &*data {
@@ -816,6 +819,7 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Int(n) => Ok(n.abs().to_object()),
             PyObjectPayload::Float(f) => Ok(PyObject::float(f.abs())),
             PyObjectPayload::Bool(b) => Ok(PyObject::int(*b as i64)),
+            PyObjectPayload::Complex { real, imag } => Ok(PyObject::float((real * real + imag * imag).sqrt())),
             _ => Err(PyException::type_error(format!("bad operand type for abs(): '{}'", self.type_name()))),
         }
     }
