@@ -3388,191 +3388,22 @@ impl VirtualMachine {
                         return Ok(Arc::new(PyObject { payload: new_prop }));
                     }
                 }
-                // namedtuple methods
+                // namedtuple methods — delegated to builtins
                 if let PyObjectPayload::Instance(inst) = &receiver.payload {
-                    if inst.class.get_attr("__namedtuple__").is_some() {
-                        match method_name.as_str() {
-                            "_asdict" => {
-                                if let Some(fields) = inst.class.get_attr("_fields") {
-                                    if let PyObjectPayload::Tuple(field_names) = &fields.payload {
-                                        let mut map = IndexMap::new();
-                                        let attrs = inst.attrs.read();
-                                        for field in field_names {
-                                            let name = field.py_to_string();
-                                            let val = attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
-                                            map.insert(HashableKey::Str(CompactString::from(name.as_str())), val);
-                                        }
-                                        return Ok(PyObject::dict(map));
-                                    }
-                                }
-                            }
-                            "__len__" => {
-                                if let Some(tup) = inst.attrs.read().get("_tuple") {
-                                    if let PyObjectPayload::Tuple(items) = &tup.payload {
-                                        return Ok(PyObject::int(items.len() as i64));
-                                    }
-                                }
-                                return Ok(PyObject::int(0));
-                            }
-                            "__iter__" => {
-                                if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
-                                    if let PyObjectPayload::Tuple(items) = &tup.payload {
-                                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                                            Arc::new(std::sync::Mutex::new(
-                                                ferrython_core::object::IteratorData::Tuple { items: items.clone(), index: 0 }
-                                            ))
-                                        )));
-                                    }
-                                }
-                                return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                                    Arc::new(std::sync::Mutex::new(
-                                        ferrython_core::object::IteratorData::Tuple { items: vec![], index: 0 }
-                                    ))
-                                )));
-                            }
-                            _ => {}
+                    if inst.class.get_attr("__namedtuple__").is_some()
+                        || inst.attrs.read().contains_key("__deque__")
+                    {
+                        // deque extend/extendleft need iterable collection via VM
+                        if inst.attrs.read().contains_key("__deque__") && matches!(method_name.as_str(), "extend" | "extendleft") {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::call_method(receiver, method_name.as_str(), &[PyObject::list(items)]);
                         }
+                        return builtins::call_method(receiver, method_name.as_str(), &args);
                     }
-                    // Deque methods
-                    if inst.attrs.read().contains_key("__deque__") {
-                        let get_data = || -> PyObjectRef {
-                            inst.attrs.read().get("_data").cloned().unwrap_or_else(|| PyObject::list(vec![]))
-                        };
-                        match method_name.as_str() {
-                            "append" => {
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    list.write().push(args[0].clone());
-                                }
-                                return Ok(PyObject::none());
-                            }
-                            "appendleft" => {
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    list.write().insert(0, args[0].clone());
-                                }
-                                return Ok(PyObject::none());
-                            }
-                            "pop" => {
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    let mut v = list.write();
-                                    if v.is_empty() {
-                                        return Err(PyException::new(ExceptionKind::IndexError, "pop from an empty deque"));
-                                    }
-                                    return Ok(v.pop().unwrap());
-                                }
-                                return Ok(PyObject::none());
-                            }
-                            "popleft" => {
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    let mut v = list.write();
-                                    if v.is_empty() {
-                                        return Err(PyException::new(ExceptionKind::IndexError, "pop from an empty deque"));
-                                    }
-                                    return Ok(v.remove(0));
-                                }
-                                return Ok(PyObject::none());
-                            }
-                            "extend" => {
-                                let items = self.collect_iterable(&args[0])?;
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    list.write().extend(items);
-                                }
-                                return Ok(PyObject::none());
-                            }
-                            "extendleft" => {
-                                let items = self.collect_iterable(&args[0])?;
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    let mut v = list.write();
-                                    for item in items.into_iter().rev() {
-                                        v.insert(0, item);
-                                    }
-                                }
-                                return Ok(PyObject::none());
-                            }
-                            "rotate" => {
-                                let n = if args.is_empty() { 1i64 } else { args[0].as_int().unwrap_or(1) };
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    let mut v = list.write();
-                                    let len = v.len() as i64;
-                                    if len > 0 {
-                                        let n = ((n % len) + len) % len;
-                                        let split = v.len() - n as usize;
-                                        let tail: Vec<_> = v.drain(split..).collect();
-                                        for (i, item) in tail.into_iter().enumerate() {
-                                            v.insert(i, item);
-                                        }
-                                    }
-                                }
-                                return Ok(PyObject::none());
-                            }
-                            "clear" => {
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    list.write().clear();
-                                }
-                                return Ok(PyObject::none());
-                            }
-                            "copy" => {
-                                let data = get_data();
-                                let items = data.to_list()?;
-                                return builtins::dispatch("deque", &[PyObject::list(items)]);
-                            }
-                            "count" => {
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    let v = list.read();
-                                    let count = v.iter().filter(|x| x.py_to_string() == args[0].py_to_string()).count();
-                                    return Ok(PyObject::int(count as i64));
-                                }
-                                return Ok(PyObject::int(0));
-                            }
-                            "reverse" => {
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    list.write().reverse();
-                                }
-                                return Ok(PyObject::none());
-                            }
-                            "__len__" => {
-                                let data = get_data();
-                                if let PyObjectPayload::List(list) = &data.payload {
-                                    return Ok(PyObject::int(list.read().len() as i64));
-                                }
-                                return Ok(PyObject::int(0));
-                            }
-                            "__iter__" => {
-                                let data = get_data();
-                                return Ok(data);
-                            }
-                            _ => {}
-                        }
-                    }
-                    // Hash object methods (hashlib)
+                    // Hashlib methods — delegated to builtins
                     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.to_string() } else { String::new() };
                     if matches!(class_name.as_str(), "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
-                        match method_name.as_str() {
-                            "hexdigest" => {
-                                let attrs = inst.attrs.read();
-                                if let Some(hd) = attrs.get("_hexdigest") {
-                                    return Ok(hd.clone());
-                                }
-                                return Ok(PyObject::str_val(CompactString::from("")));
-                            }
-                            "digest" => {
-                                let attrs = inst.attrs.read();
-                                if let Some(d) = attrs.get("_digest") {
-                                    return Ok(d.clone());
-                                }
-                                return Ok(PyObject::bytes(vec![]));
-                            }
-                            _ => {}
-                        }
+                        return builtins::call_method(receiver, method_name.as_str(), &args);
                     }
                 }
                 builtins::call_method(receiver, method_name.as_str(), &args)
