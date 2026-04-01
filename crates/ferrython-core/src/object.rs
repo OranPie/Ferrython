@@ -874,6 +874,20 @@ impl PyObjectMethods for PyObjectRef {
     fn get_attr(&self, name: &str) -> Option<PyObjectRef> {
         match &self.payload {
             PyObjectPayload::Instance(inst) => {
+                // Special instance attributes
+                if name == "__class__" {
+                    return Some(inst.class.clone());
+                }
+                if name == "__dict__" {
+                    let attrs = inst.attrs.read();
+                    let mut map = IndexMap::new();
+                    for (k, v) in attrs.iter() {
+                        if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
+                            map.insert(hk, v.clone());
+                        }
+                    }
+                    return Some(PyObject::dict(map));
+                }
                 // Check class MRO for data descriptors (Property) first
                 if let Some(v) = lookup_in_class_mro(&inst.class, name) {
                     match &v.payload {
@@ -923,6 +937,16 @@ impl PyObjectMethods for PyObjectRef {
                     let mut mro_list = vec![self.clone()];
                     mro_list.extend(cd.mro.iter().cloned());
                     return Some(PyObject::tuple(mro_list));
+                }
+                if name == "__dict__" {
+                    let ns = cd.namespace.read();
+                    let mut map = IndexMap::new();
+                    for (k, v) in ns.iter() {
+                        if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
+                            map.insert(hk, v.clone());
+                        }
+                    }
+                    return Some(PyObject::dict(map));
                 }
                 // Check own namespace first, then bases
                 if let Some(v) = cd.namespace.read().get(name).cloned() {

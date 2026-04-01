@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData};
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -282,11 +282,49 @@ fn builtin_bool(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() == 3 {
+        // type(name, bases, dict) → dynamic class creation
+        let name = args[0].as_str().ok_or_else(|| 
+            PyException::type_error("type() argument 1 must be str"))?;
+        let bases = args[1].to_list()?;
+        let namespace = match &args[2].payload {
+            PyObjectPayload::Dict(m) => {
+                let r = m.read();
+                let mut ns = IndexMap::new();
+                for (k, v) in r.iter() {
+                    let key_str = match k {
+                        HashableKey::Str(s) => s.clone(),
+                        _ => CompactString::from(k.to_object().py_to_string()),
+                    };
+                    ns.insert(key_str, v.clone());
+                }
+                ns
+            }
+            _ => return Err(PyException::type_error("type() argument 3 must be dict")),
+        };
+        // Compute simple MRO from bases
+        let mut mro = Vec::new();
+        for base in &bases {
+            mro.push(base.clone());
+            if let PyObjectPayload::Class(cd) = &base.payload {
+                for m in &cd.mro {
+                    if !mro.iter().any(|existing| Arc::ptr_eq(existing, m)) {
+                        mro.push(m.clone());
+                    }
+                }
+            }
+        }
+        return Ok(PyObject::wrap(PyObjectPayload::Class(ferrython_core::object::ClassData {
+            name: CompactString::from(name),
+            bases,
+            namespace: Arc::new(RwLock::new(namespace)),
+            mro,
+        })));
+    }
     check_args("type", args, 1)?;
     let name = args[0].type_name();
     match &args[0].payload {
         PyObjectPayload::Instance(inst) => {
-            // For instances, return their class
             Ok(inst.class.clone())
         }
         PyObjectPayload::ExceptionInstance { kind, .. } => {

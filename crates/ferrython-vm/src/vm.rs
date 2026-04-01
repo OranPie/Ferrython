@@ -814,6 +814,13 @@ impl VirtualMachine {
                             push!(r); return Ok(None);
                         }
                     }
+                    if matches!(&b.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = b.get_attr("__radd__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![a])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.add(&b)?);
                 }
                 Opcode::InplaceAdd => {
@@ -833,6 +840,13 @@ impl VirtualMachine {
                         if let Some(m) = a.get_attr("__sub__") {
                             drop(frame);
                             let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
+                    if matches!(&b.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = b.get_attr("__rsub__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![a])?;
                             push!(r); return Ok(None);
                         }
                     }
@@ -858,6 +872,13 @@ impl VirtualMachine {
                             push!(r); return Ok(None);
                         }
                     }
+                    if matches!(&b.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = b.get_attr("__rmul__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![a])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.mul(&b)?);
                 }
                 Opcode::InplaceMultiply => {
@@ -877,6 +898,13 @@ impl VirtualMachine {
                         if let Some(m) = a.get_attr("__truediv__") {
                             drop(frame);
                             let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
+                    if matches!(&b.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = b.get_attr("__rtruediv__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![a])?;
                             push!(r); return Ok(None);
                         }
                     }
@@ -902,6 +930,13 @@ impl VirtualMachine {
                             push!(r); return Ok(None);
                         }
                     }
+                    if matches!(&b.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = b.get_attr("__rfloordiv__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![a])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.floor_div(&b)?);
                 }
                 Opcode::InplaceFloorDivide => {
@@ -924,6 +959,13 @@ impl VirtualMachine {
                             push!(r); return Ok(None);
                         }
                     }
+                    if matches!(&b.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = b.get_attr("__rmod__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![a])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.modulo(&b)?);
                 }
                 Opcode::BinaryPower | Opcode::InplacePower => {
@@ -935,26 +977,68 @@ impl VirtualMachine {
                             push!(r); return Ok(None);
                         }
                     }
+                    if matches!(&b.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = b.get_attr("__rpow__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![a])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.power(&b)?);
                 }
                 Opcode::BinaryLshift | Opcode::InplaceLshift => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__lshift__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.lshift(&b)?);
                 }
                 Opcode::BinaryRshift | Opcode::InplaceRshift => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__rshift__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.rshift(&b)?);
                 }
                 Opcode::BinaryAnd | Opcode::InplaceAnd => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__and__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.bit_and(&b)?);
                 }
                 Opcode::BinaryOr | Opcode::InplaceOr => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__or__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.bit_or(&b)?);
                 }
                 Opcode::BinaryXor | Opcode::InplaceXor => {
                     let b = frame.pop(); let a = frame.pop();
+                    if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                        if let Some(m) = a.get_attr("__xor__") {
+                            drop(frame);
+                            let r = self.call_object(m, vec![b])?;
+                            push!(r); return Ok(None);
+                        }
+                    }
                     frame.push(a.bit_xor(&b)?);
                 }
                 Opcode::BinarySubscr => {
@@ -2100,6 +2184,16 @@ impl VirtualMachine {
                         return Ok(PyObject::wrap(PyObjectPayload::Iterator(
                             Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
                         )));
+                    }
+                    "iter" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(iter_method) = args[0].get_attr("__iter__") {
+                                    return self.call_object(iter_method, vec![]);
+                                }
+                            }
+                            // Fall through to builtin dispatch for non-instances
+                        }
                     }
                     "next" => {
                         if args.is_empty() {
