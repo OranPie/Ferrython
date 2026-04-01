@@ -961,6 +961,29 @@ impl PyObjectMethods for PyObjectRef {
                         return Some(v.clone());
                     }
                 }
+                // deque methods
+                if inst.attrs.read().contains_key("__deque__") {
+                    if matches!(name, "append" | "appendleft" | "pop" | "popleft" | "extend" | "extendleft" | "rotate" | "clear" | "copy" | "count" | "index" | "insert" | "remove" | "reverse" | "maxlen") {
+                        return Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: self.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }));
+                    }
+                    // __iter__ for deque → iterate _data
+                    if name == "__iter__" || name == "__len__" || name == "__contains__" || name == "__getitem__" {
+                        return Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: self.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }));
+                    }
+                    if let Some(v) = inst.attrs.read().get(name) {
+                        return Some(v.clone());
+                    }
+                }
                 None
             }
             PyObjectPayload::Class(cd) => {

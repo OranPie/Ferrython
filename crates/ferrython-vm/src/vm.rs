@@ -3501,6 +3501,126 @@ impl VirtualMachine {
                             _ => {}
                         }
                     }
+                    // Deque methods
+                    if inst.attrs.read().contains_key("__deque__") {
+                        let get_data = || -> PyObjectRef {
+                            inst.attrs.read().get("_data").cloned().unwrap_or_else(|| PyObject::list(vec![]))
+                        };
+                        match method_name.as_str() {
+                            "append" => {
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    list.write().push(args[0].clone());
+                                }
+                                return Ok(PyObject::none());
+                            }
+                            "appendleft" => {
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    list.write().insert(0, args[0].clone());
+                                }
+                                return Ok(PyObject::none());
+                            }
+                            "pop" => {
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    let mut v = list.write();
+                                    if v.is_empty() {
+                                        return Err(PyException::new(ExceptionKind::IndexError, "pop from an empty deque"));
+                                    }
+                                    return Ok(v.pop().unwrap());
+                                }
+                                return Ok(PyObject::none());
+                            }
+                            "popleft" => {
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    let mut v = list.write();
+                                    if v.is_empty() {
+                                        return Err(PyException::new(ExceptionKind::IndexError, "pop from an empty deque"));
+                                    }
+                                    return Ok(v.remove(0));
+                                }
+                                return Ok(PyObject::none());
+                            }
+                            "extend" => {
+                                let items = self.collect_iterable(&args[0])?;
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    list.write().extend(items);
+                                }
+                                return Ok(PyObject::none());
+                            }
+                            "extendleft" => {
+                                let items = self.collect_iterable(&args[0])?;
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    let mut v = list.write();
+                                    for item in items.into_iter().rev() {
+                                        v.insert(0, item);
+                                    }
+                                }
+                                return Ok(PyObject::none());
+                            }
+                            "rotate" => {
+                                let n = if args.is_empty() { 1i64 } else { args[0].as_int().unwrap_or(1) };
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    let mut v = list.write();
+                                    let len = v.len() as i64;
+                                    if len > 0 {
+                                        let n = ((n % len) + len) % len;
+                                        let split = v.len() - n as usize;
+                                        let tail: Vec<_> = v.drain(split..).collect();
+                                        for (i, item) in tail.into_iter().enumerate() {
+                                            v.insert(i, item);
+                                        }
+                                    }
+                                }
+                                return Ok(PyObject::none());
+                            }
+                            "clear" => {
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    list.write().clear();
+                                }
+                                return Ok(PyObject::none());
+                            }
+                            "copy" => {
+                                let data = get_data();
+                                let items = data.to_list()?;
+                                return builtins::dispatch("deque", &[PyObject::list(items)]);
+                            }
+                            "count" => {
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    let v = list.read();
+                                    let count = v.iter().filter(|x| x.py_to_string() == args[0].py_to_string()).count();
+                                    return Ok(PyObject::int(count as i64));
+                                }
+                                return Ok(PyObject::int(0));
+                            }
+                            "reverse" => {
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    list.write().reverse();
+                                }
+                                return Ok(PyObject::none());
+                            }
+                            "__len__" => {
+                                let data = get_data();
+                                if let PyObjectPayload::List(list) = &data.payload {
+                                    return Ok(PyObject::int(list.read().len() as i64));
+                                }
+                                return Ok(PyObject::int(0));
+                            }
+                            "__iter__" => {
+                                let data = get_data();
+                                return Ok(data);
+                            }
+                            _ => {}
+                        }
+                    }
                     // Hash object methods (hashlib)
                     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.to_string() } else { String::new() };
                     if matches!(class_name.as_str(), "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
@@ -3545,10 +3665,14 @@ impl VirtualMachine {
                 let partial_func = partial_func.clone();
                 let mut combined_args = partial_args.clone();
                 combined_args.extend(args);
-                // If there are kwargs, we'd need to handle them through CALL_FUNCTION_KW path
-                // For now, just call with combined positional args
-                let _ = partial_kwargs;
-                self.call_object(partial_func, combined_args)
+                if !partial_kwargs.is_empty() {
+                    let kw: Vec<(CompactString, PyObjectRef)> = partial_kwargs.iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    self.call_object_kw(partial_func, combined_args, kw)
+                } else {
+                    self.call_object(partial_func, combined_args)
+                }
             }
             PyObjectPayload::Instance(_) => {
                 // Callable instances: check for __call__
@@ -3700,7 +3824,13 @@ impl VirtualMachine {
                 }
                 Ok(items)
             }
-            PyObjectPayload::Instance(_) => {
+            PyObjectPayload::Instance(inst) => {
+                // Deque: directly return internal data as list
+                if inst.attrs.read().contains_key("__deque__") {
+                    if let Some(data) = inst.attrs.read().get("_data").cloned() {
+                        return data.to_list();
+                    }
+                }
                 if let Some(iter_method) = obj.get_attr("__iter__") {
                     let iter_obj = self.call_object(iter_method, vec![])?;
                     // If __iter__ returned a builtin Iterator, use iter_advance

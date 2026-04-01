@@ -3329,6 +3329,15 @@ fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::dict_from_pairs(vec![]));
     }
+    // Handle dict input: Counter({"red": 4, "blue": 2})
+    if let PyObjectPayload::Dict(m) = &args[0].payload {
+        let map = m.read();
+        let pairs: Vec<(PyObjectRef, PyObjectRef)> = map.iter()
+            .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__"))
+            .map(|(k, v)| (k.to_object(), v.clone()))
+            .collect();
+        return Ok(PyObject::dict_from_pairs(pairs));
+    }
     let items = args[0].to_list()?;
     let mut counts: IndexMap<HashableKey, i64> = IndexMap::new();
     for item in &items {
@@ -3416,13 +3425,23 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // Simplified deque — just a list
-    if args.is_empty() {
-        Ok(PyObject::list(vec![]))
+    let items = if args.is_empty() {
+        vec![]
     } else {
-        let items = args[0].to_list()?;
-        Ok(PyObject::list(items))
+        args[0].to_list()?
+    };
+    let deque_cls = PyObject::class(
+        CompactString::from("deque"),
+        vec![],
+        IndexMap::new(),
+    );
+    let inst = PyObject::instance(deque_cls);
+    if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
+        attrs.insert(CompactString::from("_data"), PyObject::list(items));
     }
+    Ok(inst)
 }
 
 pub fn create_functools_module() -> PyObjectRef {
