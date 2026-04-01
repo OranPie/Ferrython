@@ -291,6 +291,52 @@ pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRe
     None
 }
 
+/// Check if an instance has built-in methods from special types (namedtuple, deque, hashlib).
+/// Returns a BuiltinBoundMethod if the method name matches, None otherwise.
+fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -> Option<PyObjectRef> {
+    let make_bound = |name: &str| -> PyObjectRef {
+        Arc::new(PyObject {
+            payload: PyObjectPayload::BuiltinBoundMethod {
+                receiver: obj.clone(),
+                method_name: CompactString::from(name),
+            }
+        })
+    };
+
+    // Namedtuple
+    if inst.class.get_attr("__namedtuple__").is_some() {
+        if name == "_fields" {
+            return inst.class.get_attr("_fields");
+        }
+        if matches!(name, "_asdict" | "_replace" | "_make" | "__len__" | "__iter__") {
+            return Some(make_bound(name));
+        }
+    }
+
+    // Deque
+    if inst.attrs.read().contains_key("__deque__") {
+        if matches!(name, "append" | "appendleft" | "pop" | "popleft" | "extend"
+            | "extendleft" | "rotate" | "clear" | "copy" | "count" | "index"
+            | "insert" | "remove" | "reverse" | "maxlen"
+            | "__iter__" | "__len__" | "__contains__" | "__getitem__")
+        {
+            return Some(make_bound(name));
+        }
+        return inst.attrs.read().get(name).cloned();
+    }
+
+    // Hashlib hash objects
+    let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.as_str() } else { "" };
+    if matches!(class_name, "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
+        if matches!(name, "hexdigest" | "digest" | "update" | "copy") {
+            return Some(make_bound(name));
+        }
+        return inst.attrs.read().get(name).cloned();
+    }
+
+    None
+}
+
 impl PyObjectMethods for PyObjectRef {
     fn type_name(&self) -> &'static str {
         match &self.payload {
@@ -931,58 +977,9 @@ impl PyObjectMethods for PyObjectRef {
                     }
                     return Some(v.clone());
                 }
-                // namedtuple methods: _asdict, _replace, _make, __len__, __iter__
-                if inst.class.get_attr("__namedtuple__").is_some() {
-                    if name == "_asdict" || name == "_replace" || name == "_make" 
-                       || name == "__len__" || name == "__iter__" || name == "_fields" {
-                        if name == "_fields" {
-                            return inst.class.get_attr("_fields");
-                        }
-                        return Some(Arc::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod {
-                                receiver: self.clone(),
-                                method_name: CompactString::from(name),
-                            }
-                        }));
-                    }
-                }
-                // hashlib hash object methods
-                let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.as_str() } else { "" };
-                if matches!(class_name, "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
-                    if name == "hexdigest" || name == "digest" || name == "update" || name == "copy" {
-                        return Some(Arc::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod {
-                                receiver: self.clone(),
-                                method_name: CompactString::from(name),
-                            }
-                        }));
-                    }
-                    if let Some(v) = inst.attrs.read().get(name) {
-                        return Some(v.clone());
-                    }
-                }
-                // deque methods
-                if inst.attrs.read().contains_key("__deque__") {
-                    if matches!(name, "append" | "appendleft" | "pop" | "popleft" | "extend" | "extendleft" | "rotate" | "clear" | "copy" | "count" | "index" | "insert" | "remove" | "reverse" | "maxlen") {
-                        return Some(Arc::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod {
-                                receiver: self.clone(),
-                                method_name: CompactString::from(name),
-                            }
-                        }));
-                    }
-                    // __iter__ for deque → iterate _data
-                    if name == "__iter__" || name == "__len__" || name == "__contains__" || name == "__getitem__" {
-                        return Some(Arc::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod {
-                                receiver: self.clone(),
-                                method_name: CompactString::from(name),
-                            }
-                        }));
-                    }
-                    if let Some(v) = inst.attrs.read().get(name) {
-                        return Some(v.clone());
-                    }
+                // Check for built-in instance methods (namedtuple, deque, hashlib)
+                if let Some(result) = instance_builtin_method(self, inst, name) {
+                    return Some(result);
                 }
                 None
             }
