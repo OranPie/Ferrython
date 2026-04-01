@@ -499,6 +499,21 @@ impl PyObjectMethods for PyObjectRef {
             (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a + b)),
             (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.to_f64() + b)),
             (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => Ok(PyObject::float(a + b.to_f64())),
+            (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
+                Ok(PyObject::complex(ar + br, ai + bi))
+            }
+            (PyObjectPayload::Int(a), PyObjectPayload::Complex { real, imag }) => {
+                Ok(PyObject::complex(a.to_f64() + real, *imag))
+            }
+            (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Int(b)) => {
+                Ok(PyObject::complex(real + b.to_f64(), *imag))
+            }
+            (PyObjectPayload::Float(a), PyObjectPayload::Complex { real, imag }) => {
+                Ok(PyObject::complex(a + real, *imag))
+            }
+            (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Float(b)) => {
+                Ok(PyObject::complex(real + b, *imag))
+            }
             (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => {
                 let mut s = a.to_string(); s.push_str(b.as_str());
                 Ok(PyObject::str_val(CompactString::from(s)))
@@ -519,6 +534,32 @@ impl PyObjectMethods for PyObjectRef {
             (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a - b)),
             (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.to_f64() - b)),
             (PyObjectPayload::Float(a), PyObjectPayload::Int(b)) => Ok(PyObject::float(a - b.to_f64())),
+            (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
+                Ok(PyObject::complex(ar - br, ai - bi))
+            }
+            (PyObjectPayload::Int(a), PyObjectPayload::Complex { real, imag }) => {
+                Ok(PyObject::complex(a.to_f64() - real, -*imag))
+            }
+            (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Int(b)) => {
+                Ok(PyObject::complex(real - b.to_f64(), *imag))
+            }
+            (PyObjectPayload::Float(a), PyObjectPayload::Complex { real, imag }) => {
+                Ok(PyObject::complex(a - real, -*imag))
+            }
+            (PyObjectPayload::Complex { real, imag }, PyObjectPayload::Float(b)) => {
+                Ok(PyObject::complex(real - b, *imag))
+            }
+            (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
+                let ra = a.read(); let rb = b.read();
+                let mut result = IndexMap::new();
+                for (k, v) in ra.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+            }
+            (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
+                let mut result = IndexMap::new();
+                for (k, v) in a.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for -: '{}' and '{}'", self.type_name(), other.type_name()))),
         }
     }
@@ -662,9 +703,40 @@ impl PyObjectMethods for PyObjectRef {
 
     fn lshift(&self, other: &Self) -> PyResult<PyObjectRef> { int_bitop(self, other, "<<", |a, b| a << b) }
     fn rshift(&self, other: &Self) -> PyResult<PyObjectRef> { int_bitop(self, other, ">>", |a, b| a >> b) }
-    fn bit_and(&self, other: &Self) -> PyResult<PyObjectRef> { int_bitop(self, other, "&", |a, b| a & b) }
-    fn bit_or(&self, other: &Self) -> PyResult<PyObjectRef> { int_bitop(self, other, "|", |a, b| a | b) }
-    fn bit_xor(&self, other: &Self) -> PyResult<PyObjectRef> { int_bitop(self, other, "^", |a, b| a ^ b) }
+    fn bit_and(&self, other: &Self) -> PyResult<PyObjectRef> {
+        match (&self.payload, &other.payload) {
+            (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
+                let ra = a.read(); let rb = b.read();
+                let mut result = IndexMap::new();
+                for (k, v) in ra.iter() { if rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+            }
+            _ => int_bitop(self, other, "&", |a, b| a & b),
+        }
+    }
+    fn bit_or(&self, other: &Self) -> PyResult<PyObjectRef> {
+        match (&self.payload, &other.payload) {
+            (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
+                let ra = a.read(); let rb = b.read();
+                let mut result = ra.clone();
+                for (k, v) in rb.iter() { result.insert(k.clone(), v.clone()); }
+                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+            }
+            _ => int_bitop(self, other, "|", |a, b| a | b),
+        }
+    }
+    fn bit_xor(&self, other: &Self) -> PyResult<PyObjectRef> {
+        match (&self.payload, &other.payload) {
+            (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
+                let ra = a.read(); let rb = b.read();
+                let mut result = IndexMap::new();
+                for (k, v) in ra.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                for (k, v) in rb.iter() { if !ra.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+            }
+            _ => int_bitop(self, other, "^", |a, b| a ^ b),
+        }
+    }
 
     fn negate(&self) -> PyResult<PyObjectRef> {
         match &self.payload {
@@ -700,6 +772,22 @@ impl PyObjectMethods for PyObjectRef {
     }
 
     fn compare(&self, other: &Self, op: CompareOp) -> PyResult<PyObjectRef> {
+        // Set comparisons: subset/superset semantics
+        match (&self.payload, &other.payload) {
+            (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
+                let ra = a.read(); let rb = b.read();
+                let result = match op {
+                    CompareOp::Eq => ra.len() == rb.len() && ra.keys().all(|k| rb.contains_key(k)),
+                    CompareOp::Ne => !(ra.len() == rb.len() && ra.keys().all(|k| rb.contains_key(k))),
+                    CompareOp::Le => ra.keys().all(|k| rb.contains_key(k)),  // issubset
+                    CompareOp::Lt => ra.len() < rb.len() && ra.keys().all(|k| rb.contains_key(k)),
+                    CompareOp::Ge => rb.keys().all(|k| ra.contains_key(k)),  // issuperset
+                    CompareOp::Gt => ra.len() > rb.len() && rb.keys().all(|k| ra.contains_key(k)),
+                };
+                return Ok(PyObject::bool_val(result));
+            }
+            _ => {}
+        }
         let ord = partial_cmp_objects(self, other);
         let result = match op {
             CompareOp::Eq => ord == Some(std::cmp::Ordering::Equal),
@@ -794,9 +882,42 @@ impl PyObjectMethods for PyObjectRef {
                     _ => None,
                 }
             }
+            PyObjectPayload::Complex { real, imag } => {
+                match name {
+                    "real" => Some(PyObject::float(*real)),
+                    "imag" => Some(PyObject::float(*imag)),
+                    "conjugate" => Some(Arc::new(PyObject {
+                        payload: PyObjectPayload::BuiltinBoundMethod {
+                            receiver: self.clone(),
+                            method_name: CompactString::from("conjugate"),
+                        }
+                    })),
+                    _ => None,
+                }
+            }
             PyObjectPayload::BuiltinType(n) => {
                 match name {
                     "__name__" => Some(PyObject::str_val(n.clone())),
+                    _ => None,
+                }
+            }
+            PyObjectPayload::Property { fget, fset, fdel } => {
+                match name {
+                    "setter" | "getter" | "deleter" | "fget" | "fset" | "fdel" => {
+                        match name {
+                            "fget" => return fget.clone().or_else(|| Some(PyObject::none())),
+                            "fset" => return fset.clone().or_else(|| Some(PyObject::none())),
+                            "fdel" => return fdel.clone().or_else(|| Some(PyObject::none())),
+                            _ => {}
+                        }
+                        // Return a BuiltinBoundMethod that the VM will handle
+                        Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: self.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }))
+                    }
                     _ => None,
                 }
             }
@@ -955,6 +1076,13 @@ impl PyObjectMethods for PyObjectRef {
                 let actual = if idx < 0 { len + idx } else { idx };
                 if actual < 0 || actual >= len { return Err(PyException::index_error("string index out of range")); }
                 Ok(PyObject::str_val(CompactString::from(chars[actual as usize].to_string())))
+            }
+            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                let idx = key.to_int()?;
+                let len = b.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len { return Err(PyException::index_error("index out of range")); }
+                Ok(PyObject::int(b[actual as usize] as i64))
             }
             _ => Err(PyException::type_error(format!("'{}' object is not subscriptable", self.type_name()))),
         }
@@ -1142,6 +1270,11 @@ fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ord
         }
         (PyObjectPayload::BuiltinFunction(a), PyObjectPayload::BuiltinFunction(b)) => {
             if a == b { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        (PyObjectPayload::Bytes(a), PyObjectPayload::Bytes(b)) => a.partial_cmp(b),
+        (PyObjectPayload::ByteArray(a), PyObjectPayload::ByteArray(b)) => a.partial_cmp(b),
+        (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
+            if ar == br && ai == bi { Some(std::cmp::Ordering::Equal) } else { None }
         }
         (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) => {
             if a == b { Some(std::cmp::Ordering::Equal) } else { None }
@@ -1353,6 +1486,18 @@ fn get_slice_impl(
                 while i > ev && i >= 0 { result.push(chars[i as usize]); i += step; }
             }
             Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+            let len = b.len() as i64;
+            let (sv, ev, step) = resolve_slice(start, stop, step, len);
+            let mut result = Vec::new();
+            let mut i = sv;
+            if step > 0 {
+                while i < ev && i < len { result.push(b[i as usize]); i += step; }
+            } else if step < 0 {
+                while i > ev && i >= 0 { result.push(b[i as usize]); i += step; }
+            }
+            Ok(PyObject::bytes(result))
         }
         _ => Err(PyException::type_error(format!("'{}' object is not subscriptable", obj.type_name()))),
     }

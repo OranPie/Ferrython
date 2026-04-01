@@ -261,6 +261,33 @@ impl VirtualMachine {
             _ => {
                 // For BuiltinBoundMethod on str.format, pass kwargs as a dict
                 if let PyObjectPayload::BuiltinBoundMethod { receiver, method_name } = &func.payload {
+                    // Handle list.sort(key=..., reverse=...)
+                    if method_name.as_str() == "sort" {
+                        if let PyObjectPayload::List(items_arc) = &receiver.payload {
+                            let mut items_vec = items_arc.read().clone();
+                            let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
+                            let reverse = kwargs.iter().find(|(k, _)| k.as_str() == "reverse")
+                                .map(|(_, v)| v.is_truthy()).unwrap_or(false);
+                            if let Some(key) = key_fn {
+                                let mut decorated: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
+                                for item in &items_vec {
+                                    let k = self.call_object(key.clone(), vec![item.clone()])?;
+                                    decorated.push((k, item.clone()));
+                                }
+                                decorated.sort_by(|(a, _), (b, _)| {
+                                    builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                                items_vec = decorated.into_iter().map(|(_, v)| v).collect();
+                            } else {
+                                items_vec.sort_by(|a, b| {
+                                    builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                            }
+                            if reverse { items_vec.reverse(); }
+                            *items_arc.write() = items_vec;
+                            return Ok(PyObject::none());
+                        }
+                    }
                     if method_name.as_str() == "format" && !kwargs.is_empty() {
                         if let PyObjectPayload::Str(s) = &receiver.payload {
                             // Handle str.format() with named args
@@ -684,6 +711,23 @@ impl VirtualMachine {
                     let name = frame.code.names[instr.arg as usize].clone();
                     let obj = frame.pop();   // TOS: the object
                     let value = frame.pop(); // TOS1: the value
+                    // Check for property descriptor in class MRO
+                    if let PyObjectPayload::Instance(inst) = &obj.payload {
+                        if let Some(desc) = lookup_in_class_mro(&inst.class, &name) {
+                            if let PyObjectPayload::Property { fset, .. } = &desc.payload {
+                                if let Some(setter) = fset {
+                                    let setter = setter.clone();
+                                    drop(frame);
+                                    self.call_object(setter, vec![obj, value])?;
+                                    return Ok(None);
+                                } else {
+                                    return Err(PyException::attribute_error(format!(
+                                        "can't set attribute '{}'", name
+                                    )));
+                                }
+                            }
+                        }
+                    }
                     // Check for __setattr__ dunder in class MRO (not instance dict)
                     if let PyObjectPayload::Instance(inst) = &obj.payload {
                         if let Some(sa) = lookup_in_class_mro(&inst.class, "__setattr__") {
@@ -743,24 +787,9 @@ impl VirtualMachine {
                 }
                 Opcode::UnaryNot => {
                     let v = frame.pop();
-                    // Check __bool__ dunder on instances
-                    if let PyObjectPayload::Instance(_) = &v.payload {
-                        if let Some(bool_method) = v.get_attr("__bool__") {
-                            drop(frame);
-                            let result = self.call_object(bool_method, vec![])?;
-                            let truthy = result.is_truthy();
-                            push!(PyObject::bool_val(!truthy));
-                            return Ok(None);
-                        }
-                        if let Some(len_method) = v.get_attr("__len__") {
-                            drop(frame);
-                            let result = self.call_object(len_method, vec![])?;
-                            let truthy = result.is_truthy();
-                            push!(PyObject::bool_val(!truthy));
-                            return Ok(None);
-                        }
-                    }
-                    frame.push(PyObject::bool_val(!v.is_truthy()));
+                    drop(frame);
+                    let truthy = self.vm_is_truthy(&v)?;
+                    push!(PyObject::bool_val(!truthy));
                 }
                 Opcode::UnaryInvert => {
                     let v = frame.pop();
@@ -1111,31 +1140,39 @@ impl VirtualMachine {
                 }
                 Opcode::PopJumpIfFalse => {
                     let v = frame.pop();
-                    if !v.is_truthy() {
+                    drop(frame);
+                    if !self.vm_is_truthy(&v)? {
                         let frame = self.call_stack.last_mut().unwrap();
                         frame.ip = instr.arg as usize;
                     }
                 }
                 Opcode::PopJumpIfTrue => {
                     let v = frame.pop();
-                    if v.is_truthy() {
+                    drop(frame);
+                    if self.vm_is_truthy(&v)? {
                         let frame = self.call_stack.last_mut().unwrap();
                         frame.ip = instr.arg as usize;
                     }
                 }
                 Opcode::JumpIfTrueOrPop => {
-                    if frame.peek().is_truthy() {
+                    let v = frame.peek().clone();
+                    drop(frame);
+                    if self.vm_is_truthy(&v)? {
                         let frame = self.call_stack.last_mut().unwrap();
                         frame.ip = instr.arg as usize;
                     } else {
+                        let frame = self.call_stack.last_mut().unwrap();
                         frame.pop();
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
-                    if !frame.peek().is_truthy() {
+                    let v = frame.peek().clone();
+                    drop(frame);
+                    if !self.vm_is_truthy(&v)? {
                         let frame = self.call_stack.last_mut().unwrap();
                         frame.ip = instr.arg as usize;
                     } else {
+                        let frame = self.call_stack.last_mut().unwrap();
                         frame.pop();
                     }
                 }
@@ -1876,6 +1913,21 @@ impl VirtualMachine {
             Ok(None)
     }
 
+    /// Truthiness test that dispatches __bool__/__len__ on instances.
+    fn vm_is_truthy(&mut self, obj: &PyObjectRef) -> PyResult<bool> {
+        if let PyObjectPayload::Instance(_) = &obj.payload {
+            if let Some(bool_method) = obj.get_attr("__bool__") {
+                let result = self.call_object(bool_method, vec![])?;
+                return Ok(result.is_truthy());
+            }
+            if let Some(len_method) = obj.get_attr("__len__") {
+                let result = self.call_object(len_method, vec![])?;
+                return Ok(result.is_truthy());
+            }
+        }
+        Ok(obj.is_truthy())
+    }
+
     /// Produce a str() string for an object, dispatching __str__ on instances.
     /// For containers, uses vm_repr for elements (like CPython).
     fn vm_str(&mut self, obj: &PyObjectRef) -> PyResult<String> {
@@ -2010,9 +2062,9 @@ impl VirtualMachine {
                         let mut result = Vec::new();
                         for item in iterable {
                             let keep = if matches!(func_obj.payload, PyObjectPayload::None) {
-                                item.is_truthy()
+                                self.vm_is_truthy(&item)?
                             } else {
-                                self.call_object(func_obj.clone(), vec![item.clone()])?.is_truthy()
+                                { let r = self.call_object(func_obj.clone(), vec![item.clone()])?; self.vm_is_truthy(&r)? }
                             };
                             if keep {
                                 result.push(item);
@@ -2174,12 +2226,7 @@ impl VirtualMachine {
                     }
                     "bool" => {
                         if args.len() == 1 {
-                            if let PyObjectPayload::Instance(_) = &args[0].payload {
-                                if let Some(method) = args[0].get_attr("__bool__") {
-                                    let result = self.call_object(method, vec![args[0].clone()])?;
-                                    return Ok(PyObject::bool_val(result.is_truthy()));
-                                }
-                            }
+                            return Ok(PyObject::bool_val(self.vm_is_truthy(&args[0])?));
                         }
                     }
                     "super" => {
@@ -2296,9 +2343,9 @@ impl VirtualMachine {
                         let mut result = Vec::new();
                         for item in iterable {
                             let keep = if matches!(func_obj.payload, PyObjectPayload::None) {
-                                item.is_truthy()
+                                self.vm_is_truthy(&item)?
                             } else {
-                                self.call_object(func_obj.clone(), vec![item.clone()])?.is_truthy()
+                                { let r = self.call_object(func_obj.clone(), vec![item.clone()])?; self.vm_is_truthy(&r)? }
                             };
                             if keep {
                                 result.push(item);
@@ -2427,12 +2474,7 @@ impl VirtualMachine {
                     }
                     "bool" => {
                         if args.len() == 1 {
-                            if let PyObjectPayload::Instance(_) = &args[0].payload {
-                                if let Some(method) = args[0].get_attr("__bool__") {
-                                    let result = self.call_object(method, vec![args[0].clone()])?;
-                                    return Ok(PyObject::bool_val(result.is_truthy()));
-                                }
-                            }
+                            return Ok(PyObject::bool_val(self.vm_is_truthy(&args[0])?));
                         }
                     }
                     _ => {}
@@ -2502,6 +2544,44 @@ impl VirtualMachine {
                             return self.resume_generator(gen_arc, PyObject::none());
                         }
                         _ => {}
+                    }
+                }
+                // VM-level methods that need iterable collection
+                if method_name.as_str() == "join" {
+                    if let PyObjectPayload::Str(sep) = &receiver.payload {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            let strs: Result<Vec<String>, _> = items.iter()
+                                .map(|x| x.as_str().map(String::from).ok_or_else(||
+                                    ferrython_core::error::PyException::type_error("sequence item: expected str")))
+                                .collect();
+                            return Ok(PyObject::str_val(CompactString::from(strs?.join(sep.as_str()))));
+                        }
+                    }
+                }
+                // VM-level list.sort with key function
+                if method_name.as_str() == "sort" {
+                    if let PyObjectPayload::List(items_arc) = &receiver.payload {
+                        let items_arc = items_arc.clone();
+                        let mut items_vec = items_arc.read().clone();
+                        items_vec.sort_by(|a, b| {
+                            builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        *items_arc.write() = items_vec;
+                        return Ok(PyObject::none());
+                    }
+                }
+                // Property descriptor methods: setter/getter/deleter
+                if let PyObjectPayload::Property { fget, fset, fdel } = &receiver.payload {
+                    if args.len() == 1 {
+                        let func = args[0].clone();
+                        let new_prop = match method_name.as_str() {
+                            "setter" => PyObjectPayload::Property { fget: fget.clone(), fset: Some(func), fdel: fdel.clone() },
+                            "getter" => PyObjectPayload::Property { fget: Some(func), fset: fset.clone(), fdel: fdel.clone() },
+                            "deleter" => PyObjectPayload::Property { fget: fget.clone(), fset: fset.clone(), fdel: Some(func) },
+                            _ => return Err(PyException::attribute_error(format!("property has no attribute '{}'", method_name))),
+                        };
+                        return Ok(Arc::new(PyObject { payload: new_prop }));
                     }
                 }
                 builtins::call_method(receiver, method_name.as_str(), &args)

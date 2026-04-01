@@ -729,6 +729,12 @@ fn builtin_dir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn builtin_format(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("format", args, 1)?;
+    if args.len() >= 2 {
+        let spec = args[1].py_to_string();
+        if !spec.is_empty() {
+            return args[0].format_value(&spec).map(|s| PyObject::str_val(CompactString::from(s)));
+        }
+    }
     Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
 }
 
@@ -1162,6 +1168,25 @@ fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyOb
             } else {
                 Ok(PyObject::str_val(CompactString::from(format!("{}{}", pad, s))))
             }
+        }
+        "expandtabs" => {
+            let tabsize = if args.is_empty() { 8 } else { args[0].to_int()? as usize };
+            let mut result = String::new();
+            let mut col = 0usize;
+            for ch in s.chars() {
+                if ch == '\t' {
+                    let spaces = tabsize - (col % tabsize);
+                    result.extend(std::iter::repeat(' ').take(spaces));
+                    col += spaces;
+                } else if ch == '\n' || ch == '\r' {
+                    result.push(ch);
+                    col = 0;
+                } else {
+                    result.push(ch);
+                    col += 1;
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(result)))
         }
         "encode" => {
             // Simple UTF-8 encoding
