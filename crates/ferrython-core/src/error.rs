@@ -75,7 +75,7 @@ impl ExceptionKind {
             "ArithmeticError" => Some(Self::ArithmeticError),
             "OverflowError" => Some(Self::OverflowError),
             "ZeroDivisionError" => Some(Self::ZeroDivisionError),
-            "AssertionError" | "AssertionError" => Some(Self::AssertionError),
+            "AssertionError" => Some(Self::AssertionError),
             "AttributeError" => Some(Self::AttributeError),
             "EOFError" => Some(Self::EOFError),
             "FileExistsError" => Some(Self::FileExistsError),

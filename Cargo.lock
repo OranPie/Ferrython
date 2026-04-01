@@ -178,9 +178,7 @@ version = "0.1.0"
 dependencies = [
  "ferrython-bytecode",
  "ferrython-core",
- "ferrython-vm",
  "thiserror",
- "tracing",
 ]
 
 [[package]]
