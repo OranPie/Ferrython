@@ -699,6 +699,17 @@ impl VirtualMachine {
                                         "unreadable attribute '{}'", name
                                     )));
                                 }
+                            } else if matches!(&obj.payload, PyObjectPayload::Module(_))
+                                && matches!(&v.payload, PyObjectPayload::NativeFunction { .. })
+                                && obj.get_attr("_bind_methods").is_some()
+                            {
+                                // Auto-bind NativeFunction methods on module-like objects
+                                frame.push(Arc::new(PyObject {
+                                    payload: PyObjectPayload::BoundMethod {
+                                        receiver: obj,
+                                        method: v,
+                                    }
+                                }));
                             } else {
                                 frame.push(v);
                             }
@@ -1695,7 +1706,23 @@ impl VirtualMachine {
                     let name = frame.code.names[instr.arg as usize].clone();
                     let obj = frame.pop();
                     match obj.get_attr(&name) {
-                        Some(method) => frame.push(method),
+                        Some(method) => {
+                            // For Module objects with a _bind_methods marker,
+                            // bind NativeFunction methods to the module (self pattern)
+                            if matches!(&obj.payload, PyObjectPayload::Module(_))
+                                && matches!(&method.payload, PyObjectPayload::NativeFunction { .. })
+                                && obj.get_attr("_bind_methods").is_some()
+                            {
+                                frame.push(Arc::new(PyObject {
+                                    payload: PyObjectPayload::BoundMethod {
+                                        receiver: obj,
+                                        method,
+                                    }
+                                }));
+                            } else {
+                                frame.push(method);
+                            }
+                        }
                         None => return Err(PyException::attribute_error(format!(
                             "'{}' object has no attribute '{}'", obj.type_name(), name
                         ))),

@@ -1300,6 +1300,32 @@ impl PyObjectMethods for PyObjectRef {
         // Parse format spec: [[fill]align][sign][#][0][width][grouping_option][.precision][type]
         let spec_bytes = spec.as_bytes();
         let len = spec_bytes.len();
+
+        // Handle comma grouping: {:,} or {:,d}
+        if spec.contains(',') {
+            let without_comma = spec.replace(',', "");
+            let base_str = if without_comma.is_empty() {
+                // Just {:,} — format as integer with commas
+                let n = self.to_int()?;
+                n.to_string()
+            } else {
+                self.format_value(&without_comma)?
+            };
+            // Apply comma grouping to the numeric part
+            return Ok(add_thousands_separator(&base_str, ','));
+        }
+        // Handle underscore grouping: {:_} or {:_d}
+        if spec.contains('_') && !spec.contains("__") {
+            let without_underscore = spec.replace('_', "");
+            let base_str = if without_underscore.is_empty() {
+                let n = self.to_int()?;
+                n.to_string()
+            } else {
+                self.format_value(&without_underscore)?
+            };
+            return Ok(add_thousands_separator(&base_str, '_'));
+        }
+
         // Simple parsing for common cases
         let type_char = spec_bytes[len - 1] as char;
         match type_char {
@@ -1515,6 +1541,23 @@ fn format_float_spec(f: f64, spec: &str) -> String {
     } else {
         format!("{:.6}", f)
     }
+}
+
+fn add_thousands_separator(s: &str, sep: char) -> String {
+    // Find the integer part (before any decimal point)
+    let (sign, rest) = if s.starts_with('-') { ("-", &s[1..]) } else { ("", s) };
+    let (int_part, frac_part) = if let Some(dot) = rest.find('.') {
+        (&rest[..dot], &rest[dot..])
+    } else {
+        (rest, "")
+    };
+    let mut result = String::new();
+    for (i, ch) in int_part.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 { result.push(sep); }
+        result.push(ch);
+    }
+    let grouped: String = result.chars().rev().collect();
+    format!("{}{}{}", sign, grouped, frac_part)
 }
 
 pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
