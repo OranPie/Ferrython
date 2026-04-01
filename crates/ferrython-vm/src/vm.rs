@@ -289,6 +289,26 @@ impl VirtualMachine {
                             }
                         }
                     }
+                } else if func.get_attr("__namedtuple__").is_some() {
+                    if let Some(fields) = func.get_attr("_fields") {
+                        if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                            if let PyObjectPayload::Instance(inst) = &instance.payload {
+                                let mut attrs = inst.attrs.write();
+                                for (i, field) in field_names.iter().enumerate() {
+                                    let name = field.py_to_string();
+                                    let value = if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
+                                        v.clone()
+                                    } else if i < pos_args.len() {
+                                        pos_args[i].clone()
+                                    } else {
+                                        PyObject::none()
+                                    };
+                                    attrs.insert(CompactString::from(name.as_str()), value);
+                                }
+                                attrs.insert(CompactString::from("_tuple"), PyObject::tuple(pos_args.clone()));
+                            }
+                        }
+                    }
                 } else if let Some(init) = func.get_attr("__init__") {
                     let init_fn = match &init.payload {
                         PyObjectPayload::BoundMethod { method, .. } => method.clone(),
@@ -1126,6 +1146,11 @@ impl VirtualMachine {
                             drop(frame);
                             let r = self.call_object(m, vec![key])?;
                             push!(r); return Ok(None);
+                        }
+                        // namedtuple indexing: support int subscript via _tuple
+                        if let Some(tup) = obj.get_attr("_tuple") {
+                            frame.push(tup.get_item(&key)?);
+                            return Ok(None);
                         }
                     }
                     // Handle defaultdict: on KeyError, check for factory
@@ -2421,7 +2446,8 @@ impl VirtualMachine {
                         };
                     }
                 }
-                Ok(obj.py_to_string())
+                // Fall back to vm_repr (handles namedtuple, dataclass, etc.)
+                self.vm_repr(obj)
             }
             // For containers, str() is same as repr() (elements use repr)
             PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) |
@@ -2456,6 +2482,26 @@ impl VirtualMachine {
                                         let val_repr = self.vm_repr(val)?;
                                         parts.push(format!("{}={}", name, val_repr));
                                     }
+                                }
+                            }
+                            return Ok(format!("{}({})", class_name, parts.join(", ")));
+                        }
+                    }
+                }
+                // Namedtuple auto-repr
+                if class.get_attr("__namedtuple__").is_some() {
+                    if let Some(fields) = class.get_attr("_fields") {
+                        if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                            let class_name = if let PyObjectPayload::Class(cd) = &class.payload {
+                                cd.name.to_string()
+                            } else { "?".to_string() };
+                            let mut parts = Vec::new();
+                            let attrs = inst.attrs.read();
+                            for field in field_names {
+                                let name = field.py_to_string();
+                                if let Some(val) = attrs.get(name.as_str()) {
+                                    let val_repr = self.vm_repr(val)?;
+                                    parts.push(format!("{}={}", name, val_repr));
                                 }
                             }
                             return Ok(format!("{}({})", class_name, parts.join(", ")));
@@ -3231,6 +3277,22 @@ impl VirtualMachine {
                             }
                         }
                     }
+                } else if func.get_attr("__namedtuple__").is_some() {
+                    // namedtuple: store args as named fields
+                    if let Some(fields) = func.get_attr("_fields") {
+                        if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                            if let PyObjectPayload::Instance(inst) = &instance.payload {
+                                let mut attrs = inst.attrs.write();
+                                for (i, field) in field_names.iter().enumerate() {
+                                    let name = field.py_to_string();
+                                    let value = if i < args.len() { args[i].clone() } else { PyObject::none() };
+                                    attrs.insert(CompactString::from(name.as_str()), value);
+                                }
+                                // Also store as _tuple for indexing
+                                attrs.insert(CompactString::from("_tuple"), PyObject::tuple(args.clone()));
+                            }
+                        }
+                    }
                 } else if let Some(init) = func.get_attr("__init__") {
                     let init_fn = match &init.payload {
                         PyObjectPayload::BoundMethod { method, .. } => method.clone(),
@@ -3336,6 +3398,52 @@ impl VirtualMachine {
                             _ => return Err(PyException::attribute_error(format!("property has no attribute '{}'", method_name))),
                         };
                         return Ok(Arc::new(PyObject { payload: new_prop }));
+                    }
+                }
+                // namedtuple methods
+                if let PyObjectPayload::Instance(inst) = &receiver.payload {
+                    if inst.class.get_attr("__namedtuple__").is_some() {
+                        match method_name.as_str() {
+                            "_asdict" => {
+                                if let Some(fields) = inst.class.get_attr("_fields") {
+                                    if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                                        let mut map = IndexMap::new();
+                                        let attrs = inst.attrs.read();
+                                        for field in field_names {
+                                            let name = field.py_to_string();
+                                            let val = attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
+                                            map.insert(HashableKey::Str(CompactString::from(name.as_str())), val);
+                                        }
+                                        return Ok(PyObject::dict(map));
+                                    }
+                                }
+                            }
+                            "__len__" => {
+                                if let Some(tup) = inst.attrs.read().get("_tuple") {
+                                    if let PyObjectPayload::Tuple(items) = &tup.payload {
+                                        return Ok(PyObject::int(items.len() as i64));
+                                    }
+                                }
+                                return Ok(PyObject::int(0));
+                            }
+                            "__iter__" => {
+                                if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
+                                    if let PyObjectPayload::Tuple(items) = &tup.payload {
+                                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                                            Arc::new(std::sync::Mutex::new(
+                                                ferrython_core::object::IteratorData::Tuple { items: items.clone(), index: 0 }
+                                            ))
+                                        )));
+                                    }
+                                }
+                                return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                                    Arc::new(std::sync::Mutex::new(
+                                        ferrython_core::object::IteratorData::Tuple { items: vec![], index: 0 }
+                                    ))
+                                )));
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 builtins::call_method(receiver, method_name.as_str(), &args)
@@ -3640,6 +3748,19 @@ impl VirtualMachine {
             "locale" => Ok(builtins::create_locale_module()),
             "inspect" => Ok(builtins::create_inspect_module()),
             "dis" => Ok(builtins::create_dis_module()),
+            "logging" => Ok(builtins::create_logging_module()),
+            "subprocess" => Ok(builtins::create_subprocess_module()),
+            "pathlib" => Ok(builtins::create_pathlib_module()),
+            "unittest" => Ok(builtins::create_unittest_module()),
+            "threading" => Ok(builtins::create_threading_module()),
+            "csv" => Ok(builtins::create_csv_module()),
+            "shutil" => Ok(builtins::create_shutil_module()),
+            "glob" => Ok(builtins::create_glob_module()),
+            "tempfile" => Ok(builtins::create_tempfile_module()),
+            "fnmatch" => Ok(builtins::create_fnmatch_module()),
+            "base64" => Ok(builtins::create_base64_module()),
+            "pprint" => Ok(builtins::create_pprint_module()),
+            "argparse" => Ok(builtins::create_argparse_module()),
             _ => Err(PyException::import_error(format!("No module named '{}'", name))),
         }
     }

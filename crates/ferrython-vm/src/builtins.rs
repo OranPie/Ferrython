@@ -3338,15 +3338,54 @@ fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // Simplified namedtuple — returns a class that creates tuples with named access
     if args.len() < 2 {
         return Err(PyException::type_error("namedtuple requires typename and field_names"));
     }
-    let _typename = args[0].py_to_string();
-    // For now, return a simple tuple constructor
-    Ok(make_builtin(|args| {
-        Ok(PyObject::tuple(args.to_vec()))
-    }))
+    let typename = args[0].py_to_string();
+    
+    // Parse field names
+    let field_names: Vec<CompactString> = match &args[1].payload {
+        PyObjectPayload::Str(s) => {
+            // "x y" or "x, y" style
+            s.replace(',', " ").split_whitespace()
+                .map(|s| CompactString::from(s))
+                .collect()
+        }
+        PyObjectPayload::List(_) => {
+            args[1].to_list()?.iter().map(|i| CompactString::from(i.py_to_string())).collect()
+        }
+        PyObjectPayload::Tuple(items) => {
+            items.iter().map(|i| CompactString::from(i.py_to_string())).collect()
+        }
+        _ => {
+            args[1].to_list()?.iter().map(|i| CompactString::from(i.py_to_string())).collect()
+        }
+    };
+    
+    // Create a class with namespace containing field info
+    let mut namespace = IndexMap::new();
+    // Store field names for __init__ and indexing
+    let fields_tuple = PyObject::tuple(
+        field_names.iter().map(|n| PyObject::str_val(n.clone())).collect()
+    );
+    namespace.insert(CompactString::from("_fields"), fields_tuple);
+    namespace.insert(CompactString::from("__namedtuple__"), PyObject::bool_val(true));
+    
+    // Store field indices  
+    for (i, name) in field_names.iter().enumerate() {
+        namespace.insert(
+            CompactString::from(format!("_field_idx_{}", name)),
+            PyObject::int(i as i64)
+        );
+    }
+    
+    let cls = PyObject::class(
+        CompactString::from(typename.as_str()),
+        vec![],
+        namespace,
+    );
+    
+    Ok(cls)
 }
 
 fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -4826,5 +4865,581 @@ pub fn create_inspect_module() -> PyObjectRef {
 pub fn create_dis_module() -> PyObjectRef {
     make_module("dis", vec![
         ("dis", make_builtin(|_| { Ok(PyObject::none()) })),
+    ])
+}
+
+// ── logging module ──
+
+pub fn create_logging_module() -> PyObjectRef {
+    // Logging levels
+    let debug_level = PyObject::int(10);
+    let info_level = PyObject::int(20);
+    let warning_level = PyObject::int(30);
+    let error_level = PyObject::int(40);
+    let critical_level = PyObject::int(50);
+
+    make_module("logging", vec![
+        ("DEBUG", debug_level),
+        ("INFO", info_level),
+        ("WARNING", warning_level.clone()),
+        ("ERROR", error_level),
+        ("CRITICAL", critical_level),
+        ("NOTSET", PyObject::int(0)),
+        ("basicConfig", make_builtin(|_args| { Ok(PyObject::none()) })),
+        ("getLogger", make_builtin(logging_get_logger)),
+        ("debug", make_builtin(|args| { logging_log(10, args) })),
+        ("info", make_builtin(|args| { logging_log(20, args) })),
+        ("warning", make_builtin(|args| { logging_log(30, args) })),
+        ("error", make_builtin(|args| { logging_log(40, args) })),
+        ("critical", make_builtin(|args| { logging_log(50, args) })),
+        ("log", make_builtin(|args| {
+            if args.len() >= 2 {
+                let level = args[0].as_int().unwrap_or(20);
+                logging_log(level, &args[1..])
+            } else {
+                Ok(PyObject::none())
+            }
+        })),
+        ("StreamHandler", make_builtin(|_| Ok(PyObject::none()))),
+        ("FileHandler", make_builtin(|_| Ok(PyObject::none()))),
+        ("Formatter", make_builtin(|_| Ok(PyObject::none()))),
+        ("Handler", make_builtin(|_| Ok(PyObject::none()))),
+        ("Logger", make_builtin(logging_get_logger)),
+    ])
+}
+
+fn logging_log(level: i64, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Ok(PyObject::none()); }
+    let level_name = match level {
+        10 => "DEBUG",
+        20 => "INFO",
+        30 => "WARNING",
+        40 => "ERROR",
+        50 => "CRITICAL",
+        _ => "UNKNOWN",
+    };
+    let msg = args[0].py_to_string();
+    eprintln!("{}:root:{}", level_name, msg);
+    Ok(PyObject::none())
+}
+
+fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let logger_name = if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) {
+        CompactString::from("root")
+    } else {
+        CompactString::from(args[0].py_to_string())
+    };
+    // Return a logger object (Instance of a Logger class)
+    let mut ns = IndexMap::new();
+    ns.insert(CompactString::from("name"), PyObject::str_val(logger_name.clone()));
+    ns.insert(CompactString::from("level"), PyObject::int(30)); // WARNING default
+    // Logger methods — stored as NativeFunction attrs
+    ns.insert(CompactString::from("debug"), make_builtin(move |args| logging_log(10, args)));
+    ns.insert(CompactString::from("info"), make_builtin(move |args| logging_log(20, args)));
+    ns.insert(CompactString::from("warning"), make_builtin(move |args| logging_log(30, args)));
+    ns.insert(CompactString::from("error"), make_builtin(move |args| logging_log(40, args)));
+    ns.insert(CompactString::from("critical"), make_builtin(move |args| logging_log(50, args)));
+    ns.insert(CompactString::from("setLevel"), make_builtin(|_| Ok(PyObject::none())));
+    ns.insert(CompactString::from("addHandler"), make_builtin(|_| Ok(PyObject::none())));
+    ns.insert(CompactString::from("removeHandler"), make_builtin(|_| Ok(PyObject::none())));
+    ns.insert(CompactString::from("hasHandlers"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+    ns.insert(CompactString::from("isEnabledFor"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+    ns.insert(CompactString::from("getEffectiveLevel"), make_builtin(|_| Ok(PyObject::int(30))));
+    
+    let cls = PyObject::class(CompactString::from("Logger"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        for (k, v) in ns {
+            attrs.insert(k, v);
+        }
+    }
+    Ok(inst)
+}
+
+// ── subprocess module (basic) ──
+
+pub fn create_subprocess_module() -> PyObjectRef {
+    make_module("subprocess", vec![
+        ("PIPE", PyObject::int(-1)),
+        ("STDOUT", PyObject::int(-2)),
+        ("DEVNULL", PyObject::int(-3)),
+        ("CalledProcessError", make_builtin(|_| Ok(PyObject::none()))),
+        ("run", make_builtin(subprocess_run)),
+        ("call", make_builtin(subprocess_call)),
+        ("check_output", make_builtin(subprocess_check_output)),
+        ("check_call", make_builtin(subprocess_call)),
+        ("Popen", make_builtin(|_| {
+            Err(PyException::runtime_error("subprocess.Popen not implemented"))
+        })),
+    ])
+}
+
+fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("subprocess.run requires arguments"));
+    }
+    let cmd_parts: Vec<String> = args[0].to_list()?.iter().map(|a| a.py_to_string()).collect();
+    if cmd_parts.is_empty() {
+        return Err(PyException::value_error("empty command"));
+    }
+    let output = std::process::Command::new(&cmd_parts[0])
+        .args(&cmd_parts[1..])
+        .output();
+    match output {
+        Ok(out) => {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("returncode"), PyObject::int(out.status.code().unwrap_or(-1) as i64));
+            ns.insert(CompactString::from("stdout"), PyObject::bytes(out.stdout));
+            ns.insert(CompactString::from("stderr"), PyObject::bytes(out.stderr));
+            let cls = PyObject::class(CompactString::from("CompletedProcess"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+                let mut attrs = inst_data.attrs.write();
+                for (k, v) in ns { attrs.insert(k, v); }
+            }
+            Ok(inst)
+        }
+        Err(e) => Err(PyException::runtime_error(format!("subprocess error: {}", e))),
+    }
+}
+
+fn subprocess_call(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let result = subprocess_run(args)?;
+    if let Some(rc) = result.get_attr("returncode") {
+        Ok(rc)
+    } else {
+        Ok(PyObject::int(0))
+    }
+}
+
+fn subprocess_check_output(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let result = subprocess_run(args)?;
+    if let Some(stdout) = result.get_attr("stdout") {
+        Ok(stdout)
+    } else {
+        Ok(PyObject::bytes(vec![]))
+    }
+}
+
+// ── pathlib module (basic) ──
+
+pub fn create_pathlib_module() -> PyObjectRef {
+    make_module("pathlib", vec![
+        ("Path", make_builtin(pathlib_path)),
+        ("PurePath", make_builtin(pathlib_path)),
+        ("PurePosixPath", make_builtin(pathlib_path)),
+        ("PureWindowsPath", make_builtin(pathlib_path)),
+    ])
+}
+
+fn pathlib_path(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let path_str = if args.is_empty() { ".".to_string() } else { args[0].py_to_string() };
+    let path = std::path::Path::new(&path_str);
+    let mut ns = IndexMap::new();
+    ns.insert(CompactString::from("_path"), PyObject::str_val(CompactString::from(path_str.as_str())));
+    ns.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(
+        path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    )));
+    ns.insert(CompactString::from("stem"), PyObject::str_val(CompactString::from(
+        path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    )));
+    ns.insert(CompactString::from("suffix"), PyObject::str_val(CompactString::from(
+        path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default()
+    )));
+    ns.insert(CompactString::from("parent"), PyObject::str_val(CompactString::from(
+        path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+    )));
+    // Methods that need the path are implemented via BuiltinBoundMethod in the VM
+    ns.insert(CompactString::from("__pathlib_path__"), PyObject::bool_val(true));
+
+    let cls = PyObject::class(CompactString::from("Path"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        for (k, v) in ns { attrs.insert(k, v); }
+    }
+    Ok(inst)
+}
+
+// ── unittest module (basic) ──
+
+pub fn create_unittest_module() -> PyObjectRef {
+    // Create TestCase class
+    let mut tc_ns = IndexMap::new();
+    tc_ns.insert(CompactString::from("__unittest_testcase__"), PyObject::bool_val(true));
+    let test_case = PyObject::class(CompactString::from("TestCase"), vec![], tc_ns);
+
+    make_module("unittest", vec![
+        ("TestCase", test_case),
+        ("main", make_builtin(|_| Ok(PyObject::none()))),
+        ("TestSuite", make_builtin(|_| Ok(PyObject::none()))),
+        ("TestLoader", make_builtin(|_| Ok(PyObject::none()))),
+        ("TextTestRunner", make_builtin(|_| Ok(PyObject::none()))),
+        ("skip", make_builtin(|args| {
+            // Return identity decorator
+            Ok(make_builtin(|args| {
+                if args.is_empty() { Ok(PyObject::none()) } else { Ok(args[0].clone()) }
+            }))
+        })),
+        ("skipIf", make_builtin(|_| {
+            Ok(make_builtin(|args| {
+                if args.is_empty() { Ok(PyObject::none()) } else { Ok(args[0].clone()) }
+            }))
+        })),
+        ("expectedFailure", make_builtin(|args| {
+            if args.is_empty() { Ok(PyObject::none()) } else { Ok(args[0].clone()) }
+        })),
+    ])
+}
+
+// ── threading module (basic) ──
+
+pub fn create_threading_module() -> PyObjectRef {
+    make_module("threading", vec![
+        ("Thread", make_builtin(|_| Ok(PyObject::none()))),
+        ("Lock", make_builtin(|_| Ok(PyObject::none()))),
+        ("RLock", make_builtin(|_| Ok(PyObject::none()))),
+        ("Event", make_builtin(|_| Ok(PyObject::none()))),
+        ("Semaphore", make_builtin(|_| Ok(PyObject::none()))),
+        ("BoundedSemaphore", make_builtin(|_| Ok(PyObject::none()))),
+        ("Condition", make_builtin(|_| Ok(PyObject::none()))),
+        ("Barrier", make_builtin(|_| Ok(PyObject::none()))),
+        ("Timer", make_builtin(|_| Ok(PyObject::none()))),
+        ("current_thread", make_builtin(|_| {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("name"), PyObject::str_val(CompactString::from("MainThread")));
+            ns.insert(CompactString::from("ident"), PyObject::int(1));
+            ns.insert(CompactString::from("daemon"), PyObject::bool_val(false));
+            ns.insert(CompactString::from("is_alive"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+            ns.insert(CompactString::from("getName"), make_builtin(|_| Ok(PyObject::str_val(CompactString::from("MainThread")))));
+            let cls = PyObject::class(CompactString::from("Thread"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(i) = &inst.payload {
+                let mut attrs = i.attrs.write();
+                for (k, v) in ns { attrs.insert(k, v); }
+            }
+            Ok(inst)
+        })),
+        ("active_count", make_builtin(|_| Ok(PyObject::int(1)))),
+        ("enumerate", make_builtin(|_| Ok(PyObject::list(vec![])))),
+        ("main_thread", make_builtin(|_| Ok(PyObject::none()))),
+        ("local", make_builtin(|_| {
+            // Thread-local storage — return a simple object
+            let cls = PyObject::class(CompactString::from("local"), vec![], IndexMap::new());
+            Ok(PyObject::instance(cls))
+        })),
+    ])
+}
+
+// ── csv module (basic) ──
+
+pub fn create_csv_module() -> PyObjectRef {
+    make_module("csv", vec![
+        ("reader", make_builtin(csv_reader)),
+        ("writer", make_builtin(|_| Ok(PyObject::none()))),
+        ("DictReader", make_builtin(|_| Ok(PyObject::none()))),
+        ("DictWriter", make_builtin(|_| Ok(PyObject::none()))),
+        ("QUOTE_ALL", PyObject::int(1)),
+        ("QUOTE_MINIMAL", PyObject::int(0)),
+        ("QUOTE_NONNUMERIC", PyObject::int(2)),
+        ("QUOTE_NONE", PyObject::int(3)),
+    ])
+}
+
+fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("csv.reader requires an iterable"));
+    }
+    // Convert iterable of strings into list of lists
+    let lines = args[0].to_list()?;
+    let mut rows = Vec::new();
+    for line in &lines {
+        let s = line.py_to_string();
+        let fields: Vec<PyObjectRef> = s.split(',')
+            .map(|f| {
+                let f = f.trim();
+                let f = if f.starts_with('"') && f.ends_with('"') {
+                    &f[1..f.len()-1]
+                } else {
+                    f
+                };
+                PyObject::str_val(CompactString::from(f))
+            })
+            .collect();
+        rows.push(PyObject::list(fields));
+    }
+    Ok(PyObject::list(rows))
+}
+
+// ── shutil module (basic) ──
+
+pub fn create_shutil_module() -> PyObjectRef {
+    make_module("shutil", vec![
+        ("copy", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("copy requires src and dst")); }
+            let src = args[0].py_to_string();
+            let dst = args[1].py_to_string();
+            std::fs::copy(&src, &dst).map_err(|e| PyException::runtime_error(format!("{}", e)))?;
+            Ok(PyObject::str_val(CompactString::from(dst)))
+        })),
+        ("copy2", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("copy2 requires src and dst")); }
+            let src = args[0].py_to_string();
+            let dst = args[1].py_to_string();
+            std::fs::copy(&src, &dst).map_err(|e| PyException::runtime_error(format!("{}", e)))?;
+            Ok(PyObject::str_val(CompactString::from(dst)))
+        })),
+        ("rmtree", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("rmtree requires path")); }
+            let path = args[0].py_to_string();
+            std::fs::remove_dir_all(&path).map_err(|e| PyException::runtime_error(format!("{}", e)))?;
+            Ok(PyObject::none())
+        })),
+        ("move", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("move requires src and dst")); }
+            let src = args[0].py_to_string();
+            let dst = args[1].py_to_string();
+            std::fs::rename(&src, &dst).map_err(|e| PyException::runtime_error(format!("{}", e)))?;
+            Ok(PyObject::str_val(CompactString::from(dst)))
+        })),
+        ("which", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            let name = args[0].py_to_string();
+            if let Ok(path) = std::env::var("PATH") {
+                for dir in path.split(':') {
+                    let candidate = std::path::Path::new(dir).join(&name);
+                    if candidate.exists() {
+                        return Ok(PyObject::str_val(CompactString::from(candidate.to_string_lossy().to_string())));
+                    }
+                }
+            }
+            Ok(PyObject::none())
+        })),
+        ("disk_usage", make_builtin(|_| Ok(PyObject::none()))),
+        ("get_terminal_size", make_builtin(|_| {
+            Ok(PyObject::tuple(vec![PyObject::int(80), PyObject::int(24)]))
+        })),
+    ])
+}
+
+// ── glob module ──
+
+pub fn create_glob_module() -> PyObjectRef {
+    make_module("glob", vec![
+        ("glob", make_builtin(glob_glob)),
+        ("iglob", make_builtin(glob_glob)),
+    ])
+}
+
+fn glob_glob(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("glob requires a pattern"));
+    }
+    let pattern = args[0].py_to_string();
+    // Basic glob: handle *, ?, but not **
+    // Use std::fs for simple patterns
+    let path = std::path::Path::new(&pattern);
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let file_pattern = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    
+    let mut results = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if glob_match(&file_pattern, &name) {
+                let full = entry.path().to_string_lossy().to_string();
+                results.push(PyObject::str_val(CompactString::from(full)));
+            }
+        }
+    }
+    Ok(PyObject::list(results))
+}
+
+fn glob_match(pattern: &str, text: &str) -> bool {
+    if pattern == "*" { return true; }
+    if !pattern.contains('*') && !pattern.contains('?') {
+        return pattern == text;
+    }
+    // Simple wildcard matching
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        // No *, just ? wildcards
+        if pattern.len() != text.len() { return false; }
+        return pattern.chars().zip(text.chars()).all(|(p, t)| p == '?' || p == t);
+    }
+    let mut pos = 0;
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() { continue; }
+        if let Some(idx) = text[pos..].find(part) {
+            if i == 0 && idx != 0 { return false; }
+            pos += idx + part.len();
+        } else {
+            return false;
+        }
+    }
+    if !parts.last().unwrap_or(&"").is_empty() {
+        return pos == text.len();
+    }
+    true
+}
+
+// ── tempfile module (basic) ──
+
+pub fn create_tempfile_module() -> PyObjectRef {
+    make_module("tempfile", vec![
+        ("gettempdir", make_builtin(|_| {
+            Ok(PyObject::str_val(CompactString::from(
+                std::env::temp_dir().to_string_lossy().to_string()
+            )))
+        })),
+        ("mkdtemp", make_builtin(|_| {
+            let dir = std::env::temp_dir().join(format!("ferrython_tmp_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).ok();
+            Ok(PyObject::str_val(CompactString::from(dir.to_string_lossy().to_string())))
+        })),
+        ("NamedTemporaryFile", make_builtin(|_| Ok(PyObject::none()))),
+        ("TemporaryDirectory", make_builtin(|_| Ok(PyObject::none()))),
+        ("mkstemp", make_builtin(|_| {
+            let path = std::env::temp_dir().join(format!("ferrython_{}", std::process::id()));
+            Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::str_val(CompactString::from(path.to_string_lossy().to_string()))]))
+        })),
+    ])
+}
+
+// ── fnmatch module ──
+
+pub fn create_fnmatch_module() -> PyObjectRef {
+    make_module("fnmatch", vec![
+        ("fnmatch", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("fnmatch requires name and pattern")); }
+            let name = args[0].py_to_string();
+            let pattern = args[1].py_to_string();
+            Ok(PyObject::bool_val(glob_match(&pattern, &name)))
+        })),
+        ("fnmatchcase", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("fnmatchcase requires name and pattern")); }
+            let name = args[0].py_to_string();
+            let pattern = args[1].py_to_string();
+            Ok(PyObject::bool_val(glob_match(&pattern, &name)))
+        })),
+        ("filter", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("filter requires names and pattern")); }
+            let names = args[0].to_list()?;
+            let pattern = args[1].py_to_string();
+            let filtered: Vec<PyObjectRef> = names.iter()
+                .filter(|n| glob_match(&pattern, &n.py_to_string()))
+                .cloned().collect();
+            Ok(PyObject::list(filtered))
+        })),
+    ])
+}
+
+// ── base64 module ──
+
+pub fn create_base64_module() -> PyObjectRef {
+    make_module("base64", vec![
+        ("b64encode", make_builtin(base64_encode)),
+        ("b64decode", make_builtin(base64_decode)),
+        ("b16encode", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("b16encode requires data")); }
+            let data = extract_bytes(&args[0])?;
+            let hex: String = data.iter().map(|b| format!("{:02X}", b)).collect();
+            Ok(PyObject::bytes(hex.into_bytes()))
+        })),
+        ("b16decode", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("b16decode requires data")); }
+            let s = args[0].py_to_string();
+            let bytes: Vec<u8> = (0..s.len())
+                .step_by(2)
+                .filter_map(|i| u8::from_str_radix(&s[i..i+2], 16).ok())
+                .collect();
+            Ok(PyObject::bytes(bytes))
+        })),
+        ("encodebytes", make_builtin(base64_encode)),
+        ("decodebytes", make_builtin(base64_decode)),
+    ])
+}
+
+fn extract_bytes(obj: &PyObjectRef) -> PyResult<Vec<u8>> {
+    match &obj.payload {
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok(b.clone()),
+        PyObjectPayload::Str(s) => Ok(s.as_bytes().to_vec()),
+        _ => Err(PyException::type_error("expected bytes-like object")),
+    }
+}
+
+fn base64_encode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("b64encode requires data")); }
+    let data = extract_bytes(&args[0])?;
+    // Simple base64 encoding
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = Vec::new();
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((n >> 18) & 63) as usize]);
+        result.push(CHARS[((n >> 12) & 63) as usize]);
+        if chunk.len() > 1 { result.push(CHARS[((n >> 6) & 63) as usize]); } else { result.push(b'='); }
+        if chunk.len() > 2 { result.push(CHARS[(n & 63) as usize]); } else { result.push(b'='); }
+    }
+    Ok(PyObject::bytes(result))
+}
+
+fn base64_decode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("b64decode requires data")); }
+    let input_bytes = extract_bytes(&args[0])?;
+    let input: Vec<u8> = input_bytes.iter().copied().filter(|&b| b != b'\n' && b != b'\r').collect();
+    fn decode_char(c: u8) -> u32 {
+        match c {
+            b'A'..=b'Z' => (c - b'A') as u32,
+            b'a'..=b'z' => (c - b'a' + 26) as u32,
+            b'0'..=b'9' => (c - b'0' + 52) as u32,
+            b'+' => 62,
+            b'/' => 63,
+            _ => 0,
+        }
+    }
+    let mut result = Vec::new();
+    for chunk in input.chunks(4) {
+        if chunk.len() < 4 { break; }
+        let n = (decode_char(chunk[0]) << 18) | (decode_char(chunk[1]) << 12) | (decode_char(chunk[2]) << 6) | decode_char(chunk[3]);
+        result.push((n >> 16) as u8);
+        if chunk[2] != b'=' { result.push((n >> 8) as u8); }
+        if chunk[3] != b'=' { result.push(n as u8); }
+    }
+    Ok(PyObject::bytes(result))
+}
+
+// ── pprint module ──
+
+pub fn create_pprint_module() -> PyObjectRef {
+    make_module("pprint", vec![
+        ("pprint", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            println!("{}", args[0].py_to_string());
+            Ok(PyObject::none())
+        })),
+        ("pformat", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
+        })),
+        ("PrettyPrinter", make_builtin(|_| Ok(PyObject::none()))),
+    ])
+}
+
+// ── argparse module (basic) ──
+
+pub fn create_argparse_module() -> PyObjectRef {
+    let mut ap_ns = IndexMap::new();
+    ap_ns.insert(CompactString::from("__argparse__"), PyObject::bool_val(true));
+    let argument_parser = PyObject::class(CompactString::from("ArgumentParser"), vec![], ap_ns);
+
+    make_module("argparse", vec![
+        ("ArgumentParser", argument_parser),
+        ("Namespace", make_builtin(|_| Ok(PyObject::none()))),
+        ("Action", make_builtin(|_| Ok(PyObject::none()))),
     ])
 }

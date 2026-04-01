@@ -931,6 +931,21 @@ impl PyObjectMethods for PyObjectRef {
                     }
                     return Some(v.clone());
                 }
+                // namedtuple methods: _asdict, _replace, _make, __len__, __iter__
+                if inst.class.get_attr("__namedtuple__").is_some() {
+                    if name == "_asdict" || name == "_replace" || name == "_make" 
+                       || name == "__len__" || name == "__iter__" || name == "_fields" {
+                        if name == "_fields" {
+                            return inst.class.get_attr("_fields");
+                        }
+                        return Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: self.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }));
+                    }
+                }
                 None
             }
             PyObjectPayload::Class(cd) => {
