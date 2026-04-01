@@ -39,6 +39,8 @@ pub enum PyObjectPayload {
     Dict(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     Function(PyFunction),
     BuiltinFunction(CompactString),
+    /// Built-in type object (int, str, float, etc.) — callable as constructor
+    BuiltinType(CompactString),
     BoundMethod { receiver: PyObjectRef, method: PyObjectRef },
     BuiltinBoundMethod { receiver: PyObjectRef, method_name: CompactString },
     Code(Box<ferrython_bytecode::CodeObject>),
@@ -152,6 +154,7 @@ impl PyObject {
     pub fn dict(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(items)))) }
     pub fn function(func: PyFunction) -> PyObjectRef { Self::wrap(PyObjectPayload::Function(func)) }
     pub fn builtin_function(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinFunction(name)) }
+    pub fn builtin_type(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinType(name)) }
     pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef { Self::wrap(PyObjectPayload::Code(Box::new(code))) }
     pub fn class(name: CompactString, bases: Vec<PyObjectRef>, namespace: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Class(ClassData { name, bases, namespace: Arc::new(RwLock::new(namespace)), mro: Vec::new() }))
@@ -301,6 +304,7 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Dict(_) => "dict",
             PyObjectPayload::Function(_) => "function",
             PyObjectPayload::BuiltinFunction(_) => "builtin_function_or_method",
+            PyObjectPayload::BuiltinType(_) => "type",
             PyObjectPayload::BoundMethod { .. } => "method",
             PyObjectPayload::BuiltinBoundMethod { .. } => "builtin_method",
             PyObjectPayload::Code(_) => "code",
@@ -345,8 +349,9 @@ impl PyObjectMethods for PyObjectRef {
 
     fn is_callable(&self) -> bool {
         matches!(&self.payload, PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
-            | PyObjectPayload::BoundMethod { .. } | PyObjectPayload::Class(_)
-            | PyObjectPayload::ExceptionType(_) | PyObjectPayload::NativeFunction { .. })
+            | PyObjectPayload::BuiltinType(_) | PyObjectPayload::BoundMethod { .. }
+            | PyObjectPayload::Class(_) | PyObjectPayload::ExceptionType(_)
+            | PyObjectPayload::NativeFunction { .. })
     }
 
     fn is_same(&self, other: &Self) -> bool { Arc::ptr_eq(self, other) }
@@ -379,6 +384,7 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::NotImplemented => "NotImplemented".into(),
             PyObjectPayload::Function(f) => format!("<function {}>", f.name),
             PyObjectPayload::BuiltinFunction(n) => format!("<built-in function {}>", n),
+            PyObjectPayload::BuiltinType(n) => format!("<class '{}'>", n),
             PyObjectPayload::Code(c) => format!("<code object {}>", c.name),
             PyObjectPayload::Class(cd) => format!("<class '{}'>", cd.name),
             PyObjectPayload::Instance(inst) => {
@@ -780,6 +786,43 @@ impl PyObjectMethods for PyObjectRef {
                 None
             }
             PyObjectPayload::Module(m) => m.attrs.get(name).cloned(),
+            PyObjectPayload::Slice { start, stop, step } => {
+                match name {
+                    "start" => Some(start.clone().unwrap_or_else(PyObject::none)),
+                    "stop" => Some(stop.clone().unwrap_or_else(PyObject::none)),
+                    "step" => Some(step.clone().unwrap_or_else(PyObject::none)),
+                    _ => None,
+                }
+            }
+            PyObjectPayload::BuiltinType(n) => {
+                match name {
+                    "__name__" => Some(PyObject::str_val(n.clone())),
+                    _ => None,
+                }
+            }
+            PyObjectPayload::ExceptionType(kind) => {
+                match name {
+                    "__name__" => Some(PyObject::str_val(CompactString::from(format!("{:?}", kind)))),
+                    _ => None,
+                }
+            }
+            PyObjectPayload::ExceptionInstance { kind, message, args } => {
+                match name {
+                    "args" => {
+                        if args.is_empty() {
+                            if message.is_empty() {
+                                Some(PyObject::tuple(vec![]))
+                            } else {
+                                Some(PyObject::tuple(vec![PyObject::str_val(message.clone())]))
+                            }
+                        } else {
+                            Some(PyObject::tuple(args.clone()))
+                        }
+                    }
+                    "__class__" => Some(PyObject::exception_type(kind.clone())),
+                    _ => None,
+                }
+            }
             // Built-in type methods — return bound method names
             PyObjectPayload::Str(_) | PyObjectPayload::List(_) |
             PyObjectPayload::Dict(_) | PyObjectPayload::Tuple(_) |
@@ -1100,6 +1143,9 @@ fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ord
         (PyObjectPayload::BuiltinFunction(a), PyObjectPayload::BuiltinFunction(b)) => {
             if a == b { Some(std::cmp::Ordering::Equal) } else { None }
         }
+        (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) => {
+            if a == b { Some(std::cmp::Ordering::Equal) } else { None }
+        }
         (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
             let a = a.read(); let b = b.read();
             if a.len() != b.len() { return None; }
@@ -1126,6 +1172,14 @@ fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ord
                 }
             }
             Some(std::cmp::Ordering::Equal)
+        }
+        // Class identity comparison (same Arc pointer = same class)
+        (PyObjectPayload::Class(a), PyObjectPayload::Class(b)) => {
+            if a.name == b.name { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        // ExceptionType comparison
+        (PyObjectPayload::ExceptionType(a), PyObjectPayload::ExceptionType(b)) => {
+            if a == b { Some(std::cmp::Ordering::Equal) } else { None }
         }
         _ => None,
     }

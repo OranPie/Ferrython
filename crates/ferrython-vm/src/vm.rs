@@ -308,7 +308,96 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // Fall back to call_object for builtins etc (kwargs ignored)
+                // Fall back to call_object for builtins etc
+                // Handle builtins with keyword args
+                let builtin_name = match &func.payload {
+                    PyObjectPayload::BuiltinFunction(name) => Some(name.clone()),
+                    PyObjectPayload::BuiltinType(name) => Some(name.clone()),
+                    _ => None,
+                };
+                if let Some(name) = builtin_name {
+                    match name.as_str() {
+                        "sorted" => {
+                            if !pos_args.is_empty() {
+                                let items = self.collect_iterable(&pos_args[0])?;
+                                let mut items_vec = items;
+                                let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
+                                let reverse = kwargs.iter().find(|(k, _)| k.as_str() == "reverse")
+                                    .map(|(_, v)| v.is_truthy()).unwrap_or(false);
+                                if let Some(key) = key_fn {
+                                    // Decorate-sort-undecorate (Schwartzian transform)
+                                    let mut decorated: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
+                                    for item in &items_vec {
+                                        let k = self.call_object(key.clone(), vec![item.clone()])?;
+                                        decorated.push((k, item.clone()));
+                                    }
+                                    decorated.sort_by(|(a, _), (b, _)| {
+                                        builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                                    });
+                                    items_vec = decorated.into_iter().map(|(_, v)| v).collect();
+                                } else {
+                                    items_vec.sort_by(|a, b| {
+                                        builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                                    });
+                                }
+                                if reverse {
+                                    items_vec.reverse();
+                                }
+                                return Ok(PyObject::list(items_vec));
+                            }
+                        }
+                        "print" => {
+                            let sep = kwargs.iter().find(|(k, _)| k.as_str() == "sep")
+                                .map(|(_, v)| v.py_to_string()).unwrap_or_else(|| " ".to_string());
+                            let end = kwargs.iter().find(|(k, _)| k.as_str() == "end")
+                                .map(|(_, v)| v.py_to_string()).unwrap_or_else(|| "\n".to_string());
+                            let mut parts = Vec::new();
+                            for a in &pos_args {
+                                parts.push(self.vm_str(a)?);
+                            }
+                            print!("{}{}", parts.join(&sep), end);
+                            return Ok(PyObject::none());
+                        }
+                        "max" | "min" => {
+                            let is_max = name.as_str() == "max";
+                            let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
+                            let default = kwargs.iter().find(|(k, _)| k.as_str() == "default").map(|(_, v)| v.clone());
+                            let items = if pos_args.len() == 1 {
+                                self.collect_iterable(&pos_args[0])?
+                            } else {
+                                pos_args.clone()
+                            };
+                            if items.is_empty() {
+                                return if let Some(d) = default {
+                                    Ok(d)
+                                } else {
+                                    Err(PyException::value_error(format!("{}() arg is an empty sequence", name)))
+                                };
+                            }
+                            let mut best = items[0].clone();
+                            let mut best_key = if let Some(ref kf) = key_fn {
+                                self.call_object(kf.clone(), vec![best.clone()])?
+                            } else { best.clone() };
+                            for item in &items[1..] {
+                                let item_key = if let Some(ref kf) = key_fn {
+                                    self.call_object(kf.clone(), vec![item.clone()])?
+                                } else { item.clone() };
+                                let cmp = builtins::partial_cmp_for_sort(&item_key, &best_key);
+                                let better = if is_max {
+                                    cmp == Some(std::cmp::Ordering::Greater)
+                                } else {
+                                    cmp == Some(std::cmp::Ordering::Less)
+                                };
+                                if better {
+                                    best = item.clone();
+                                    best_key = item_key;
+                                }
+                            }
+                            return Ok(best);
+                        }
+                        _ => {}
+                    }
+                }
                 let mut all_args = pos_args;
                 for (_, v) in kwargs {
                     all_args.push(v);
@@ -1787,6 +1876,77 @@ impl VirtualMachine {
             Ok(None)
     }
 
+    /// Produce a str() string for an object, dispatching __str__ on instances.
+    /// For containers, uses vm_repr for elements (like CPython).
+    fn vm_str(&mut self, obj: &PyObjectRef) -> PyResult<String> {
+        match &obj.payload {
+            PyObjectPayload::Instance(_) => {
+                if let Some(str_method) = obj.get_attr("__str__") {
+                    let result = self.call_object(str_method, vec![])?;
+                    return Ok(result.py_to_string());
+                }
+                Ok(obj.py_to_string())
+            }
+            // For containers, str() is same as repr() (elements use repr)
+            PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) |
+            PyObjectPayload::Dict(_) | PyObjectPayload::Set(_) |
+            PyObjectPayload::FrozenSet(_) => self.vm_repr(obj),
+            _ => Ok(obj.py_to_string()),
+        }
+    }
+
+    /// Produce a repr string for an object, dispatching __repr__ on instances.
+    fn vm_repr(&mut self, obj: &PyObjectRef) -> PyResult<String> {
+        match &obj.payload {
+            PyObjectPayload::Instance(_) => {
+                if let Some(repr_method) = obj.get_attr("__repr__") {
+                    let result = self.call_object(repr_method, vec![])?;
+                    return Ok(result.py_to_string());
+                }
+                Ok(obj.repr())
+            }
+            PyObjectPayload::List(items) => {
+                let items = items.read().clone();
+                let mut parts = Vec::new();
+                for item in &items {
+                    parts.push(self.vm_repr(item)?);
+                }
+                Ok(format!("[{}]", parts.join(", ")))
+            }
+            PyObjectPayload::Tuple(items) => {
+                let mut parts = Vec::new();
+                for item in items {
+                    parts.push(self.vm_repr(item)?);
+                }
+                if parts.len() == 1 {
+                    Ok(format!("({},)", parts[0]))
+                } else {
+                    Ok(format!("({})", parts.join(", ")))
+                }
+            }
+            PyObjectPayload::Dict(m) => {
+                let m = m.read().clone();
+                let mut parts = Vec::new();
+                for (k, v) in &m {
+                    let kr = self.vm_repr(&k.to_object())?;
+                    let vr = self.vm_repr(v)?;
+                    parts.push(format!("{}: {}", kr, vr));
+                }
+                Ok(format!("{{{}}}", parts.join(", ")))
+            }
+            PyObjectPayload::Set(m) => {
+                let m = m.read().clone();
+                if m.is_empty() { return Ok("set()".to_string()); }
+                let mut parts = Vec::new();
+                for v in m.values() {
+                    parts.push(self.vm_repr(v)?);
+                }
+                Ok(format!("{{{}}}", parts.join(", ")))
+            }
+            _ => Ok(obj.repr()),
+        }
+    }
+
     /// Call a Python object (function, builtin, class).
     fn call_object(
         &mut self,
@@ -1810,14 +1970,7 @@ impl VirtualMachine {
                     "print" => {
                         let mut parts = Vec::new();
                         for a in &args {
-                            if matches!(&a.payload, PyObjectPayload::Instance(_)) {
-                                if let Some(str_method) = a.get_attr("__str__") {
-                                    let s = self.call_object(str_method, vec![])?;
-                                    parts.push(s.py_to_string());
-                                    continue;
-                                }
-                            }
-                            parts.push(a.py_to_string());
+                            parts.push(self.vm_str(a)?);
                         }
                         println!("{}", parts.join(" "));
                         return Ok(PyObject::none());
@@ -1826,24 +1979,13 @@ impl VirtualMachine {
                         if args.is_empty() {
                             return Ok(PyObject::str_val(CompactString::from("")));
                         }
-                        // Only check __str__ on class instances, not builtins
-                        if matches!(&args[0].payload, PyObjectPayload::Instance(_)) {
-                            if let Some(str_method) = args[0].get_attr("__str__") {
-                                return self.call_object(str_method, vec![]);
-                            }
-                        }
-                        return Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())));
+                        return self.vm_str(&args[0]).map(|s| PyObject::str_val(CompactString::from(s)));
                     }
                     "repr" => {
                         if args.is_empty() {
                             return Ok(PyObject::str_val(CompactString::from("")));
                         }
-                        if matches!(&args[0].payload, PyObjectPayload::Instance(_)) {
-                            if let Some(repr_method) = args[0].get_attr("__repr__") {
-                                return self.call_object(repr_method, vec![]);
-                            }
-                        }
-                        return Ok(PyObject::str_val(CompactString::from(args[0].repr())));
+                        return self.vm_repr(&args[0]).map(|s| PyObject::str_val(CompactString::from(s)));
                     }
                     "map" => {
                         if args.len() < 2 {
@@ -2085,6 +2227,212 @@ impl VirtualMachine {
                             return Ok(Arc::new(PyObject {
                                 payload: PyObjectPayload::Super { cls: args[0].clone(), instance: args[1].clone() }
                             }));
+                        }
+                    }
+                    _ => {}
+                }
+                match builtins::get_builtin_fn(name.as_str()) {
+                    Some(f) => f(&args),
+                    None => Err(PyException::type_error(format!(
+                        "'{}' is not callable", name
+                    ))),
+                }
+            }
+            PyObjectPayload::BuiltinType(name) => {
+                // BuiltinType dispatch: same as BuiltinFunction for VM-aware builtins
+                match name.as_str() {
+                    "print" => {
+                        let mut parts = Vec::new();
+                        for a in &args {
+                            if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                                if let Some(str_method) = a.get_attr("__str__") {
+                                    let s = self.call_object(str_method, vec![])?;
+                                    parts.push(s.py_to_string());
+                                    continue;
+                                }
+                            }
+                            parts.push(a.py_to_string());
+                        }
+                        println!("{}", parts.join(" "));
+                        return Ok(PyObject::none());
+                    }
+                    "str" => {
+                        if args.is_empty() {
+                            return Ok(PyObject::str_val(CompactString::from("")));
+                        }
+                        if matches!(&args[0].payload, PyObjectPayload::Instance(_)) {
+                            if let Some(str_method) = args[0].get_attr("__str__") {
+                                return self.call_object(str_method, vec![]);
+                            }
+                        }
+                        return Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())));
+                    }
+                    "repr" => {
+                        if args.is_empty() {
+                            return Ok(PyObject::str_val(CompactString::from("")));
+                        }
+                        return self.vm_repr(&args[0]).map(|s| PyObject::str_val(CompactString::from(s)));
+                    }
+                    "map" => {
+                        if args.len() < 2 {
+                            return Err(PyException::type_error("map() requires at least 2 arguments"));
+                        }
+                        let func_obj = args[0].clone();
+                        let iterable = self.collect_iterable(&args[1])?;
+                        let mut result = Vec::new();
+                        for item in iterable {
+                            result.push(self.call_object(func_obj.clone(), vec![item])?);
+                        }
+                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                            Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+                        )));
+                    }
+                    "filter" => {
+                        if args.len() < 2 {
+                            return Err(PyException::type_error("filter() requires at least 2 arguments"));
+                        }
+                        let func_obj = args[0].clone();
+                        let iterable = self.collect_iterable(&args[1])?;
+                        let mut result = Vec::new();
+                        for item in iterable {
+                            let keep = if matches!(func_obj.payload, PyObjectPayload::None) {
+                                item.is_truthy()
+                            } else {
+                                self.call_object(func_obj.clone(), vec![item.clone()])?.is_truthy()
+                            };
+                            if keep {
+                                result.push(item);
+                            }
+                        }
+                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                            Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+                        )));
+                    }
+                    "list" => {
+                        if args.is_empty() { return Ok(PyObject::list(vec![])); }
+                        let items = self.collect_iterable(&args[0])?;
+                        return Ok(PyObject::list(items));
+                    }
+                    "tuple" => {
+                        if args.is_empty() { return Ok(PyObject::tuple(vec![])); }
+                        let items = self.collect_iterable(&args[0])?;
+                        return Ok(PyObject::tuple(items));
+                    }
+                    "sum" => {
+                        if args.is_empty() {
+                            return Err(PyException::type_error("sum() requires at least 1 argument"));
+                        }
+                        let items = self.collect_iterable(&args[0])?;
+                        let start = if args.len() > 1 { args[1].clone() } else { PyObject::int(0) };
+                        let mut total = start;
+                        for item in items {
+                            total = total.add(&item)?;
+                        }
+                        return Ok(total);
+                    }
+                    "sorted" => {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("sorted", &[PyObject::list(items)]);
+                        }
+                    }
+                    "set" => {
+                        if args.is_empty() { return builtins::dispatch("set", &[]); }
+                        let items = self.collect_iterable(&args[0])?;
+                        return builtins::dispatch("set", &[PyObject::list(items)]);
+                    }
+                    "frozenset" => {
+                        if args.is_empty() { return builtins::dispatch("frozenset", &[]); }
+                        let items = self.collect_iterable(&args[0])?;
+                        return builtins::dispatch("frozenset", &[PyObject::list(items)]);
+                    }
+                    "any" => {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("any", &[PyObject::list(items)]);
+                        }
+                    }
+                    "all" => {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("all", &[PyObject::list(items)]);
+                        }
+                    }
+                    "min" => {
+                        if args.len() == 1 {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("min", &items);
+                        }
+                    }
+                    "max" => {
+                        if args.len() == 1 {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("max", &items);
+                        }
+                    }
+                    "reversed" => {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::dispatch("reversed", &[PyObject::list(items)]);
+                        }
+                    }
+                    "enumerate" => {
+                        if !args.is_empty() {
+                            let items = self.collect_iterable(&args[0])?;
+                            let mut new_args = vec![PyObject::list(items)];
+                            if args.len() > 1 { new_args.push(args[1].clone()); }
+                            return builtins::dispatch("enumerate", &new_args);
+                        }
+                    }
+                    "super" => {
+                        if args.is_empty() {
+                            let frame = self.call_stack.last().unwrap();
+                            if let Some(self_obj) = frame.locals.first().cloned().flatten() {
+                                if let PyObjectPayload::Instance(inst) = &self_obj.payload {
+                                    let qualname = frame.code.qualname.as_str();
+                                    let defining_class_name = qualname.rsplit_once('.')
+                                        .map(|(cls_part, _)| {
+                                            cls_part.rsplit_once('.').map(|(_, c)| c).unwrap_or(cls_part)
+                                        });
+                                    let runtime_cls = &inst.class;
+                                    let mut cls = runtime_cls.clone();
+                                    if let Some(def_name) = defining_class_name {
+                                        if let PyObjectPayload::Class(cd) = &runtime_cls.payload {
+                                            let mro = if cd.mro.is_empty() {
+                                                vec![runtime_cls.clone()]
+                                            } else {
+                                                cd.mro.clone()
+                                            };
+                                            for m in &mro {
+                                                if let PyObjectPayload::Class(mc) = &m.payload {
+                                                    if mc.name.as_str() == def_name {
+                                                        cls = m.clone();
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    return Ok(Arc::new(PyObject {
+                                        payload: PyObjectPayload::Super { cls, instance: self_obj.clone() }
+                                    }));
+                                }
+                            }
+                            return Err(PyException::runtime_error("super(): no current class"));
+                        } else if args.len() == 2 {
+                            return Ok(Arc::new(PyObject {
+                                payload: PyObjectPayload::Super { cls: args[0].clone(), instance: args[1].clone() }
+                            }));
+                        }
+                    }
+                    "bool" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__bool__") {
+                                    let result = self.call_object(method, vec![args[0].clone()])?;
+                                    return Ok(PyObject::bool_val(result.is_truthy()));
+                                }
+                            }
                         }
                     }
                     _ => {}

@@ -1,7 +1,7 @@
 //! Built-in functions available in Python's builtins module.
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -14,22 +14,35 @@ type BuiltinFn = fn(&[PyObjectRef]) -> PyResult<PyObjectRef>;
 
 pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
     let mut m = IndexMap::new();
-    let names = [
-        "print", "len", "repr", "str", "int", "float", "bool", "type", "id",
+    // Regular builtin functions
+    let func_names = [
+        "print", "len", "repr", "id",
         "abs", "min", "max", "sum", "round", "pow", "divmod", "hash",
         "isinstance", "issubclass", "callable", "input", "ord", "chr",
         "hex", "oct", "bin", "sorted", "reversed", "enumerate", "zip",
-        "range", "list", "tuple", "dict", "set", "frozenset",
         "all", "any", "iter", "next", "hasattr", "getattr", "setattr",
         "delattr", "dir", "vars", "globals", "locals", "format",
         "ascii", "exec", "eval", "compile", "help", "breakpoint",
-        "object", "super", "classmethod", "staticmethod", "property",
-        "map", "filter", "slice", "open",
+        "open",
     ];
-    for name in names {
+    for name in func_names {
         m.insert(
             CompactString::from(name),
             PyObject::builtin_function(CompactString::from(name)),
+        );
+    }
+    // Builtin types (constructors that also serve as type objects)
+    let type_names = [
+        "str", "int", "float", "bool", "type", "object",
+        "list", "tuple", "dict", "set", "frozenset", "range",
+        "bytes", "bytearray", "complex", "slice",
+        "super", "classmethod", "staticmethod", "property",
+        "map", "filter",
+    ];
+    for name in type_names {
+        m.insert(
+            CompactString::from(name),
+            PyObject::builtin_type(CompactString::from(name)),
         );
     }
     m.insert(CompactString::from("None"), PyObject::none());
@@ -146,6 +159,7 @@ pub fn get_builtin_fn(name: &str) -> Option<BuiltinFn> {
         "issubclass" => Some(builtin_issubclass),
         "object" => Some(builtin_object),
         "super" => Some(builtin_super),
+        "slice" => Some(builtin_slice),
         _ => None,
     }
 }
@@ -263,13 +277,15 @@ fn builtin_bool(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("type", args, 1)?;
     let name = args[0].type_name();
-    // Return a BuiltinFunction so type(42) == int works (int is also BuiltinFunction("int"))
     match &args[0].payload {
         PyObjectPayload::Instance(inst) => {
             // For instances, return their class
             Ok(inst.class.clone())
         }
-        _ => Ok(PyObject::builtin_function(CompactString::from(name)))
+        PyObjectPayload::ExceptionInstance { kind, .. } => {
+            Ok(PyObject::exception_type(kind.clone()))
+        }
+        _ => Ok(PyObject::builtin_type(CompactString::from(name)))
     }
 }
 
@@ -403,7 +419,7 @@ fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// Check if obj is an instance of cls (including inheritance).
 fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
     match &cls.payload {
-        PyObjectPayload::BuiltinFunction(type_name) => {
+        PyObjectPayload::BuiltinFunction(type_name) | PyObjectPayload::BuiltinType(type_name) => {
             let obj_type = obj.type_name();
             if obj_type == type_name.as_str() {
                 return true;
@@ -809,19 +825,109 @@ fn builtin_locals(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::dict_from_pairs(vec![]))
 }
 
+fn builtin_slice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let to_opt = |a: &PyObjectRef| -> Option<PyObjectRef> {
+        if matches!(a.payload, PyObjectPayload::None) { None } else { Some(a.clone()) }
+    };
+    match args.len() {
+        0 => Err(PyException::type_error("slice expected at least 1 argument, got 0")),
+        1 => Ok(PyObject::slice(None, to_opt(&args[0]), None)),
+        2 => Ok(PyObject::slice(to_opt(&args[0]), to_opt(&args[1]), None)),
+        _ => Ok(PyObject::slice(to_opt(&args[0]), to_opt(&args[1]), to_opt(&args[2]))),
+    }
+}
+
 fn builtin_issubclass(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("issubclass", args, 2)?;
-    match (&args[0].payload, &args[1].payload) {
-        (PyObjectPayload::Class(sub), PyObjectPayload::Class(sup)) => {
-            if sub.name == sup.name { return Ok(PyObject::bool_val(true)); }
-            for base in &sub.bases {
+    let sub = &args[0];
+    let sup = &args[1];
+    // Handle tuple of types: issubclass(A, (B, C))
+    if let PyObjectPayload::Tuple(types) = &sup.payload {
+        for t in types {
+            if check_subclass(sub, t) {
+                return Ok(PyObject::bool_val(true));
+            }
+        }
+        return Ok(PyObject::bool_val(false));
+    }
+    Ok(PyObject::bool_val(check_subclass(sub, sup)))
+}
+
+fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
+    match (&sub.payload, &sup.payload) {
+        (PyObjectPayload::Class(sub_cd), PyObjectPayload::Class(sup_cd)) => {
+            if sub_cd.name == sup_cd.name { return true; }
+            // Walk full MRO
+            for base in &sub_cd.mro {
                 if let PyObjectPayload::Class(bc) = &base.payload {
-                    if bc.name == sup.name { return Ok(PyObject::bool_val(true)); }
+                    if bc.name == sup_cd.name { return true; }
                 }
             }
-            Ok(PyObject::bool_val(false))
+            // Also check direct bases
+            for base in &sub_cd.bases {
+                if let PyObjectPayload::Class(bc) = &base.payload {
+                    if bc.name == sup_cd.name { return true; }
+                }
+            }
+            false
         }
-        _ => Ok(PyObject::bool_val(false)),
+        // Class inheriting from ExceptionType (e.g. class MyError(ValueError))
+        (PyObjectPayload::Class(sub_cd), PyObjectPayload::ExceptionType(target_kind)) => {
+            let target_name = format!("{:?}", target_kind);
+            // Check bases: is any base an ExceptionType matching target?
+            for base in &sub_cd.bases {
+                if let PyObjectPayload::ExceptionType(bk) = &base.payload {
+                    if bk == target_kind { return true; }
+                    // Check exception hierarchy
+                    if is_exception_subclass(bk, target_kind) { return true; }
+                }
+                // Recursively check class bases
+                if check_subclass(base, sup) { return true; }
+            }
+            false
+        }
+        (PyObjectPayload::ExceptionType(a), PyObjectPayload::ExceptionType(b)) => {
+            a == b || is_exception_subclass(a, b)
+        }
+        // BuiltinType subclass (bool is subclass of int)
+        (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) => {
+            a == b || (a.as_str() == "bool" && b.as_str() == "int")
+        }
+        _ => false,
+    }
+}
+
+/// Check if exception kind `child` is a subclass of `parent` in the hierarchy.
+fn is_exception_subclass(child: &ExceptionKind, parent: &ExceptionKind) -> bool {
+    if std::mem::discriminant(child) == std::mem::discriminant(parent) { return true; }
+    match parent {
+        ExceptionKind::BaseException => true,
+        ExceptionKind::Exception => !matches!(child,
+            ExceptionKind::SystemExit | ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit
+        ),
+        ExceptionKind::ArithmeticError => matches!(child,
+            ExceptionKind::ArithmeticError | ExceptionKind::FloatingPointError |
+            ExceptionKind::OverflowError | ExceptionKind::ZeroDivisionError
+        ),
+        ExceptionKind::LookupError => matches!(child,
+            ExceptionKind::LookupError | ExceptionKind::IndexError | ExceptionKind::KeyError
+        ),
+        ExceptionKind::OSError => matches!(child,
+            ExceptionKind::OSError | ExceptionKind::FileExistsError |
+            ExceptionKind::FileNotFoundError | ExceptionKind::PermissionError
+        ),
+        ExceptionKind::ValueError => matches!(child,
+            ExceptionKind::ValueError | ExceptionKind::UnicodeError |
+            ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError
+        ),
+        ExceptionKind::Warning => matches!(child,
+            ExceptionKind::Warning | ExceptionKind::DeprecationWarning |
+            ExceptionKind::RuntimeWarning | ExceptionKind::UserWarning
+        ),
+        ExceptionKind::ImportError => matches!(child,
+            ExceptionKind::ImportError | ExceptionKind::ModuleNotFoundError
+        ),
+        _ => false,
     }
 }
 
@@ -882,12 +988,26 @@ fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyOb
         "lstrip" => Ok(PyObject::str_val(CompactString::from(s.trim_start()))),
         "rstrip" => Ok(PyObject::str_val(CompactString::from(s.trim_end()))),
         "split" => {
+            let maxsplit: Option<usize> = if args.len() > 1 {
+                args[1].as_int().map(|n| n as usize)
+            } else { None };
             let parts: Vec<&str> = if args.is_empty() {
-                s.split_whitespace().collect()
+                match maxsplit {
+                    Some(n) => s.splitn(n + 1, char::is_whitespace).collect(),
+                    None => s.split_whitespace().collect(),
+                }
             } else if let Some(sep) = args[0].as_str() {
-                s.split(sep).collect()
+                match maxsplit {
+                    Some(n) => s.splitn(n + 1, sep).collect(),
+                    None => s.split(sep).collect(),
+                }
+            } else if matches!(&args[0].payload, PyObjectPayload::None) {
+                match maxsplit {
+                    Some(n) => s.splitn(n + 1, char::is_whitespace).collect(),
+                    None => s.split_whitespace().collect(),
+                }
             } else {
-                return Err(PyException::type_error("split() argument must be str"));
+                return Err(PyException::type_error("split() argument must be str or None"));
             };
             Ok(PyObject::list(parts.iter().map(|p| PyObject::str_val(CompactString::from(*p))).collect()))
         }
@@ -1468,7 +1588,7 @@ mod hex {
     }
 }
 
-fn partial_cmp_for_sort(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ordering> {
+pub(crate) fn partial_cmp_for_sort(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ordering> {
     match (&a.payload, &b.payload) {
         (PyObjectPayload::Int(x), PyObjectPayload::Int(y)) => x.partial_cmp(y),
         (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => x.partial_cmp(y),
