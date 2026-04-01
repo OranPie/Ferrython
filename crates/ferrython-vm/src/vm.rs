@@ -2069,11 +2069,18 @@ impl VirtualMachine {
                     if let Some(module) = self.modules.get(&name) {
                         frame.push(module.clone());
                     } else {
-                        // Try builtin module first, then filesystem
                         drop(frame);
-                        let module = match self.load_builtin_module(&name) {
-                            Ok(m) => m,
-                            Err(_) => self.load_file_module(&name, &filename)?
+                        let module = match ferrython_import::resolve_module(&name, &filename)? {
+                            ferrython_import::ResolvedModule::Builtin(m) => m,
+                            ferrython_import::ResolvedModule::Source { code, name: mod_name } => {
+                                let mod_globals = Arc::new(RwLock::new(IndexMap::new()));
+                                let frame = Frame::new(code, mod_globals.clone(), self.builtins.clone());
+                                self.call_stack.push(frame);
+                                let _ = self.run_frame();
+                                self.call_stack.pop();
+                                let attrs = mod_globals.read().clone();
+                                PyObject::module_with_attrs(mod_name, attrs)
+                            }
                         };
                         self.modules.insert(name, module.clone());
                         push!(module);
@@ -3443,46 +3450,6 @@ impl VirtualMachine {
             gen.frame = None;
             Err(PyException::new(ExceptionKind::StopIteration, ""))
         }
-    }
-
-    fn load_builtin_module(&self, name: &str) -> PyResult<PyObjectRef> {
-        ferrython_stdlib::load_module(name)
-            .ok_or_else(|| PyException::import_error(format!("No module named '{}'", name)))
-    }
-
-    fn load_file_module(&mut self, name: &str, importer_filename: &str) -> PyResult<PyObjectRef> {
-        let module_path = name.replace('.', "/");
-        // Search relative to importer's directory, then cwd
-        let importer_dir = std::path::Path::new(importer_filename)
-            .parent()
-            .unwrap_or(std::path::Path::new("."));
-        let search_dirs = [importer_dir.to_path_buf(), std::path::PathBuf::from(".")];
-        for dir in &search_dirs {
-            let candidates = [
-                dir.join(format!("{}.py", module_path)),
-                dir.join(format!("{}/__init__.py", module_path)),
-            ];
-            for candidate in &candidates {
-                if candidate.exists() {
-                    let candidate_str = candidate.to_string_lossy().to_string();
-                    let source = std::fs::read_to_string(candidate)
-                        .map_err(|e| PyException::import_error(format!("cannot read '{}': {}", candidate_str, e)))?;
-                    let ast = ferrython_parser::parse(&source, &candidate_str)
-                        .map_err(|e| PyException::import_error(format!("syntax error in '{}': {}", candidate_str, e)))?;
-                    let code = ferrython_compiler::compile(&ast, &candidate_str)
-                        .map_err(|e| PyException::import_error(format!("compile error in '{}': {}", candidate_str, e)))?;
-                    // Execute module code and collect its globals as module attributes
-                    let mod_globals = Arc::new(RwLock::new(IndexMap::new()));
-                    let frame = Frame::new(code, mod_globals.clone(), self.builtins.clone());
-                    self.call_stack.push(frame);
-                    let _ = self.run_frame();
-                    self.call_stack.pop();
-                    let attrs = mod_globals.read().clone();
-                    return Ok(PyObject::module_with_attrs(CompactString::from(name), attrs));
-                }
-            }
-        }
-        Err(PyException::import_error(format!("No module named '{}'", name)))
     }
 }
 

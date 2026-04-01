@@ -204,12 +204,14 @@ dependencies = [
 name = "ferrython-import"
 version = "0.1.0"
 dependencies = [
+ "compact_str",
  "ferrython-bytecode",
  "ferrython-compiler",
  "ferrython-core",
  "ferrython-parser",
+ "ferrython-stdlib",
+ "indexmap",
  "thiserror",
- "tracing",
 ]
 
 [[package]]
@@ -273,6 +275,7 @@ dependencies = [
  "ferrython-bytecode",
  "ferrython-compiler",
  "ferrython-core",
+ "ferrython-import",
  "ferrython-parser",
  "ferrython-stdlib",
  "indexmap",
