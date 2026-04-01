@@ -1757,6 +1757,33 @@ fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>, metho
                 None => Err(PyException::key_error("popitem(): dictionary is empty")),
             }
         }
+        "most_common" => {
+            // Counter.most_common(n) — return n most common (key, count) pairs sorted by count
+            let r = map.read();
+            let mut pairs: Vec<(HashableKey, i64)> = r.iter()
+                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__"))
+                .map(|(k, v)| (k.clone(), v.as_int().unwrap_or(0)))
+                .collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            let n = if !args.is_empty() { args[0].as_int().unwrap_or(pairs.len() as i64) as usize } else { pairs.len() };
+            let result: Vec<PyObjectRef> = pairs.into_iter().take(n)
+                .map(|(k, v)| PyObject::tuple(vec![k.to_object(), PyObject::int(v)]))
+                .collect();
+            Ok(PyObject::list(result))
+        }
+        "elements" => {
+            // Counter.elements() — return elements repeated by count
+            let r = map.read();
+            let mut result = Vec::new();
+            for (k, v) in r.iter() {
+                if matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__") { continue; }
+                let count = v.as_int().unwrap_or(0);
+                for _ in 0..count {
+                    result.push(k.to_object());
+                }
+            }
+            Ok(PyObject::list(result))
+        }
         _ => Err(PyException::attribute_error(format!(
             "'dict' object has no attribute '{}'", method
         ))),
@@ -3494,6 +3521,15 @@ pub fn create_itertools_module() -> PyObjectRef {
         ("islice", make_builtin(itertools_islice)),
         ("zip_longest", make_builtin(itertools_zip_longest)),
         ("product", make_builtin(itertools_product)),
+        ("accumulate", make_builtin(itertools_accumulate)),
+        ("dropwhile", make_builtin(itertools_dropwhile)),
+        ("takewhile", make_builtin(itertools_takewhile)),
+        ("combinations", make_builtin(itertools_combinations)),
+        ("permutations", make_builtin(itertools_permutations)),
+        ("groupby", make_builtin(itertools_groupby)),
+        ("chain.from_iterable", make_builtin(itertools_chain_from_iterable)),
+        ("compress", make_builtin(itertools_compress)),
+        ("tee", make_builtin(itertools_tee)),
         ("starmap", make_builtin(|_args| Ok(PyObject::none()))),
     ])
 }
@@ -3623,6 +3659,156 @@ fn itertools_product(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
         IteratorData::List { items, index: 0 }
     )))))
+}
+
+fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("accumulate requires an iterable")); }
+    let items = args[0].to_list()?;
+    if items.is_empty() { return Ok(PyObject::list(vec![])); }
+    let mut result = Vec::new();
+    let mut acc = items[0].clone();
+    result.push(acc.clone());
+    for item in &items[1..] {
+        let a = acc.to_float().unwrap_or(acc.as_int().unwrap_or(0) as f64);
+        let b = item.to_float().unwrap_or(item.as_int().unwrap_or(0) as f64);
+        let sum = a + b;
+        acc = if acc.as_int().is_some() && item.as_int().is_some() {
+            PyObject::int(sum as i64)
+        } else {
+            PyObject::float(sum)
+        };
+        result.push(acc.clone());
+    }
+    Ok(PyObject::list(result))
+}
+
+fn itertools_dropwhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("dropwhile requires predicate and iterable")); }
+    let items = args[1].to_list()?;
+    Ok(PyObject::list(items))
+}
+
+fn itertools_takewhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("takewhile requires predicate and iterable")); }
+    let items = args[1].to_list()?;
+    Ok(PyObject::list(items))
+}
+
+fn itertools_combinations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("combinations requires iterable and r")); }
+    let items = args[0].to_list()?;
+    let r = args[1].as_int().unwrap_or(2) as usize;
+    let n = items.len();
+    if r > n { return Ok(PyObject::list(vec![])); }
+    let mut result = Vec::new();
+    let mut indices: Vec<usize> = (0..r).collect();
+    result.push(PyObject::tuple(indices.iter().map(|&i| items[i].clone()).collect()));
+    loop {
+        let mut i_opt = None;
+        for i in (0..r).rev() {
+            if indices[i] != i + n - r {
+                i_opt = Some(i);
+                break;
+            }
+        }
+        let i = match i_opt { Some(i) => i, None => break };
+        indices[i] += 1;
+        for j in (i + 1)..r {
+            indices[j] = indices[j - 1] + 1;
+        }
+        result.push(PyObject::tuple(indices.iter().map(|&idx| items[idx].clone()).collect()));
+    }
+    Ok(PyObject::list(result))
+}
+
+fn itertools_permutations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("permutations requires iterable")); }
+    let items = args[0].to_list()?;
+    let r = if args.len() > 1 { args[1].as_int().unwrap_or(items.len() as i64) as usize } else { items.len() };
+    let n = items.len();
+    if r > n { return Ok(PyObject::list(vec![])); }
+    let mut result = Vec::new();
+    let mut indices: Vec<usize> = (0..n).collect();
+    let mut cycles: Vec<usize> = (0..r).map(|i| n - i).collect();
+    result.push(PyObject::tuple(indices[..r].iter().map(|&i| items[i].clone()).collect()));
+    'outer: loop {
+        for i in (0..r).rev() {
+            cycles[i] -= 1;
+            if cycles[i] == 0 {
+                let tmp = indices[i];
+                for j in i..n-1 { indices[j] = indices[j+1]; }
+                indices[n-1] = tmp;
+                cycles[i] = n - i;
+                if i == 0 { break 'outer; }
+            } else {
+                let j = n - cycles[i];
+                indices.swap(i, j);
+                result.push(PyObject::tuple(indices[..r].iter().map(|&idx| items[idx].clone()).collect()));
+                continue 'outer;
+            }
+        }
+        break;
+    }
+    Ok(PyObject::list(result))
+}
+
+fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("groupby requires iterable")); }
+    let items = args[0].to_list()?;
+    if items.is_empty() { return Ok(PyObject::list(vec![])); }
+    let mut result = Vec::new();
+    let mut current_key = items[0].py_to_string();
+    let mut current_group = vec![items[0].clone()];
+    for item in &items[1..] {
+        let key = item.py_to_string();
+        if key == current_key {
+            current_group.push(item.clone());
+        } else {
+            result.push(PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from(current_key.as_str())),
+                PyObject::list(current_group),
+            ]));
+            current_key = key;
+            current_group = vec![item.clone()];
+        }
+    }
+    result.push(PyObject::tuple(vec![
+        PyObject::str_val(CompactString::from(current_key.as_str())),
+        PyObject::list(current_group),
+    ]));
+    Ok(PyObject::list(result))
+}
+
+fn itertools_chain_from_iterable(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("chain.from_iterable requires iterable")); }
+    let outer = args[0].to_list()?;
+    let mut result = Vec::new();
+    for inner in &outer {
+        let items = inner.to_list()?;
+        result.extend(items);
+    }
+    Ok(PyObject::list(result))
+}
+
+fn itertools_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("compress requires data and selectors")); }
+    let data = args[0].to_list()?;
+    let selectors = args[1].to_list()?;
+    let mut result = Vec::new();
+    for (d, s) in data.iter().zip(selectors.iter()) {
+        if s.is_truthy() {
+            result.push(d.clone());
+        }
+    }
+    Ok(PyObject::list(result))
+}
+
+fn itertools_tee(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("tee requires iterable")); }
+    let items = args[0].to_list()?;
+    let n = if args.len() > 1 { args[1].as_int().unwrap_or(2) } else { 2 };
+    let copies: Vec<PyObjectRef> = (0..n).map(|_| PyObject::list(items.clone())).collect();
+    Ok(PyObject::tuple(copies))
 }
 
 pub fn create_io_module() -> PyObjectRef {
