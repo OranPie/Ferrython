@@ -621,10 +621,24 @@ fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::dict(IndexMap::new()));
     }
-    // Simple: copy a dict
     match &args[0].payload {
         PyObjectPayload::Dict(m) => Ok(PyObject::dict(m.read().clone())),
-        _ => Err(PyException::type_error("dict() argument must be a mapping")),
+        // dict from iterable of (key, value) pairs
+        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::Set(_) => {
+            let pairs = args[0].to_list()?;
+            let mut map = IndexMap::new();
+            for pair in &pairs {
+                let kv = pair.to_list()?;
+                if kv.len() != 2 {
+                    return Err(PyException::value_error(
+                        format!("dictionary update sequence element has length {}; 2 is required", kv.len())));
+                }
+                let key = kv[0].to_hashable_key()?;
+                map.insert(key, kv[1].clone());
+            }
+            Ok(PyObject::dict(map))
+        }
+        _ => Err(PyException::type_error("dict() argument must be a mapping or iterable")),
     }
 }
 
@@ -1072,13 +1086,33 @@ fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyOb
         }
         "startswith" => {
             check_args_min("startswith", args, 1)?;
-            let prefix = args[0].as_str().ok_or_else(|| PyException::type_error("startswith() argument must be str"))?;
-            Ok(PyObject::bool_val(s.starts_with(prefix)))
+            match &args[0].payload {
+                PyObjectPayload::Tuple(prefixes) => {
+                    let result = prefixes.iter().any(|p| {
+                        p.as_str().map(|ps| s.starts_with(ps)).unwrap_or(false)
+                    });
+                    Ok(PyObject::bool_val(result))
+                }
+                _ => {
+                    let prefix = args[0].as_str().ok_or_else(|| PyException::type_error("startswith() argument must be str or tuple"))?;
+                    Ok(PyObject::bool_val(s.starts_with(prefix)))
+                }
+            }
         }
         "endswith" => {
             check_args_min("endswith", args, 1)?;
-            let suffix = args[0].as_str().ok_or_else(|| PyException::type_error("endswith() argument must be str"))?;
-            Ok(PyObject::bool_val(s.ends_with(suffix)))
+            match &args[0].payload {
+                PyObjectPayload::Tuple(suffixes) => {
+                    let result = suffixes.iter().any(|p| {
+                        p.as_str().map(|ps| s.ends_with(ps)).unwrap_or(false)
+                    });
+                    Ok(PyObject::bool_val(result))
+                }
+                _ => {
+                    let suffix = args[0].as_str().ok_or_else(|| PyException::type_error("endswith() argument must be str or tuple"))?;
+                    Ok(PyObject::bool_val(s.ends_with(suffix)))
+                }
+            }
         }
         "isdigit" => Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))),
         "isalpha" => Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_alphabetic()))),

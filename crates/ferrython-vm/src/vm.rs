@@ -976,14 +976,27 @@ impl VirtualMachine {
                     let value = frame.pop();
                     match &obj.payload {
                         PyObjectPayload::List(items) => {
-                            let idx = key.to_int()?;
-                            let mut w = items.write();
-                            let len = w.len() as i64;
-                            let actual = if idx < 0 { len + idx } else { idx };
-                            if actual < 0 || actual >= len {
-                                return Err(PyException::index_error("list assignment index out of range"));
+                            if let PyObjectPayload::Slice { start, stop, step: _ } = &key.payload {
+                                // Slice assignment: lst[start:stop] = iterable
+                                let new_items = value.to_list()?;
+                                let mut w = items.write();
+                                let len = w.len() as i64;
+                                let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
+                                let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
+                                let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
+                                let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
+                                let e = e.max(s);
+                                w.splice(s..e, new_items);
+                            } else {
+                                let idx = key.to_int()?;
+                                let mut w = items.write();
+                                let len = w.len() as i64;
+                                let actual = if idx < 0 { len + idx } else { idx };
+                                if actual < 0 || actual >= len {
+                                    return Err(PyException::index_error("list assignment index out of range"));
+                                }
+                                w[actual as usize] = value;
                             }
-                            w[actual as usize] = value;
                         }
                         PyObjectPayload::Dict(map) => {
                             let hk = key.to_hashable_key()?;

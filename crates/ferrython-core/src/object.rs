@@ -350,8 +350,10 @@ impl PyObjectMethods for PyObjectRef {
     fn is_callable(&self) -> bool {
         matches!(&self.payload, PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
             | PyObjectPayload::BuiltinType(_) | PyObjectPayload::BoundMethod { .. }
+            | PyObjectPayload::BuiltinBoundMethod { .. }
             | PyObjectPayload::Class(_) | PyObjectPayload::ExceptionType(_)
             | PyObjectPayload::NativeFunction { .. })
+            || (matches!(&self.payload, PyObjectPayload::Instance(_)) && self.get_attr("__call__").is_some())
     }
 
     fn is_same(&self, other: &Self) -> bool { Arc::ptr_eq(self, other) }
@@ -1093,6 +1095,23 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Set(m) => Ok(m.read().len()),
             PyObjectPayload::FrozenSet(m) => Ok(m.len()),
             PyObjectPayload::Dict(m) => Ok(m.read().len()),
+            PyObjectPayload::Iterator(iter_data) => {
+                let data = iter_data.lock().unwrap();
+                match &*data {
+                    IteratorData::Range { current, stop, step } => {
+                        if *step > 0 && *current < *stop {
+                            Ok(((stop - current + step - 1) / step) as usize)
+                        } else if *step < 0 && *current > *stop {
+                            Ok(((current - stop - step - 1) / (-step)) as usize)
+                        } else {
+                            Ok(0)
+                        }
+                    }
+                    IteratorData::List { items, index } => Ok(items.len() - index),
+                    IteratorData::Tuple { items, index } => Ok(items.len() - index),
+                    IteratorData::Str { chars, index } => Ok(chars.len() - index),
+                }
+            }
             _ => Err(PyException::type_error(format!("object of type '{}' has no len()", self.type_name()))),
         }
     }
@@ -1179,6 +1198,27 @@ impl PyObjectMethods for PyObjectRef {
                         Ok(b.windows(needle.len()).any(|w| w == needle.as_slice()))
                     }
                     _ => Err(PyException::type_error("a bytes-like object is required")),
+                }
+            }
+            PyObjectPayload::Iterator(iter_data) => {
+                let data = iter_data.lock().unwrap();
+                match &*data {
+                    IteratorData::Range { current, stop, step } => {
+                        if let Some(val) = item.as_int() {
+                            if *step > 0 {
+                                Ok(val >= *current && val < *stop && (val - current) % step == 0)
+                            } else {
+                                Ok(val <= *current && val > *stop && (current - val) % (-step) == 0)
+                            }
+                        } else {
+                            Ok(false)
+                        }
+                    }
+                    _ => {
+                        drop(data);
+                        let items = self.to_list()?;
+                        Ok(items.iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
+                    }
                 }
             }
             _ => Err(PyException::type_error(format!("argument of type '{}' is not iterable", self.type_name()))),
