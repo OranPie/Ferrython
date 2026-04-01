@@ -219,6 +219,13 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
 
 fn hashable_key_to_object(key: &HashableKey) -> PyObjectRef { key.to_object() }
 
+fn apply_format_spec(val: &PyObjectRef, spec: &str) -> String {
+    match val.format_value(spec) {
+        Ok(s) => s,
+        Err(_) => val.py_to_string(),
+    }
+}
+
 // ── Builtin function implementations ──
 
 fn builtin_print(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1344,31 +1351,42 @@ fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyOb
             Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_numeric())))
         }
         "format" => {
-            // Basic positional format: "{} is {}".format(a, b)
             let mut result = String::new();
             let mut chars = s.chars().peekable();
-            let mut arg_idx = 0usize;
+            let mut auto_idx = 0usize;
             while let Some(c) = chars.next() {
                 if c == '{' {
                     if chars.peek() == Some(&'{') {
                         chars.next();
                         result.push('{');
-                    } else if chars.peek() == Some(&'}') {
-                        chars.next();
-                        if arg_idx < args.len() {
-                            result.push_str(&args[arg_idx].py_to_string());
-                            arg_idx += 1;
-                        }
                     } else {
-                        // Collect field name
-                        let mut field = String::new();
+                        // Collect everything until '}'
+                        let mut field_spec = String::new();
                         for c in chars.by_ref() {
                             if c == '}' { break; }
-                            field.push(c);
+                            field_spec.push(c);
                         }
-                        if let Ok(idx) = field.parse::<usize>() {
-                            if idx < args.len() {
-                                result.push_str(&args[idx].py_to_string());
+                        // Split field_spec on ':' → field_name : format_spec
+                        let (field_name, format_spec) = if let Some(colon_pos) = field_spec.find(':') {
+                            (&field_spec[..colon_pos], Some(&field_spec[colon_pos+1..]))
+                        } else {
+                            (field_spec.as_str(), None)
+                        };
+                        // Resolve the value
+                        let value = if field_name.is_empty() {
+                            let v = args.get(auto_idx).cloned();
+                            auto_idx += 1;
+                            v
+                        } else if let Ok(idx) = field_name.parse::<usize>() {
+                            args.get(idx).cloned()
+                        } else {
+                            None
+                        };
+                        if let Some(val) = value {
+                            if let Some(spec) = format_spec {
+                                result.push_str(&apply_format_spec(&val, spec));
+                            } else {
+                                result.push_str(&val.py_to_string());
                             }
                         }
                     }

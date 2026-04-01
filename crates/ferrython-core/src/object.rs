@@ -500,6 +500,12 @@ impl PyObjectMethods for PyObjectRef {
 
     fn add(&self, other: &Self) -> PyResult<PyObjectRef> {
         match (&self.payload, &other.payload) {
+            // Bool → Int coercion for arithmetic
+            (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => Ok(PyObject::int(*a as i64 + *b as i64)),
+            (PyObjectPayload::Bool(a), PyObjectPayload::Int(b)) => Ok(PyInt::add_op(&PyInt::Small(*a as i64), b).to_object()),
+            (PyObjectPayload::Int(a), PyObjectPayload::Bool(b)) => Ok(PyInt::add_op(a, &PyInt::Small(*b as i64)).to_object()),
+            (PyObjectPayload::Bool(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(*a as i64 as f64 + b)),
+            (PyObjectPayload::Float(a), PyObjectPayload::Bool(b)) => Ok(PyObject::float(a + *b as i64 as f64)),
             (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => Ok(PyInt::add_op(a, b).to_object()),
             (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a + b)),
             (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.to_f64() + b)),
@@ -535,6 +541,11 @@ impl PyObjectMethods for PyObjectRef {
 
     fn sub(&self, other: &Self) -> PyResult<PyObjectRef> {
         match (&self.payload, &other.payload) {
+            (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => Ok(PyObject::int(*a as i64 - *b as i64)),
+            (PyObjectPayload::Bool(a), PyObjectPayload::Int(b)) => Ok(PyInt::sub_op(&PyInt::Small(*a as i64), b).to_object()),
+            (PyObjectPayload::Int(a), PyObjectPayload::Bool(b)) => Ok(PyInt::sub_op(a, &PyInt::Small(*b as i64)).to_object()),
+            (PyObjectPayload::Bool(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(*a as i64 as f64 - b)),
+            (PyObjectPayload::Float(a), PyObjectPayload::Bool(b)) => Ok(PyObject::float(a - *b as i64 as f64)),
             (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => Ok(PyInt::sub_op(a, b).to_object()),
             (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a - b)),
             (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.to_f64() - b)),
@@ -571,6 +582,11 @@ impl PyObjectMethods for PyObjectRef {
 
     fn mul(&self, other: &Self) -> PyResult<PyObjectRef> {
         match (&self.payload, &other.payload) {
+            (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => Ok(PyObject::int(*a as i64 * *b as i64)),
+            (PyObjectPayload::Bool(a), PyObjectPayload::Int(b)) => Ok(PyInt::mul_op(&PyInt::Small(*a as i64), b).to_object()),
+            (PyObjectPayload::Int(a), PyObjectPayload::Bool(b)) => Ok(PyInt::mul_op(a, &PyInt::Small(*b as i64)).to_object()),
+            (PyObjectPayload::Bool(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(*a as i64 as f64 * b)),
+            (PyObjectPayload::Float(a), PyObjectPayload::Bool(b)) => Ok(PyObject::float(a * *b as i64 as f64)),
             (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => Ok(PyInt::mul_op(a, b).to_object()),
             (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a * b)),
             (PyObjectPayload::Int(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.to_f64() * b)),
