@@ -231,6 +231,162 @@ impl VirtualMachine {
         result
     }
 
+    /// Unified class instantiation: __new__, dataclass/namedtuple auto-init, __init__, exception attrs.
+    fn instantiate_class(
+        &mut self,
+        cls: &PyObjectRef,
+        pos_args: Vec<PyObjectRef>,
+        kwargs: Vec<(CompactString, PyObjectRef)>,
+    ) -> PyResult<PyObjectRef> {
+        // __new__
+        let instance = if let Some(new_method) = cls.get_attr("__new__") {
+            let new_fn = match &new_method.payload {
+                PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                _ => new_method.clone(),
+            };
+            let mut new_args = vec![cls.clone()];
+            new_args.extend(pos_args.clone());
+            self.call_object(new_fn, new_args)?
+        } else {
+            PyObject::instance(cls.clone())
+        };
+
+        let is_dataclass = cls.get_attr("__dataclass__").is_some();
+        let has_user_init = cls.get_attr("__init__").is_some();
+
+        if is_dataclass && !has_user_init {
+            // Dataclass auto-init: populate fields from args/kwargs
+            if let Some(fields) = cls.get_attr("__dataclass_fields__") {
+                if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                    let mut arg_idx = 0;
+                    for ft in field_tuples {
+                        if let PyObjectPayload::Tuple(info) = &ft.payload {
+                            let name = info[0].py_to_string();
+                            let has_default = info[1].is_truthy();
+                            let default_val = &info[2];
+
+                            let value = if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
+                                v.clone()
+                            } else if arg_idx < pos_args.len() {
+                                let v = pos_args[arg_idx].clone();
+                                arg_idx += 1;
+                                v
+                            } else if has_default {
+                                default_val.clone()
+                            } else {
+                                return Err(PyException::type_error(format!(
+                                    "__init__() missing required argument: '{}'", name
+                                )));
+                            };
+
+                            if let PyObjectPayload::Instance(inst) = &instance.payload {
+                                inst.attrs.write().insert(CompactString::from(name.as_str()), value);
+                            }
+                        }
+                    }
+                }
+            }
+        } else if cls.get_attr("__namedtuple__").is_some() {
+            // Namedtuple: populate named fields
+            if let Some(fields) = cls.get_attr("_fields") {
+                if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        let mut attrs = inst.attrs.write();
+                        for (i, field) in field_names.iter().enumerate() {
+                            let name = field.py_to_string();
+                            let value = if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
+                                v.clone()
+                            } else if i < pos_args.len() {
+                                pos_args[i].clone()
+                            } else {
+                                PyObject::none()
+                            };
+                            attrs.insert(CompactString::from(name.as_str()), value);
+                        }
+                        attrs.insert(CompactString::from("_tuple"), PyObject::tuple(pos_args.clone()));
+                    }
+                }
+            }
+        } else if let Some(init) = cls.get_attr("__init__") {
+            // Normal __init__
+            let init_fn = match &init.payload {
+                PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                _ => init.clone(),
+            };
+            let mut init_args = vec![instance.clone()];
+            init_args.extend(pos_args.clone());
+            if kwargs.is_empty() {
+                self.call_object(init_fn, init_args)?;
+            } else {
+                self.call_object_kw(init_fn, init_args, kwargs)?;
+            }
+        }
+
+        // Exception subclass attrs
+        if Self::is_exception_class(cls) {
+            if let PyObjectPayload::Instance(inst) = &instance.payload {
+                let mut attrs = inst.attrs.write();
+                if !attrs.contains_key("args") {
+                    attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args.clone()));
+                }
+                if !attrs.contains_key("message") && !pos_args.is_empty() {
+                    attrs.insert(CompactString::from("message"), pos_args[0].clone());
+                }
+            }
+        }
+
+        Ok(instance)
+    }
+
+    /// Build a super() proxy from current call frame or explicit args.
+    fn make_super(&self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            let frame = self.call_stack.last().unwrap();
+            if let Some(self_obj) = frame.locals.first().cloned().flatten() {
+                let qualname = frame.code.qualname.as_str();
+                let defining_class_name = qualname.rsplit_once('.')
+                    .map(|(cls_part, _)| {
+                        cls_part.rsplit_once('.').map(|(_, c)| c).unwrap_or(cls_part)
+                    });
+
+                let (runtime_cls, instance_for_super) = match &self_obj.payload {
+                    PyObjectPayload::Instance(inst) => (inst.class.clone(), self_obj.clone()),
+                    PyObjectPayload::Class(_) => (self_obj.clone(), self_obj.clone()),
+                    _ => return Err(PyException::runtime_error("super(): no current class")),
+                };
+
+                let mut cls = runtime_cls.clone();
+                if let Some(def_name) = defining_class_name {
+                    if let PyObjectPayload::Class(cd) = &runtime_cls.payload {
+                        let mro = if cd.mro.is_empty() {
+                            vec![runtime_cls.clone()]
+                        } else {
+                            cd.mro.clone()
+                        };
+                        for m in &mro {
+                            if let PyObjectPayload::Class(mc) = &m.payload {
+                                if mc.name.as_str() == def_name {
+                                    cls = m.clone();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                return Ok(Arc::new(PyObject {
+                    payload: PyObjectPayload::Super { cls, instance: instance_for_super }
+                }));
+            }
+            Err(PyException::runtime_error("super(): no current class"))
+        } else if args.len() == 2 {
+            Ok(Arc::new(PyObject {
+                payload: PyObjectPayload::Super { cls: args[0].clone(), instance: args[1].clone() }
+            }))
+        } else {
+            Err(PyException::type_error("super() takes 0 or 2 arguments"))
+        }
+    }
+
     fn call_object_kw(
         &mut self,
         func: PyObjectRef,
@@ -251,95 +407,7 @@ impl VirtualMachine {
                 self.call_object_kw(method.clone(), bound_args, kwargs)
             }
             PyObjectPayload::Class(_class) => {
-                // Check for __new__ before creating instance
-                let instance = if let Some(new_method) = func.get_attr("__new__") {
-                    let new_fn = match &new_method.payload {
-                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
-                        _ => new_method.clone(),
-                    };
-                    let mut new_args = vec![func.clone()];
-                    new_args.extend(pos_args.clone());
-                    self.call_object(new_fn, new_args)?
-                } else {
-                    PyObject::instance(func.clone())
-                };
-                
-                let is_dataclass = func.get_attr("__dataclass__").is_some();
-                let has_user_init = func.get_attr("__init__").is_some();
-                
-                if is_dataclass && !has_user_init {
-                    if let Some(fields) = func.get_attr("__dataclass_fields__") {
-                        if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
-                            let mut arg_idx = 0;
-                            for ft in field_tuples {
-                                if let PyObjectPayload::Tuple(info) = &ft.payload {
-                                    let name = info[0].py_to_string();
-                                    let has_default = info[1].is_truthy();
-                                    let default_val = &info[2];
-                                    
-                                    // Check kwargs first, then positional
-                                    let value = if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
-                                        v.clone()
-                                    } else if arg_idx < pos_args.len() {
-                                        let v = pos_args[arg_idx].clone();
-                                        arg_idx += 1;
-                                        v
-                                    } else if has_default {
-                                        default_val.clone()
-                                    } else {
-                                        return Err(PyException::type_error(format!(
-                                            "__init__() missing required argument: '{}'", name
-                                        )));
-                                    };
-                                    
-                                    if let PyObjectPayload::Instance(inst) = &instance.payload {
-                                        inst.attrs.write().insert(CompactString::from(name.as_str()), value);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if func.get_attr("__namedtuple__").is_some() {
-                    if let Some(fields) = func.get_attr("_fields") {
-                        if let PyObjectPayload::Tuple(field_names) = &fields.payload {
-                            if let PyObjectPayload::Instance(inst) = &instance.payload {
-                                let mut attrs = inst.attrs.write();
-                                for (i, field) in field_names.iter().enumerate() {
-                                    let name = field.py_to_string();
-                                    let value = if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
-                                        v.clone()
-                                    } else if i < pos_args.len() {
-                                        pos_args[i].clone()
-                                    } else {
-                                        PyObject::none()
-                                    };
-                                    attrs.insert(CompactString::from(name.as_str()), value);
-                                }
-                                attrs.insert(CompactString::from("_tuple"), PyObject::tuple(pos_args.clone()));
-                            }
-                        }
-                    }
-                } else if let Some(init) = func.get_attr("__init__") {
-                    let init_fn = match &init.payload {
-                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
-                        _ => init.clone(),
-                    };
-                    let mut init_args = vec![instance.clone()];
-                    init_args.extend(pos_args.clone());
-                    self.call_object_kw(init_fn, init_args, kwargs)?;
-                }
-                if Self::is_exception_class(&func) {
-                    if let PyObjectPayload::Instance(inst) = &instance.payload {
-                        let mut attrs = inst.attrs.write();
-                        if !attrs.contains_key("args") {
-                            attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args.clone()));
-                        }
-                        if !attrs.contains_key("message") && !pos_args.is_empty() {
-                            attrs.insert(CompactString::from("message"), pos_args[0].clone());
-                        }
-                    }
-                }
-                Ok(instance)
+                self.instantiate_class(&func, pos_args, kwargs)
             }
             _ => {
                 // For BuiltinBoundMethod on str.format, pass kwargs as a dict
@@ -505,9 +573,56 @@ impl VirtualMachine {
                             }
                             return Ok(best);
                         }
+                        "super" => {
+                            return self.make_super(&pos_args);
+                        }
                         _ => {}
                     }
                 }
+                // Handle other payload types that support kwargs
+                match &func.payload {
+                    PyObjectPayload::NativeFunction { func: nf, name } => {
+                        if name.as_str() == "functools.partial" {
+                            // functools.partial(func, *args, **kwargs)
+                            if pos_args.is_empty() {
+                                return Err(PyException::type_error("partial() requires at least 1 argument"));
+                            }
+                            let pf = pos_args[0].clone();
+                            let pa = if pos_args.len() > 1 { pos_args[1..].to_vec() } else { vec![] };
+                            return Ok(PyObject::wrap(PyObjectPayload::Partial {
+                                func: pf, args: pa, kwargs,
+                            }));
+                        }
+                        // Other native functions: drop kwargs
+                        return nf(&pos_args);
+                    }
+                    PyObjectPayload::Partial { func: partial_func, args: partial_args, kwargs: partial_kwargs } => {
+                        let partial_func = partial_func.clone();
+                        let mut combined_args = partial_args.clone();
+                        combined_args.extend(pos_args);
+                        let mut combined_kw = partial_kwargs.clone();
+                        combined_kw.extend(kwargs);
+                        if combined_kw.is_empty() {
+                            return self.call_object(partial_func, combined_args);
+                        } else {
+                            return self.call_object_kw(partial_func, combined_args, combined_kw);
+                        }
+                    }
+                    PyObjectPayload::ExceptionType(kind) => {
+                        let msg = if pos_args.is_empty() { String::new() } else { pos_args[0].py_to_string() };
+                        return Ok(PyObject::exception_instance(kind.clone(), msg));
+                    }
+                    PyObjectPayload::Instance(_) => {
+                        if let Some(method) = func.get_attr("__call__") {
+                            return self.call_object_kw(method, pos_args, kwargs);
+                        }
+                        return Err(PyException::type_error(format!(
+                            "'{}' object is not callable", func.type_name()
+                        )));
+                    }
+                    _ => {}
+                }
+                // Final fallback: merge kwargs into positional (lossy but functional)
                 let mut all_args = pos_args;
                 for (_, v) in kwargs {
                     all_args.push(v);
@@ -2856,59 +2971,7 @@ impl VirtualMachine {
                         }
                     }
                     "super" => {
-                        // super() with 0 args: find class and self from calling frame
-                        if args.is_empty() {
-                            let frame = self.call_stack.last().unwrap();
-                            if let Some(self_obj) = frame.locals.first().cloned().flatten() {
-                                let qualname = frame.code.qualname.as_str();
-                                let defining_class_name = qualname.rsplit_once('.')
-                                    .map(|(cls_part, _)| {
-                                        cls_part.rsplit_once('.').map(|(_, c)| c).unwrap_or(cls_part)
-                                    });
-                                
-                                // Handle both Instance (normal methods) and Class (__new__)
-                                let (runtime_cls, instance_for_super) = match &self_obj.payload {
-                                    PyObjectPayload::Instance(inst) => {
-                                        (inst.class.clone(), self_obj.clone())
-                                    }
-                                    PyObjectPayload::Class(_) => {
-                                        // In __new__(cls, ...), cls is a Class
-                                        (self_obj.clone(), self_obj.clone())
-                                    }
-                                    _ => {
-                                        return Err(PyException::runtime_error("super(): no current class"));
-                                    }
-                                };
-                                
-                                let mut cls = runtime_cls.clone();
-                                if let Some(def_name) = defining_class_name {
-                                    if let PyObjectPayload::Class(cd) = &runtime_cls.payload {
-                                        let mro = if cd.mro.is_empty() {
-                                            vec![runtime_cls.clone()]
-                                        } else {
-                                            cd.mro.clone()
-                                        };
-                                        for m in &mro {
-                                            if let PyObjectPayload::Class(mc) = &m.payload {
-                                                if mc.name.as_str() == def_name {
-                                                    cls = m.clone();
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                return Ok(Arc::new(PyObject {
-                                    payload: PyObjectPayload::Super { cls, instance: instance_for_super }
-                                }));
-                            }
-                            return Err(PyException::runtime_error("super(): no current class"));
-                        } else if args.len() == 2 {
-                            // super(cls, instance)
-                            return Ok(Arc::new(PyObject {
-                                payload: PyObjectPayload::Super { cls: args[0].clone(), instance: args[1].clone() }
-                            }));
-                        }
+                        return self.make_super(&args);
                     }
                     "exec" => {
                         if args.is_empty() || args.len() > 3 {
@@ -3143,55 +3206,7 @@ impl VirtualMachine {
                         }
                     }
                     "super" => {
-                        if args.is_empty() {
-                            let frame = self.call_stack.last().unwrap();
-                            if let Some(self_obj) = frame.locals.first().cloned().flatten() {
-                                let qualname = frame.code.qualname.as_str();
-                                let defining_class_name = qualname.rsplit_once('.')
-                                    .map(|(cls_part, _)| {
-                                        cls_part.rsplit_once('.').map(|(_, c)| c).unwrap_or(cls_part)
-                                    });
-                                
-                                let (runtime_cls, instance_for_super) = match &self_obj.payload {
-                                    PyObjectPayload::Instance(inst) => {
-                                        (inst.class.clone(), self_obj.clone())
-                                    }
-                                    PyObjectPayload::Class(_) => {
-                                        (self_obj.clone(), self_obj.clone())
-                                    }
-                                    _ => {
-                                        return Err(PyException::runtime_error("super(): no current class"));
-                                    }
-                                };
-                                
-                                let mut cls = runtime_cls.clone();
-                                if let Some(def_name) = defining_class_name {
-                                    if let PyObjectPayload::Class(cd) = &runtime_cls.payload {
-                                        let mro = if cd.mro.is_empty() {
-                                            vec![runtime_cls.clone()]
-                                        } else {
-                                            cd.mro.clone()
-                                        };
-                                        for m in &mro {
-                                            if let PyObjectPayload::Class(mc) = &m.payload {
-                                                if mc.name.as_str() == def_name {
-                                                    cls = m.clone();
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                return Ok(Arc::new(PyObject {
-                                    payload: PyObjectPayload::Super { cls, instance: instance_for_super }
-                                }));
-                            }
-                            return Err(PyException::runtime_error("super(): no current class"));
-                        } else if args.len() == 2 {
-                            return Ok(Arc::new(PyObject {
-                                payload: PyObjectPayload::Super { cls: args[0].clone(), instance: args[1].clone() }
-                            }));
-                        }
+                        return self.make_super(&args);
                     }
                     "bool" => {
                         if args.len() == 1 {
@@ -3287,90 +3302,7 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::Class(_class) => {
-                // Check for __new__ before creating instance
-                let instance = if let Some(new_method) = func.get_attr("__new__") {
-                    let new_fn = match &new_method.payload {
-                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
-                        _ => new_method.clone(),
-                    };
-                    let mut new_args = vec![func.clone()];
-                    new_args.extend(args.clone());
-                    self.call_object(new_fn, new_args)?
-                } else {
-                    PyObject::instance(func.clone())
-                };
-                
-                // Check for dataclass auto-init
-                let is_dataclass = func.get_attr("__dataclass__").is_some();
-                let has_user_init = func.get_attr("__init__").is_some();
-                
-                if is_dataclass && !has_user_init {
-                    // Auto-generate __init__ for dataclass
-                    if let Some(fields) = func.get_attr("__dataclass_fields__") {
-                        if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
-                            let mut arg_idx = 0;
-                            for ft in field_tuples {
-                                if let PyObjectPayload::Tuple(info) = &ft.payload {
-                                    let name = info[0].py_to_string();
-                                    let has_default = info[1].is_truthy();
-                                    let default_val = &info[2];
-                                    
-                                    let value = if arg_idx < args.len() {
-                                        args[arg_idx].clone()
-                                    } else if has_default {
-                                        default_val.clone()
-                                    } else {
-                                        return Err(PyException::type_error(format!(
-                                            "__init__() missing required argument: '{}'", name
-                                        )));
-                                    };
-                                    
-                                    if let PyObjectPayload::Instance(inst) = &instance.payload {
-                                        inst.attrs.write().insert(CompactString::from(name.as_str()), value);
-                                    }
-                                    arg_idx += 1;
-                                }
-                            }
-                        }
-                    }
-                } else if func.get_attr("__namedtuple__").is_some() {
-                    // namedtuple: store args as named fields
-                    if let Some(fields) = func.get_attr("_fields") {
-                        if let PyObjectPayload::Tuple(field_names) = &fields.payload {
-                            if let PyObjectPayload::Instance(inst) = &instance.payload {
-                                let mut attrs = inst.attrs.write();
-                                for (i, field) in field_names.iter().enumerate() {
-                                    let name = field.py_to_string();
-                                    let value = if i < args.len() { args[i].clone() } else { PyObject::none() };
-                                    attrs.insert(CompactString::from(name.as_str()), value);
-                                }
-                                // Also store as _tuple for indexing
-                                attrs.insert(CompactString::from("_tuple"), PyObject::tuple(args.clone()));
-                            }
-                        }
-                    }
-                } else if let Some(init) = func.get_attr("__init__") {
-                    let init_fn = match &init.payload {
-                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
-                        _ => init.clone(),
-                    };
-                    let mut init_args = vec![instance.clone()];
-                    init_args.extend(args.clone());
-                    self.call_object(init_fn, init_args)?;
-                }
-                // For exception subclasses, set args and __str__ behavior
-                if Self::is_exception_class(&func) {
-                    if let PyObjectPayload::Instance(inst) = &instance.payload {
-                        let mut attrs = inst.attrs.write();
-                        if !attrs.contains_key("args") {
-                            attrs.insert(CompactString::from("args"), PyObject::tuple(args.clone()));
-                        }
-                        if !attrs.contains_key("message") && !args.is_empty() {
-                            attrs.insert(CompactString::from("message"), args[0].clone());
-                        }
-                    }
-                }
-                Ok(instance)
+                self.instantiate_class(&func, args, vec![])
             }
             PyObjectPayload::BoundMethod { receiver, method } => {
                 let mut bound_args = vec![receiver.clone()];

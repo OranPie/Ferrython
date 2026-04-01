@@ -3447,7 +3447,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub fn create_functools_module() -> PyObjectRef {
     make_module("functools", vec![
         ("reduce", PyObject::native_function("functools.reduce", functools_reduce)),
-        ("partial", make_builtin(functools_partial)),
+        ("partial", PyObject::native_function("functools.partial", functools_partial)),
         ("lru_cache", make_builtin(|args| {
             // lru_cache(func) — bare decorator: return func unchanged
             // lru_cache(maxsize=N) — called with int arg: return identity decorator
