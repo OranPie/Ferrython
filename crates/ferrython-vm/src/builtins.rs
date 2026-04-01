@@ -584,7 +584,9 @@ fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("reversed", args, 1)?;
     let mut items = args[0].to_list()?;
     items.reverse();
-    Ok(PyObject::list(items))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(
+        Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items, index: 0 }))
+    )))
 }
 
 fn builtin_enumerate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -596,12 +598,16 @@ fn builtin_enumerate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let result: Vec<PyObjectRef> = items.into_iter().enumerate().map(|(i, v)| {
         PyObject::tuple(vec![PyObject::int(start + i as i64), v])
     }).collect();
-    Ok(PyObject::list(result))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(
+        Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+    )))
 }
 
 fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Ok(PyObject::list(vec![]));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+            Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: vec![], index: 0 }))
+        )));
     }
     let lists: Vec<Vec<PyObjectRef>> = args.iter()
         .map(|a| a.to_list())
@@ -612,7 +618,9 @@ fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let tuple: Vec<PyObjectRef> = lists.iter().map(|l| l[i].clone()).collect();
         result.push(PyObject::tuple(tuple));
     }
-    Ok(PyObject::list(result))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(
+        Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+    )))
 }
 
 fn builtin_range(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

@@ -2367,7 +2367,7 @@ impl VirtualMachine {
                         if args.len() == 1 {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
                                 if let Some(method) = args[0].get_attr("__len__") {
-                                    return self.call_object(method, vec![args[0].clone()]);
+                                    return self.call_object(method, vec![]);
                                 }
                             }
                         }
@@ -2385,6 +2385,24 @@ impl VirtualMachine {
                         if args.len() == 1 {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
                                 if let Some(method) = args[0].get_attr("__hash__") {
+                                    return self.call_object(method, vec![]);
+                                }
+                            }
+                        }
+                    }
+                    "int" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__int__") {
+                                    return self.call_object(method, vec![]);
+                                }
+                            }
+                        }
+                    }
+                    "float" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__float__") {
                                     return self.call_object(method, vec![]);
                                 }
                             }
@@ -2655,6 +2673,85 @@ impl VirtualMachine {
                     "bool" => {
                         if args.len() == 1 {
                             return Ok(PyObject::bool_val(self.vm_is_truthy(&args[0])?));
+                        }
+                    }
+                    "int" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__int__") {
+                                    return self.call_object(method, vec![]);
+                                }
+                            }
+                        }
+                    }
+                    "float" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__float__") {
+                                    return self.call_object(method, vec![]);
+                                }
+                            }
+                        }
+                    }
+                    "len" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__len__") {
+                                    return self.call_object(method, vec![]);
+                                }
+                            }
+                        }
+                    }
+                    "hash" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__hash__") {
+                                    return self.call_object(method, vec![]);
+                                }
+                            }
+                        }
+                    }
+                    "abs" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__abs__") {
+                                    return self.call_object(method, vec![]);
+                                }
+                            }
+                        }
+                    }
+                    "iter" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__iter__") {
+                                    return self.call_object(method, vec![]);
+                                }
+                            }
+                        }
+                    }
+                    "next" => {
+                        if !args.is_empty() {
+                            if let PyObjectPayload::Generator(ref gen_arc) = args[0].payload {
+                                let gen_arc = gen_arc.clone();
+                                return match self.resume_generator(&gen_arc, PyObject::none()) {
+                                    Ok(value) => Ok(value),
+                                    Err(e) if e.kind == ExceptionKind::StopIteration && args.len() > 1 => {
+                                        Ok(args[1].clone())
+                                    }
+                                    Err(e) => Err(e),
+                                };
+                            }
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(next_method) = args[0].get_attr("__next__") {
+                                    return match self.call_object(next_method, vec![]) {
+                                        Ok(value) => Ok(value),
+                                        Err(e) if e.kind == ExceptionKind::StopIteration && args.len() > 1 => {
+                                            Ok(args[1].clone())
+                                        }
+                                        Err(e) => Err(e),
+                                    };
+                                }
+                            }
                         }
                     }
                     _ => {}

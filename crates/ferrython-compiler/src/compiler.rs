@@ -1572,36 +1572,31 @@ impl Compiler {
                 // Check for dictionary unpacking (None keys indicate **)
                 let has_unpacking = keys.iter().any(|k| k.is_none());
                 if has_unpacking {
-                    // Build dict in segments
+                    // Start with empty dict, then update with each segment
+                    self.emit_arg(Opcode::BuildMap, 0); // empty base dict
                     let mut n_regular = 0u32;
-                    let mut n_segments = 0u32;
                     for (key, val) in keys.iter().zip(values.iter()) {
                         if let Some(k) = key {
+                            // Accumulate regular key-value pairs
                             self.compile_expression(k)?;
                             self.compile_expression(val)?;
                             n_regular += 1;
                         } else {
-                            // Flush regular pairs
+                            // Flush accumulated regular pairs first
                             if n_regular > 0 {
                                 self.emit_arg(Opcode::BuildMap, n_regular);
+                                self.emit_arg(Opcode::DictUpdate, 1);
                                 n_regular = 0;
-                                n_segments += 1;
                             }
-                            // Compile the unpacked dict
+                            // Compile and merge the unpacked dict
                             self.compile_expression(val)?;
-                            n_segments += 1;
-                        }
-                    }
-                    if n_regular > 0 {
-                        self.emit_arg(Opcode::BuildMap, n_regular);
-                        n_segments += 1;
-                    }
-                    // Merge all segments
-                    if n_segments > 1 {
-                        self.emit_arg(Opcode::BuildMap, 0);
-                        for _ in 0..n_segments {
                             self.emit_arg(Opcode::DictUpdate, 1);
                         }
+                    }
+                    // Flush any remaining regular pairs
+                    if n_regular > 0 {
+                        self.emit_arg(Opcode::BuildMap, n_regular);
+                        self.emit_arg(Opcode::DictUpdate, 1);
                     }
                 } else {
                     for (key, val) in keys.iter().zip(values.iter()) {
