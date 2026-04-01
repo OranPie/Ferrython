@@ -1218,6 +1218,35 @@ impl Parser {
                         loc,
                     ));
                 }
+                if self.check(TokenKind::DoubleStar) {
+                    // Dict starting with **unpacking
+                    self.advance();
+                    let first_val = self.parse_test()?;
+                    let mut keys: Vec<Option<Expression>> = vec![None];
+                    let mut values = vec![first_val];
+                    while self.check(TokenKind::Comma) {
+                        self.advance();
+                        if self.check(TokenKind::RightBrace) {
+                            break;
+                        }
+                        if self.check(TokenKind::DoubleStar) {
+                            self.advance();
+                            keys.push(None);
+                            values.push(self.parse_test()?);
+                        } else {
+                            let k = self.parse_test()?;
+                            self.expect(TokenKind::Colon)?;
+                            let v = self.parse_test()?;
+                            keys.push(Some(k));
+                            values.push(v);
+                        }
+                    }
+                    self.expect(TokenKind::RightBrace)?;
+                    Ok(Expression::new(
+                        ExpressionKind::Dict { keys, values },
+                        loc,
+                    ))
+                } else {
                 // Could be dict or set
                 let first = self.parse_test_or_star()?;
                 if self.check(TokenKind::Colon) {
@@ -1285,6 +1314,7 @@ impl Parser {
                     self.expect(TokenKind::RightBrace)?;
                     Ok(Expression::new(ExpressionKind::Set { elts }, loc))
                 }
+                } // end else for non-DoubleStar first element
             }
             _ => Err(ParseError::new(
                 ParseErrorKind::ExpressionExpected,

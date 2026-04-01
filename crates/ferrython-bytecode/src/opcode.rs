@@ -155,6 +155,7 @@ pub enum Opcode {
     SetUpdate = 163,
     DictMerge = 164,
     DictUpdate = 165,
+    ListToTuple = 166,
 
     // ── Method call optimization ──
     LoadMethod = 160,
@@ -257,6 +258,7 @@ impl Opcode {
             Self::RaiseVarargs => -(arg as i32),
             Self::ListAppend | Self::SetAdd | Self::MapAdd => -1,
             Self::ListExtend | Self::SetUpdate | Self::DictMerge | Self::DictUpdate => -1,
+            Self::ListToTuple => 0, // pops list, pushes tuple
             Self::FormatValue => if arg & 0x04 != 0 { -1 } else { 0 },
             Self::GetAwaitable | Self::GetAiter | Self::GetAnext
             | Self::GetYieldFromIter => 0,

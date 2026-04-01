@@ -1436,6 +1436,51 @@ impl VirtualMachine {
                         }
                     }
                 }
+                Opcode::DictUpdate | Opcode::DictMerge => {
+                    let update_obj = frame.pop();
+                    let idx = instr.arg as usize;
+                    let stack_pos = frame.stack.len() - idx;
+                    let dict_obj = &frame.stack[stack_pos];
+                    if let PyObjectPayload::Dict(target) = &dict_obj.payload {
+                        if let PyObjectPayload::Dict(source) = &update_obj.payload {
+                            let src = source.read();
+                            let mut tgt = target.write();
+                            for (k, v) in src.iter() {
+                                tgt.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                }
+                Opcode::ListExtend => {
+                    let iterable = frame.pop();
+                    let idx = instr.arg as usize;
+                    let stack_pos = frame.stack.len() - idx;
+                    let list_obj = frame.stack[stack_pos].clone();
+                    if let PyObjectPayload::List(items) = &list_obj.payload {
+                        let new_items = iterable.to_list()?;
+                        items.write().extend(new_items);
+                    }
+                }
+                Opcode::SetUpdate => {
+                    let iterable = frame.pop();
+                    let idx = instr.arg as usize;
+                    let stack_pos = frame.stack.len() - idx;
+                    let set_obj = frame.stack[stack_pos].clone();
+                    if let PyObjectPayload::Set(s) = &set_obj.payload {
+                        let new_items = iterable.to_list()?;
+                        let mut set = s.write();
+                        for item in new_items {
+                            if let Ok(key) = item.to_hashable_key() {
+                                set.insert(key, item);
+                            }
+                        }
+                    }
+                }
+                Opcode::ListToTuple => {
+                    let list = frame.pop();
+                    let items = list.to_list()?;
+                    frame.push(PyObject::tuple(items));
+                }
                 Opcode::BuildSlice => {
                     let argc = instr.arg as usize;
                     let step = if argc == 3 { Some(frame.pop()) } else { None };

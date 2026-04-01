@@ -1469,10 +1469,44 @@ impl Compiler {
             ExpressionKind::List { elts, ctx } => {
                 match ctx {
                     ExprContext::Load => {
-                        for elt in elts {
-                            self.compile_expression(elt)?;
+                        let has_star = elts.iter().any(|e| matches!(e.node, ExpressionKind::Starred { .. }));
+                        if has_star {
+                            // Build list then extend with starred elements
+                            let mut regular_count = 0u32;
+                            let mut started = false;
+                            for elt in elts {
+                                if let ExpressionKind::Starred { value, .. } = &elt.node {
+                                    if !started {
+                                        self.emit_arg(Opcode::BuildList, regular_count);
+                                        started = true;
+                                        regular_count = 0;
+                                    } else if regular_count > 0 {
+                                        self.emit_arg(Opcode::BuildList, regular_count);
+                                        self.emit_arg(Opcode::ListExtend, 1);
+                                        regular_count = 0;
+                                    }
+                                    self.compile_expression(value)?;
+                                    self.emit_arg(Opcode::ListExtend, 1);
+                                } else {
+                                    self.compile_expression(elt)?;
+                                    regular_count += 1;
+                                    if !started {
+                                        // still collecting initial elements
+                                    }
+                                }
+                            }
+                            if !started {
+                                self.emit_arg(Opcode::BuildList, regular_count);
+                            } else if regular_count > 0 {
+                                self.emit_arg(Opcode::BuildList, regular_count);
+                                self.emit_arg(Opcode::ListExtend, 1);
+                            }
+                        } else {
+                            for elt in elts {
+                                self.compile_expression(elt)?;
+                            }
+                            self.emit_arg(Opcode::BuildList, elts.len() as u32);
                         }
-                        self.emit_arg(Opcode::BuildList, elts.len() as u32);
                     }
                     _ => {
                         // Store/Del contexts handled by compile_store_target
@@ -1483,10 +1517,43 @@ impl Compiler {
             ExpressionKind::Tuple { elts, ctx } => {
                 match ctx {
                     ExprContext::Load => {
-                        for elt in elts {
-                            self.compile_expression(elt)?;
+                        let has_star = elts.iter().any(|e| matches!(e.node, ExpressionKind::Starred { .. }));
+                        if has_star {
+                            // Build list, extend, convert to tuple
+                            let mut regular_count = 0u32;
+                            let mut started = false;
+                            for elt in elts {
+                                if let ExpressionKind::Starred { value, .. } = &elt.node {
+                                    if !started {
+                                        self.emit_arg(Opcode::BuildList, regular_count);
+                                        started = true;
+                                        regular_count = 0;
+                                    } else if regular_count > 0 {
+                                        self.emit_arg(Opcode::BuildList, regular_count);
+                                        self.emit_arg(Opcode::ListExtend, 1);
+                                        regular_count = 0;
+                                    }
+                                    self.compile_expression(value)?;
+                                    self.emit_arg(Opcode::ListExtend, 1);
+                                } else {
+                                    self.compile_expression(elt)?;
+                                    regular_count += 1;
+                                }
+                            }
+                            if !started {
+                                self.emit_arg(Opcode::BuildList, regular_count);
+                            } else if regular_count > 0 {
+                                self.emit_arg(Opcode::BuildList, regular_count);
+                                self.emit_arg(Opcode::ListExtend, 1);
+                            }
+                            // Convert list to tuple
+                            self.emit_arg(Opcode::ListToTuple, 0);
+                        } else {
+                            for elt in elts {
+                                self.compile_expression(elt)?;
+                            }
+                            self.emit_arg(Opcode::BuildTuple, elts.len() as u32);
                         }
-                        self.emit_arg(Opcode::BuildTuple, elts.len() as u32);
                     }
                     _ => {
                         // Store/Del contexts handled by compile_store_target
