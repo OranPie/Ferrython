@@ -2570,6 +2570,53 @@ pub fn create_sys_module() -> PyObjectRef {
         ("setrecursionlimit", make_builtin(sys_setrecursionlimit)),
         ("exit", make_builtin(sys_exit)),
         ("getsizeof", make_builtin(sys_getsizeof)),
+        ("getdefaultencoding", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("utf-8"))))),
+        ("getfilesystemencoding", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("utf-8"))))),
+        ("intern", make_builtin(|args| { check_args("sys.intern", args, 1)?; Ok(args[0].clone()) })),
+        ("flags", PyObject::tuple(vec![
+            PyObject::int(0), // debug
+            PyObject::int(0), // inspect
+            PyObject::int(0), // interactive
+            PyObject::int(0), // optimize
+            PyObject::int(0), // dont_write_bytecode
+            PyObject::int(0), // no_user_site
+            PyObject::int(0), // no_site
+            PyObject::int(0), // ignore_environment
+            PyObject::int(0), // verbose
+            PyObject::int(0), // bytes_warning
+            PyObject::int(0), // quiet
+            PyObject::int(0), // hash_randomization
+            PyObject::int(0), // isolated
+            PyObject::bool_val(false), // dev_mode
+            PyObject::int(0), // utf8_mode
+        ])),
+        ("float_info", PyObject::tuple(vec![
+            PyObject::float(f64::MAX),       // max
+            PyObject::int(308),               // max_exp
+            PyObject::float(f64::MIN_POSITIVE), // min
+            PyObject::int(-307),              // min_exp
+            PyObject::int(15),                // dig
+            PyObject::int(53),                // mant_dig
+            PyObject::float(f64::EPSILON),    // epsilon
+            PyObject::int(2),                 // radix
+            PyObject::int(1024),              // max_10_exp
+            PyObject::int(-1021),             // min_10_exp
+        ])),
+        ("int_info", PyObject::tuple(vec![
+            PyObject::int(30),  // bits_per_digit
+            PyObject::int(4),   // sizeof_digit
+        ])),
+        ("hash_info", PyObject::tuple(vec![
+            PyObject::int(64),  // width
+            PyObject::int(0),   // modulus
+            PyObject::int(0),   // inf
+            PyObject::int(0),   // nan
+            PyObject::int(0),   // imag
+        ])),
+        ("__debug__", PyObject::bool_val(true)),
+        ("dont_write_bytecode", PyObject::bool_val(true)),
+        ("meta_path", PyObject::list(vec![])),
+        ("path_hooks", PyObject::list(vec![])),
     ])
 }
 
@@ -2977,6 +3024,22 @@ pub fn create_time_module() -> PyObjectRef {
         ("time", make_builtin(time_time)),
         ("sleep", make_builtin(time_sleep)),
         ("monotonic", make_builtin(time_monotonic)),
+        ("perf_counter", make_builtin(time_monotonic)),
+        ("perf_counter_ns", make_builtin(|_args| {
+            use std::time::Instant;
+            static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            let start = START.get_or_init(Instant::now);
+            Ok(PyObject::int(start.elapsed().as_nanos() as i64))
+        })),
+        ("time_ns", make_builtin(|_args| {
+            use std::time::SystemTime;
+            let dur = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+            Ok(PyObject::int(dur.as_nanos() as i64))
+        })),
+        ("process_time", make_builtin(time_monotonic)),
+        ("strftime", make_builtin(time_strftime)),
+        ("localtime", make_builtin(time_localtime)),
+        ("gmtime", make_builtin(time_localtime)),
     ])
 }
 
@@ -2996,10 +3059,86 @@ fn time_sleep(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn time_monotonic(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     use std::time::Instant;
-    // Return seconds since some arbitrary epoch
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let start = START.get_or_init(Instant::now);
     Ok(PyObject::float(start.elapsed().as_secs_f64()))
+}
+
+fn time_strftime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("strftime requires a format string")); }
+    let fmt = args[0].py_to_string();
+    // Simplified strftime — handle common format codes
+    use std::time::SystemTime;
+    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+    // Basic time decomposition (UTC)
+    let s = (secs % 60) as u32;
+    let m = ((secs / 60) % 60) as u32;
+    let h = ((secs / 3600) % 24) as u32;
+    let days = (secs / 86400) as i64;
+    // Days since epoch → year/month/day (simplified)
+    let mut y: i64 = 1970;
+    let mut remaining = days;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if remaining < days_in_year { break; }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mon = 0usize;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining < md as i64 { mon = i; break; }
+        remaining -= md as i64;
+    }
+    let day = remaining + 1;
+    let result = fmt
+        .replace("%Y", &format!("{:04}", y))
+        .replace("%m", &format!("{:02}", mon + 1))
+        .replace("%d", &format!("{:02}", day))
+        .replace("%H", &format!("{:02}", h))
+        .replace("%M", &format!("{:02}", m))
+        .replace("%S", &format!("{:02}", s))
+        .replace("%%", "%");
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn time_localtime(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Return a basic time tuple (year, month, day, hour, minute, second, weekday, yearday, dst)
+    use std::time::SystemTime;
+    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+    let s = (secs % 60) as i64;
+    let m = ((secs / 60) % 60) as i64;
+    let h = ((secs / 3600) % 24) as i64;
+    let days = (secs / 86400) as i64;
+    let mut y: i64 = 1970;
+    let mut remaining = days;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if remaining < days_in_year { break; }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mon = 1i64;
+    for &md in &month_days {
+        if remaining < md as i64 { break; }
+        remaining -= md as i64;
+        mon += 1;
+    }
+    let day = remaining + 1;
+    let wday = ((days + 3) % 7) as i64; // 0=Monday for time.struct_time
+    let yday = {
+        let mut yd = day;
+        for i in 0..(mon - 1) as usize { yd += month_days[i] as i64; }
+        yd
+    };
+    Ok(PyObject::tuple(vec![
+        PyObject::int(y), PyObject::int(mon), PyObject::int(day),
+        PyObject::int(h), PyObject::int(m), PyObject::int(s),
+        PyObject::int(wday), PyObject::int(yday), PyObject::int(-1),
+    ]))
 }
 
 // ── random module (basic) ──
@@ -3012,6 +3151,37 @@ pub fn create_random_module() -> PyObjectRef {
         ("shuffle", make_builtin(random_shuffle)),
         ("seed", make_builtin(random_seed)),
         ("randrange", make_builtin(random_randrange)),
+        ("uniform", make_builtin(|args| {
+            check_args("random.uniform", args, 2)?;
+            let a = args[0].to_float()?;
+            let b = args[1].to_float()?;
+            Ok(PyObject::float(a + simple_random() * (b - a)))
+        })),
+        ("sample", make_builtin(|args| {
+            check_args("random.sample", args, 2)?;
+            let items = args[0].to_list()?;
+            let k = args[1].to_int()? as usize;
+            if k > items.len() { return Err(PyException::value_error("Sample larger than population")); }
+            let mut result = Vec::with_capacity(k);
+            let mut pool = items.clone();
+            for _ in 0..k {
+                let idx = (simple_random() * pool.len() as f64) as usize;
+                let idx = idx.min(pool.len() - 1);
+                result.push(pool.remove(idx));
+            }
+            Ok(PyObject::list(result))
+        })),
+        ("choices", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("random.choices requires at least 1 argument")); }
+            let items = args[0].to_list()?;
+            let k = if args.len() > 1 { args[1].to_int()? as usize } else { 1 };
+            let mut result = Vec::with_capacity(k);
+            for _ in 0..k {
+                let idx = (simple_random() * items.len() as f64) as usize;
+                result.push(items[idx.min(items.len()-1)].clone());
+            }
+            Ok(PyObject::list(result))
+        })),
     ])
 }
 
@@ -4487,5 +4657,94 @@ pub fn create_numbers_module() -> PyObjectRef {
         ("Real", PyObject::none()),
         ("Rational", PyObject::none()),
         ("Integral", PyObject::none()),
+    ])
+}
+
+// ── platform module ──
+
+pub fn create_platform_module() -> PyObjectRef {
+    make_module("platform", vec![
+        ("system", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(std::env::consts::OS))))),
+        ("machine", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(std::env::consts::ARCH))))),
+        ("python_version", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("3.8.0"))))),
+        ("python_implementation", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("Ferrython"))))),
+        ("node", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("localhost"))))),
+        ("release", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(""))))),
+        ("version", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(""))))),
+        ("processor", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(std::env::consts::ARCH))))),
+        ("architecture", make_builtin(|_| Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from(if cfg!(target_pointer_width = "64") { "64bit" } else { "32bit" })),
+            PyObject::str_val(CompactString::from("ELF")),
+        ])))),
+    ])
+}
+
+// ── locale module (stub) ──
+
+pub fn create_locale_module() -> PyObjectRef {
+    make_module("locale", vec![
+        ("getlocale", make_builtin(|_| Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("en_US")),
+            PyObject::str_val(CompactString::from("UTF-8")),
+        ])))),
+        ("setlocale", make_builtin(|args| {
+            if args.len() >= 2 { Ok(args[1].clone()) }
+            else { Ok(PyObject::str_val(CompactString::from(""))) }
+        })),
+        ("LC_ALL", PyObject::int(0)),
+        ("LC_COLLATE", PyObject::int(1)),
+        ("LC_CTYPE", PyObject::int(2)),
+        ("LC_NUMERIC", PyObject::int(5)),
+        ("LC_TIME", PyObject::int(6)),
+        ("getpreferredencoding", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("UTF-8"))))),
+    ])
+}
+
+// ── inspect module (stub) ──
+
+pub fn create_inspect_module() -> PyObjectRef {
+    make_module("inspect", vec![
+        ("isfunction", make_builtin(|args| {
+            check_args("inspect.isfunction", args, 1)?;
+            Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::Function(_))))
+        })),
+        ("isclass", make_builtin(|args| {
+            check_args("inspect.isclass", args, 1)?;
+            Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::Class(_))))
+        })),
+        ("ismethod", make_builtin(|args| {
+            check_args("inspect.ismethod", args, 1)?;
+            Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::BoundMethod { .. })))
+        })),
+        ("ismodule", make_builtin(|args| {
+            check_args("inspect.ismodule", args, 1)?;
+            Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::Module(_))))
+        })),
+        ("isbuiltin", make_builtin(|args| {
+            check_args("inspect.isbuiltin", args, 1)?;
+            Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::NativeFunction { .. } | PyObjectPayload::BuiltinFunction(_) | PyObjectPayload::BuiltinType(_))))
+        })),
+        ("getmembers", make_builtin(|args| {
+            check_args("inspect.getmembers", args, 1)?;
+            let names = builtin_dir(args)?;
+            let mut result = Vec::new();
+            if let PyObjectPayload::List(items) = &names.payload {
+                for item in items.read().iter() {
+                    let name_str = item.py_to_string();
+                    if let Some(val) = args[0].get_attr(&name_str) {
+                        result.push(PyObject::tuple(vec![item.clone(), val]));
+                    }
+                }
+            }
+            Ok(PyObject::list(result))
+        })),
+    ])
+}
+
+// ── dis module (stub) ──
+
+pub fn create_dis_module() -> PyObjectRef {
+    make_module("dis", vec![
+        ("dis", make_builtin(|_| { Ok(PyObject::none()) })),
     ])
 }

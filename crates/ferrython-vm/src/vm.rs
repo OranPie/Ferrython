@@ -258,8 +258,19 @@ impl VirtualMachine {
                         _ => init.clone(),
                     };
                     let mut init_args = vec![instance.clone()];
-                    init_args.extend(pos_args);
+                    init_args.extend(pos_args.clone());
                     self.call_object_kw(init_fn, init_args, kwargs)?;
+                }
+                if Self::is_exception_class(&func) {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        let mut attrs = inst.attrs.write();
+                        if !attrs.contains_key("args") {
+                            attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args.clone()));
+                        }
+                        if !attrs.contains_key("message") && !pos_args.is_empty() {
+                            attrs.insert(CompactString::from("message"), pos_args[0].clone());
+                        }
+                    }
                 }
                 Ok(instance)
             }
@@ -2230,6 +2241,25 @@ impl VirtualMachine {
 
     /// Produce a str() string for an object, dispatching __str__ on instances.
     /// For containers, uses vm_repr for elements (like CPython).
+    /// Check if a class object inherits from Exception (via MRO or ExceptionType bases)
+    fn is_exception_class(cls: &PyObjectRef) -> bool {
+        if matches!(&cls.payload, PyObjectPayload::ExceptionType(_)) {
+            return true;
+        }
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            // Check if any base is an ExceptionType or an exception class
+            for base in &cd.bases {
+                if matches!(&base.payload, PyObjectPayload::ExceptionType(_)) {
+                    return true;
+                }
+                if Self::is_exception_class(base) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn vm_str(&mut self, obj: &PyObjectRef) -> PyResult<String> {
         match &obj.payload {
             PyObjectPayload::Instance(_) => {
@@ -2241,6 +2271,16 @@ impl VirtualMachine {
                 if let Some(repr_method) = obj.get_attr("__repr__") {
                     let result = self.call_object(repr_method, vec![])?;
                     return Ok(result.py_to_string());
+                }
+                // Exception instances: str(e) returns the message from args
+                if let Some(args) = obj.get_attr("args") {
+                    if let PyObjectPayload::Tuple(items) = &args.payload {
+                        return match items.len() {
+                            0 => Ok(String::new()),
+                            1 => Ok(items[0].py_to_string()),
+                            _ => self.vm_repr(&args),
+                        };
+                    }
                 }
                 Ok(obj.py_to_string())
             }
@@ -2992,14 +3032,27 @@ impl VirtualMachine {
             PyObjectPayload::Class(_class) => {
                 let instance = PyObject::instance(func.clone());
                 // Look up __init__ through MRO (supports inheritance)
+                let has_custom_init = func.get_attr("__init__").is_some();
                 if let Some(init) = func.get_attr("__init__") {
                     let init_fn = match &init.payload {
                         PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                         _ => init.clone(),
                     };
                     let mut init_args = vec![instance.clone()];
-                    init_args.extend(args);
+                    init_args.extend(args.clone());
                     self.call_object(init_fn, init_args)?;
+                }
+                // For exception subclasses, set args and __str__ behavior
+                if Self::is_exception_class(&func) {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        let mut attrs = inst.attrs.write();
+                        if !attrs.contains_key("args") {
+                            attrs.insert(CompactString::from("args"), PyObject::tuple(args.clone()));
+                        }
+                        if !attrs.contains_key("message") && !args.is_empty() {
+                            attrs.insert(CompactString::from("message"), args[0].clone());
+                        }
+                    }
                 }
                 Ok(instance)
             }
@@ -3385,6 +3438,10 @@ impl VirtualMachine {
             "decimal" => Ok(builtins::create_decimal_module()),
             "statistics" => Ok(builtins::create_statistics_module()),
             "numbers" => Ok(builtins::create_numbers_module()),
+            "platform" => Ok(builtins::create_platform_module()),
+            "locale" => Ok(builtins::create_locale_module()),
+            "inspect" => Ok(builtins::create_inspect_module()),
+            "dis" => Ok(builtins::create_dis_module()),
             _ => Err(PyException::import_error(format!("No module named '{}'", name))),
         }
     }
