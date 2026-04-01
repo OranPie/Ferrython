@@ -39,6 +39,11 @@ impl VirtualMachine {
     /// Execute a code object (module-level).
     pub fn execute(&mut self, code: CodeObject) -> PyResult<PyObjectRef> {
         let globals = Arc::new(RwLock::new(IndexMap::new()));
+        // Set __name__ = "__main__" for top-level scripts
+        globals.write().insert(
+            CompactString::from("__name__"),
+            PyObject::str_val(CompactString::from("__main__")),
+        );
         self.execute_with_globals(code, globals)
     }
 
@@ -3087,7 +3092,11 @@ impl VirtualMachine {
                 };
                 Ok(PyObject::exception_instance(kind.clone(), msg))
             }
-            PyObjectPayload::NativeFunction { func, .. } => {
+            PyObjectPayload::NativeFunction { func, name } => {
+                // Intercept functions that need VM access to call Python callables
+                if name.as_str() == "functools.reduce" {
+                    return self.vm_functools_reduce(&args);
+                }
                 func(&args)
             }
             PyObjectPayload::Instance(_) => {
@@ -3204,6 +3213,25 @@ impl VirtualMachine {
             }
         }
         result
+    }
+
+    fn vm_functools_reduce(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("reduce() requires at least 2 arguments")); }
+        let func = args[0].clone();
+        let items = self.collect_iterable(&args[1])?;
+        let has_initial = args.len() > 2;
+        let mut acc = if has_initial {
+            args[2].clone()
+        } else if !items.is_empty() {
+            items[0].clone()
+        } else {
+            return Err(PyException::type_error("reduce() of empty sequence with no initial value"));
+        };
+        let start_idx = if has_initial { 0 } else { 1 };
+        for item in &items[start_idx..] {
+            acc = self.call_object(func.clone(), vec![acc, item.clone()])?;
+        }
+        Ok(acc)
     }
 
     /// Collect all items from any iterable (list, tuple, generator, instance with __iter__/__next__).
@@ -3328,6 +3356,11 @@ impl VirtualMachine {
             "io" => Ok(builtins::create_io_module()),
             "re" => Ok(builtins::create_re_module()),
             "hashlib" => Ok(builtins::create_hashlib_module()),
+            "copy" => Ok(builtins::create_copy_module()),
+            "operator" => Ok(builtins::create_operator_module()),
+            "typing" => Ok(builtins::create_typing_module()),
+            "abc" => Ok(builtins::create_abc_module()),
+            "enum" => Ok(builtins::create_enum_module()),
             _ => Err(PyException::import_error(format!("No module named '{}'", name))),
         }
     }

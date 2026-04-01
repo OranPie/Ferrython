@@ -993,6 +993,52 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::BuiltinType(n) => {
                 match name {
                     "__name__" => Some(PyObject::str_val(n.clone())),
+                    "fromkeys" if n.as_str() == "dict" => {
+                        Some(PyObject::native_function("dict.fromkeys", |args| {
+                            if args.is_empty() { return Err(crate::error::PyException::type_error("fromkeys() requires at least 1 argument")); }
+                            let keys = args[0].to_list()?;
+                            let value = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+                            let mut map = IndexMap::new();
+                            for k in keys {
+                                let hk = k.to_hashable_key()?;
+                                map.insert(hk, value.clone());
+                            }
+                            Ok(PyObject::dict(map))
+                        }))
+                    }
+                    "maketrans" if n.as_str() == "str" => {
+                        Some(PyObject::native_function("str.maketrans", |args| {
+                            if args.is_empty() { return Err(crate::error::PyException::type_error("maketrans() requires at least 1 argument")); }
+                            let mut result_map = IndexMap::new();
+                            if args.len() == 1 {
+                                if let PyObjectPayload::Dict(map) = &args[0].payload {
+                                    for (k, v) in map.read().iter() {
+                                        let key = match k {
+                                            HashableKey::Int(n) => n.clone(),
+                                            HashableKey::Str(s) => {
+                                                if let Some(c) = s.chars().next() { PyInt::Small(c as i64) } else { continue; }
+                                            }
+                                            _ => continue,
+                                        };
+                                        result_map.insert(HashableKey::Int(key), v.clone());
+                                    }
+                                }
+                            } else {
+                                let x = args[0].py_to_string();
+                                let y = args[1].py_to_string();
+                                for (cx, cy) in x.chars().zip(y.chars()) {
+                                    result_map.insert(HashableKey::Int(PyInt::Small(cx as i64)), PyObject::int(cy as i64));
+                                }
+                                if args.len() > 2 {
+                                    let z = args[2].py_to_string();
+                                    for cz in z.chars() {
+                                        result_map.insert(HashableKey::Int(PyInt::Small(cz as i64)), PyObject::none());
+                                    }
+                                }
+                            }
+                            Ok(PyObject::dict(result_map))
+                        }))
+                    }
                     _ => None,
                 }
             }

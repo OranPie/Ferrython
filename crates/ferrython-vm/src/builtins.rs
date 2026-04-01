@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData, IteratorData};
+use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData, IteratorData, CompareOp};
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -1444,6 +1444,67 @@ fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyOb
                 }
             }
             Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        "translate" => {
+            check_args_min("translate", args, 1)?;
+            let table = &args[0];
+            let mut result = String::new();
+            if let PyObjectPayload::Dict(map) = &table.payload {
+                let map = map.read();
+                for ch in s.chars() {
+                    let key = HashableKey::Int(PyInt::Small(ch as i64));
+                    match map.get(&key) {
+                        Some(val) => {
+                            if matches!(&val.payload, PyObjectPayload::None) {
+                                // Delete the character
+                            } else if let Ok(n) = val.to_int() {
+                                if let Some(c) = char::from_u32(n as u32) {
+                                    result.push(c);
+                                }
+                            } else {
+                                result.push_str(&val.py_to_string());
+                            }
+                        }
+                        None => result.push(ch),
+                    }
+                }
+            } else {
+                result = s.to_string();
+            }
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        "maketrans" => {
+            if args.is_empty() {
+                return Err(PyException::type_error("maketrans() requires at least 1 argument"));
+            }
+            let mut result_map = IndexMap::new();
+            if args.len() == 1 {
+                if let PyObjectPayload::Dict(map) = &args[0].payload {
+                    for (k, v) in map.read().iter() {
+                        let key = match k {
+                            HashableKey::Int(n) => n.clone(),
+                            HashableKey::Str(s) => {
+                                if let Some(c) = s.chars().next() { PyInt::Small(c as i64) } else { continue; }
+                            }
+                            _ => continue,
+                        };
+                        result_map.insert(HashableKey::Int(key), v.clone());
+                    }
+                }
+            } else {
+                let x = args[0].py_to_string();
+                let y = args[1].py_to_string();
+                for (cx, cy) in x.chars().zip(y.chars()) {
+                    result_map.insert(HashableKey::Int(PyInt::Small(cx as i64)), PyObject::int(cy as i64));
+                }
+                if args.len() > 2 {
+                    let z = args[2].py_to_string();
+                    for cz in z.chars() {
+                        result_map.insert(HashableKey::Int(PyInt::Small(cz as i64)), PyObject::none());
+                    }
+                }
+            }
+            Ok(PyObject::dict(result_map))
         }
         _ => Err(PyException::attribute_error(format!(
             "'str' object has no attribute '{}'", method
@@ -3025,7 +3086,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub fn create_functools_module() -> PyObjectRef {
     make_module("functools", vec![
-        ("reduce", make_builtin(functools_reduce)),
+        ("reduce", PyObject::native_function("functools.reduce", functools_reduce)),
         ("partial", make_builtin(|_args| Ok(PyObject::none()))),
     ])
 }
@@ -3539,4 +3600,286 @@ fn re_escape(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub fn create_hashlib_module() -> PyObjectRef {
     make_module("hashlib", vec![])
+}
+
+// ── copy module ──
+
+pub fn create_copy_module() -> PyObjectRef {
+    make_module("copy", vec![
+        ("copy", make_builtin(copy_copy)),
+        ("deepcopy", make_builtin(copy_deepcopy)),
+    ])
+}
+
+fn copy_copy(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("copy() requires 1 argument")); }
+    shallow_copy(&args[0])
+}
+
+fn copy_deepcopy(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("deepcopy() requires 1 argument")); }
+    deep_copy(&args[0])
+}
+
+fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    match &obj.payload {
+        PyObjectPayload::None | PyObjectPayload::Bool(_) | PyObjectPayload::Int(_)
+        | PyObjectPayload::Float(_) | PyObjectPayload::Str(_) | PyObjectPayload::Bytes(_)
+        | PyObjectPayload::FrozenSet(_) => Ok(obj.clone()),
+        PyObjectPayload::Tuple(items) => Ok(PyObject::tuple(items.clone())),
+        PyObjectPayload::List(items) => Ok(PyObject::list(items.read().clone())),
+        PyObjectPayload::Dict(map) => Ok(PyObject::dict(map.read().clone())),
+        PyObjectPayload::Set(set) => {
+            Ok(PyObject::set(set.read().clone()))
+        }
+        _ => Ok(obj.clone()),
+    }
+}
+
+fn deep_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    match &obj.payload {
+        PyObjectPayload::None | PyObjectPayload::Bool(_) | PyObjectPayload::Int(_)
+        | PyObjectPayload::Float(_) | PyObjectPayload::Str(_) | PyObjectPayload::Bytes(_)
+        | PyObjectPayload::FrozenSet(_) => Ok(obj.clone()),
+        PyObjectPayload::Tuple(items) => {
+            let new_items: Result<Vec<_>, _> = items.iter().map(|x| deep_copy(x)).collect();
+            Ok(PyObject::tuple(new_items?))
+        }
+        PyObjectPayload::List(items) => {
+            let new_items: Result<Vec<_>, _> = items.read().iter().map(|x| deep_copy(x)).collect();
+            Ok(PyObject::list(new_items?))
+        }
+        PyObjectPayload::Dict(map) => {
+            let mut new_map = IndexMap::new();
+            for (k, v) in map.read().iter() {
+                new_map.insert(k.clone(), deep_copy(v)?);
+            }
+            Ok(PyObject::dict(new_map))
+        }
+        PyObjectPayload::Set(set) => {
+            Ok(PyObject::set(set.read().clone()))
+        }
+        _ => Ok(obj.clone()),
+    }
+}
+
+// ── operator module ──
+
+pub fn create_operator_module() -> PyObjectRef {
+    make_module("operator", vec![
+        ("add", make_builtin(|args| {
+            check_args_min("add", args, 2)?;
+            let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_)) || matches!(&args[1].payload, PyObjectPayload::Float(_));
+            if !either_float {
+                if let (Ok(a), Ok(b)) = (args[0].to_int(), args[1].to_int()) {
+                    return Ok(PyObject::int(a + b));
+                }
+            }
+            if let (Ok(a), Ok(b)) = (args[0].to_float(), args[1].to_float()) {
+                Ok(PyObject::float(a + b))
+            } else {
+                let a = args[0].py_to_string();
+                let b = args[1].py_to_string();
+                Ok(PyObject::str_val(CompactString::from(format!("{}{}", a, b))))
+            }
+        })),
+        ("sub", make_builtin(|args| {
+            check_args_min("sub", args, 2)?;
+            let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_)) || matches!(&args[1].payload, PyObjectPayload::Float(_));
+            if !either_float {
+                if let (Ok(a), Ok(b)) = (args[0].to_int(), args[1].to_int()) {
+                    return Ok(PyObject::int(a - b));
+                }
+            }
+            let a = args[0].to_float()?;
+            let b = args[1].to_float()?;
+            Ok(PyObject::float(a - b))
+        })),
+        ("mul", make_builtin(|args| {
+            check_args_min("mul", args, 2)?;
+            let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_)) || matches!(&args[1].payload, PyObjectPayload::Float(_));
+            if !either_float {
+                if let (Ok(a), Ok(b)) = (args[0].to_int(), args[1].to_int()) {
+                    return Ok(PyObject::int(a * b));
+                }
+            }
+            let a = args[0].to_float()?;
+            let b = args[1].to_float()?;
+            Ok(PyObject::float(a * b))
+        })),
+        ("truediv", make_builtin(|args| {
+            check_args_min("truediv", args, 2)?;
+            let a = args[0].to_float()?;
+            let b = args[1].to_float()?;
+            if b == 0.0 { return Err(PyException::zero_division_error("division by zero")); }
+            Ok(PyObject::float(a / b))
+        })),
+        ("floordiv", make_builtin(|args| {
+            check_args_min("floordiv", args, 2)?;
+            let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_)) || matches!(&args[1].payload, PyObjectPayload::Float(_));
+            if !either_float {
+                if let (Ok(a), Ok(b)) = (args[0].to_int(), args[1].to_int()) {
+                    if b == 0 { return Err(PyException::zero_division_error("integer division or modulo by zero")); }
+                    return Ok(PyObject::int(a.div_euclid(b)));
+                }
+            }
+            let a = args[0].to_float()?;
+            let b = args[1].to_float()?;
+            if b == 0.0 { return Err(PyException::zero_division_error("float floor division by zero")); }
+            Ok(PyObject::float((a / b).floor()))
+        })),
+        ("mod_", make_builtin(|args| {
+            check_args_min("mod_", args, 2)?;
+            let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_)) || matches!(&args[1].payload, PyObjectPayload::Float(_));
+            if !either_float {
+                if let (Ok(a), Ok(b)) = (args[0].to_int(), args[1].to_int()) {
+                    if b == 0 { return Err(PyException::zero_division_error("integer division or modulo by zero")); }
+                    return Ok(PyObject::int(a.rem_euclid(b)));
+                }
+            }
+            let a = args[0].to_float()?;
+            let b = args[1].to_float()?;
+            Ok(PyObject::float(a % b))
+        })),
+        ("neg", make_builtin(|args| {
+            check_args_min("neg", args, 1)?;
+            if matches!(&args[0].payload, PyObjectPayload::Float(_)) {
+                Ok(PyObject::float(-args[0].to_float()?))
+            } else if let Ok(n) = args[0].to_int() {
+                Ok(PyObject::int(-n))
+            } else {
+                Ok(PyObject::float(-args[0].to_float()?))
+            }
+        })),
+        ("pos", make_builtin(|args| {
+            check_args_min("pos", args, 1)?;
+            Ok(args[0].clone())
+        })),
+        ("not_", make_builtin(|args| {
+            check_args_min("not_", args, 1)?;
+            Ok(PyObject::bool_val(!args[0].is_truthy()))
+        })),
+        ("eq", make_builtin(|args| {
+            check_args_min("eq", args, 2)?;
+            args[0].compare(&args[1], CompareOp::Eq)
+        })),
+        ("ne", make_builtin(|args| {
+            check_args_min("ne", args, 2)?;
+            args[0].compare(&args[1], CompareOp::Ne)
+        })),
+        ("lt", make_builtin(|args| {
+            check_args_min("lt", args, 2)?;
+            args[0].compare(&args[1], CompareOp::Lt)
+        })),
+        ("le", make_builtin(|args| {
+            check_args_min("le", args, 2)?;
+            args[0].compare(&args[1], CompareOp::Le)
+        })),
+        ("gt", make_builtin(|args| {
+            check_args_min("gt", args, 2)?;
+            args[0].compare(&args[1], CompareOp::Gt)
+        })),
+        ("ge", make_builtin(|args| {
+            check_args_min("ge", args, 2)?;
+            args[0].compare(&args[1], CompareOp::Ge)
+        })),
+        ("abs", make_builtin(|args| {
+            check_args_min("abs", args, 1)?;
+            builtin_abs(args)
+        })),
+        ("contains", make_builtin(|args| {
+            check_args_min("contains", args, 2)?;
+            Ok(PyObject::bool_val(args[0].contains(&args[1])?))
+        })),
+        ("getitem", make_builtin(|args| {
+            check_args_min("getitem", args, 2)?;
+            match &args[0].payload {
+                PyObjectPayload::List(items) => {
+                    let idx = args[1].to_int()? as usize;
+                    items.read().get(idx).cloned()
+                        .ok_or_else(|| PyException::index_error("list index out of range"))
+                }
+                PyObjectPayload::Dict(map) => {
+                    let key = args[1].to_hashable_key()?;
+                    map.read().get(&key).cloned()
+                        .ok_or_else(|| PyException::key_error(args[1].repr()))
+                }
+                PyObjectPayload::Tuple(items) => {
+                    let idx = args[1].to_int()? as usize;
+                    items.get(idx).cloned()
+                        .ok_or_else(|| PyException::index_error("tuple index out of range"))
+                }
+                _ => Err(PyException::type_error("object is not subscriptable")),
+            }
+        })),
+        ("itemgetter", make_builtin(|args| {
+            // Returns a Module-like callable that extracts an item
+            check_args_min("itemgetter", args, 1)?;
+            let key = args[0].clone();
+            let mut attrs = vec![
+                ("_key", key),
+            ];
+            attrs.push(("_bind_methods", PyObject::bool_val(true)));
+            Ok(make_module("itemgetter", attrs))
+        })),
+        ("attrgetter", make_builtin(|args| {
+            check_args_min("attrgetter", args, 1)?;
+            let attr_name = args[0].clone();
+            let mut attrs = vec![
+                ("_attr", attr_name),
+            ];
+            attrs.push(("_bind_methods", PyObject::bool_val(true)));
+            Ok(make_module("attrgetter", attrs))
+        })),
+    ])
+}
+
+// ── typing module (stub) ──
+
+pub fn create_typing_module() -> PyObjectRef {
+    let mut attrs: Vec<(&str, PyObjectRef)> = vec![
+        ("Any", PyObject::none()),
+        ("Union", PyObject::none()),
+        ("Optional", PyObject::none()),
+        ("List", PyObject::builtin_type(CompactString::from("list"))),
+        ("Dict", PyObject::builtin_type(CompactString::from("dict"))),
+        ("Set", PyObject::builtin_type(CompactString::from("set"))),
+        ("Tuple", PyObject::builtin_type(CompactString::from("tuple"))),
+        ("FrozenSet", PyObject::builtin_type(CompactString::from("frozenset"))),
+        ("Type", PyObject::builtin_type(CompactString::from("type"))),
+        ("Callable", PyObject::none()),
+        ("Iterator", PyObject::none()),
+        ("Generator", PyObject::none()),
+        ("Sequence", PyObject::none()),
+        ("Mapping", PyObject::none()),
+        ("MutableMapping", PyObject::none()),
+        ("Iterable", PyObject::none()),
+    ];
+    attrs.push(("TYPE_CHECKING", PyObject::bool_val(false)));
+    make_module("typing", attrs)
+}
+
+// ── abc module (stub) ──
+
+pub fn create_abc_module() -> PyObjectRef {
+    make_module("abc", vec![
+        ("ABC", PyObject::none()),
+        ("ABCMeta", PyObject::none()),
+        ("abstractmethod", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("abstractmethod requires 1 argument")); }
+            Ok(args[0].clone())
+        })),
+    ])
+}
+
+// ── enum module (stub) ──
+
+pub fn create_enum_module() -> PyObjectRef {
+    make_module("enum", vec![
+        ("Enum", PyObject::none()),
+        ("IntEnum", PyObject::none()),
+        ("Flag", PyObject::none()),
+        ("IntFlag", PyObject::none()),
+        ("auto", make_builtin(|_| Ok(PyObject::none()))),
+    ])
 }
