@@ -1140,9 +1140,26 @@ impl VirtualMachine {
                     let obj = frame.pop();
                     match &obj.payload {
                         PyObjectPayload::Instance(inst) => {
-                            if inst.attrs.write().swap_remove(name.as_str()).is_none() {
-                                return Err(PyException::attribute_error(format!(
-                                    "'{}' object has no attribute '{}'", obj.type_name(), name)));
+                            // Check for __delattr__ dunder
+                            if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
+                                if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
+                                    let method = Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod { receiver: obj.clone(), method: delattr_method }
+                                    });
+                                    let name_arg = PyObject::str_val(name);
+                                    drop(frame);
+                                    self.call_object(method, vec![name_arg])?;
+                                } else {
+                                    if inst.attrs.write().swap_remove(name.as_str()).is_none() {
+                                        return Err(PyException::attribute_error(format!(
+                                            "'{}' object has no attribute '{}'", obj.type_name(), name)));
+                                    }
+                                }
+                            } else {
+                                if inst.attrs.write().swap_remove(name.as_str()).is_none() {
+                                    return Err(PyException::attribute_error(format!(
+                                        "'{}' object has no attribute '{}'", obj.type_name(), name)));
+                                }
                             }
                         }
                         PyObjectPayload::Class(cd) => {
@@ -2459,6 +2476,81 @@ impl VirtualMachine {
                                 payload: PyObjectPayload::Super { cls: args[0].clone(), instance: args[1].clone() }
                             }));
                         }
+                    }
+                    "exec" => {
+                        if args.is_empty() || args.len() > 3 {
+                            return Err(PyException::type_error("exec() takes 1 to 3 arguments"));
+                        }
+                        let code_str = args[0].as_str().ok_or_else(||
+                            PyException::type_error("exec() arg 1 must be a string"))?;
+                        match ferrython_parser::parse(code_str, "<string>") {
+                            Ok(module) => {
+                                let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
+                                match compiler.compile_module(&module) {
+                                    Ok(code) => {
+                                        // Execute in same globals
+                                        let globals = self.call_stack.last().unwrap().globals.clone();
+                                        self.execute_with_globals(code, globals)?;
+                                        return Ok(PyObject::none());
+                                    }
+                                    Err(_) => return Err(PyException::syntax_error("exec: compilation failed")),
+                                }
+                            }
+                            Err(e) => return Err(PyException::syntax_error(format!("exec: {}", e))),
+                        }
+                    }
+                    "eval" => {
+                        if args.is_empty() || args.len() > 3 {
+                            return Err(PyException::type_error("eval() takes 1 to 3 arguments"));
+                        }
+                        let code_str = args[0].as_str().ok_or_else(||
+                            PyException::type_error("eval() arg 1 must be a string"))?;
+                        // Wrap expression in a module that evaluates and returns it
+                        let wrapped = format!("__eval_result__ = ({})", code_str);
+                        match ferrython_parser::parse(&wrapped, "<string>") {
+                            Ok(module) => {
+                                let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
+                                match compiler.compile_module(&module) {
+                                    Ok(code) => {
+                                        let globals = self.call_stack.last().unwrap().globals.clone();
+                                        self.execute_with_globals(code, globals.clone())?;
+                                        // Retrieve the result from globals
+                                        let result = globals.read().get("__eval_result__").cloned()
+                                            .unwrap_or_else(PyObject::none);
+                                        return Ok(result);
+                                    }
+                                    Err(_) => return Err(PyException::syntax_error("eval: compilation failed")),
+                                }
+                            }
+                            Err(e) => return Err(PyException::syntax_error(format!("eval: {}", e))),
+                        }
+                    }
+                    "globals" => {
+                        let frame = self.call_stack.last().unwrap();
+                        let g = frame.globals.read();
+                        let pairs: Vec<(PyObjectRef, PyObjectRef)> = g.iter()
+                            .map(|(k, v)| (PyObject::str_val(CompactString::from(k.as_str())), v.clone()))
+                            .collect();
+                        drop(g);
+                        return Ok(PyObject::dict_from_pairs(pairs));
+                    }
+                    "locals" => {
+                        let frame = self.call_stack.last().unwrap();
+                        let mut pairs: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
+                        for (i, name) in frame.code.varnames.iter().enumerate() {
+                            if let Some(Some(val)) = frame.locals.get(i) {
+                                pairs.push((PyObject::str_val(name.clone()), val.clone()));
+                            }
+                        }
+                        for (i, name) in frame.code.cellvars.iter().chain(frame.code.freevars.iter()).enumerate() {
+                            if let Some(cell) = frame.cells.get(i) {
+                                let cell_val = cell.read();
+                                if let Some(val) = cell_val.as_ref() {
+                                    pairs.push((PyObject::str_val(name.clone()), val.clone()));
+                                }
+                            }
+                        }
+                        return Ok(PyObject::dict_from_pairs(pairs));
                     }
                     _ => {}
                 }
