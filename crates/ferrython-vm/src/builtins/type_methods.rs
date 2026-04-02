@@ -358,18 +358,115 @@ pub(super) fn call_set_method(m: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>
             }
             Ok(PyObject::none())
         }
+        "difference_update" => {
+            check_args_min("difference_update", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let remove_keys: Vec<HashableKey> = other_items.iter()
+                .filter_map(|x| x.to_hashable_key().ok())
+                .collect();
+            let mut guard = m.write();
+            for k in &remove_keys {
+                guard.shift_remove(k);
+            }
+            Ok(PyObject::none())
+        }
+        "intersection_update" => {
+            check_args_min("intersection_update", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let mut guard = m.write();
+            guard.retain(|_, v| other_keys.contains(&v.py_to_string()));
+            Ok(PyObject::none())
+        }
+        "symmetric_difference_update" => {
+            check_args_min("symmetric_difference_update", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let mut guard = m.write();
+            let self_keys: std::collections::HashSet<String> = guard.values()
+                .map(|x| x.py_to_string()).collect();
+            // Remove items that are in both
+            let mut to_remove = Vec::new();
+            for item in &other_items {
+                let s = item.py_to_string();
+                if self_keys.contains(&s) {
+                    if let Ok(hk) = item.to_hashable_key() {
+                        to_remove.push(hk);
+                    }
+                }
+            }
+            for k in &to_remove {
+                guard.shift_remove(k);
+            }
+            // Add items from other that weren't in self
+            for item in &other_items {
+                if !self_keys.contains(&item.py_to_string()) {
+                    if let Ok(hk) = item.to_hashable_key() {
+                        guard.insert(hk, item.clone());
+                    }
+                }
+            }
+            Ok(PyObject::none())
+        }
         _ => Err(PyException::attribute_error(format!(
             "'set' object has no attribute '{}'", method
         ))),
     }
 }
 
-pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, _args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "bit_length" => {
             let n = _receiver.to_int()?;
             Ok(PyObject::int(if n == 0 { 0 } else { 64 - n.abs().leading_zeros() as i64 }))
         }
+        "bit_count" => {
+            let n = _receiver.to_int()?;
+            Ok(PyObject::int(n.abs().count_ones() as i64))
+        }
+        "to_bytes" => {
+            let n = _receiver.to_int()?;
+            if args.is_empty() {
+                return Err(PyException::type_error("to_bytes() requires at least 1 argument"));
+            }
+            let length = args[0].to_int()? as usize;
+            let byteorder = if args.len() >= 2 {
+                args[1].py_to_string()
+            } else {
+                "big".to_string()
+            };
+            let bytes: Vec<u8> = match byteorder.as_str() {
+                "big" => {
+                    let mut result = vec![0u8; length];
+                    let mut val = n.unsigned_abs();
+                    for i in (0..length).rev() {
+                        result[i] = (val & 0xff) as u8;
+                        val >>= 8;
+                    }
+                    result
+                }
+                "little" => {
+                    let mut result = vec![0u8; length];
+                    let mut val = n.unsigned_abs();
+                    for byte in result.iter_mut().take(length) {
+                        *byte = (val & 0xff) as u8;
+                        val >>= 8;
+                    }
+                    result
+                }
+                _ => return Err(PyException::value_error("byteorder must be 'big' or 'little'")),
+            };
+            Ok(PyObject::bytes(bytes))
+        }
+        "as_integer_ratio" => {
+            let n = _receiver.to_int()?;
+            Ok(PyObject::tuple(vec![PyObject::int(n), PyObject::int(1)]))
+        }
+        "conjugate" => Ok(_receiver.clone()),
+        "real" => Ok(_receiver.clone()),
+        "imag" => Ok(PyObject::int(0)),
+        "numerator" => Ok(_receiver.clone()),
+        "denominator" => Ok(PyObject::int(1)),
         _ => Err(PyException::attribute_error(format!(
             "'int' object has no attribute '{}'", method
         ))),
@@ -394,6 +491,34 @@ pub(super) fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> 
                 "{}0x1.{:013x}p{:+}", sign, mantissa, exponent
             ))))
         }
+        "as_integer_ratio" => {
+            if f.is_infinite() || f.is_nan() {
+                return Err(PyException::value_error("cannot convert Infinity or NaN to integer ratio"));
+            }
+            // Decompose f into mantissa * 2^exponent
+            let (mantissa, exponent, _) = {
+                let bits = f.to_bits();
+                let sign = if bits >> 63 != 0 { -1i64 } else { 1 };
+                let exp = ((bits >> 52) & 0x7ff) as i64;
+                let frac = (bits & 0x000f_ffff_ffff_ffff) as i64;
+                if exp == 0 {
+                    // Subnormal
+                    (sign * frac, -1022 - 52, sign)
+                } else {
+                    (sign * ((1i64 << 52) | frac), exp - 1023 - 52, sign)
+                }
+            };
+            if exponent >= 0 {
+                let numer = mantissa * (1i64 << exponent.min(62));
+                Ok(PyObject::tuple(vec![PyObject::int(numer), PyObject::int(1)]))
+            } else {
+                let denom = 1i64 << (-exponent).min(62);
+                Ok(PyObject::tuple(vec![PyObject::int(mantissa), PyObject::int(denom)]))
+            }
+        }
+        "conjugate" => Ok(PyObject::float(f)),
+        "real" => Ok(PyObject::float(f)),
+        "imag" => Ok(PyObject::float(0.0)),
         _ => Err(PyException::attribute_error(format!(
             "'float' object has no attribute '{}'", method
         ))),
@@ -532,6 +657,275 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
         "isalpha" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_alphabetic()))),
         "isalnum" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_alphanumeric()))),
         "isspace" => Ok(PyObject::bool_val(!b.is_empty() && b.iter().all(|c| c.is_ascii_whitespace()))),
+        "islower" => Ok(PyObject::bool_val(
+            b.iter().any(|c| c.is_ascii_lowercase()) &&
+            b.iter().all(|c| !c.is_ascii_uppercase())
+        )),
+        "isupper" => Ok(PyObject::bool_val(
+            b.iter().any(|c| c.is_ascii_uppercase()) &&
+            b.iter().all(|c| !c.is_ascii_lowercase())
+        )),
+        "istitle" => {
+            let s = String::from_utf8_lossy(b);
+            let mut prev_cased = false;
+            let mut found_cased = false;
+            let mut is_title = true;
+            for c in s.chars() {
+                if c.is_uppercase() {
+                    if prev_cased { is_title = false; break; }
+                    prev_cased = true;
+                    found_cased = true;
+                } else if c.is_lowercase() {
+                    if !prev_cased { is_title = false; break; }
+                    prev_cased = true;
+                    found_cased = true;
+                } else {
+                    prev_cased = false;
+                }
+            }
+            Ok(PyObject::bool_val(found_cased && is_title))
+        }
+        "swapcase" => Ok(PyObject::bytes(b.iter().map(|&c| {
+            if c.is_ascii_lowercase() { c.to_ascii_uppercase() }
+            else if c.is_ascii_uppercase() { c.to_ascii_lowercase() }
+            else { c }
+        }).collect())),
+        "title" => {
+            let mut result = Vec::with_capacity(b.len());
+            let mut prev_alpha = false;
+            for &c in b {
+                if c.is_ascii_alphabetic() {
+                    if !prev_alpha {
+                        result.push(c.to_ascii_uppercase());
+                    } else {
+                        result.push(c.to_ascii_lowercase());
+                    }
+                    prev_alpha = true;
+                } else {
+                    result.push(c);
+                    prev_alpha = false;
+                }
+            }
+            Ok(PyObject::bytes(result))
+        }
+        "capitalize" => {
+            if b.is_empty() { return Ok(PyObject::bytes(vec![])); }
+            let mut result = vec![b[0].to_ascii_uppercase()];
+            result.extend(b[1..].iter().map(|c| c.to_ascii_lowercase()));
+            Ok(PyObject::bytes(result))
+        }
+        "center" => {
+            if args.is_empty() { return Err(PyException::type_error("center requires width argument")); }
+            let width = args[0].to_int()? as usize;
+            let fill = if args.len() > 1 {
+                if let PyObjectPayload::Bytes(fb) = &args[1].payload { fb[0] } else { b' ' }
+            } else { b' ' };
+            if b.len() >= width { return Ok(PyObject::bytes(b.to_vec())); }
+            let pad = width - b.len();
+            let left = pad / 2;
+            let right = pad - left;
+            let mut result = vec![fill; left];
+            result.extend_from_slice(b);
+            result.extend(vec![fill; right]);
+            Ok(PyObject::bytes(result))
+        }
+        "ljust" => {
+            if args.is_empty() { return Err(PyException::type_error("ljust requires width argument")); }
+            let width = args[0].to_int()? as usize;
+            let fill = if args.len() > 1 {
+                if let PyObjectPayload::Bytes(fb) = &args[1].payload { fb[0] } else { b' ' }
+            } else { b' ' };
+            if b.len() >= width { return Ok(PyObject::bytes(b.to_vec())); }
+            let mut result = b.to_vec();
+            result.extend(vec![fill; width - b.len()]);
+            Ok(PyObject::bytes(result))
+        }
+        "rjust" => {
+            if args.is_empty() { return Err(PyException::type_error("rjust requires width argument")); }
+            let width = args[0].to_int()? as usize;
+            let fill = if args.len() > 1 {
+                if let PyObjectPayload::Bytes(fb) = &args[1].payload { fb[0] } else { b' ' }
+            } else { b' ' };
+            if b.len() >= width { return Ok(PyObject::bytes(b.to_vec())); }
+            let mut result = vec![fill; width - b.len()];
+            result.extend_from_slice(b);
+            Ok(PyObject::bytes(result))
+        }
+        "lstrip" => {
+            let stripped: Vec<u8> = b.iter().copied().skip_while(|c| c.is_ascii_whitespace()).collect();
+            Ok(PyObject::bytes(stripped))
+        }
+        "rstrip" => {
+            let mut result = b.to_vec();
+            while result.last().map_or(false, |c| c.is_ascii_whitespace()) {
+                result.pop();
+            }
+            Ok(PyObject::bytes(result))
+        }
+        "rfind" => {
+            if args.is_empty() { return Err(PyException::type_error("rfind requires an argument")); }
+            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) = &args[0].payload {
+                let pos = b.windows(needle.len()).rposition(|w| w == needle.as_slice());
+                Ok(PyObject::int(pos.map(|p| p as i64).unwrap_or(-1)))
+            } else if let Some(n) = args[0].as_int() {
+                let byte = n as u8;
+                Ok(PyObject::int(b.iter().rposition(|&x| x == byte).map(|p| p as i64).unwrap_or(-1)))
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "index" => {
+            if args.is_empty() { return Err(PyException::type_error("index requires an argument")); }
+            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) = &args[0].payload {
+                let pos = b.windows(needle.len()).position(|w| w == needle.as_slice());
+                match pos {
+                    Some(p) => Ok(PyObject::int(p as i64)),
+                    None => Err(PyException::value_error("subsection not found")),
+                }
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "rindex" => {
+            if args.is_empty() { return Err(PyException::type_error("rindex requires an argument")); }
+            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) = &args[0].payload {
+                let pos = b.windows(needle.len()).rposition(|w| w == needle.as_slice());
+                match pos {
+                    Some(p) => Ok(PyObject::int(p as i64)),
+                    None => Err(PyException::value_error("subsection not found")),
+                }
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "zfill" => {
+            if args.is_empty() { return Err(PyException::type_error("zfill requires width argument")); }
+            let width = args[0].to_int()? as usize;
+            if b.len() >= width { return Ok(PyObject::bytes(b.to_vec())); }
+            let pad = width - b.len();
+            let mut result = vec![b'0'; pad];
+            result.extend_from_slice(b);
+            Ok(PyObject::bytes(result))
+        }
+        "expandtabs" => {
+            let tabsize = if !args.is_empty() { args[0].to_int()? as usize } else { 8 };
+            let mut result = Vec::new();
+            let mut col = 0;
+            for &byte in b {
+                if byte == b'\t' {
+                    let spaces = tabsize - (col % tabsize);
+                    result.extend(std::iter::repeat(b' ').take(spaces));
+                    col += spaces;
+                } else if byte == b'\n' || byte == b'\r' {
+                    result.push(byte);
+                    col = 0;
+                } else {
+                    result.push(byte);
+                    col += 1;
+                }
+            }
+            Ok(PyObject::bytes(result))
+        }
+        "isascii" => Ok(PyObject::bool_val(b.iter().all(|c| c.is_ascii()))),
+        "partition" => {
+            if args.is_empty() { return Err(PyException::type_error("partition requires an argument")); }
+            if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload {
+                if let Some(pos) = b.windows(sep.len()).position(|w| w == sep.as_slice()) {
+                    Ok(PyObject::tuple(vec![
+                        PyObject::bytes(b[..pos].to_vec()),
+                        PyObject::bytes(sep.clone()),
+                        PyObject::bytes(b[pos + sep.len()..].to_vec()),
+                    ]))
+                } else {
+                    Ok(PyObject::tuple(vec![
+                        PyObject::bytes(b.to_vec()),
+                        PyObject::bytes(vec![]),
+                        PyObject::bytes(vec![]),
+                    ]))
+                }
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "rpartition" => {
+            if args.is_empty() { return Err(PyException::type_error("rpartition requires an argument")); }
+            if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload {
+                if let Some(pos) = b.windows(sep.len()).rposition(|w| w == sep.as_slice()) {
+                    Ok(PyObject::tuple(vec![
+                        PyObject::bytes(b[..pos].to_vec()),
+                        PyObject::bytes(sep.clone()),
+                        PyObject::bytes(b[pos + sep.len()..].to_vec()),
+                    ]))
+                } else {
+                    Ok(PyObject::tuple(vec![
+                        PyObject::bytes(vec![]),
+                        PyObject::bytes(vec![]),
+                        PyObject::bytes(b.to_vec()),
+                    ]))
+                }
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "removeprefix" => {
+            if args.is_empty() { return Err(PyException::type_error("removeprefix requires an argument")); }
+            if let PyObjectPayload::Bytes(prefix) | PyObjectPayload::ByteArray(prefix) = &args[0].payload {
+                if b.starts_with(prefix) {
+                    Ok(PyObject::bytes(b[prefix.len()..].to_vec()))
+                } else {
+                    Ok(PyObject::bytes(b.to_vec()))
+                }
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "removesuffix" => {
+            if args.is_empty() { return Err(PyException::type_error("removesuffix requires an argument")); }
+            if let PyObjectPayload::Bytes(suffix) | PyObjectPayload::ByteArray(suffix) = &args[0].payload {
+                if b.ends_with(suffix) {
+                    Ok(PyObject::bytes(b[..b.len() - suffix.len()].to_vec()))
+                } else {
+                    Ok(PyObject::bytes(b.to_vec()))
+                }
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "rsplit" => {
+            if args.is_empty() {
+                let parts: Vec<PyObjectRef> = String::from_utf8_lossy(b)
+                    .split_whitespace()
+                    .rev()
+                    .map(|s| PyObject::bytes(s.as_bytes().to_vec()))
+                    .collect::<Vec<_>>().into_iter().rev().collect();
+                Ok(PyObject::list(parts))
+            } else if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &args[0].payload {
+                let max_split = if args.len() > 1 { args[1].to_int().unwrap_or(-1) } else { -1 };
+                let s = String::from_utf8_lossy(b);
+                let sep_s = String::from_utf8_lossy(sep);
+                let parts: Vec<&str> = if max_split < 0 {
+                    s.rsplitn(usize::MAX, sep_s.as_ref()).collect()
+                } else {
+                    s.rsplitn(max_split as usize + 1, sep_s.as_ref()).collect()
+                };
+                let result: Vec<PyObjectRef> = parts.into_iter().rev()
+                    .map(|p| PyObject::bytes(p.as_bytes().to_vec()))
+                    .collect();
+                Ok(PyObject::list(result))
+            } else {
+                Err(PyException::type_error("a bytes-like object is required"))
+            }
+        }
+        "splitlines" => {
+            let s = String::from_utf8_lossy(b);
+            let keep_ends = !args.is_empty() && args[0].is_truthy();
+            let parts: Vec<PyObjectRef> = if keep_ends {
+                s.split_inclusive('\n').map(|l| PyObject::bytes(l.as_bytes().to_vec())).collect()
+            } else {
+                s.lines().map(|l| PyObject::bytes(l.as_bytes().to_vec())).collect()
+            };
+            Ok(PyObject::list(parts))
+        }
         _ => Err(PyException::attribute_error(format!(
             "'bytes' object has no attribute '{}'", method
         ))),

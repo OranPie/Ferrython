@@ -464,6 +464,53 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             }
             Ok(PyObject::dict(result_map))
         }
+        "rindex" => {
+            check_args_min("rindex", args, 1)?;
+            let sub = args[0].as_str().ok_or_else(|| PyException::type_error("rindex() argument must be str"))?;
+            match s.rfind(sub) {
+                Some(i) => Ok(PyObject::int(i as i64)),
+                None => Err(PyException::value_error("substring not found")),
+            }
+        }
+        "format_map" => {
+            check_args_min("format_map", args, 1)?;
+            let mapping = &args[0];
+            let mut result = String::new();
+            let mut chars = s.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '{' {
+                    if chars.peek() == Some(&'{') {
+                        chars.next();
+                        result.push('{');
+                    } else {
+                        let mut field = String::new();
+                        for c in chars.by_ref() {
+                            if c == '}' { break; }
+                            field.push(c);
+                        }
+                        // Look up field in mapping
+                        if let Some(val) = mapping.get_attr(&field) {
+                            result.push_str(&val.py_to_string());
+                        } else if let PyObjectPayload::Dict(m) = &mapping.payload {
+                            let key = HashableKey::Str(CompactString::from(&field));
+                            if let Some(val) = m.read().get(&key) {
+                                result.push_str(&val.py_to_string());
+                            } else {
+                                return Err(PyException::key_error(field));
+                            }
+                        } else {
+                            return Err(PyException::key_error(field));
+                        }
+                    }
+                } else if c == '}' && chars.peek() == Some(&'}') {
+                    chars.next();
+                    result.push('}');
+                } else {
+                    result.push(c);
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
         _ => Err(PyException::attribute_error(format!(
             "'str' object has no attribute '{}'", method
         ))),

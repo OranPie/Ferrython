@@ -511,6 +511,10 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
             name: CompactString::from("type.__new__"),
             func: core_fns::builtin_type,
         })),
+        ("float", "fromhex") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("float.fromhex"),
+            func: builtin_float_fromhex,
+        })),
         _ => None,
     }
 }
@@ -593,7 +597,49 @@ fn builtin_bytes_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::bytes(bytes))
 }
 
-/// object.__getattribute__(self, name) — default attribute lookup
+fn builtin_float_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("float.fromhex requires 1 argument"));
+    }
+    let hex_str = args[0].py_to_string().trim().to_lowercase();
+    // Handle special values
+    match hex_str.as_str() {
+        "inf" | "+inf" | "infinity" | "+infinity" => return Ok(PyObject::float(f64::INFINITY)),
+        "-inf" | "-infinity" => return Ok(PyObject::float(f64::NEG_INFINITY)),
+        "nan" | "+nan" | "-nan" => return Ok(PyObject::float(f64::NAN)),
+        _ => {}
+    }
+    // Parse hex float format: [sign] "0x" hex_mantissa "p" exp
+    let (sign, rest) = if hex_str.starts_with('-') {
+        (-1.0f64, &hex_str[1..])
+    } else if hex_str.starts_with('+') {
+        (1.0, &hex_str[1..])
+    } else {
+        (1.0, hex_str.as_str())
+    };
+    let rest = rest.strip_prefix("0x").unwrap_or(rest);
+    if let Some(p_idx) = rest.find('p') {
+        let mantissa_str = &rest[..p_idx];
+        let exp: i32 = rest[p_idx + 1..].parse().map_err(|_|
+            PyException::value_error("invalid hexadecimal floating-point string"))?;
+        let (int_part, frac_part) = if let Some(dot) = mantissa_str.find('.') {
+            (&mantissa_str[..dot], &mantissa_str[dot + 1..])
+        } else {
+            (mantissa_str, "")
+        };
+        let int_val = i64::from_str_radix(int_part, 16).unwrap_or(0);
+        let frac_val: f64 = if frac_part.is_empty() {
+            0.0
+        } else {
+            let frac_int = i64::from_str_radix(frac_part, 16).unwrap_or(0);
+            frac_int as f64 / (16.0f64).powi(frac_part.len() as i32)
+        };
+        let value = sign * (int_val as f64 + frac_val) * (2.0f64).powi(exp);
+        Ok(PyObject::float(value))
+    } else {
+        Err(PyException::value_error("invalid hexadecimal floating-point string"))
+    }
+}
 fn builtin_object_getattribute(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 {
         return Err(PyException::type_error("object.__getattribute__ requires 2 arguments"));

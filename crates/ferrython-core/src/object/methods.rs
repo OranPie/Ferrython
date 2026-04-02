@@ -991,12 +991,48 @@ impl PyObjectMethods for PyObjectRef {
                     _ => None,
                 }
             }
+            // Int property-like attributes (return values, not bound methods)
+            PyObjectPayload::Int(_n) => match name {
+                "real" | "numerator" => Some(PyObject::wrap(self.payload.clone())),
+                "imag" => Some(PyObject::int(0)),
+                "denominator" => Some(PyObject::int(1)),
+                "__class__" => Some(PyObject::builtin_type(CompactString::from("int"))),
+                _ => Some(Arc::new(PyObject {
+                    payload: PyObjectPayload::BuiltinBoundMethod {
+                        receiver: self.clone(),
+                        method_name: CompactString::from(name),
+                    }
+                })),
+            },
+            // Float property-like attributes
+            PyObjectPayload::Float(f) => match name {
+                "real" => Some(PyObject::float(*f)),
+                "imag" => Some(PyObject::float(0.0)),
+                "__class__" => Some(PyObject::builtin_type(CompactString::from("float"))),
+                _ => Some(Arc::new(PyObject {
+                    payload: PyObjectPayload::BuiltinBoundMethod {
+                        receiver: self.clone(),
+                        method_name: CompactString::from(name),
+                    }
+                })),
+            },
+            // Bool property-like attributes (bool is subtype of int)
+            PyObjectPayload::Bool(b) => match name {
+                "real" | "numerator" => Some(PyObject::int(if *b { 1 } else { 0 })),
+                "imag" => Some(PyObject::int(0)),
+                "denominator" => Some(PyObject::int(1)),
+                "__class__" => Some(PyObject::builtin_type(CompactString::from("bool"))),
+                _ => Some(Arc::new(PyObject {
+                    payload: PyObjectPayload::BuiltinBoundMethod {
+                        receiver: self.clone(),
+                        method_name: CompactString::from(name),
+                    }
+                })),
+            },
             // Built-in type methods — return bound method names
             PyObjectPayload::Str(_) | PyObjectPayload::List(_) |
             PyObjectPayload::Dict(_) | PyObjectPayload::Tuple(_) |
-            PyObjectPayload::Set(_) | PyObjectPayload::Int(_) |
-            PyObjectPayload::Float(_) | PyObjectPayload::Bytes(_) => {
-                // Create a BoundMethod wrapping (self_obj, method_name)
+            PyObjectPayload::Set(_) | PyObjectPayload::Bytes(_) => {
                 Some(Arc::new(PyObject {
                     payload: PyObjectPayload::BuiltinBoundMethod {
                         receiver: self.clone(),
