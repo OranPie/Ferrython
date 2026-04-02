@@ -1418,36 +1418,82 @@ impl VirtualMachine {
             }
             Opcode::ImportName => {
                 let frame = self.vm_frame();
-                let _fromlist = frame.pop();
+                let fromlist = frame.pop();
                 let level_obj = frame.pop();
                 let level = level_obj.as_int().unwrap_or(0) as usize;
                 let name = frame.code.names[instr.arg as usize].clone();
                 let filename = frame.code.filename.clone();
-                if let Some(module) = self.modules.get(&name) {
-                    let module = module.clone();
-                    self.vm_push(module);
-                } else {
-                    let resolved = if level > 0 {
-                        ferrython_import::resolve_relative_import(&name, &filename, level)?
+
+                let has_fromlist = !matches!(&fromlist.payload, PyObjectPayload::None);
+
+                // Handle dotted imports: `import a.b.c` or `from a.b import c`
+                let parts: Vec<&str> = name.split('.').collect();
+
+                // Import (or fetch cached) each component in the chain
+                let mut current_name = String::new();
+                let mut parent: Option<PyObjectRef> = None;
+                let mut top_level: Option<PyObjectRef> = None;
+
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 { current_name.push('.'); }
+                    current_name.push_str(part);
+
+                    let module = if let Some(cached) = self.modules.get(current_name.as_str()) {
+                        cached.clone()
                     } else {
-                        ferrython_import::resolve_module(&name, &filename)?
+                        let resolved = if level > 0 && i == 0 {
+                            ferrython_import::resolve_relative_import(&current_name, &filename, level)?
+                        } else {
+                            ferrython_import::resolve_module(&current_name, &filename)?
+                        };
+                        let module = match resolved {
+                            ferrython_import::ResolvedModule::Builtin(m) => m,
+                            ferrython_import::ResolvedModule::Source { code, name: mod_name } => {
+                                let mod_globals = Arc::new(RwLock::new(IndexMap::new()));
+                                let frame = Frame::new(code, mod_globals.clone(), self.builtins.clone());
+                                self.call_stack.push(frame);
+                                let _ = self.run_frame();
+                                self.call_stack.pop();
+                                let attrs = mod_globals.read().clone();
+                                PyObject::module_with_attrs(mod_name, attrs)
+                            }
+                        };
+                        self.modules.insert(CompactString::from(current_name.as_str()), module.clone());
+                        module
                     };
-                    let module = match resolved {
-                        ferrython_import::ResolvedModule::Builtin(m) => m,
-                        ferrython_import::ResolvedModule::Source { code, name: mod_name } => {
-                            let mod_globals = Arc::new(RwLock::new(IndexMap::new()));
-                            let frame = Frame::new(code, mod_globals.clone(), self.builtins.clone());
-                            self.call_stack.push(frame);
-                            let _ = self.run_frame();
-                            self.call_stack.pop();
-                            let attrs = mod_globals.read().clone();
-                            PyObject::module_with_attrs(mod_name, attrs)
+
+                    // Attach submodule to parent (e.g., os.path on os)
+                    if let Some(ref p) = parent {
+                        if let PyObjectPayload::Module(ref mod_data) = &p.payload {
+                            if mod_data.attrs.get(*part).is_none() {
+                                let mut new_attrs = mod_data.attrs.clone();
+                                new_attrs.insert(CompactString::from(*part), module.clone());
+                                let updated = PyObject::module_with_attrs(mod_data.name.clone(), new_attrs);
+                                // Update cached module
+                                let parent_name = if i == 1 {
+                                    parts[0].to_string()
+                                } else {
+                                    parts[..i].join(".")
+                                };
+                                self.modules.insert(CompactString::from(parent_name.as_str()), updated.clone());
+                                if i == 1 { top_level = Some(updated); }
+                            }
                         }
-                    };
-                    self.modules.insert(name, module.clone());
-                    self.vm_push(module);
-                    return Ok(None);
+                    }
+
+                    if i == 0 { top_level = Some(module.clone()); }
+                    parent = Some(module);
                 }
+
+                // `import a.b.c` pushes top-level `a` (STORE_NAME will bind it)
+                // `from a.b import c` pushes the final module `a.b` (IMPORT_FROM extracts `c`)
+                let push_module = if has_fromlist {
+                    parent.unwrap_or_else(PyObject::none)
+                } else {
+                    top_level.unwrap_or_else(PyObject::none)
+                };
+                self.vm_push(push_module);
+                return Ok(None);
             }
             Opcode::ImportFrom => {
                 let frame = self.vm_frame();

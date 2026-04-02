@@ -194,6 +194,7 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::ExceptionInstance { .. } => "exception",
             PyObjectPayload::Generator(_) => "generator",
             PyObjectPayload::NativeFunction { .. } => "builtin_function_or_method",
+            PyObjectPayload::NativeClosure { .. } => "builtin_function_or_method",
             PyObjectPayload::Property { .. } => "property",
             PyObjectPayload::StaticMethod(_) => "staticmethod",
             PyObjectPayload::ClassMethod(_) => "classmethod",
@@ -225,7 +226,7 @@ impl PyObjectMethods for PyObjectRef {
             | PyObjectPayload::BuiltinType(_) | PyObjectPayload::BoundMethod { .. }
             | PyObjectPayload::BuiltinBoundMethod { .. }
             | PyObjectPayload::Class(_) | PyObjectPayload::ExceptionType(_)
-            | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::Partial { .. })
+            | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } | PyObjectPayload::Partial { .. })
             || (matches!(&self.payload, PyObjectPayload::Instance(_)) && self.get_attr("__call__").is_some())
     }
 
@@ -1014,7 +1015,15 @@ impl PyObjectMethods for PyObjectRef {
                             Ok(PyObject::dict(result_map))
                         }))
                     }
-                    _ => None,
+                    _ => {
+                        // Unbound method access: str.upper, list.append, etc.
+                        Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: self.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }))
+                    }
                 }
             }
             PyObjectPayload::Property { fget, fset, fdel } => {

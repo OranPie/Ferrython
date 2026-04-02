@@ -50,6 +50,9 @@ impl PyObject {
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(IndexMap::new())) }))
     }
+    pub fn instance_with_attrs(class: PyObjectRef, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(attrs)) }))
+    }
     pub fn module(name: CompactString) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: IndexMap::new() }))
     }
@@ -58,6 +61,9 @@ impl PyObject {
     }
     pub fn native_function(name: &str, func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::NativeFunction { name: CompactString::from(name), func })
+    }
+    pub fn native_closure(name: &str, func: impl Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + Send + Sync + 'static) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::NativeClosure { name: CompactString::from(name), func: Arc::new(func) })
     }
     pub fn dict_from_pairs(pairs: Vec<(PyObjectRef, PyObjectRef)>) -> PyObjectRef {
         let mut map = IndexMap::new();

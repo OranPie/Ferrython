@@ -641,6 +641,9 @@ impl VirtualMachine {
                         // Other native functions: drop kwargs
                         return nf(&pos_args);
                     }
+                    PyObjectPayload::NativeClosure { func, .. } => {
+                        return func(&pos_args);
+                    }
                     PyObjectPayload::Partial { func: partial_func, args: partial_args, kwargs: partial_kwargs } => {
                         let partial_func = partial_func.clone();
                         let mut combined_args = partial_args.clone();
@@ -1664,6 +1667,14 @@ impl VirtualMachine {
                         return builtins::call_method(receiver, method_name.as_str(), &args);
                     }
                 }
+                // Unbound method call: str.upper("hello") → call_method("hello", "upper", [])
+                if let PyObjectPayload::BuiltinType(_) = &receiver.payload {
+                    if !args.is_empty() {
+                        let instance = args[0].clone();
+                        let rest_args = if args.len() > 1 { args[1..].to_vec() } else { vec![] };
+                        return builtins::call_method(&instance, method_name.as_str(), &rest_args);
+                    }
+                }
                 builtins::call_method(receiver, method_name.as_str(), &args)
             }
             PyObjectPayload::ExceptionType(kind) => {
@@ -1680,6 +1691,9 @@ impl VirtualMachine {
                 if name.as_str() == "functools.reduce" {
                     return self.vm_functools_reduce(&args);
                 }
+                func(&args)
+            }
+            PyObjectPayload::NativeClosure { func, .. } => {
                 func(&args)
             }
             PyObjectPayload::Partial { func: partial_func, args: partial_args, kwargs: partial_kwargs } => {

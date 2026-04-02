@@ -271,7 +271,18 @@ fn deep_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             Ok(PyObject::dict(new_map))
         }
         PyObjectPayload::Set(set) => {
-            Ok(PyObject::set(set.read().clone()))
+            let mut new_set = IndexMap::new();
+            for (k, v) in set.read().iter() {
+                new_set.insert(k.clone(), deep_copy(v)?);
+            }
+            Ok(PyObject::set(new_set))
+        }
+        PyObjectPayload::Instance(inst) => {
+            let mut new_attrs = IndexMap::new();
+            for (k, v) in inst.attrs.read().iter() {
+                new_attrs.insert(k.clone(), deep_copy(v)?);
+            }
+            Ok(PyObject::instance_with_attrs(inst.class.clone(), new_attrs))
         }
         _ => Ok(obj.clone()),
     }
@@ -429,23 +440,45 @@ pub fn create_operator_module() -> PyObjectRef {
             }
         })),
         ("itemgetter", make_builtin(|args| {
-            // Returns a Module-like callable that extracts an item
             check_args_min("itemgetter", args, 1)?;
-            let key = args[0].clone();
-            let mut attrs = vec![
-                ("_key", key),
-            ];
-            attrs.push(("_bind_methods", PyObject::bool_val(true)));
-            Ok(make_module("itemgetter", attrs))
+            let keys: Vec<PyObjectRef> = args.to_vec();
+            Ok(PyObject::native_closure("operator.itemgetter", move |call_args| {
+                if call_args.is_empty() {
+                    return Err(PyException::type_error("itemgetter expected 1 argument, got 0"));
+                }
+                let obj = &call_args[0];
+                if keys.len() == 1 {
+                    obj.get_item(&keys[0])
+                } else {
+                    let items: Vec<PyObjectRef> = keys.iter()
+                        .map(|k| obj.get_item(k))
+                        .collect::<PyResult<Vec<_>>>()?;
+                    Ok(PyObject::tuple(items))
+                }
+            }))
         })),
         ("attrgetter", make_builtin(|args| {
             check_args_min("attrgetter", args, 1)?;
-            let attr_name = args[0].clone();
-            let mut attrs = vec![
-                ("_attr", attr_name),
-            ];
-            attrs.push(("_bind_methods", PyObject::bool_val(true)));
-            Ok(make_module("attrgetter", attrs))
+            let attr_names: Vec<String> = args.iter().map(|a| a.py_to_string()).collect();
+            Ok(PyObject::native_closure("operator.attrgetter", move |call_args| {
+                if call_args.is_empty() {
+                    return Err(PyException::type_error("attrgetter expected 1 argument, got 0"));
+                }
+                let obj = &call_args[0];
+                if attr_names.len() == 1 {
+                    obj.get_attr(&attr_names[0])
+                        .ok_or_else(|| PyException::attribute_error(format!(
+                            "'{}' object has no attribute '{}'", obj.type_name(), attr_names[0]
+                        )))
+                } else {
+                    let items: Vec<PyObjectRef> = attr_names.iter()
+                        .map(|name| obj.get_attr(name).ok_or_else(|| PyException::attribute_error(
+                            format!("'{}' object has no attribute '{}'", obj.type_name(), name)
+                        )))
+                        .collect::<PyResult<Vec<_>>>()?;
+                    Ok(PyObject::tuple(items))
+                }
+            }))
         })),
     ])
 }

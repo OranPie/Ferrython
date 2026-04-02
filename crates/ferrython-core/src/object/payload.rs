@@ -19,7 +19,7 @@ pub struct PyObject {
 }
 
 /// The actual data of a Python value.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum PyObjectPayload {
     None,
     Ellipsis,
@@ -61,6 +61,11 @@ pub enum PyObjectPayload {
         name: CompactString,
         func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>,
     },
+    /// Native closure — a Rust function that captures state (for itemgetter, partial, etc.)
+    NativeClosure {
+        name: CompactString,
+        func: Arc<dyn Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + Send + Sync>,
+    },
     /// Partial application (functools.partial)
     Partial {
         func: PyObjectRef,
@@ -75,6 +80,50 @@ pub enum PyObjectPayload {
     ClassMethod(PyObjectRef),
     /// super() proxy — wraps (class, instance) for parent method dispatch
     Super { cls: PyObjectRef, instance: PyObjectRef },
+}
+
+impl fmt::Debug for PyObjectPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => write!(f, "None"),
+            Self::Ellipsis => write!(f, "Ellipsis"),
+            Self::NotImplemented => write!(f, "NotImplemented"),
+            Self::Bool(b) => write!(f, "Bool({b})"),
+            Self::Int(n) => write!(f, "Int({n:?})"),
+            Self::Float(v) => write!(f, "Float({v})"),
+            Self::Complex { real, imag } => write!(f, "Complex({real}+{imag}j)"),
+            Self::Str(s) => write!(f, "Str({s:?})"),
+            Self::Bytes(b) => write!(f, "Bytes({b:?})"),
+            Self::ByteArray(b) => write!(f, "ByteArray({b:?})"),
+            Self::List(_) => write!(f, "List(...)"),
+            Self::Tuple(items) => write!(f, "Tuple(len={})", items.len()),
+            Self::Set(_) => write!(f, "Set(...)"),
+            Self::FrozenSet(_) => write!(f, "FrozenSet(...)"),
+            Self::Dict(_) => write!(f, "Dict(...)"),
+            Self::Function(pf) => write!(f, "Function({:?})", pf.name),
+            Self::BuiltinFunction(name) => write!(f, "BuiltinFunction({name})"),
+            Self::BuiltinType(name) => write!(f, "BuiltinType({name})"),
+            Self::BoundMethod { .. } => write!(f, "BoundMethod(...)"),
+            Self::BuiltinBoundMethod { method_name, .. } => write!(f, "BuiltinBoundMethod({method_name})"),
+            Self::Code(_) => write!(f, "Code(...)"),
+            Self::Class(cd) => write!(f, "Class({})", cd.name),
+            Self::Instance(id) => write!(f, "Instance(class={:?})", id.class.payload),
+            Self::Module(md) => write!(f, "Module({})", md.name),
+            Self::Iterator(_) => write!(f, "Iterator(...)"),
+            Self::Slice { .. } => write!(f, "Slice(...)"),
+            Self::Cell(_) => write!(f, "Cell(...)"),
+            Self::ExceptionType(k) => write!(f, "ExceptionType({k:?})"),
+            Self::ExceptionInstance { kind, message, .. } => write!(f, "ExceptionInstance({kind:?}, {message:?})"),
+            Self::Generator(_) => write!(f, "Generator(...)"),
+            Self::NativeFunction { name, .. } => write!(f, "NativeFunction({name})"),
+            Self::NativeClosure { name, .. } => write!(f, "NativeClosure({name})"),
+            Self::Partial { .. } => write!(f, "Partial(...)"),
+            Self::Property { .. } => write!(f, "Property(...)"),
+            Self::StaticMethod(_) => write!(f, "StaticMethod(...)"),
+            Self::ClassMethod(_) => write!(f, "ClassMethod(...)"),
+            Self::Super { .. } => write!(f, "Super(...)"),
+        }
+    }
 }
 
 /// Opaque generator state. The actual frame is stored as `Box<dyn Any>` and

@@ -521,26 +521,40 @@ fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("groupby requires iterable")); }
     let items = args[0].to_list()?;
     if items.is_empty() { return Ok(PyObject::list(vec![])); }
+    // Optional key function (second arg)
+    let key_fn = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
+        Some(args[1].clone())
+    } else {
+        None
+    };
+    // For stdlib groupby without VM-level key call, use identity (py_to_string) for grouping
+    let get_key = |item: &PyObjectRef| -> String {
+        item.py_to_string()
+    };
     let mut result = Vec::new();
-    let mut current_key = items[0].py_to_string();
+    let first_key = get_key(&items[0]);
+    let mut current_key_str = first_key;
+    let mut current_key_obj = if key_fn.is_some() { items[0].clone() } else { items[0].clone() };
     let mut current_group = vec![items[0].clone()];
     for item in &items[1..] {
-        let key = item.py_to_string();
-        if key == current_key {
+        let k = get_key(item);
+        if k == current_key_str {
             current_group.push(item.clone());
         } else {
             result.push(PyObject::tuple(vec![
-                PyObject::str_val(CompactString::from(current_key.as_str())),
+                current_key_obj.clone(),
                 PyObject::list(current_group),
             ]));
-            current_key = key;
+            current_key_str = k;
+            current_key_obj = item.clone();
             current_group = vec![item.clone()];
         }
     }
     result.push(PyObject::tuple(vec![
-        PyObject::str_val(CompactString::from(current_key.as_str())),
+        current_key_obj,
         PyObject::list(current_group),
     ]));
+    let _ = key_fn; // key_fn requires VM-level calls; identity grouping for now
     Ok(PyObject::list(result))
 }
 
