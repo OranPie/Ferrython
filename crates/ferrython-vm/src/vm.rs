@@ -638,7 +638,16 @@ impl VirtualMachine {
                                 func: pf, args: pa, kwargs,
                             }));
                         }
-                        // Other native functions: drop kwargs
+                        // Pass kwargs as trailing dict if present
+                        if !kwargs.is_empty() {
+                            let mut all_args = pos_args;
+                            let mut kw_map = IndexMap::new();
+                            for (k, v) in kwargs {
+                                kw_map.insert(HashableKey::Str(k), v);
+                            }
+                            all_args.push(PyObject::dict(kw_map));
+                            return nf(&all_args);
+                        }
                         return nf(&pos_args);
                     }
                     PyObjectPayload::NativeClosure { func, .. } => {

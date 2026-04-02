@@ -381,14 +381,29 @@ fn itertools_zip_longest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 {
         return Err(PyException::type_error("zip_longest requires at least 2 arguments"));
     }
-    let lists: Vec<Vec<PyObjectRef>> = args.iter()
+    // Check for trailing kwargs dict (from kw dispatch)
+    let mut fillvalue = PyObject::none();
+    let iter_args = if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(map) = &last.payload {
+            let map_r = map.read();
+            if let Some(fv) = map_r.get(&HashableKey::Str(CompactString::from("fillvalue"))) {
+                fillvalue = fv.clone();
+            }
+            &args[..args.len() - 1]
+        } else {
+            args
+        }
+    } else {
+        args
+    };
+    let lists: Vec<Vec<PyObjectRef>> = iter_args.iter()
         .map(|a| a.to_list())
         .collect::<Result<Vec<_>, _>>()?;
     let max_len = lists.iter().map(|l| l.len()).max().unwrap_or(0);
     let mut result = Vec::new();
     for i in 0..max_len {
         let tuple: Vec<PyObjectRef> = lists.iter()
-            .map(|l| l.get(i).cloned().unwrap_or_else(PyObject::none))
+            .map(|l| l.get(i).cloned().unwrap_or_else(|| fillvalue.clone()))
             .collect();
         result.push(PyObject::tuple(tuple));
     }
