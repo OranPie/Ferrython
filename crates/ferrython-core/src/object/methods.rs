@@ -760,6 +760,11 @@ impl PyObjectMethods for PyObjectRef {
                 for (k, v) in ra.iter() { if rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
             }
+            (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
+                let mut result = IndexMap::new();
+                for (k, v) in a.iter() { if b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            }
             _ => int_bitop(self, other, "&", |a, b| a & b),
         }
     }
@@ -770,6 +775,11 @@ impl PyObjectMethods for PyObjectRef {
                 let mut result = ra.clone();
                 for (k, v) in rb.iter() { result.insert(k.clone(), v.clone()); }
                 Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+            }
+            (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
+                let mut result = a.clone();
+                for (k, v) in b.iter() { result.insert(k.clone(), v.clone()); }
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
             }
             _ => int_bitop(self, other, "|", |a, b| a | b),
         }
@@ -782,6 +792,12 @@ impl PyObjectMethods for PyObjectRef {
                 for (k, v) in ra.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 for (k, v) in rb.iter() { if !ra.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+            }
+            (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
+                let mut result = IndexMap::new();
+                for (k, v) in a.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                for (k, v) in b.iter() { if !a.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
             }
             _ => int_bitop(self, other, "^", |a, b| a ^ b),
         }
