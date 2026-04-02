@@ -353,7 +353,15 @@ impl VirtualMachine {
             PyObject::instance(cls.clone())
         };
 
-        let is_dataclass = cls.get_attr("__dataclass__").is_some();
+        // Check markers in class namespace directly, not via get_attr,
+        // because BuiltinType get_attr can return false positives.
+        let class_has_key = |obj: &PyObjectRef, key: &str| -> bool {
+            match &obj.payload {
+                PyObjectPayload::Class(cd) => cd.namespace.read().contains_key(key),
+                _ => false,
+            }
+        };
+        let is_dataclass = class_has_key(cls, "__dataclass__");
         let has_user_init = cls.get_attr("__init__").is_some();
 
         if is_dataclass && !has_user_init {
@@ -388,7 +396,7 @@ impl VirtualMachine {
                     }
                 }
             }
-        } else if cls.get_attr("__namedtuple__").is_some() {
+        } else if class_has_key(cls, "__namedtuple__") {
             // Namedtuple: populate named fields
             if let Some(fields) = cls.get_attr("_fields") {
                 if let PyObjectPayload::Tuple(field_names) = &fields.payload {
@@ -410,17 +418,22 @@ impl VirtualMachine {
                 }
             }
         } else if let Some(init) = cls.get_attr("__init__") {
-            // Normal __init__
-            let init_fn = match &init.payload {
-                PyObjectPayload::BoundMethod { method, .. } => method.clone(),
-                _ => init.clone(),
-            };
-            let mut init_args = vec![instance.clone()];
-            init_args.extend(pos_args.clone());
-            if kwargs.is_empty() {
-                self.call_object(init_fn, init_args)?;
-            } else {
-                self.call_object_kw(init_fn, init_args, kwargs)?;
+            // Skip builtin __init__ — instance already created, no user code to run
+            let is_builtin_init = matches!(&init.payload,
+                PyObjectPayload::BuiltinBoundMethod { receiver, .. }
+                    if matches!(&receiver.payload, PyObjectPayload::BuiltinType(_)));
+            if !is_builtin_init {
+                let init_fn = match &init.payload {
+                    PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                    _ => init.clone(),
+                };
+                let mut init_args = vec![instance.clone()];
+                init_args.extend(pos_args.clone());
+                if kwargs.is_empty() {
+                    self.call_object(init_fn, init_args)?;
+                } else {
+                    self.call_object_kw(init_fn, init_args, kwargs)?;
+                }
             }
         }
 
@@ -1141,7 +1154,7 @@ impl VirtualMachine {
                 }
                 // Dataclass auto-repr
                 let class = &inst.class;
-                if class.get_attr("__dataclass__").is_some() {
+                if matches!(&class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__dataclass__")) {
                     if let Some(fields) = class.get_attr("__dataclass_fields__") {
                         if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
                             let class_name = if let PyObjectPayload::Class(cd) = &class.payload {
@@ -1163,7 +1176,7 @@ impl VirtualMachine {
                     }
                 }
                 // Namedtuple auto-repr
-                if class.get_attr("__namedtuple__").is_some() {
+                if matches!(&class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__namedtuple__")) {
                     if let Some(fields) = class.get_attr("_fields") {
                         if let PyObjectPayload::Tuple(field_names) = &fields.payload {
                             let class_name = if let PyObjectPayload::Class(cd) = &class.payload {
@@ -1838,7 +1851,7 @@ impl VirtualMachine {
                 }
                 // namedtuple methods — delegated to builtins
                 if let PyObjectPayload::Instance(inst) = &receiver.payload {
-                    if inst.class.get_attr("__namedtuple__").is_some()
+                    if matches!(&inst.class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__namedtuple__"))
                         || inst.attrs.read().contains_key("__deque__")
                     {
                         // deque extend/extendleft need iterable collection via VM

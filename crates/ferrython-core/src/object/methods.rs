@@ -1155,21 +1155,39 @@ impl PyObjectMethods for PyObjectRef {
                         }))
                     }
                     _ => {
-                        // Dunder methods BuiltinType doesn't have → return None
                         if name.starts_with("__") && name.ends_with("__") {
-                            match name {
-                                "__init_subclass__" | "__set_name__"
-                                | "__prepare__" | "__instancecheck__"
-                                | "__subclasscheck__" | "__class_getitem__"
-                                => None,
-                                _ => {
-                                    Some(Arc::new(PyObject {
-                                        payload: PyObjectPayload::BuiltinBoundMethod {
-                                            receiver: self.clone(),
-                                            method_name: CompactString::from(name),
-                                        }
-                                    }))
-                                }
+                            // Whitelist of dunders that BuiltinTypes actually support.
+                            // Unknown dunders return None to avoid false positives
+                            // (e.g. __namedtuple__, __dataclass__, __slots__ markers).
+                            static BUILTIN_DUNDERS: &[&str] = &[
+                                "__init__", "__new__", "__str__", "__repr__", "__hash__",
+                                "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__",
+                                "__bool__", "__len__", "__getitem__", "__setitem__",
+                                "__delitem__", "__contains__", "__iter__", "__next__",
+                                "__call__", "__add__", "__sub__", "__mul__", "__truediv__",
+                                "__floordiv__", "__mod__", "__pow__", "__and__", "__or__",
+                                "__xor__", "__neg__", "__pos__", "__abs__", "__invert__",
+                                "__radd__", "__rsub__", "__rmul__", "__rtruediv__",
+                                "__rfloordiv__", "__rmod__", "__rpow__", "__rand__",
+                                "__ror__", "__rxor__", "__iadd__", "__isub__", "__imul__",
+                                "__itruediv__", "__ifloordiv__", "__imod__", "__ipow__",
+                                "__iand__", "__ior__", "__ixor__", "__lshift__", "__rshift__",
+                                "__rlshift__", "__rrshift__", "__ilshift__", "__irshift__",
+                                "__enter__", "__exit__", "__format__", "__index__",
+                                "__int__", "__float__", "__complex__", "__round__",
+                                "__reversed__", "__missing__", "__del__", "__copy__",
+                                "__deepcopy__", "__reduce__", "__sizeof__", "__class__",
+                                "__subclasses__", "__subclasshook__",
+                            ];
+                            if BUILTIN_DUNDERS.contains(&name) {
+                                Some(Arc::new(PyObject {
+                                    payload: PyObjectPayload::BuiltinBoundMethod {
+                                        receiver: self.clone(),
+                                        method_name: CompactString::from(name),
+                                    }
+                                }))
+                            } else {
+                                None
                             }
                         } else {
                             // Unbound method access: str.upper, list.append, etc.

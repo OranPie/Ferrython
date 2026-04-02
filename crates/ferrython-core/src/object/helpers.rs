@@ -538,6 +538,10 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             }
             Ok(PyObject::instance(args[0].clone()))
         })),
+        // __init__ on any builtin type base is a no-op (instance already created)
+        (_, "__init__") => Some(PyObject::native_function("builtin.__init__", |_args| {
+            Ok(PyObject::none())
+        })),
         _ => None,
     }
 }
