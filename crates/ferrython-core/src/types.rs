@@ -205,6 +205,8 @@ pub struct PyFunction {
     /// Closure cells: Vec of shared cell references from enclosing scope.
     pub closure: Vec<Arc<RwLock<Option<PyObjectRef>>>>,
     pub annotations: IndexMap<CompactString, PyObjectRef>,
+    /// User-settable attributes (e.g., __name__, __doc__, __wrapped__)
+    pub attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
 }
 
 impl PyFunction {
@@ -214,6 +216,7 @@ impl PyFunction {
             defaults: Vec::new(), kw_defaults: IndexMap::new(),
             globals: Arc::new(RwLock::new(IndexMap::new())),
             closure: Vec::new(), annotations: IndexMap::new(),
+            attrs: Arc::new(RwLock::new(IndexMap::new())),
         }
     }
 }

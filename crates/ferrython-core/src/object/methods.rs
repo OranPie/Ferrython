@@ -1187,28 +1187,34 @@ impl PyObjectMethods for PyObjectRef {
                 }
             }
             // Function attributes
-            PyObjectPayload::Function(f) => match name {
-                "__name__" => Some(PyObject::str_val(f.name.clone())),
-                "__qualname__" => Some(PyObject::str_val(f.qualname.clone())),
-                "__defaults__" => {
-                    if f.defaults.is_empty() { Some(PyObject::none()) }
-                    else { Some(PyObject::tuple(f.defaults.clone())) }
+            PyObjectPayload::Function(f) => {
+                // Check user-set attrs first (allows overriding __name__ etc.)
+                if let Some(v) = f.attrs.read().get(name).cloned() {
+                    return Some(v);
                 }
-                "__module__" => Some(PyObject::str_val(CompactString::from("__main__"))),
-                "__doc__" => Some(PyObject::none()),
-                "__dict__" => Some(PyObject::dict(IndexMap::new())),
-                "__annotations__" => {
-                    let mut map = IndexMap::new();
-                    for (k, v) in &f.annotations {
-                        if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
-                            map.insert(hk, v.clone());
-                        }
+                match name {
+                    "__name__" => Some(PyObject::str_val(f.name.clone())),
+                    "__qualname__" => Some(PyObject::str_val(f.qualname.clone())),
+                    "__defaults__" => {
+                        if f.defaults.is_empty() { Some(PyObject::none()) }
+                        else { Some(PyObject::tuple(f.defaults.clone())) }
                     }
-                    Some(PyObject::dict(map))
+                    "__module__" => Some(PyObject::str_val(CompactString::from("__main__"))),
+                    "__doc__" => Some(PyObject::none()),
+                    "__dict__" => Some(PyObject::wrap(PyObjectPayload::InstanceDict(f.attrs.clone()))),
+                    "__annotations__" => {
+                        let mut map = IndexMap::new();
+                        for (k, v) in &f.annotations {
+                            if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
+                                map.insert(hk, v.clone());
+                            }
+                        }
+                        Some(PyObject::dict(map))
+                    }
+                    "__closure__" => Some(PyObject::none()),
+                    "__code__" => Some(PyObject::none()),
+                    _ => None,
                 }
-                "__closure__" => Some(PyObject::none()),
-                "__code__" => Some(PyObject::none()),
-                _ => None,
             }
             PyObjectPayload::NativeFunction { name: fname, .. } => match name {
                 "__name__" => Some(PyObject::str_val(CompactString::from(fname.as_str()))),

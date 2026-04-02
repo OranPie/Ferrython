@@ -437,6 +437,9 @@ impl VirtualMachine {
                     PyObjectPayload::Class(cd) => {
                         cd.namespace.write().insert(name, value);
                     }
+                    PyObjectPayload::Function(f) => {
+                        f.attrs.write().insert(name, value);
+                    }
                     _ => {
                         return Err(PyException::attribute_error(format!(
                             "'{}' object does not support attribute assignment", obj.type_name()
@@ -1483,6 +1486,7 @@ impl VirtualMachine {
                     globals: frame.globals.clone(),
                     closure: closure_cells,
                     annotations: IndexMap::new(),
+                    attrs: Arc::new(RwLock::new(IndexMap::new())),
                 };
                 frame.push(PyObject::function(func));
             }
