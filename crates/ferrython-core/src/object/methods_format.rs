@@ -1,0 +1,158 @@
+//! String formatting and dir methods.
+
+use crate::error::PyResult;
+use compact_str::CompactString;
+
+use super::payload::*;
+use super::helpers::*;
+use super::methods::PyObjectMethods;
+
+pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String> {
+        if spec.is_empty() {
+            return Ok(obj.py_to_string());
+        }
+        // Parse format spec: [[fill]align][sign][#][0][width][grouping_option][.precision][type]
+        let spec_bytes = spec.as_bytes();
+        let len = spec_bytes.len();
+
+        // Handle comma grouping: {:,} or {:,d}
+        if spec.contains(',') {
+            let without_comma = spec.replace(',', "");
+            let base_str = if without_comma.is_empty() {
+                // Just {:,} — format as integer with commas
+                let n = obj.to_int()?;
+                n.to_string()
+            } else {
+                obj.format_value(&without_comma)?
+            };
+            // Apply comma grouping to the numeric part
+            return Ok(add_thousands_separator(&base_str, ','));
+        }
+        // Handle underscore grouping: {:_} or {:_d}
+        if spec.contains('_') && !spec.contains("__") {
+            let without_underscore = spec.replace('_', "");
+            let base_str = if without_underscore.is_empty() {
+                let n = obj.to_int()?;
+                n.to_string()
+            } else {
+                obj.format_value(&without_underscore)?
+            };
+            return Ok(add_thousands_separator(&base_str, '_'));
+        }
+
+        // Simple parsing for common cases
+        let type_char = spec_bytes[len - 1] as char;
+        match type_char {
+            'd' => {
+                let n = obj.to_int()?;
+                let inner_spec = &spec[..len - 1];
+                if inner_spec.is_empty() {
+                    return Ok(n.to_string());
+                }
+                return Ok(apply_string_format_spec(&n.to_string(), inner_spec));
+            }
+            'f' | 'F' => {
+                let f = obj.to_float()?;
+                let inner_spec = &spec[..len - 1];
+                let use_comma = inner_spec.contains(',');
+                let clean_spec: String = inner_spec.chars().filter(|c| *c != ',').collect();
+                if let Some(dot_pos) = clean_spec.rfind('.') {
+                    let prec: usize = clean_spec[dot_pos + 1..].parse().unwrap_or(6);
+                    let num_str = format!("{:.prec$}", f, prec = prec);
+                    let result = if use_comma {
+                        add_thousands_separator(&num_str, ',')
+                    } else {
+                        num_str
+                    };
+                    let pre_dot = &clean_spec[..dot_pos];
+                    if pre_dot.is_empty() {
+                        return Ok(result);
+                    }
+                    return Ok(apply_string_format_spec(&result, pre_dot));
+                }
+                let num_str = format!("{:.6}", f);
+                if use_comma {
+                    return Ok(add_thousands_separator(&num_str, ','));
+                }
+                return Ok(num_str);
+            }
+            'e' | 'E' => {
+                let f = obj.to_float()?;
+                let inner_spec = &spec[..len - 1];
+                let prec = if let Some(dot_pos) = inner_spec.rfind('.') {
+                    inner_spec[dot_pos + 1..].parse().unwrap_or(6)
+                } else { 6 };
+                if type_char == 'e' {
+                    return Ok(format!("{:.prec$e}", f, prec = prec));
+                } else {
+                    return Ok(format!("{:.prec$E}", f, prec = prec));
+                }
+            }
+            'b' => {
+                let n = obj.to_int()?;
+                let digits = format!("{:b}", n);
+                let inner_spec = &spec[..len - 1];
+                let alt = inner_spec.contains('#');
+                let raw = if alt { format!("0b{}", digits) } else { digits };
+                let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
+                if clean_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, &clean_spec));
+            }
+            'o' => {
+                let n = obj.to_int()?;
+                let digits = format!("{:o}", n);
+                let inner_spec = &spec[..len - 1];
+                let alt = inner_spec.contains('#');
+                let raw = if alt { format!("0o{}", digits) } else { digits };
+                let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
+                if clean_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, &clean_spec));
+            }
+            'x' => {
+                let n = obj.to_int()?;
+                let digits = format!("{:x}", n);
+                let inner_spec = &spec[..len - 1];
+                let alt = inner_spec.contains('#');
+                let raw = if alt { format!("0x{}", digits) } else { digits };
+                let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
+                if clean_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, &clean_spec));
+            }
+            'X' => {
+                let n = obj.to_int()?;
+                let digits = format!("{:X}", n);
+                let inner_spec = &spec[..len - 1];
+                let alt = inner_spec.contains('#');
+                let raw = if alt { format!("0X{}", digits) } else { digits };
+                let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
+                if clean_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, &clean_spec));
+            }
+            's' => {
+                let s = obj.py_to_string();
+                let inner_spec = &spec[..len - 1];
+                if inner_spec.is_empty() { return Ok(s); }
+                return Ok(apply_string_format_spec(&s, inner_spec));
+            }
+            _ => {
+                // No type char — treat entire spec as alignment spec
+                let s = obj.py_to_string();
+                return Ok(apply_string_format_spec(&s, spec));
+            }
+        }
+}
+
+pub(super) fn py_dir(obj: &PyObjectRef) -> Vec<CompactString> {
+        match &obj.payload {
+            PyObjectPayload::Instance(inst) => {
+                let mut names: Vec<CompactString> = inst.attrs.read().keys().cloned().collect();
+                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    names.extend(cd.namespace.read().keys().cloned());
+                }
+                names.sort(); names.dedup(); names
+            }
+            PyObjectPayload::Class(cd) => { let mut n: Vec<_> = cd.namespace.read().keys().cloned().collect(); n.sort(); n }
+            PyObjectPayload::Module(m) => { let mut n: Vec<_> = m.attrs.keys().cloned().collect(); n.sort(); n }
+            _ => vec![],
+        }
+}
