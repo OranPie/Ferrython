@@ -15,9 +15,36 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
     match method {
         "upper" => Ok(PyObject::str_val(CompactString::from(s.to_uppercase()))),
         "lower" => Ok(PyObject::str_val(CompactString::from(s.to_lowercase()))),
-        "strip" => Ok(PyObject::str_val(CompactString::from(s.trim()))),
-        "lstrip" => Ok(PyObject::str_val(CompactString::from(s.trim_start()))),
-        "rstrip" => Ok(PyObject::str_val(CompactString::from(s.trim_end()))),
+        "strip" => {
+            if !args.is_empty() {
+                if let Some(chars) = args[0].as_str() {
+                    let ch: Vec<char> = chars.chars().collect();
+                    let trimmed = s.trim_matches(|c: char| ch.contains(&c));
+                    return Ok(PyObject::str_val(CompactString::from(trimmed)));
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(s.trim())))
+        }
+        "lstrip" => {
+            if !args.is_empty() {
+                if let Some(chars) = args[0].as_str() {
+                    let ch: Vec<char> = chars.chars().collect();
+                    let trimmed = s.trim_start_matches(|c: char| ch.contains(&c));
+                    return Ok(PyObject::str_val(CompactString::from(trimmed)));
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(s.trim_start())))
+        }
+        "rstrip" => {
+            if !args.is_empty() {
+                if let Some(chars) = args[0].as_str() {
+                    let ch: Vec<char> = chars.chars().collect();
+                    let trimmed = s.trim_end_matches(|c: char| ch.contains(&c));
+                    return Ok(PyObject::str_val(CompactString::from(trimmed)));
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(s.trim_end())))
+        }
         "split" => {
             let maxsplit: Option<usize> = if args.len() > 1 {
                 args[1].as_int().map(|n| n as usize)

@@ -1054,6 +1054,38 @@ impl VirtualMachine {
         }
     }
 
+    /// Convert a Python object to a HashableKey, calling __hash__/__eq__ on instances.
+    /// Also installs the thread-local __eq__ dispatch so Custom key comparisons work.
+    pub(crate) fn vm_to_hashable_key(&mut self, obj: &PyObjectRef) -> PyResult<HashableKey> {
+        // Install __eq__ dispatch using a raw pointer to self.
+        // SAFETY: The dispatch is only called during dict/set operations while self is alive.
+        let vm_ptr = self as *mut VirtualMachine;
+        ferrython_core::types::set_eq_dispatch(move |a: &PyObjectRef, b: &PyObjectRef| {
+            let vm = unsafe { &mut *vm_ptr };
+            if let Some(eq_method) = a.get_attr("__eq__") {
+                // get_attr returns BoundMethod(self=a, __eq__), so only pass other
+                if let Ok(result) = vm.call_object(eq_method, vec![b.clone()]) {
+                    return Some(result.is_truthy());
+                }
+            }
+            None
+        });
+
+        if let PyObjectPayload::Instance(_) = &obj.payload {
+            // Check for __hash__ method
+            if let Some(hash_method) = obj.get_attr("__hash__") {
+                let hash_result = self.call_object(hash_method, vec![])?;
+                let hash_value = hash_result.as_int()
+                    .ok_or_else(|| PyException::type_error("__hash__ must return int"))?;
+                return Ok(HashableKey::Custom {
+                    hash_value,
+                    object: obj.clone(),
+                });
+            }
+        }
+        obj.to_hashable_key()
+    }
+
     /// Call a Python object (function, builtin, class).
     pub(crate) fn call_object(
         &mut self,

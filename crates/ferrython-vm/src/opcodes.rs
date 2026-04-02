@@ -680,7 +680,7 @@ impl VirtualMachine {
                     }
                 }
                 if let PyObjectPayload::Dict(map) = &obj.payload {
-                    let hk = key.to_hashable_key()?;
+                    let hk = self.vm_to_hashable_key(&key)?;
                     let existing = map.read().get(&hk).cloned();
                     if let Some(val) = existing {
                         self.vm_push(val);
@@ -728,7 +728,7 @@ impl VirtualMachine {
                         }
                     }
                     PyObjectPayload::Dict(map) => {
-                        let hk = key.to_hashable_key()?;
+                        let hk = self.vm_to_hashable_key(&key)?;
                         map.write().insert(hk, value);
                     }
                     PyObjectPayload::Instance(_) => {
@@ -759,7 +759,7 @@ impl VirtualMachine {
                         w.remove(actual as usize);
                     }
                     PyObjectPayload::Dict(map) => {
-                        let hk = key.to_hashable_key()?;
+                        let hk = self.vm_to_hashable_key(&key)?;
                         if map.write().swap_remove(&hk).is_none() {
                             return Err(PyException::key_error(key.repr()));
                         }
@@ -1043,13 +1043,15 @@ impl VirtualMachine {
                 let mut stack_items = Vec::new();
                 for _ in 0..count { stack_items.push(frame.pop()); }
                 stack_items.reverse();
+                // Drop frame borrow before calling vm_to_hashable_key
+                let _ = frame;
                 let mut set = IndexMap::new();
                 for item in stack_items {
-                    if let Ok(key) = item.to_hashable_key() {
+                    if let Ok(key) = self.vm_to_hashable_key(&item) {
                         set.insert(key, item);
                     }
                 }
-                frame.push(PyObject::set(set));
+                self.vm_frame().push(PyObject::set(set));
             }
             Opcode::BuildMap => {
                 let count = instr.arg as usize;
@@ -1060,12 +1062,13 @@ impl VirtualMachine {
                     entries.push((key, value));
                 }
                 entries.reverse();
+                let _ = frame;
                 let mut map = IndexMap::new();
                 for (key, value) in entries {
-                    let hkey = key.to_hashable_key()?;
+                    let hkey = self.vm_to_hashable_key(&key)?;
                     map.insert(hkey, value);
                 }
-                frame.push(PyObject::dict(map));
+                self.vm_frame().push(PyObject::dict(map));
             }
             Opcode::BuildConstKeyMap => {
                 let keys_tuple = frame.pop();
@@ -1074,12 +1077,13 @@ impl VirtualMachine {
                 let mut values = Vec::new();
                 for _ in 0..count { values.push(frame.pop()); }
                 values.reverse();
+                let _ = frame;
                 let mut map = IndexMap::new();
                 for (key, value) in keys.into_iter().zip(values) {
-                    let hkey = key.to_hashable_key()?;
+                    let hkey = self.vm_to_hashable_key(&key)?;
                     map.insert(hkey, value);
                 }
-                frame.push(PyObject::dict(map));
+                self.vm_frame().push(PyObject::dict(map));
             }
             Opcode::BuildString => {
                 let count = instr.arg as usize;
@@ -1103,20 +1107,23 @@ impl VirtualMachine {
                 let idx = instr.arg as usize;
                 let stack_pos = frame.stack.len() - idx;
                 let set_obj = frame.stack[stack_pos].clone();
+                let _ = frame;
                 if let PyObjectPayload::Set(s) = &set_obj.payload {
-                    if let Ok(key) = item.to_hashable_key() {
+                    if let Ok(key) = self.vm_to_hashable_key(&item) {
                         s.write().insert(key, item);
                     }
                 }
+                // frame not needed after this
             }
             Opcode::MapAdd => {
                 let value = frame.pop();
                 let key = frame.pop();
                 let idx = instr.arg as usize;
                 let stack_pos = frame.stack.len() - idx;
-                let dict_obj = &frame.stack[stack_pos];
+                let dict_obj = frame.stack[stack_pos].clone();
+                let _ = frame;
                 if let PyObjectPayload::Dict(m) = &dict_obj.payload {
-                    if let Ok(hk) = key.to_hashable_key() {
+                    if let Ok(hk) = self.vm_to_hashable_key(&key) {
                         m.write().insert(hk, value);
                     }
                 }
@@ -1155,7 +1162,7 @@ impl VirtualMachine {
                     let new_items = iterable.to_list()?;
                     let mut set = s.write();
                     for item in new_items {
-                        if let Ok(key) = item.to_hashable_key() {
+                        if let Ok(key) = self.vm_to_hashable_key(&item) {
                             set.insert(key, item);
                         }
                     }

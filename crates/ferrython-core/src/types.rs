@@ -10,6 +10,33 @@ use num_traits::{ToPrimitive, Zero};
 use parking_lot::RwLock;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::cell::RefCell;
+
+/// Thread-local dispatch for calling Python __eq__ from PartialEq on HashableKey.
+/// The VM sets this before any dict/set operation that may compare Custom keys.
+type EqDispatchFn = Box<dyn FnMut(&PyObjectRef, &PyObjectRef) -> Option<bool>>;
+
+thread_local! {
+    static EQ_DISPATCH: RefCell<Option<EqDispatchFn>> = RefCell::new(None);
+}
+
+/// Install an __eq__ dispatch callback (called by VM before dict/set ops).
+pub fn set_eq_dispatch<F: FnMut(&PyObjectRef, &PyObjectRef) -> Option<bool> + 'static>(f: F) {
+    EQ_DISPATCH.with(|cell| {
+        *cell.borrow_mut() = Some(Box::new(f));
+    });
+}
+
+/// Call the installed __eq__ dispatch, if any.
+fn call_eq_dispatch(a: &PyObjectRef, b: &PyObjectRef) -> Option<bool> {
+    EQ_DISPATCH.with(|cell| {
+        if let Some(ref mut f) = *cell.borrow_mut() {
+            f(a, b)
+        } else {
+            None
+        }
+    })
+}
 
 /// Shared globals dictionary — all functions defined in the same module share
 /// one instance so that `global` mutations are visible across calls.
@@ -193,7 +220,7 @@ impl PyFunction {
 
 // ── HashableKey ──
 
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone)]
 pub enum HashableKey {
     None,
     Bool(bool),
@@ -204,9 +231,15 @@ pub enum HashableKey {
     Tuple(Vec<HashableKey>),
     FrozenSet(Vec<HashableKey>),
     /// Identity-based key using the Arc pointer address.
-    /// Used for Instance objects (default Python behavior: hash/eq by identity).
     Identity(usize),
+    /// Custom hashable key for objects with __hash__/__eq__.
+    Custom {
+        hash_value: i64,
+        object: PyObjectRef,
+    },
 }
+
+impl Eq for HashableKey {}
 
 impl HashableKey {
     pub fn from_object(obj: &PyObjectRef) -> PyResult<Self> {
@@ -266,9 +299,9 @@ impl HashableKey {
                 PyObject::frozenset(map)
             },
             HashableKey::Identity(ptr) => {
-                // Identity keys can't be reconstructed; return None as placeholder
                 PyObject::int(*ptr as i64)
             },
+            HashableKey::Custom { object, .. } => object.clone(),
         }
     }
 }
@@ -288,6 +321,15 @@ impl PartialEq for HashableKey {
                 *n == PyInt::Small(*b as i64)
             }
             (HashableKey::Identity(a), HashableKey::Identity(b)) => a == b,
+            (HashableKey::Custom { hash_value: ha, object: oa }, HashableKey::Custom { hash_value: hb, object: ob }) => {
+                if ha != hb { return false; }
+                // Try thread-local VM dispatch for __eq__
+                if let Some(result) = call_eq_dispatch(oa, ob) {
+                    return result;
+                }
+                // Fallback: identity
+                std::sync::Arc::ptr_eq(oa, ob)
+            }
             _ => false,
         }
     }
@@ -306,6 +348,7 @@ impl Hash for HashableKey {
             HashableKey::Tuple(items) => items.hash(state),
             HashableKey::FrozenSet(items) => items.hash(state),
             HashableKey::Identity(ptr) => ptr.hash(state),
+            HashableKey::Custom { hash_value, .. } => hash_value.hash(state),
         }
     }
 }

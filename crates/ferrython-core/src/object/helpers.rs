@@ -154,6 +154,29 @@ pub(super) fn format_float_spec(f: f64, spec: &str) -> String {
     }
 }
 
+pub(super) fn format_str_spec(s: &str, spec: &str) -> String {
+    let left_align = spec.starts_with('-');
+    let width_str = spec.trim_start_matches(|c: char| "-+ #0".contains(c));
+    // Parse precision (max string length)
+    let (width_part, precision) = if let Some(dot) = width_str.find('.') {
+        (&width_str[..dot], width_str[dot + 1..].parse::<usize>().ok())
+    } else {
+        (width_str, None)
+    };
+    let width: usize = width_part.parse().unwrap_or(0);
+    let display = if let Some(prec) = precision {
+        if s.len() > prec { &s[..prec] } else { s }
+    } else {
+        s
+    };
+    if width == 0 { return display.to_string(); }
+    if left_align {
+        format!("{:<width$}", display, width = width)
+    } else {
+        format!("{:>width$}", display, width = width)
+    }
+}
+
 pub(super) fn add_thousands_separator(s: &str, sep: char) -> String {
     // Find the integer part (before any decimal point)
     let (sign, rest) = if s.starts_with('-') { ("-", &s[1..]) } else { ("", s) };

@@ -109,6 +109,7 @@ fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     PyObject::frozenset(map)
                 },
                 HashableKey::Identity(ptr) => PyObject::int(ptr as i64),
+                HashableKey::Custom { object, .. } => object.clone(),
             };
             (key_obj, PyObject::int(v))
         })

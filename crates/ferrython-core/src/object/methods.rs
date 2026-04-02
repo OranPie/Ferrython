@@ -652,8 +652,22 @@ impl PyObjectMethods for PyObjectRef {
                         let arg = &args_list[arg_idx];
                         arg_idx += 1;
                         match conv {
-                            's' => result.push_str(&arg.py_to_string()),
-                            'r' => result.push_str(&arg.repr()),
+                            's' => {
+                                let s = arg.py_to_string();
+                                if spec_chars.is_empty() {
+                                    result.push_str(&s);
+                                } else {
+                                    result.push_str(&format_str_spec(&s, &spec_chars));
+                                }
+                            }
+                            'r' => {
+                                let s = arg.repr();
+                                if spec_chars.is_empty() {
+                                    result.push_str(&s);
+                                } else {
+                                    result.push_str(&format_str_spec(&s, &spec_chars));
+                                }
+                            }
                             'd' | 'i' => {
                                 let n = arg.to_int()?;
                                 if spec_chars.is_empty() {
