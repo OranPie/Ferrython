@@ -359,6 +359,21 @@ impl VirtualMachine {
                 }
                 match &obj.payload {
                     PyObjectPayload::Instance(inst) => {
+                        // Check __slots__ restriction
+                        if let Some(slots) = lookup_in_class_mro(&inst.class, "__slots__") {
+                            let allowed = slots.to_list().unwrap_or_default();
+                            let allowed_names: Vec<String> = allowed.iter()
+                                .map(|s| s.py_to_string()).collect();
+                            if !allowed_names.iter().any(|s| s == name.as_str()) {
+                                return Err(PyException::attribute_error(format!(
+                                    "'{}' object has no attribute '{}'",
+                                    inst.class.get_attr("__name__")
+                                        .map(|n| n.py_to_string())
+                                        .unwrap_or_else(|| "object".to_string()),
+                                    name
+                                )));
+                            }
+                        }
                         inst.attrs.write().insert(name, value);
                     }
                     PyObjectPayload::Class(cd) => {

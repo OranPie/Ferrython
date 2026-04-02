@@ -1067,6 +1067,12 @@ impl PyObjectMethods for PyObjectRef {
                                             return Some(v.clone());
                                         }
                                     }
+                                    // Check BuiltinType bases (e.g., type, object)
+                                    if let PyObjectPayload::BuiltinType(bt_name) = &base.payload {
+                                        if let Some(resolved) = crate::object::resolve_builtin_type_method(bt_name.as_str(), name) {
+                                            return Some(resolved);
+                                        }
+                                    }
                                 }
                             }
                         }

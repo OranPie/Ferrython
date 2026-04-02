@@ -507,6 +507,10 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
             name: CompactString::from("object.__delattr__"),
             func: builtin_object_delattr,
         })),
+        ("type", "__new__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("type.__new__"),
+            func: core_fns::builtin_type,
+        })),
         _ => None,
     }
 }

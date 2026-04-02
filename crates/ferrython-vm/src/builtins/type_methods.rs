@@ -572,6 +572,9 @@ pub(crate) fn partial_cmp_for_sort(a: &PyObjectRef, b: &PyObjectRef) -> Option<s
             }
             x.len().partial_cmp(&y.len())
         }
+        // Custom objects — can't call __lt__ from here (no VM), return None
+        // so callers fall back to default ordering
+        (PyObjectPayload::Instance(_), _) | (_, PyObjectPayload::Instance(_)) => None,
         _ => None,
     }
 }

@@ -427,14 +427,20 @@ impl VirtualMachine {
                                     let k = self.call_object(key.clone(), vec![item.clone()])?;
                                     decorated.push((k, item.clone()));
                                 }
-                                decorated.sort_by(|(a, _), (b, _)| {
-                                    builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
-                                });
-                                items_vec = decorated.into_iter().map(|(_, v)| v).collect();
+                                let mut indices: Vec<usize> = (0..decorated.len()).collect();
+                                for i in 1..indices.len() {
+                                    let mut j = i;
+                                    while j > 0 {
+                                        let is_less = self.vm_lt(&decorated[indices[j]].0, &decorated[indices[j - 1]].0)?;
+                                        if is_less {
+                                            indices.swap(j, j - 1);
+                                            j -= 1;
+                                        } else { break; }
+                                    }
+                                }
+                                items_vec = indices.into_iter().map(|i| decorated[i].1.clone()).collect();
                             } else {
-                                items_vec.sort_by(|a, b| {
-                                    builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
-                                });
+                                self.vm_sort(&mut items_vec)?;
                             }
                             if reverse { items_vec.reverse(); }
                             *items_arc.write() = items_vec;
@@ -496,6 +502,9 @@ impl VirtualMachine {
                 };
                 if let Some(name) = builtin_name {
                     match name.as_str() {
+                        "__build_class__" => {
+                            return self.build_class_kw(pos_args, kwargs);
+                        }
                         "sorted" => {
                             if !pos_args.is_empty() {
                                 let items = self.collect_iterable(&pos_args[0])?;
@@ -510,14 +519,25 @@ impl VirtualMachine {
                                         let k = self.call_object(key.clone(), vec![item.clone()])?;
                                         decorated.push((k, item.clone()));
                                     }
-                                    decorated.sort_by(|(a, _), (b, _)| {
-                                        builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
-                                    });
-                                    items_vec = decorated.into_iter().map(|(_, v)| v).collect();
+                                    // Sort keys using VM-level comparison
+                                    let keys: Vec<PyObjectRef> = decorated.iter().map(|(k, _)| k.clone()).collect();
+                                    let mut indices: Vec<usize> = (0..decorated.len()).collect();
+                                    // Insertion sort on indices by key
+                                    for i in 1..indices.len() {
+                                        let mut j = i;
+                                        while j > 0 {
+                                            let is_less = self.vm_lt(&keys[indices[j]], &keys[indices[j - 1]])?;
+                                            if is_less {
+                                                indices.swap(j, j - 1);
+                                                j -= 1;
+                                            } else {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    items_vec = indices.into_iter().map(|i| decorated[i].1.clone()).collect();
                                 } else {
-                                    items_vec.sort_by(|a, b| {
-                                        builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
-                                    });
+                                    self.vm_sort(&mut items_vec)?;
                                 }
                                 if reverse {
                                     items_vec.reverse();
@@ -561,11 +581,10 @@ impl VirtualMachine {
                                 let item_key = if let Some(ref kf) = key_fn {
                                     self.call_object(kf.clone(), vec![item.clone()])?
                                 } else { item.clone() };
-                                let cmp = builtins::partial_cmp_for_sort(&item_key, &best_key);
                                 let better = if is_max {
-                                    cmp == Some(std::cmp::Ordering::Greater)
+                                    self.vm_lt(&best_key, &item_key)?
                                 } else {
-                                    cmp == Some(std::cmp::Ordering::Less)
+                                    self.vm_lt(&item_key, &best_key)?
                                 };
                                 if better {
                                     best = item.clone();
@@ -1186,8 +1205,9 @@ impl VirtualMachine {
                     }
                     "sorted" => {
                         if !args.is_empty() {
-                            let items = self.collect_iterable(&args[0])?;
-                            return builtins::dispatch("sorted", &[PyObject::list(items)]);
+                            let mut items = self.collect_iterable(&args[0])?;
+                            self.vm_sort(&mut items)?;
+                            return Ok(PyObject::list(items));
                         }
                     }
                     "set" => {
@@ -1219,13 +1239,31 @@ impl VirtualMachine {
                     "min" => {
                         if args.len() == 1 {
                             let items = self.collect_iterable(&args[0])?;
-                            return builtins::dispatch("min", &items);
+                            if items.is_empty() {
+                                return Err(PyException::value_error("min() arg is an empty sequence"));
+                            }
+                            let mut best = items[0].clone();
+                            for item in &items[1..] {
+                                if self.vm_lt(item, &best)? {
+                                    best = item.clone();
+                                }
+                            }
+                            return Ok(best);
                         }
                     }
                     "max" => {
                         if args.len() == 1 {
                             let items = self.collect_iterable(&args[0])?;
-                            return builtins::dispatch("max", &items);
+                            if items.is_empty() {
+                                return Err(PyException::value_error("max() arg is an empty sequence"));
+                            }
+                            let mut best = items[0].clone();
+                            for item in &items[1..] {
+                                if self.vm_lt(&best, item)? {
+                                    best = item.clone();
+                                }
+                            }
+                            return Ok(best);
                         }
                     }
                     "reversed" => {
@@ -1457,9 +1495,7 @@ impl VirtualMachine {
                     if let PyObjectPayload::List(items_arc) = &receiver.payload {
                         let items_arc = items_arc.clone();
                         let mut items_vec = items_arc.read().clone();
-                        items_vec.sort_by(|a, b| {
-                            builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
-                        });
+                        self.vm_sort(&mut items_vec)?;
                         *items_arc.write() = items_vec;
                         return Ok(PyObject::none());
                     }
@@ -1603,6 +1639,91 @@ impl VirtualMachine {
         }
 
         Ok(cls)
+    }
+
+    /// Handle __build_class__ with keyword args (e.g., metaclass=Meta).
+    fn build_class_kw(
+        &mut self,
+        args: Vec<PyObjectRef>,
+        kwargs: Vec<(CompactString, PyObjectRef)>,
+    ) -> PyResult<PyObjectRef> {
+        if args.len() < 2 {
+            return Err(PyException::type_error(
+                "__build_class__ requires at least 2 arguments"));
+        }
+        let body_func = args[0].clone();
+        let class_name = match &args[1].payload {
+            PyObjectPayload::Str(s) => s.clone(),
+            _ => CompactString::from(args[1].py_to_string()),
+        };
+        let bases: Vec<PyObjectRef> = args[2..].to_vec();
+
+        // Extract metaclass from kwargs
+        let metaclass = kwargs.iter()
+            .find(|(k, _)| k.as_str() == "metaclass")
+            .map(|(_, v)| v.clone());
+
+        // Execute class body to get namespace
+        let namespace = match &body_func.payload {
+            PyObjectPayload::Function(pyfunc) => {
+                let code = pyfunc.code.clone();
+                let globals = pyfunc.globals.clone();
+                let mut frame = Frame::new(code, globals, self.builtins.clone());
+                frame.scope_kind = ScopeKind::Class;
+                let n_cell = frame.code.cellvars.len();
+                for (i, cell) in pyfunc.closure.iter().enumerate() {
+                    let free_idx = n_cell + i;
+                    if free_idx < frame.cells.len() {
+                        frame.cells[free_idx] = cell.clone();
+                    }
+                }
+                self.call_stack.push(frame);
+                let _ = self.run_frame();
+                let frame = self.call_stack.pop().unwrap();
+                frame.local_names
+            }
+            _ => IndexMap::new(),
+        };
+
+        if let Some(meta) = metaclass {
+            // Metaclass provided: call meta(name, bases, namespace_dict)
+            let ns_dict = {
+                let mut map = IndexMap::new();
+                for (k, v) in &namespace {
+                    if let Ok(hk) = PyObject::str_val(CompactString::from(k.as_str())).to_hashable_key() {
+                        map.insert(hk, v.clone());
+                    }
+                }
+                PyObject::dict(map)
+            };
+            let bases_tuple = PyObject::tuple(bases);
+            let name_obj = PyObject::str_val(class_name);
+            self.call_object(meta, vec![name_obj, bases_tuple, ns_dict])
+        } else {
+            // No metaclass: build normally
+            let mro = Self::compute_mro(&bases);
+            let cls = PyObject::wrap(PyObjectPayload::Class(ClassData {
+                name: class_name, bases: bases.clone(),
+                namespace: Arc::new(RwLock::new(namespace)), mro,
+            }));
+            // __init_subclass__
+            for base in &bases {
+                if let Some(init_sub) = base.get_attr("__init_subclass__") {
+                    let bound = if matches!(&init_sub.payload, PyObjectPayload::BoundMethod { .. }) {
+                        init_sub
+                    } else {
+                        Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: base.clone(),
+                                method: init_sub,
+                            }
+                        })
+                    };
+                    self.call_object(bound, vec![cls.clone()])?;
+                }
+            }
+            Ok(cls)
+        }
     }
 
     /// Compute a simple MRO from bases (includes bases and their ancestors, NOT self).
@@ -1790,6 +1911,45 @@ impl VirtualMachine {
             gen.frame = None;
             Err(PyException::new(ExceptionKind::StopIteration, ""))
         }
+    }
+
+    /// Sort items using VM-level comparison (supports custom __lt__).
+    /// Uses insertion sort to allow &mut self access during comparisons.
+    pub fn vm_sort(&mut self, items: &mut Vec<PyObjectRef>) -> PyResult<()> {
+        let n = items.len();
+        if n <= 1 { return Ok(()); }
+        let has_instances = items.iter().any(|x| matches!(&x.payload, PyObjectPayload::Instance(_)));
+        if !has_instances {
+            items.sort_by(|a, b| {
+                builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            return Ok(());
+        }
+        // Insertion sort with VM-level __lt__ calls
+        for i in 1..n {
+            let mut j = i;
+            while j > 0 {
+                let is_less = self.vm_lt(&items[j], &items[j - 1])?;
+                if is_less {
+                    items.swap(j, j - 1);
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Compare two objects using __lt__, falling back to native comparison.
+    fn vm_lt(&mut self, a: &PyObjectRef, b: &PyObjectRef) -> PyResult<bool> {
+        if let PyObjectPayload::Instance(_) = &a.payload {
+            if let Some(method) = a.get_attr("__lt__") {
+                let result = self.call_object(method, vec![b.clone()])?;
+                return Ok(result.is_truthy());
+            }
+        }
+        Ok(builtins::partial_cmp_for_sort(a, b) == Some(std::cmp::Ordering::Less))
     }
 }
 

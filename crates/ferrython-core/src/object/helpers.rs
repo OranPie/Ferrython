@@ -366,3 +366,96 @@ pub fn check_args_min(name: &str, args: &[PyObjectRef], min: usize) -> PyResult<
         )))
     } else { Ok(()) }
 }
+
+/// Resolve known built-in type methods that can be defined without VM access.
+/// This is used by super() resolution when a base is a BuiltinType.
+pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option<PyObjectRef> {
+    match (type_name, method_name) {
+        ("type", "__new__") => Some(PyObject::native_function("type.__new__", |args| {
+            // type.__new__(mcs, name, bases, dict) or type(name, bases, dict)
+            if args.len() == 4 {
+                let name = args[1].as_str().ok_or_else(||
+                    PyException::type_error("type.__new__ argument 2 must be str"))?;
+                let bases = args[2].to_list()?;
+                let namespace = match &args[3].payload {
+                    PyObjectPayload::Dict(m) => {
+                        let r = m.read();
+                        let mut ns = IndexMap::new();
+                        for (k, v) in r.iter() {
+                            let key_str = match k {
+                                HashableKey::Str(s) => s.clone(),
+                                _ => CompactString::from(k.to_object().py_to_string()),
+                            };
+                            ns.insert(key_str, v.clone());
+                        }
+                        ns
+                    }
+                    _ => return Err(PyException::type_error("type.__new__ argument 4 must be dict")),
+                };
+                let mut mro = Vec::new();
+                for base in &bases {
+                    mro.push(base.clone());
+                    if let PyObjectPayload::Class(cd) = &base.payload {
+                        for m in &cd.mro {
+                            if !mro.iter().any(|existing| std::sync::Arc::ptr_eq(existing, m)) {
+                                mro.push(m.clone());
+                            }
+                        }
+                    }
+                }
+                Ok(PyObject::wrap(PyObjectPayload::Class(ClassData {
+                    name: CompactString::from(name),
+                    bases,
+                    namespace: std::sync::Arc::new(parking_lot::RwLock::new(namespace)),
+                    mro,
+                })))
+            } else if args.len() == 3 {
+                // type(name, bases, dict) — no mcs
+                let name = args[0].as_str().ok_or_else(||
+                    PyException::type_error("type() argument 1 must be str"))?;
+                let bases = args[1].to_list()?;
+                let namespace = match &args[2].payload {
+                    PyObjectPayload::Dict(m) => {
+                        let r = m.read();
+                        let mut ns = IndexMap::new();
+                        for (k, v) in r.iter() {
+                            let key_str = match k {
+                                HashableKey::Str(s) => s.clone(),
+                                _ => CompactString::from(k.to_object().py_to_string()),
+                            };
+                            ns.insert(key_str, v.clone());
+                        }
+                        ns
+                    }
+                    _ => return Err(PyException::type_error("type() argument 3 must be dict")),
+                };
+                let mut mro = Vec::new();
+                for base in &bases {
+                    mro.push(base.clone());
+                    if let PyObjectPayload::Class(cd) = &base.payload {
+                        for m in &cd.mro {
+                            if !mro.iter().any(|existing| std::sync::Arc::ptr_eq(existing, m)) {
+                                mro.push(m.clone());
+                            }
+                        }
+                    }
+                }
+                Ok(PyObject::wrap(PyObjectPayload::Class(ClassData {
+                    name: CompactString::from(name),
+                    bases,
+                    namespace: std::sync::Arc::new(parking_lot::RwLock::new(namespace)),
+                    mro,
+                })))
+            } else {
+                Err(PyException::type_error("type.__new__ requires 3 or 4 arguments"))
+            }
+        })),
+        ("object", "__new__") => Some(PyObject::native_function("object.__new__", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("object.__new__ requires cls"));
+            }
+            Ok(PyObject::instance(args[0].clone()))
+        })),
+        _ => None,
+    }
+}

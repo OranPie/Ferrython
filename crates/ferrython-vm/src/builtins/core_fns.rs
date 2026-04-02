@@ -67,44 +67,14 @@ pub(super) fn builtin_bool(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // type.__new__(mcs, name, bases, dict) — called from metaclass __new__
+    if args.len() == 4 {
+        // First arg is the metaclass (mcs), skip it; use name, bases, dict
+        return builtin_type_create(&args[1], &args[2], &args[3]);
+    }
     if args.len() == 3 {
         // type(name, bases, dict) → dynamic class creation
-        let name = args[0].as_str().ok_or_else(|| 
-            PyException::type_error("type() argument 1 must be str"))?;
-        let bases = args[1].to_list()?;
-        let namespace = match &args[2].payload {
-            PyObjectPayload::Dict(m) => {
-                let r = m.read();
-                let mut ns = IndexMap::new();
-                for (k, v) in r.iter() {
-                    let key_str = match k {
-                        HashableKey::Str(s) => s.clone(),
-                        _ => CompactString::from(k.to_object().py_to_string()),
-                    };
-                    ns.insert(key_str, v.clone());
-                }
-                ns
-            }
-            _ => return Err(PyException::type_error("type() argument 3 must be dict")),
-        };
-        // Compute simple MRO from bases
-        let mut mro = Vec::new();
-        for base in &bases {
-            mro.push(base.clone());
-            if let PyObjectPayload::Class(cd) = &base.payload {
-                for m in &cd.mro {
-                    if !mro.iter().any(|existing| Arc::ptr_eq(existing, m)) {
-                        mro.push(m.clone());
-                    }
-                }
-            }
-        }
-        return Ok(PyObject::wrap(PyObjectPayload::Class(ferrython_core::object::ClassData {
-            name: CompactString::from(name),
-            bases,
-            namespace: Arc::new(RwLock::new(namespace)),
-            mro,
-        })));
+        return builtin_type_create(&args[0], &args[1], &args[2]);
     }
     check_args("type", args, 1)?;
     let name = args[0].type_name();
@@ -117,6 +87,44 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         _ => Ok(PyObject::builtin_type(CompactString::from(name)))
     }
+}
+
+fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    let name = name_obj.as_str().ok_or_else(||
+        PyException::type_error("type() argument 1 must be str"))?;
+    let bases = bases_obj.to_list()?;
+    let namespace = match &dict_obj.payload {
+        PyObjectPayload::Dict(m) => {
+            let r = m.read();
+            let mut ns = IndexMap::new();
+            for (k, v) in r.iter() {
+                let key_str = match k {
+                    HashableKey::Str(s) => s.clone(),
+                    _ => CompactString::from(k.to_object().py_to_string()),
+                };
+                ns.insert(key_str, v.clone());
+            }
+            ns
+        }
+        _ => return Err(PyException::type_error("type() argument 3 must be dict")),
+    };
+    let mut mro = Vec::new();
+    for base in &bases {
+        mro.push(base.clone());
+        if let PyObjectPayload::Class(cd) = &base.payload {
+            for m in &cd.mro {
+                if !mro.iter().any(|existing| Arc::ptr_eq(existing, m)) {
+                    mro.push(m.clone());
+                }
+            }
+        }
+    }
+    Ok(PyObject::wrap(PyObjectPayload::Class(ferrython_core::object::ClassData {
+        name: CompactString::from(name),
+        bases,
+        namespace: Arc::new(RwLock::new(namespace)),
+        mro,
+    })))
 }
 
 pub(super) fn builtin_id(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

@@ -3,7 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    PyObject, PyObjectMethods, PyObjectRef,
 };
 use indexmap::IndexMap;
 use parking_lot::RwLock;
