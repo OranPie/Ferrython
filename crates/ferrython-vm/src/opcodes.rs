@@ -450,7 +450,41 @@ impl VirtualMachine {
                 let obj = frame.pop();
                 match &obj.payload {
                     PyObjectPayload::Instance(inst) => {
-                        if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
+                        // Check for property descriptor with fdel first
+                        if let Some(class_attr) = lookup_in_class_mro(&inst.class, name.as_str()) {
+                            if let PyObjectPayload::Property { fdel, .. } = &class_attr.payload {
+                                if let Some(fdel_fn) = fdel {
+                                    let bound = Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: obj.clone(),
+                                            method: fdel_fn.clone(),
+                                        }
+                                    });
+                                    self.call_object(bound, vec![])?;
+                                } else {
+                                    return Err(PyException::attribute_error(format!(
+                                        "can't delete attribute '{}'", name)));
+                                }
+                            } else if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
+                                if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
+                                    let method = Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod { receiver: obj.clone(), method: delattr_method }
+                                    });
+                                    let name_arg = PyObject::str_val(name);
+                                    self.call_object(method, vec![name_arg])?;
+                                } else {
+                                    if inst.attrs.write().swap_remove(name.as_str()).is_none() {
+                                        return Err(PyException::attribute_error(format!(
+                                            "'{}' object has no attribute '{}'", obj.type_name(), name)));
+                                    }
+                                }
+                            } else {
+                                if inst.attrs.write().swap_remove(name.as_str()).is_none() {
+                                    return Err(PyException::attribute_error(format!(
+                                        "'{}' object has no attribute '{}'", obj.type_name(), name)));
+                                }
+                            }
+                        } else if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
                             if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
                                 let method = Arc::new(PyObject {
                                     payload: PyObjectPayload::BoundMethod { receiver: obj.clone(), method: delattr_method }
@@ -1908,7 +1942,9 @@ impl VirtualMachine {
                                     return Ok(None);
                                 }
                             }
-                            value.py_to_string()
+                            // Use VM-aware str for containers (list/tuple/dict)
+                            // so items with __repr__ get proper representation
+                            self.vm_str(&value)?
                         }
                     }
                 };

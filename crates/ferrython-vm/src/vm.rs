@@ -283,13 +283,22 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         // __new__
         let instance = if let Some(new_method) = cls.get_attr("__new__") {
-            let new_fn = match &new_method.payload {
-                PyObjectPayload::BoundMethod { method, .. } => method.clone(),
-                _ => new_method.clone(),
-            };
-            let mut new_args = vec![cls.clone()];
-            new_args.extend(pos_args.clone());
-            self.call_object(new_fn, new_args)?
+            // If __new__ is from a BuiltinType base (dict, list, etc.), just create instance
+            let is_builtin_new = matches!(&new_method.payload,
+                PyObjectPayload::BuiltinBoundMethod { receiver, .. }
+                    if matches!(&receiver.payload, PyObjectPayload::BuiltinType(_))
+            );
+            if is_builtin_new {
+                PyObject::instance(cls.clone())
+            } else {
+                let new_fn = match &new_method.payload {
+                    PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                    _ => new_method.clone(),
+                };
+                let mut new_args = vec![cls.clone()];
+                new_args.extend(pos_args.clone());
+                self.call_object(new_fn, new_args)?
+            }
         } else {
             PyObject::instance(cls.clone())
         };

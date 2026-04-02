@@ -1087,13 +1087,31 @@ impl PyObjectMethods for PyObjectRef {
                         }))
                     }
                     _ => {
-                        // Unbound method access: str.upper, list.append, etc.
-                        Some(Arc::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod {
-                                receiver: self.clone(),
-                                method_name: CompactString::from(name),
+                        // Dunder methods BuiltinType doesn't have → return None
+                        if name.starts_with("__") && name.ends_with("__") {
+                            match name {
+                                "__init_subclass__" | "__set_name__"
+                                | "__prepare__" | "__instancecheck__"
+                                | "__subclasscheck__" | "__class_getitem__"
+                                => None,
+                                _ => {
+                                    Some(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BuiltinBoundMethod {
+                                            receiver: self.clone(),
+                                            method_name: CompactString::from(name),
+                                        }
+                                    }))
+                                }
                             }
-                        }))
+                        } else {
+                            // Unbound method access: str.upper, list.append, etc.
+                            Some(Arc::new(PyObject {
+                                payload: PyObjectPayload::BuiltinBoundMethod {
+                                    receiver: self.clone(),
+                                    method_name: CompactString::from(name),
+                                }
+                            }))
+                        }
                     }
                 }
             }

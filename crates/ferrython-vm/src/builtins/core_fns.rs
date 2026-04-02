@@ -49,6 +49,26 @@ pub(super) fn builtin_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::int(0));
     }
+    if args.len() >= 2 {
+        // int(string, base)
+        let s = args[0].as_str().ok_or_else(||
+            PyException::type_error("int() can't convert non-string with explicit base"))?;
+        let base = args[1].to_int()? as u32;
+        let s = s.trim();
+        // Strip base prefix if present
+        let s = if base == 16 && (s.starts_with("0x") || s.starts_with("0X")) {
+            &s[2..]
+        } else if base == 8 && (s.starts_with("0o") || s.starts_with("0O")) {
+            &s[2..]
+        } else if base == 2 && (s.starts_with("0b") || s.starts_with("0B")) {
+            &s[2..]
+        } else {
+            s
+        };
+        let val = i64::from_str_radix(s, base).map_err(|_|
+            PyException::value_error(format!("invalid literal for int() with base {}: '{}'", base, args[0].as_str().unwrap())))?;
+        return Ok(PyObject::int(val));
+    }
     Ok(PyObject::int(args[0].to_int()?))
 }
 
