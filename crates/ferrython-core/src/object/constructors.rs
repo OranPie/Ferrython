@@ -218,7 +218,7 @@ impl PyObject {
         Self::wrap(PyObjectPayload::FrozenSet(items))
     }
     pub fn range(start: i64, stop: i64, step: i64) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Iterator(Arc::new(std::sync::Mutex::new(IteratorData::Range { current: start, stop, step }))))
+        Self::wrap(PyObjectPayload::Range { start, stop, step })
     }
     pub fn cell(cell: Arc<RwLock<Option<PyObjectRef>>>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Cell(cell))

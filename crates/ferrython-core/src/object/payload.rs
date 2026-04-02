@@ -82,6 +82,8 @@ pub enum PyObjectPayload {
     ClassMethod(PyObjectRef),
     /// super() proxy — wraps (class, instance) for parent method dispatch
     Super { cls: PyObjectRef, instance: PyObjectRef },
+    /// Range object — preserves start/stop/step, creates fresh iterators
+    Range { start: i64, stop: i64, step: i64 },
 }
 
 impl fmt::Debug for PyObjectPayload {
@@ -125,6 +127,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::StaticMethod(_) => write!(f, "StaticMethod(...)"),
             Self::ClassMethod(_) => write!(f, "ClassMethod(...)"),
             Self::Super { .. } => write!(f, "Super(...)"),
+            Self::Range { start, stop, step } => write!(f, "Range({start}, {stop}, {step})"),
         }
     }
 }

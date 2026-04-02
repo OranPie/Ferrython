@@ -197,6 +197,7 @@ impl PyObjectMethods for PyObjectRef {
             }
             PyObjectPayload::Module(_) => "module",
             PyObjectPayload::Iterator(_) => "iterator",
+            PyObjectPayload::Range { .. } => "range",
             PyObjectPayload::Slice { .. } => "slice",
             PyObjectPayload::Cell(_) => "cell",
             PyObjectPayload::ExceptionType(_) => "type",
@@ -316,6 +317,10 @@ impl PyObjectMethods for PyObjectRef {
             }
             PyObjectPayload::Module(m) => format!("<module '{}'>", m.name),
             PyObjectPayload::Iterator(_) => "<iterator>".into(),
+            PyObjectPayload::Range { start, stop, step } => {
+                if *step == 1 { format!("range({}, {})", start, stop) }
+                else { format!("range({}, {}, {})", start, stop, step) }
+            }
             PyObjectPayload::ExceptionType(kind) => format!("<class '{}'>", kind),
             PyObjectPayload::ExceptionInstance { kind, message, args, .. } => {
                 // KeyError wraps its argument in repr() for str()
@@ -388,6 +393,15 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::InstanceDict(attrs) => Ok(attrs.read().keys().map(|k| PyObject::str_val(k.clone())).collect()),
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 Ok(b.iter().map(|byte| PyObject::int(*byte as i64)).collect())
+            }
+            PyObjectPayload::Range { start, stop, step } => {
+                let mut result = Vec::new();
+                let mut val = *start;
+                while (*step > 0 && val < *stop) || (*step < 0 && val > *stop) {
+                    result.push(PyObject::int(val));
+                    val += step;
+                }
+                Ok(result)
             }
             PyObjectPayload::Iterator(iter_data) => {
                 let data = iter_data.lock().unwrap();
@@ -1511,6 +1525,15 @@ impl PyObjectMethods for PyObjectRef {
                 }
                 Err(PyException::type_error(format!("object of type '{}' has no len()", self.type_name())))
             },
+            PyObjectPayload::Range { start, stop, step } => {
+                if *step > 0 && *start < *stop {
+                    Ok(((stop - start + step - 1) / step) as usize)
+                } else if *step < 0 && *start > *stop {
+                    Ok(((start - stop - step - 1) / (-step)) as usize)
+                } else {
+                    Ok(0)
+                }
+            },
             PyObjectPayload::Iterator(iter_data) => {
                 let data = iter_data.lock().unwrap();
                 match &*data {
@@ -1665,6 +1688,17 @@ impl PyObjectMethods for PyObjectRef {
                     _ => Err(PyException::type_error("a bytes-like object is required")),
                 }
             }
+            PyObjectPayload::Range { start, stop, step } => {
+                if let Some(val) = item.as_int() {
+                    if *step > 0 {
+                        Ok(val >= *start && val < *stop && (val - start) % step == 0)
+                    } else {
+                        Ok(val <= *start && val > *stop && (start - val) % (-step) == 0)
+                    }
+                } else {
+                    Ok(false)
+                }
+            }
             PyObjectPayload::Iterator(iter_data) => {
                 let data = iter_data.lock().unwrap();
                 match &*data {
@@ -1711,6 +1745,9 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::FrozenSet(m) => {
                 let vals: Vec<PyObjectRef> = m.values().cloned().collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: vals, index: 0 })))))
+            }
+            PyObjectPayload::Range { start, stop, step } => {
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Range { current: *start, stop: *stop, step: *step })))))
             }
             PyObjectPayload::Iterator(_) => Ok(self.clone()),
             PyObjectPayload::Generator(_) => Ok(self.clone()), // generators are their own iterators

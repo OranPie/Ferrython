@@ -456,6 +456,11 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     match &obj.payload {
         PyObjectPayload::Iterator(_) | PyObjectPayload::Generator(_) => Ok(obj.clone()),
+        PyObjectPayload::Range { start, stop, step } => {
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::Range { current: *start, stop: *stop, step: *step }))
+            )))
+        }
         PyObjectPayload::List(items) => {
             let items = items.read().clone();
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
