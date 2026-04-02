@@ -1214,14 +1214,20 @@ impl VirtualMachine {
             Opcode::ImportName => {
                 let frame = self.vm_frame();
                 let _fromlist = frame.pop();
-                let _level = frame.pop();
+                let level_obj = frame.pop();
+                let level = level_obj.as_int().unwrap_or(0) as usize;
                 let name = frame.code.names[instr.arg as usize].clone();
                 let filename = frame.code.filename.clone();
                 if let Some(module) = self.modules.get(&name) {
                     let module = module.clone();
                     self.vm_push(module);
                 } else {
-                    let module = match ferrython_import::resolve_module(&name, &filename)? {
+                    let resolved = if level > 0 {
+                        ferrython_import::resolve_relative_import(&name, &filename, level)?
+                    } else {
+                        ferrython_import::resolve_module(&name, &filename)?
+                    };
+                    let module = match resolved {
                         ferrython_import::ResolvedModule::Builtin(m) => m,
                         ferrython_import::ResolvedModule::Source { code, name: mod_name } => {
                             let mod_globals = Arc::new(RwLock::new(IndexMap::new()));

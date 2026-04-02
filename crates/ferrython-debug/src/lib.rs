@@ -43,31 +43,6 @@ pub fn format_traceback(exc: &PyException) -> String {
     out
 }
 
-/// Build traceback entries from the VM call stack. Each entry is
-/// `(filename, function_name, instruction_pointer)` from the call stack.
-pub fn build_traceback(
-    frames: &[(String, String, usize, Vec<(u32, u32)>, u32)],
-) -> Vec<TracebackEntry> {
-    frames
-        .iter()
-        .map(|(filename, function, ip, lno_table, first_line)| {
-            let mut lineno = *first_line;
-            let idx = *ip as u32;
-            for &(offset, line) in lno_table {
-                if offset > idx {
-                    break;
-                }
-                lineno = line;
-            }
-            TracebackEntry {
-                filename: filename.clone(),
-                function: function.clone(),
-                lineno,
-            }
-        })
-        .collect()
-}
-
 /// Disassemble a `CodeObject` to stdout, recursing into nested code objects.
 pub fn dis_code(code: &CodeObject, indent: usize) {
     let pad = " ".repeat(indent);

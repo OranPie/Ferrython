@@ -8,7 +8,6 @@ members = [
     "crates/ferrython-vm",
     "crates/ferrython-core",
     "crates/ferrython-gc",
-    "crates/ferrython-jit",
     "crates/ferrython-ffi",
     "crates/ferrython-import",
     "crates/ferrython-repl",
@@ -34,7 +33,6 @@ ferrython-bytecode = { path = "crates/ferrython-bytecode" }
 ferrython-vm = { path = "crates/ferrython-vm" }
 ferrython-core = { path = "crates/ferrython-core" }
 ferrython-gc = { path = "crates/ferrython-gc" }
-ferrython-jit = { path = "crates/ferrython-jit" }
 ferrython-ffi = { path = "crates/ferrython-ffi" }
 ferrython-import = { path = "crates/ferrython-import" }
 ferrython-repl = { path = "crates/ferrython-repl" }

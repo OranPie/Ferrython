@@ -132,7 +132,6 @@ dependencies = [
  "ferrython-debug",
  "ferrython-gc",
  "ferrython-import",
- "ferrython-jit",
  "ferrython-parser",
  "ferrython-repl",
  "ferrython-stdlib",
@@ -214,16 +213,6 @@ dependencies = [
  "indexmap",
  "parking_lot",
  "thiserror",
-]
-
-[[package]]
-name = "ferrython-jit"
-version = "0.1.0"
-dependencies = [
- "ferrython-bytecode",
- "ferrython-core",
- "thiserror",
- "tracing",
 ]
 
 [[package]]

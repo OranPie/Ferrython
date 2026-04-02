@@ -18,7 +18,6 @@ ferrython-compiler = { workspace = true }
 ferrython-repl = { workspace = true }
 ferrython-import = { workspace = true }
 ferrython-stdlib = { workspace = true }
-ferrython-jit = { workspace = true }
 ferrython-gc = { workspace = true }
 ferrython-debug = { workspace = true }
 thiserror = { workspace = true }
