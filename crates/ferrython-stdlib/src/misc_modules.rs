@@ -1,16 +1,15 @@
 //! Miscellaneous stdlib modules
 
 use compact_str::CompactString;
-use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData,
-    IteratorData, CompareOp, InstanceData,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, CompareOp, InstanceData,
     make_module, make_builtin, check_args, check_args_min,
 };
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::serial_modules::extract_bytes;
 
@@ -791,7 +790,7 @@ pub fn create_unittest_module() -> PyObjectRef {
         ("TestSuite", make_builtin(|_| Ok(PyObject::none()))),
         ("TestLoader", make_builtin(|_| Ok(PyObject::none()))),
         ("TextTestRunner", make_builtin(|_| Ok(PyObject::none()))),
-        ("skip", make_builtin(|args| {
+        ("skip", make_builtin(|_args| {
             // Return identity decorator
             Ok(make_builtin(|args| {
                 if args.is_empty() { Ok(PyObject::none()) } else { Ok(args[0].clone()) }

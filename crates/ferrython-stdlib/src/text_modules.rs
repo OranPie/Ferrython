@@ -1,16 +1,14 @@
 //! Text processing stdlib modules (string, re, textwrap, fnmatch)
 
 use compact_str::CompactString;
-use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData,
-    IteratorData, CompareOp, InstanceData,
-    make_module, make_builtin, check_args, check_args_min,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    IteratorData,
+    make_module, make_builtin, check_args_min,
 };
-use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::fs_modules::glob_match;
 
@@ -57,7 +55,7 @@ pub fn create_re_module() -> PyObjectRef {
 fn convert_python_regex(pattern: &str) -> String {
     // Convert Python regex syntax to Rust regex syntax
     // Most are compatible, but a few need translation
-    let mut result = pattern.to_string();
+    let result = pattern.to_string();
     // Python uses (?P<name>) for named groups, Rust regex uses (?P<name>) too — compatible!
     // Python uses \d, \w, \s etc — compatible
     // Python uses (?:...) for non-capturing groups — compatible

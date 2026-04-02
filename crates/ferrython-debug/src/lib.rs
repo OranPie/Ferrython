@@ -3,7 +3,7 @@
 
 use ferrython_bytecode::code::{CodeObject, ConstantValue};
 use ferrython_bytecode::opcode::Opcode;
-use ferrython_core::error::{PyException, TracebackEntry};
+use ferrython_core::error::PyException;
 
 /// Resolve an instruction index to a source line number using the code object's
 /// line number table. Returns `first_line_number` if no entry is found.

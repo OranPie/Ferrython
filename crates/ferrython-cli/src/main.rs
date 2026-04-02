@@ -2,7 +2,6 @@
 
 use std::env;
 use std::fs;
-use std::io::{self, Write, BufRead};
 use std::process;
 
 fn main() {

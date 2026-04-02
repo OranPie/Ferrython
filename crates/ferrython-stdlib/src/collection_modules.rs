@@ -1,15 +1,14 @@
 //! Collection and functional stdlib modules
 
 use compact_str::CompactString;
-use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData,
-    IteratorData, CompareOp, InstanceData,
-    make_module, make_builtin, check_args, check_args_min,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    IteratorData,
+    make_module, make_builtin,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::sync::{Arc, Mutex};
 
 pub fn create_collections_module() -> PyObjectRef {
@@ -257,7 +256,7 @@ fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("reduce() requires at least 2 arguments")); }
     let func = args[0].clone();
     let items = args[1].to_list()?;
-    let mut acc = if args.len() > 2 {
+    let acc = if args.len() > 2 {
         args[2].clone()
     } else if !items.is_empty() {
         items[0].clone()

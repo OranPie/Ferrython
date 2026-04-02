@@ -4,7 +4,6 @@ use crate::error::{PyResult, ExceptionKind};
 use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
-use num_bigint::BigInt;
 use parking_lot::RwLock;
 use std::any::Any;
 use std::fmt;

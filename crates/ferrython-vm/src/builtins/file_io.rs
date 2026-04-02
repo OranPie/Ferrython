@@ -35,7 +35,7 @@ pub(super) fn builtin_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let file_obj = PyObject::module_with_attrs(CompactString::from("_file"), attrs);
     // Add methods via NativeFunction
     match &file_obj.payload {
-        PyObjectPayload::Module(md) => {
+        PyObjectPayload::Module(_md) => {
             // We can't mutate, so let's create a new module with all attrs
         }
         _ => {}
@@ -125,7 +125,7 @@ pub(super) fn file_read(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::str_val(CompactString::from(result)))
 }
 
-pub(super) fn file_readline(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn file_readline(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let state = get_current_file()?;
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }

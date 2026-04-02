@@ -24,7 +24,6 @@ use compact_str::CompactString;
 use ferrython_core::error::PyResult;
 use ferrython_core::object::{make_builtin, make_module, PyObject, PyObjectRef};
 use parking_lot::RwLock;
-use std::sync::Arc;
 
 /// A function pointer type for native extension functions.
 pub type NativeMethod = fn(&[PyObjectRef]) -> PyResult<PyObjectRef>;

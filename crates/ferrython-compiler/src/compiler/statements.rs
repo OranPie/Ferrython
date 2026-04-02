@@ -2,12 +2,11 @@
 
 use compact_str::CompactString;
 use ferrython_ast::*;
-use ferrython_bytecode::{CodeFlags, CodeObject, ConstantValue, Instruction, Opcode};
-use rustc_hash::FxHashSet;
+use ferrython_bytecode::{CodeFlags, CodeObject, ConstantValue, Opcode};
 
 use crate::error::CompileError;
-use crate::symbol_table::{self, Scope, ScopeType, SymbolScope};
-use super::{Compiler, Label, CompileUnit, LoopContext, Result};
+use crate::symbol_table::Scope;
+use super::{Compiler, CompileUnit, LoopContext, Result};
 use super::expressions::body_contains_yield;
 
 impl Compiler {

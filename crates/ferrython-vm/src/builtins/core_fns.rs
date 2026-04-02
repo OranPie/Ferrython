@@ -640,7 +640,7 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Class(cd) => {
             cd.namespace.write().insert(CompactString::from(name), args[2].clone());
         }
-        PyObjectPayload::Module(m) => {
+        PyObjectPayload::Module(_m) => {
             // Modules are immutable in our current design; skip for now
         }
         _ => return Err(PyException::attribute_error(format!(
@@ -813,7 +813,7 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
         }
         // Class inheriting from ExceptionType (e.g. class MyError(ValueError))
         (PyObjectPayload::Class(sub_cd), PyObjectPayload::ExceptionType(target_kind)) => {
-            let target_name = format!("{:?}", target_kind);
+            let _target_name = format!("{:?}", target_kind);
             // Check bases: is any base an ExceptionType matching target?
             for base in &sub_cd.bases {
                 if let PyObjectPayload::ExceptionType(bk) = &base.payload {

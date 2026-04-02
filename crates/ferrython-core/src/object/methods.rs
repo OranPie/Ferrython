@@ -1,17 +1,13 @@
 //! PyObjectMethods trait and implementation — arithmetic, comparison, attributes, iteration.
 
-use crate::error::{ExceptionKind, PyException, PyResult};
-use crate::types::{HashableKey, PyFunction, PyInt};
+use crate::error::{PyException, PyResult};
+use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
-use num_bigint::BigInt;
 use parking_lot::RwLock;
-use std::any::Any;
-use std::fmt;
 use std::sync::Arc;
 
 use super::payload::*;
-use super::constructors::*;
 use super::helpers::*;
 
 // ── Extension trait for methods on PyObjectRef ──
@@ -245,7 +241,7 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Module(m) => format!("<module '{}'>", m.name),
             PyObjectPayload::Iterator(_) => "<iterator>".into(),
             PyObjectPayload::ExceptionType(kind) => format!("<class '{}'>", kind),
-            PyObjectPayload::ExceptionInstance { kind, message, .. } => {
+            PyObjectPayload::ExceptionInstance { kind: _, message, .. } => {
                 // str(exception) returns just the message, like CPython
                 if message.is_empty() {
                     String::new()

@@ -1,16 +1,11 @@
 //! System, OS, and platform stdlib modules
 
 use compact_str::CompactString;
-use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData,
-    IteratorData, CompareOp, InstanceData,
-    make_module, make_builtin, check_args, check_args_min,
+    PyObject, PyObjectMethods, PyObjectRef,
+    make_module, make_builtin, check_args,
 };
-use ferrython_core::types::{HashableKey, PyInt};
-use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::{Arc, Mutex};
 
 pub fn create_sys_module() -> PyObjectRef {
     make_module("sys", vec![
@@ -192,6 +187,7 @@ fn os_rename(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .map_err(|e| PyException::os_error(format!("{}", e)))?;
     Ok(PyObject::none())
 }
+#[allow(dead_code)]
 fn os_path_stub(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(create_os_path_module())
 }

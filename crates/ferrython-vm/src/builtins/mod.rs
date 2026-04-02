@@ -232,6 +232,7 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn hashable_key_to_object(key: &HashableKey) -> PyObjectRef { key.to_object() }
 
 pub(crate) fn apply_format_spec(val: &PyObjectRef, spec: &str) -> String {

@@ -1,16 +1,12 @@
 //! Serialization stdlib modules (json, csv, base64, struct)
 
 use compact_str::CompactString;
-use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData,
-    IteratorData, CompareOp, InstanceData,
-    make_module, make_builtin, check_args, check_args_min,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    make_module, make_builtin, check_args,
 };
-use ferrython_core::types::{HashableKey, PyInt};
-use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::{Arc, Mutex};
+use ferrython_core::types::HashableKey;
 
 pub fn create_json_module() -> PyObjectRef {
     make_module("json", vec![

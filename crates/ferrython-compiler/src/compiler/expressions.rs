@@ -1,13 +1,9 @@
 //! Expression compilation methods for the Compiler, plus utility functions.
 
-use compact_str::CompactString;
 use ferrython_ast::*;
-use ferrython_bytecode::{CodeFlags, CodeObject, ConstantValue, Instruction, Opcode};
-use rustc_hash::FxHashSet;
+use ferrython_bytecode::{CodeFlags, ConstantValue, Opcode};
 
-use crate::error::CompileError;
-use crate::symbol_table::{self, Scope, ScopeType, SymbolScope};
-use super::{Compiler, Label, CompileUnit, LoopContext, Result};
+use super::{Compiler, Result};
 
 impl Compiler {
     // ── expression compilation ──────────────────────────────────────
@@ -893,7 +889,7 @@ impl Compiler {
 
 /// What kind of comprehension we're compiling.
 #[derive(Debug, Clone, Copy)]
-enum ComprehensionKind {
+pub(super) enum ComprehensionKind {
     List,
     Set,
     Dict,
