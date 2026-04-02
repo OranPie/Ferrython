@@ -189,9 +189,49 @@ pub fn create_tempfile_module() -> PyObjectRef {
 
 pub fn create_io_module() -> PyObjectRef {
     make_module("io", vec![
-        ("StringIO", make_builtin(|_args| Ok(PyObject::none()))),
-        ("BytesIO", make_builtin(|_args| Ok(PyObject::none()))),
+        ("StringIO", make_builtin(io_string_io)),
+        ("BytesIO", make_builtin(io_bytes_io)),
+        ("TextIOWrapper", make_builtin(|_| Ok(PyObject::none()))),
+        ("BufferedReader", make_builtin(|_| Ok(PyObject::none()))),
+        ("BufferedWriter", make_builtin(|_| Ok(PyObject::none()))),
+        ("SEEK_SET", PyObject::int(0)),
+        ("SEEK_CUR", PyObject::int(1)),
+        ("SEEK_END", PyObject::int(2)),
     ])
+}
+
+fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let initial = if args.is_empty() { String::new() } else { args[0].py_to_string() };
+    let cls = PyObject::class(CompactString::from("StringIO"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("__stringio__"), PyObject::bool_val(true));
+        attrs.insert(CompactString::from("_buffer"), PyObject::str_val(CompactString::from(&initial)));
+        attrs.insert(CompactString::from("_pos"), PyObject::int(initial.len() as i64));
+        attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
+    }
+    Ok(inst)
+}
+
+fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let initial = if args.is_empty() {
+        vec![]
+    } else if let PyObjectPayload::Bytes(b) = &args[0].payload {
+        b.clone()
+    } else {
+        vec![]
+    };
+    let cls = PyObject::class(CompactString::from("BytesIO"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("__bytesio__"), PyObject::bool_val(true));
+        attrs.insert(CompactString::from("_buffer"), PyObject::bytes(initial.clone()));
+        attrs.insert(CompactString::from("_pos"), PyObject::int(initial.len() as i64));
+        attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
+    }
+    Ok(inst)
 }
 
 

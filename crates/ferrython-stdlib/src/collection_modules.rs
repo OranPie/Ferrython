@@ -18,6 +18,7 @@ pub fn create_collections_module() -> PyObjectRef {
         ("Counter", make_builtin(collections_counter)),
         ("namedtuple", make_builtin(collections_namedtuple)),
         ("deque", make_builtin(collections_deque)),
+        ("most_common", make_builtin(collections_most_common)),
     ])
 }
 
@@ -70,10 +71,12 @@ fn collections_defaultdict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let int_factory = PyObject::builtin_type(CompactString::from("int"));
     let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+    let counter_marker = HashableKey::Str(CompactString::from("__counter__"));
     
     if args.is_empty() {
         let mut map = IndexMap::new();
         map.insert(factory_key, int_factory);
+        map.insert(counter_marker, PyObject::bool_val(true));
         return Ok(PyObject::dict(map));
     }
     // Handle dict input: Counter({"red": 4, "blue": 2})
@@ -81,8 +84,9 @@ fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let src = m.read();
         let mut map = IndexMap::new();
         map.insert(factory_key, int_factory);
+        map.insert(counter_marker, PyObject::bool_val(true));
         for (k, v) in src.iter() {
-            if !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__") {
+            if !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__") {
                 map.insert(k.clone(), v.clone());
             }
         }
@@ -96,10 +100,33 @@ fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let mut map = IndexMap::new();
     map.insert(factory_key, int_factory);
+    map.insert(counter_marker, PyObject::bool_val(true));
     for (k, v) in counts {
         map.insert(k.clone(), PyObject::int(v));
     }
     Ok(PyObject::dict(map))
+}
+
+/// Standalone most_common(counter_dict, n?) — also available as Counter.most_common()
+fn collections_most_common(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("most_common() requires a Counter argument"));
+    }
+    if let PyObjectPayload::Dict(map) = &args[0].payload {
+        let r = map.read();
+        let mut pairs: Vec<(HashableKey, i64)> = r.iter()
+            .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+            .map(|(k, v)| (k.clone(), v.as_int().unwrap_or(0)))
+            .collect();
+        pairs.sort_by(|a, b| b.1.cmp(&a.1));
+        let n = if args.len() > 1 { args[1].as_int().unwrap_or(pairs.len() as i64) as usize } else { pairs.len() };
+        let result: Vec<PyObjectRef> = pairs.into_iter().take(n)
+            .map(|(k, v)| PyObject::tuple(vec![k.to_object(), PyObject::int(v)]))
+            .collect();
+        Ok(PyObject::list(result))
+    } else {
+        Err(PyException::type_error("most_common() argument must be a Counter"))
+    }
 }
 
 fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -143,6 +170,15 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             PyObject::int(i as i64)
         );
     }
+
+    // _make classmethod: create instance from iterable
+    namespace.insert(CompactString::from("_make"), PyObject::native_function(
+        "namedtuple._make",
+        |_args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+            // _make is dispatched via BuiltinBoundMethod; handled in builtins
+            Ok(PyObject::none())
+        }
+    ));
     
     let cls = PyObject::class(
         CompactString::from(typename.as_str()),
@@ -159,6 +195,22 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args[0].to_list()?
     };
+    // Optional maxlen as second argument
+    let maxlen = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
+        Some(args[1].to_int()? as usize)
+    } else {
+        None
+    };
+    // Enforce maxlen on initial items
+    let items = if let Some(ml) = maxlen {
+        if items.len() > ml {
+            items[items.len() - ml..].to_vec()
+        } else {
+            items
+        }
+    } else {
+        items
+    };
     let deque_cls = PyObject::class(
         CompactString::from("deque"),
         vec![],
@@ -169,6 +221,13 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_data"), PyObject::list(items));
+        attrs.insert(
+            CompactString::from("__maxlen__"),
+            match maxlen {
+                Some(n) => PyObject::int(n as i64),
+                None => PyObject::none(),
+            },
+        );
     }
     Ok(inst)
 }
@@ -178,6 +237,7 @@ pub fn create_functools_module() -> PyObjectRef {
     make_module("functools", vec![
         ("reduce", PyObject::native_function("functools.reduce", functools_reduce)),
         ("partial", PyObject::native_function("functools.partial", functools_partial)),
+        ("cmp_to_key", make_builtin(functools_cmp_to_key)),
         ("lru_cache", make_builtin(|args| {
             // lru_cache(func) or lru_cache(maxsize=N)(func) — returns a cached wrapper
             if args.is_empty() { 
@@ -258,6 +318,27 @@ fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::type_error("functools.reduce not fully implemented yet"));
     }
     Ok(acc)
+}
+
+/// functools.cmp_to_key(cmp_func)
+/// Returns a key class whose instances compare using the given comparison function.
+/// Since native functions can't call Python functions, we create a wrapper instance
+/// that stores both the comparison function and the wrapped value.
+fn functools_cmp_to_key(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("cmp_to_key() requires 1 argument"));
+    }
+    let cmp_func = args[0].clone();
+    // Create a key class that wraps values and stores the comparison function
+    let mut namespace = IndexMap::new();
+    namespace.insert(CompactString::from("__cmp_to_key__"), PyObject::bool_val(true));
+    namespace.insert(CompactString::from("_cmp_func"), cmp_func);
+    let key_cls = PyObject::class(
+        CompactString::from("cmp_to_key"),
+        vec![],
+        namespace,
+    );
+    Ok(key_cls)
 }
 
 

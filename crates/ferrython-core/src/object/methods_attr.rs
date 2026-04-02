@@ -110,6 +110,36 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
         return inst.attrs.read().get(name).cloned();
     }
 
+    // StringIO
+    if inst.attrs.read().contains_key("__stringio__") {
+        if matches!(name, "write" | "read" | "getvalue" | "seek" | "tell" | "close" | "closed"
+            | "readline" | "readlines" | "writelines" | "truncate" | "readable" | "writable" | "seekable")
+        {
+            return Some(make_bound(name));
+        }
+        return inst.attrs.read().get(name).cloned();
+    }
+
+    // BytesIO
+    if inst.attrs.read().contains_key("__bytesio__") {
+        if matches!(name, "write" | "read" | "getvalue" | "seek" | "tell" | "close"
+            | "readline" | "readlines" | "truncate" | "readable" | "writable" | "seekable")
+        {
+            return Some(make_bound(name));
+        }
+        return inst.attrs.read().get(name).cloned();
+    }
+
+    // pathlib.Path
+    if inst.attrs.read().contains_key("__pathlib_path__") {
+        if matches!(name, "name" | "stem" | "suffix" | "parent" | "exists" | "is_file" | "is_dir"
+            | "__str__" | "__fspath__" | "resolve" | "absolute" | "parts" | "with_suffix" | "with_name")
+        {
+            return Some(make_bound(name));
+        }
+        return inst.attrs.read().get(name).cloned();
+    }
+
     // Hashlib hash objects
     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.as_str() } else { "" };
     if matches!(class_name, "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {

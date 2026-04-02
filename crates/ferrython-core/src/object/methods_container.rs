@@ -20,7 +20,9 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             PyObjectPayload::FrozenSet(m) => Ok(m.len()),
             PyObjectPayload::Dict(m) => {
                 let map = m.read();
-                let hidden = if map.contains_key(&HashableKey::Str(CompactString::from("__defaultdict_factory__"))) { 1 } else { 0 };
+                let mut hidden = 0;
+                if map.contains_key(&HashableKey::Str(CompactString::from("__defaultdict_factory__"))) { hidden += 1; }
+                if map.contains_key(&HashableKey::Str(CompactString::from("__counter__"))) { hidden += 1; }
                 Ok(map.len() - hidden)
             },
             PyObjectPayload::Instance(inst) => {

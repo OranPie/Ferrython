@@ -104,20 +104,20 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
     match method {
         "keys" => {
             let keys: Vec<PyObjectRef> = map.read().keys()
-                .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__"))
+                .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
                 .map(|k| k.to_object()).collect();
             Ok(PyObject::list(keys))
         }
         "values" => {
             let r = map.read();
             let vals: Vec<PyObjectRef> = r.iter()
-                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__"))
+                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
                 .map(|(_, v)| v.clone()).collect();
             Ok(PyObject::list(vals))
         }
         "items" => {
             let pairs: Vec<PyObjectRef> = map.read().iter()
-                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__"))
+                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
                 .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
                 .collect();
             Ok(PyObject::list(pairs))
@@ -175,7 +175,7 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
             // Counter.most_common(n) — return n most common (key, count) pairs sorted by count
             let r = map.read();
             let mut pairs: Vec<(HashableKey, i64)> = r.iter()
-                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__"))
+                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
                 .map(|(k, v)| (k.clone(), v.as_int().unwrap_or(0)))
                 .collect();
             pairs.sort_by(|a, b| b.1.cmp(&a.1));
@@ -190,7 +190,7 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
             let r = map.read();
             let mut result = Vec::new();
             for (k, v) in r.iter() {
-                if matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__") { continue; }
+                if matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__") { continue; }
                 let count = v.as_int().unwrap_or(0);
                 for _ in 0..count {
                     result.push(k.to_object());

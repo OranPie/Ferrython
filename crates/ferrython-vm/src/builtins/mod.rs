@@ -297,6 +297,18 @@ fn call_instance_method(inst: &ferrython_core::object::InstanceData, method: &st
     if inst.attrs.read().contains_key("__deque__") {
         return call_deque_method(inst, method, args);
     }
+    // StringIO methods
+    if inst.attrs.read().contains_key("__stringio__") {
+        return call_stringio_method(inst, method, args);
+    }
+    // BytesIO methods
+    if inst.attrs.read().contains_key("__bytesio__") {
+        return call_bytesio_method(inst, method, args);
+    }
+    // pathlib.Path methods
+    if inst.attrs.read().contains_key("__pathlib_path__") {
+        return call_pathlib_method(inst, method, args);
+    }
     // Hashlib hash object methods
     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.to_string() } else { String::new() };
     if matches!(class_name.as_str(), "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
@@ -309,7 +321,7 @@ fn call_instance_method(inst: &ferrython_core::object::InstanceData, method: &st
     )))
 }
 
-fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData, method: &str, _args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "_asdict" => {
             if let Some(fields) = inst.class.get_attr("_fields") {
@@ -325,6 +337,73 @@ fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData, method: &
                 }
             }
             Ok(PyObject::dict(IndexMap::new()))
+        }
+        "_replace" => {
+            // _replace(**kwargs) — create a new instance with some fields replaced
+            // In our dispatch, kwargs are passed as a trailing dict argument
+            let kwargs_dict = if !args.is_empty() {
+                if let PyObjectPayload::Dict(map) = &args[0].payload {
+                    Some(map.read().clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(fields) = inst.class.get_attr("_fields") {
+                if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                    let attrs = inst.attrs.read();
+                    let mut new_values: Vec<PyObjectRef> = Vec::new();
+                    for field in field_names {
+                        let name = field.py_to_string();
+                        let hk = HashableKey::Str(CompactString::from(name.as_str()));
+                        let val = if let Some(ref kw) = kwargs_dict {
+                            kw.get(&hk).cloned().unwrap_or_else(|| {
+                                attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none)
+                            })
+                        } else {
+                            attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none)
+                        };
+                        new_values.push(val);
+                    }
+                    drop(attrs);
+                    // Construct a new namedtuple instance
+                    let new_inst = PyObject::instance(inst.class.clone());
+                    if let PyObjectPayload::Instance(ref new_data) = new_inst.payload {
+                        let mut new_attrs = new_data.attrs.write();
+                        for (field, val) in field_names.iter().zip(new_values.iter()) {
+                            let name = field.py_to_string();
+                            new_attrs.insert(CompactString::from(name.as_str()), val.clone());
+                        }
+                        new_attrs.insert(CompactString::from("_tuple"), PyObject::tuple(new_values));
+                    }
+                    return Ok(new_inst);
+                }
+            }
+            Ok(PyObject::none())
+        }
+        "_make" => {
+            // _make(iterable) — create instance from iterable
+            if args.is_empty() {
+                return Err(PyException::type_error("_make() requires an iterable argument"));
+            }
+            let items = args[0].to_list()?;
+            if let Some(fields) = inst.class.get_attr("_fields") {
+                if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                    let new_inst = PyObject::instance(inst.class.clone());
+                    if let PyObjectPayload::Instance(ref new_data) = new_inst.payload {
+                        let mut new_attrs = new_data.attrs.write();
+                        for (i, field) in field_names.iter().enumerate() {
+                            let name = field.py_to_string();
+                            let val = items.get(i).cloned().unwrap_or_else(PyObject::none);
+                            new_attrs.insert(CompactString::from(name.as_str()), val);
+                        }
+                        new_attrs.insert(CompactString::from("_tuple"), PyObject::tuple(items));
+                    }
+                    return Ok(new_inst);
+                }
+            }
+            Ok(PyObject::none())
         }
         "__len__" => {
             if let Some(tup) = inst.attrs.read().get("_tuple") {
@@ -358,11 +437,32 @@ fn call_deque_method(inst: &ferrython_core::object::InstanceData, method: &str, 
     let get_data = || -> PyObjectRef {
         inst.attrs.read().get("_data").cloned().unwrap_or_else(|| PyObject::list(vec![]))
     };
+    let get_maxlen = || -> Option<usize> {
+        inst.attrs.read().get("__maxlen__").and_then(|v| v.as_int()).map(|n| n as usize)
+    };
+    // Helper: enforce maxlen by trimming from the appropriate end
+    let enforce_maxlen_right = |list: &parking_lot::RwLock<Vec<PyObjectRef>>| {
+        if let Some(ml) = get_maxlen() {
+            let mut v = list.write();
+            while v.len() > ml {
+                v.remove(0); // trim from left when appending to right
+            }
+        }
+    };
+    let enforce_maxlen_left = |list: &parking_lot::RwLock<Vec<PyObjectRef>>| {
+        if let Some(ml) = get_maxlen() {
+            let mut v = list.write();
+            while v.len() > ml {
+                v.pop(); // trim from right when appending to left
+            }
+        }
+    };
     match method {
         "append" => {
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 list.write().push(args[0].clone());
+                enforce_maxlen_right(list);
             }
             Ok(PyObject::none())
         }
@@ -370,6 +470,7 @@ fn call_deque_method(inst: &ferrython_core::object::InstanceData, method: &str, 
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 list.write().insert(0, args[0].clone());
+                enforce_maxlen_left(list);
             }
             Ok(PyObject::none())
         }
@@ -401,6 +502,7 @@ fn call_deque_method(inst: &ferrython_core::object::InstanceData, method: &str, 
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 list.write().extend(items);
+                enforce_maxlen_right(list);
             }
             Ok(PyObject::none())
         }
@@ -412,6 +514,8 @@ fn call_deque_method(inst: &ferrython_core::object::InstanceData, method: &str, 
                 for item in items.into_iter().rev() {
                     v.insert(0, item);
                 }
+                drop(v);
+                enforce_maxlen_left(list);
             }
             Ok(PyObject::none())
         }
@@ -442,7 +546,8 @@ fn call_deque_method(inst: &ferrython_core::object::InstanceData, method: &str, 
         "copy" => {
             let data = get_data();
             let items = data.to_list()?;
-            dispatch("deque", &[PyObject::list(items)])
+            let maxlen_obj = inst.attrs.read().get("__maxlen__").cloned().unwrap_or_else(PyObject::none);
+            dispatch("deque", &[PyObject::list(items), maxlen_obj])
         }
         "count" => {
             let data = get_data();
@@ -453,6 +558,62 @@ fn call_deque_method(inst: &ferrython_core::object::InstanceData, method: &str, 
             }
             Ok(PyObject::int(0))
         }
+        "index" => {
+            if args.is_empty() {
+                return Err(PyException::type_error("index() requires at least 1 argument"));
+            }
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let v = list.read();
+                let target = args[0].py_to_string();
+                let start = if args.len() > 1 { args[1].as_int().unwrap_or(0) as usize } else { 0 };
+                let stop = if args.len() > 2 { args[2].as_int().unwrap_or(v.len() as i64) as usize } else { v.len() };
+                for i in start..stop.min(v.len()) {
+                    if v[i].py_to_string() == target {
+                        return Ok(PyObject::int(i as i64));
+                    }
+                }
+                return Err(PyException::new(ExceptionKind::ValueError, format!("{} is not in deque", args[0].py_to_string())));
+            }
+            Err(PyException::new(ExceptionKind::ValueError, "deque index error"))
+        }
+        "insert" => {
+            if args.len() < 2 {
+                return Err(PyException::type_error("insert() requires 2 arguments"));
+            }
+            if let Some(ml) = get_maxlen() {
+                let data = get_data();
+                if let PyObjectPayload::List(list) = &data.payload {
+                    if list.read().len() >= ml {
+                        return Err(PyException::new(ExceptionKind::IndexError, "deque already at its maximum size"));
+                    }
+                }
+            }
+            let idx = args[0].to_int()? as usize;
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let mut v = list.write();
+                let idx = idx.min(v.len());
+                v.insert(idx, args[1].clone());
+            }
+            Ok(PyObject::none())
+        }
+        "remove" => {
+            if args.is_empty() {
+                return Err(PyException::type_error("remove() requires 1 argument"));
+            }
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let mut v = list.write();
+                let target = args[0].py_to_string();
+                if let Some(pos) = v.iter().position(|x| x.py_to_string() == target) {
+                    v.remove(pos);
+                    return Ok(PyObject::none());
+                }
+                return Err(PyException::new(ExceptionKind::ValueError, "deque.remove(x): x not in deque"));
+            }
+            Ok(PyObject::none())
+        }
         "reverse" => {
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
@@ -460,12 +621,44 @@ fn call_deque_method(inst: &ferrython_core::object::InstanceData, method: &str, 
             }
             Ok(PyObject::none())
         }
+        "maxlen" => {
+            // Property-like access: return maxlen value
+            let ml = inst.attrs.read().get("__maxlen__").cloned().unwrap_or_else(PyObject::none);
+            Ok(ml)
+        }
         "__len__" => {
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 return Ok(PyObject::int(list.read().len() as i64));
             }
             Ok(PyObject::int(0))
+        }
+        "__contains__" => {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let v = list.read();
+                let target = args[0].py_to_string();
+                return Ok(PyObject::bool_val(v.iter().any(|x| x.py_to_string() == target)));
+            }
+            Ok(PyObject::bool_val(false))
+        }
+        "__getitem__" => {
+            if args.is_empty() {
+                return Err(PyException::type_error("__getitem__() requires 1 argument"));
+            }
+            let idx = args[0].to_int()?;
+            let data = get_data();
+            if let PyObjectPayload::List(list) = &data.payload {
+                let v = list.read();
+                let len = v.len() as i64;
+                let actual_idx = if idx < 0 { len + idx } else { idx };
+                if actual_idx < 0 || actual_idx >= len {
+                    return Err(PyException::new(ExceptionKind::IndexError, "deque index out of range"));
+                }
+                return Ok(v[actual_idx as usize].clone());
+            }
+            Err(PyException::new(ExceptionKind::IndexError, "deque index out of range"))
         }
         "__iter__" => {
             Ok(get_data())
@@ -563,6 +756,113 @@ fn call_hashlib_method(inst: &ferrython_core::object::InstanceData, method: &str
             let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.to_string() } else { "hash".to_string() };
             Err(PyException::attribute_error(format!("'{}' object has no attribute '{}'", class_name, method)))
         }
+    }
+}
+
+// Stub implementations for StringIO, BytesIO, and pathlib.Path methods
+fn call_stringio_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let attrs = inst.attrs.read();
+    match method {
+        "getvalue" => {
+            Ok(attrs.get("_buffer").cloned().unwrap_or_else(|| PyObject::str_val(CompactString::from(""))))
+        }
+        "write" => {
+            if args.is_empty() { return Err(PyException::type_error("write() requires 1 argument")); }
+            let new_text = args[0].py_to_string();
+            let current = attrs.get("_buffer").map(|v| v.py_to_string()).unwrap_or_default();
+            drop(attrs);
+            let combined = format!("{}{}", current, new_text);
+            let len = new_text.len();
+            let mut w = inst.attrs.write();
+            w.insert(CompactString::from("_buffer"), PyObject::str_val(CompactString::from(combined.as_str())));
+            w.insert(CompactString::from("_pos"), PyObject::int(combined.len() as i64));
+            Ok(PyObject::int(len as i64))
+        }
+        "read" => {
+            let buf = attrs.get("_buffer").map(|v| v.py_to_string()).unwrap_or_default();
+            let pos = attrs.get("_pos").and_then(|v| v.as_int()).unwrap_or(0) as usize;
+            if pos >= buf.len() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            let result = &buf[pos..];
+            drop(attrs);
+            inst.attrs.write().insert(CompactString::from("_pos"), PyObject::int(buf.len() as i64));
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+        "seek" => {
+            let pos = if args.is_empty() { 0i64 } else { args[0].as_int().unwrap_or(0) };
+            drop(attrs);
+            inst.attrs.write().insert(CompactString::from("_pos"), PyObject::int(pos));
+            Ok(PyObject::int(pos))
+        }
+        "tell" => {
+            Ok(attrs.get("_pos").cloned().unwrap_or_else(|| PyObject::int(0)))
+        }
+        "close" => {
+            drop(attrs);
+            inst.attrs.write().insert(CompactString::from("_closed"), PyObject::bool_val(true));
+            Ok(PyObject::none())
+        }
+        "closed" => {
+            Ok(attrs.get("_closed").cloned().unwrap_or_else(|| PyObject::bool_val(false)))
+        }
+        _ => Err(PyException::attribute_error(format!("'StringIO' object has no attribute '{}'", method))),
+    }
+}
+
+fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let attrs = inst.attrs.read();
+    match method {
+        "getvalue" => {
+            Ok(attrs.get("_buffer").cloned().unwrap_or_else(|| PyObject::bytes(vec![])))
+        }
+        "write" => {
+            if args.is_empty() { return Err(PyException::type_error("write() requires 1 argument")); }
+            let new_bytes = if let PyObjectPayload::Bytes(b) = &args[0].payload { b.clone() } else { vec![] };
+            let current = if let Some(buf) = attrs.get("_buffer") {
+                if let PyObjectPayload::Bytes(b) = &buf.payload { b.clone() } else { vec![] }
+            } else { vec![] };
+            drop(attrs);
+            let len = new_bytes.len();
+            let mut combined = current;
+            combined.extend(new_bytes);
+            let mut w = inst.attrs.write();
+            w.insert(CompactString::from("_buffer"), PyObject::bytes(combined.clone()));
+            w.insert(CompactString::from("_pos"), PyObject::int(combined.len() as i64));
+            Ok(PyObject::int(len as i64))
+        }
+        "read" => {
+            Ok(attrs.get("_buffer").cloned().unwrap_or_else(|| PyObject::bytes(vec![])))
+        }
+        "seek" => {
+            let pos = if args.is_empty() { 0i64 } else { args[0].as_int().unwrap_or(0) };
+            drop(attrs);
+            inst.attrs.write().insert(CompactString::from("_pos"), PyObject::int(pos));
+            Ok(PyObject::int(pos))
+        }
+        "tell" => {
+            Ok(attrs.get("_pos").cloned().unwrap_or_else(|| PyObject::int(0)))
+        }
+        "close" => {
+            drop(attrs);
+            inst.attrs.write().insert(CompactString::from("_closed"), PyObject::bool_val(true));
+            Ok(PyObject::none())
+        }
+        _ => Err(PyException::attribute_error(format!("'BytesIO' object has no attribute '{}'", method))),
+    }
+}
+
+fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, method: &str, _args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let attrs = inst.attrs.read();
+    match method {
+        "name" | "stem" | "suffix" | "parent" => {
+            Ok(attrs.get(method).cloned().unwrap_or_else(|| PyObject::str_val(CompactString::from(""))))
+        }
+        "exists" => Ok(PyObject::bool_val(false)),
+        "is_file" => Ok(PyObject::bool_val(false)),
+        "is_dir" => Ok(PyObject::bool_val(false)),
+        "__str__" | "__fspath__" => {
+            Ok(attrs.get("_path").cloned().unwrap_or_else(|| PyObject::str_val(CompactString::from(""))))
+        }
+        _ => Err(PyException::attribute_error(format!("'Path' object has no attribute '{}'", method))),
     }
 }
 

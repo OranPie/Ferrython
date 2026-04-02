@@ -431,7 +431,7 @@ pub(super) fn format_dict(map: &IndexMap<HashableKey, PyObjectRef>) -> String {
     let inner: Vec<String> = map.iter()
         .filter(|(k, _)| {
             // Hide internal defaultdict factory key
-            if let HashableKey::Str(s) = k { s.as_str() != "__defaultdict_factory__" } else { true }
+            if let HashableKey::Str(s) = k { s.as_str() != "__defaultdict_factory__" && s.as_str() != "__counter__" } else { true }
         })
         .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr())).collect();
     format!("{{{}}}", inner.join(", "))
