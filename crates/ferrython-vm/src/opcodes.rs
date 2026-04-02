@@ -663,23 +663,23 @@ impl VirtualMachine {
                 else { a.power(&b)? }
             }
             Opcode::BinaryLshift | Opcode::InplaceLshift => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__lshift__", None)? { r }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__lshift__", Some("__rlshift__"))? { r }
                 else { a.lshift(&b)? }
             }
             Opcode::BinaryRshift | Opcode::InplaceRshift => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__rshift__", None)? { r }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__rshift__", Some("__rrshift__"))? { r }
                 else { a.rshift(&b)? }
             }
             Opcode::BinaryAnd | Opcode::InplaceAnd => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__and__", None)? { r }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__and__", Some("__rand__"))? { r }
                 else { a.bit_and(&b)? }
             }
             Opcode::BinaryOr | Opcode::InplaceOr => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__or__", None)? { r }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__or__", Some("__ror__"))? { r }
                 else { a.bit_or(&b)? }
             }
             Opcode::BinaryXor | Opcode::InplaceXor => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__xor__", None)? { r }
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__xor__", Some("__rxor__"))? { r }
                 else { a.bit_xor(&b)? }
             }
             Opcode::BinaryMatrixMultiply | Opcode::InplaceMatrixMultiply => {
