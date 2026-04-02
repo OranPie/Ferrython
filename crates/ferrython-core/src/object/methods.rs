@@ -435,6 +435,15 @@ impl PyObjectMethods for PyObjectRef {
                     }
                 }
             }
+            // namedtuple instances: convert _tuple to list
+            PyObjectPayload::Instance(inst) if inst.class.get_attr("__namedtuple__").is_some() => {
+                if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
+                    if let PyObjectPayload::Tuple(items) = &tup.payload {
+                        return Ok(items.clone());
+                    }
+                }
+                Ok(vec![])
+            }
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", self.type_name()))),
         }
     }
@@ -1776,6 +1785,15 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 let items: Vec<PyObjectRef> = b.iter().map(|byte| PyObject::int(*byte as i64)).collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items, index: 0 })))))
+            }
+            // namedtuple instances: iterate over the underlying _tuple
+            PyObjectPayload::Instance(inst) if inst.class.get_attr("__namedtuple__").is_some() => {
+                if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
+                    if let PyObjectPayload::Tuple(items) = &tup.payload {
+                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 })))));
+                    }
+                }
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Tuple { items: vec![], index: 0 })))))
             }
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", self.type_name()))),
         }
