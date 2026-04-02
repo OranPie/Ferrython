@@ -278,9 +278,15 @@ impl VirtualMachine {
                         }
                     }
                     None => {
-                        // Type method access: e.g., dict.fromkeys, int.from_bytes
-                        if let PyObjectPayload::NativeFunction { name: fn_name, .. } = &obj.payload {
-                            if let Some(type_method) = builtins::resolve_type_class_method(fn_name, &name) {
+                        // Type method access: e.g., dict.fromkeys, object.__getattribute__
+                        let type_name = match &obj.payload {
+                            PyObjectPayload::NativeFunction { name: fn_name, .. } => Some(fn_name.as_str()),
+                            PyObjectPayload::BuiltinType(tn) => Some(tn.as_str()),
+                            PyObjectPayload::BuiltinFunction(fn_name) => Some(fn_name.as_str()),
+                            _ => None,
+                        };
+                        if let Some(tn) = type_name {
+                            if let Some(type_method) = builtins::resolve_type_class_method(tn, &name) {
                                 self.vm_push(type_method);
                                 return Ok(None);
                             }
@@ -573,10 +579,10 @@ impl VirtualMachine {
             Opcode::BinarySubscr => {
                 let key = self.vm_pop();
                 let obj = self.vm_pop();
-                // __class_getitem__: MyClass[int] → MyClass.__class_getitem__(int)
+                // __class_getitem__: MyClass[int] → MyClass.__class_getitem__(cls, int)
                 if matches!(&obj.payload, PyObjectPayload::Class(_)) {
                     if let Some(cgi) = obj.get_attr("__class_getitem__") {
-                        let result = self.call_object(cgi, vec![key])?;
+                        let result = self.call_object(cgi, vec![obj.clone(), key])?;
                         self.vm_push(result);
                         return Ok(None);
                     }
@@ -1444,7 +1450,13 @@ impl VirtualMachine {
                     }
                 };
                 match instr.arg {
-                    0 => return Err(PyException::runtime_error("No active exception to re-raise")),
+                    0 => {
+                        // Bare raise: re-raise the currently active exception
+                        if let Some(exc) = self.active_exception.clone() {
+                            return Err(exc);
+                        }
+                        return Err(PyException::runtime_error("No active exception to re-raise"));
+                    }
                     1 => {
                         let exc = frame.pop();
                         return Err(raise_exc(&exc));

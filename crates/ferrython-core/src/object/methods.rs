@@ -337,6 +337,16 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Float(f) => Ok(*f as i64),
             PyObjectPayload::Str(s) => s.trim().parse::<i64>().map_err(|_|
                 PyException::value_error(format!("invalid literal for int(): '{}'", s))),
+            PyObjectPayload::Instance(_) => {
+                // Check for __int__ or __index__ on the instance
+                if let Some(int_val) = self.get_attr("__int__") {
+                    if let Some(v) = int_val.as_int() { return Ok(v); }
+                }
+                if let Some(idx_val) = self.get_attr("__index__") {
+                    if let Some(v) = idx_val.as_int() { return Ok(v); }
+                }
+                Err(PyException::type_error(format!("int() argument must be a string or number, not '{}'", self.type_name())))
+            }
             _ => Err(PyException::type_error(format!("int() argument must be a string or number, not '{}'", self.type_name()))),
         }
     }
@@ -348,6 +358,14 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
             PyObjectPayload::Str(s) => s.trim().parse::<f64>().map_err(|_|
                 PyException::value_error(format!("could not convert string to float: '{}'", s))),
+            PyObjectPayload::Instance(_) => {
+                if let Some(float_val) = self.get_attr("__float__") {
+                    if let PyObjectPayload::Float(f) = &float_val.payload {
+                        return Ok(*f);
+                    }
+                }
+                Err(PyException::type_error(format!("float() argument must be a string or number, not '{}'", self.type_name())))
+            }
             _ => Err(PyException::type_error(format!("float() argument must be a string or number, not '{}'", self.type_name()))),
         }
     }

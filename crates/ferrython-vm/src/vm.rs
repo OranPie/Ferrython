@@ -19,6 +19,8 @@ pub struct VirtualMachine {
     pub(crate) call_stack: Vec<Frame>,
     pub(crate) builtins: IndexMap<CompactString, PyObjectRef>,
     pub(crate) modules: IndexMap<CompactString, PyObjectRef>,
+    /// Currently active exception being handled (for bare `raise` re-raise).
+    pub(crate) active_exception: Option<PyException>,
 }
 
 impl VirtualMachine {
@@ -27,6 +29,7 @@ impl VirtualMachine {
             call_stack: Vec::new(),
             builtins: builtins::init_builtins(),
             modules: IndexMap::new(),
+            active_exception: None,
         }
     }
 
@@ -645,6 +648,8 @@ impl VirtualMachine {
                 Ok(None) => {}
                 Err(exc) => {
                     if let Some(handler_ip) = self.unwind_except() {
+                        // Store active exception for bare `raise` re-raise
+                        self.active_exception = Some(exc.clone());
                         let frame = self.call_stack.last_mut().unwrap();
                         // CPython pushes (traceback, value, type) — 3 items
                         // If the exception has an original Instance, use it as the value

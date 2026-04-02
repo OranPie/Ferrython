@@ -495,6 +495,18 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
             name: CompactString::from("bytes.fromhex"),
             func: builtin_bytes_fromhex,
         })),
+        ("object", "__getattribute__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("object.__getattribute__"),
+            func: builtin_object_getattribute,
+        })),
+        ("object", "__setattr__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("object.__setattr__"),
+            func: builtin_object_setattr,
+        })),
+        ("object", "__delattr__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("object.__delattr__"),
+            func: builtin_object_delattr,
+        })),
         _ => None,
     }
 }
@@ -575,4 +587,59 @@ fn builtin_bytes_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     }
     Ok(PyObject::bytes(bytes))
+}
+
+/// object.__getattribute__(self, name) — default attribute lookup
+fn builtin_object_getattribute(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("object.__getattribute__ requires 2 arguments"));
+    }
+    let obj = &args[0];
+    let name = args[1].py_to_string();
+    match obj.get_attr(&name) {
+        Some(v) => Ok(v),
+        None => Err(PyException::attribute_error(format!(
+            "'{}' object has no attribute '{}'", obj.type_name(), name
+        ))),
+    }
+}
+
+/// object.__setattr__(self, name, value)
+fn builtin_object_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 3 {
+        return Err(PyException::type_error("object.__setattr__ requires 3 arguments"));
+    }
+    let obj = &args[0];
+    let name = args[1].py_to_string();
+    let value = args[2].clone();
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        inst.attrs.write().insert(CompactString::from(name), value);
+        Ok(PyObject::none())
+    } else {
+        Err(PyException::attribute_error(format!(
+            "'{}' object does not support attribute assignment", obj.type_name()
+        )))
+    }
+}
+
+/// object.__delattr__(self, name)
+fn builtin_object_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("object.__delattr__ requires 2 arguments"));
+    }
+    let obj = &args[0];
+    let name = args[1].py_to_string();
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if inst.attrs.write().swap_remove(name.as_str()).is_some() {
+            Ok(PyObject::none())
+        } else {
+            Err(PyException::attribute_error(format!(
+                "'{}' object has no attribute '{}'", obj.type_name(), name
+            )))
+        }
+    } else {
+        Err(PyException::attribute_error(format!(
+            "'{}' object does not support attribute deletion", obj.type_name()
+        )))
+    }
 }

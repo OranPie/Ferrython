@@ -190,7 +190,10 @@ pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 Ok(PyObject::int(f.round() as i64))
             }
         }
-        _ => Err(PyException::type_error("type has no round()")),
+        PyObjectPayload::Bool(b) => Ok(PyObject::int(if *b { 1 } else { 0 })),
+        _ => Err(PyException::type_error(format!(
+            "type '{}' doesn't define __round__ method", args[0].type_name()
+        ))),
     }
 }
 
