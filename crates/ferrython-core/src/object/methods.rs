@@ -241,7 +241,12 @@ impl PyObjectMethods for PyObjectRef {
             || (matches!(&self.payload, PyObjectPayload::Instance(_)) && self.get_attr("__call__").is_some())
     }
 
-    fn is_same(&self, other: &Self) -> bool { Arc::ptr_eq(self, other) }
+    fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(self, other) || matches!(
+            (&self.payload, &other.payload),
+            (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) if a == b
+        )
+    }
 
     fn py_to_string(&self) -> String {
         match &self.payload {
@@ -992,6 +997,8 @@ impl PyObjectMethods for PyObjectRef {
                 if name == "__mro__" {
                     let mut mro_list = vec![self.clone()];
                     mro_list.extend(cd.mro.iter().cloned());
+                    // Append 'object' as the universal base (like CPython)
+                    mro_list.push(PyObject::builtin_type(CompactString::from("object")));
                     return Some(PyObject::tuple(mro_list));
                 }
                 if name == "__dict__" {
@@ -1635,6 +1642,17 @@ impl PyObjectMethods for PyObjectRef {
                 } else {
                     Err(PyException::key_error(key.repr()))
                 }
+            }
+            PyObjectPayload::Range { start, stop, step } => {
+                let idx = key.to_int()?;
+                let len = if *step > 0 && *start < *stop {
+                    (stop - start + step - 1) / step
+                } else if *step < 0 && *start > *stop {
+                    (start - stop - step - 1) / (-step)
+                } else { 0 };
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len { return Err(PyException::index_error("range object index out of range")); }
+                Ok(PyObject::int(start + actual * step))
             }
             _ => Err(PyException::type_error(format!("'{}' object is not subscriptable", self.type_name()))),
         }

@@ -103,8 +103,36 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
         (PyObjectPayload::ExceptionType(a), PyObjectPayload::ExceptionType(b)) => {
             if a == b { Some(std::cmp::Ordering::Equal) } else { None }
         }
+        (PyObjectPayload::Range { start: s1, stop: e1, step: st1 }, PyObjectPayload::Range { start: s2, stop: e2, step: st2 }) => {
+            // CPython: ranges are equal if they produce the same sequence
+            // Simple shortcut: normalize empty ranges
+            let len1 = range_len(*s1, *e1, *st1);
+            let len2 = range_len(*s2, *e2, *st2);
+            if len1 == 0 && len2 == 0 { return Some(std::cmp::Ordering::Equal); }
+            if len1 != len2 { return None; }
+            if *s1 != *s2 { return None; }
+            if len1 == 1 { return Some(std::cmp::Ordering::Equal); }
+            if *st1 == *st2 { Some(std::cmp::Ordering::Equal) } else { None }
+        }
+        (PyObjectPayload::InstanceDict(a), PyObjectPayload::InstanceDict(b)) => {
+            let a = a.read(); let b = b.read();
+            if a.len() != b.len() { return None; }
+            for (k, v1) in a.iter() {
+                match b.get(k.as_str()) {
+                    Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
+                    _ => return None,
+                }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
         _ => None,
     }
+}
+
+fn range_len(start: i64, stop: i64, step: i64) -> i64 {
+    if step > 0 && start < stop { (stop - start + step - 1) / step }
+    else if step < 0 && start > stop { (start - stop - step - 1) / (-step) }
+    else { 0 }
 }
 
 pub(super) fn float_to_str(f: f64) -> String {

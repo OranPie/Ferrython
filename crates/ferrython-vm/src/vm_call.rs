@@ -708,6 +708,24 @@ impl VirtualMachine {
                         "super" => {
                             return self.make_super(&pos_args);
                         }
+                        "dict" => {
+                            let mut map = IndexMap::new();
+                            // dict(iterable, **kwargs) or dict(**kwargs)
+                            if !pos_args.is_empty() {
+                                let items = self.collect_iterable(&pos_args[0])?;
+                                for item in &items {
+                                    let pair = item.to_list()?;
+                                    if pair.len() == 2 {
+                                        let hk = pair[0].to_hashable_key()?;
+                                        map.insert(hk, pair[1].clone());
+                                    }
+                                }
+                            }
+                            for (k, v) in &kwargs {
+                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                            }
+                            return Ok(PyObject::dict(map));
+                        }
                         _ => {}
                     }
                 }
