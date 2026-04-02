@@ -255,11 +255,12 @@ impl Compiler {
 
     /// Emit the correct LOAD instruction for a name.
     pub(super) fn load_name(&mut self, name: &str) {
-        if self.is_function_scope() {
-            if self.is_cell(name) || self.is_free(name) {
-                let idx = self.deref_index(name);
-                self.emit_arg(Opcode::LoadDeref, idx);
-            } else if self.is_global(name) {
+        // Cell/free variables use LoadDeref in ANY scope (function, class, comprehension)
+        if self.is_cell(name) || self.is_free(name) {
+            let idx = self.deref_index(name);
+            self.emit_arg(Opcode::LoadDeref, idx);
+        } else if self.is_function_scope() {
+            if self.is_global(name) {
                 let idx = self.add_name(name);
                 self.emit_arg(Opcode::LoadGlobal, idx);
             } else if self.is_local(name) {
@@ -277,11 +278,12 @@ impl Compiler {
 
     /// Emit the correct STORE instruction for a name.
     pub(super) fn store_name(&mut self, name: &str) {
-        if self.is_function_scope() {
-            if self.is_cell(name) || self.is_free(name) {
-                let idx = self.deref_index(name);
-                self.emit_arg(Opcode::StoreDeref, idx);
-            } else if self.is_global(name) {
+        // Cell/free variables use StoreDeref in ANY scope
+        if self.is_cell(name) || self.is_free(name) {
+            let idx = self.deref_index(name);
+            self.emit_arg(Opcode::StoreDeref, idx);
+        } else if self.is_function_scope() {
+            if self.is_global(name) {
                 let idx = self.add_name(name);
                 self.emit_arg(Opcode::StoreGlobal, idx);
             } else {

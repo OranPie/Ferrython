@@ -7,7 +7,7 @@ use ferrython_bytecode::code::{CodeFlags, CodeObject, ConstantValue};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     ClassData, GeneratorState, IteratorData, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef,
+    PyObjectPayload, PyObjectRef, is_data_descriptor, lookup_in_class_mro,
 };
 use ferrython_core::types::{HashableKey, SharedGlobals};
 use indexmap::IndexMap;
@@ -486,6 +486,27 @@ impl VirtualMachine {
                             }
                             if reverse { items_vec.reverse(); }
                             *items_arc.write() = items_vec;
+                            return Ok(PyObject::none());
+                        }
+                    }
+                    // Handle dict.update(key=val, ...)
+                    if method_name.as_str() == "update" && !kwargs.is_empty() {
+                        if let PyObjectPayload::Dict(map) = &receiver.payload {
+                            // First process positional arg (another dict or iterable)
+                            if !pos_args.is_empty() {
+                                if let PyObjectPayload::Dict(other) = &pos_args[0].payload {
+                                    let other_items = other.read().clone();
+                                    let mut w = map.write();
+                                    for (k, v) in other_items {
+                                        w.insert(k, v);
+                                    }
+                                }
+                            }
+                            // Then add kwargs
+                            let mut w = map.write();
+                            for (k, v) in &kwargs {
+                                w.insert(HashableKey::Str(k.clone()), v.clone());
+                            }
                             return Ok(PyObject::none());
                         }
                     }
@@ -1563,6 +1584,63 @@ impl VirtualMachine {
                             }
                         }
                         return Ok(PyObject::dict_from_pairs(pairs));
+                    }
+                    "setattr" => {
+                        if args.len() != 3 {
+                            return Err(PyException::type_error("setattr() takes exactly 3 arguments"));
+                        }
+                        let attr_name = args[1].py_to_string();
+                        let value = args[2].clone();
+                        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                            if let Some(desc) = lookup_in_class_mro(&inst.class, &attr_name) {
+                                if let PyObjectPayload::Property { fset, .. } = &desc.payload {
+                                    if let Some(setter) = fset {
+                                        self.call_object(setter.clone(), vec![args[0].clone(), value])?;
+                                        return Ok(PyObject::none());
+                                    } else {
+                                        return Err(PyException::attribute_error(format!(
+                                            "can't set attribute '{}'", attr_name
+                                        )));
+                                    }
+                                }
+                                if is_data_descriptor(&desc) {
+                                    if let Some(set_method) = desc.get_attr("__set__") {
+                                        self.call_object(set_method, vec![desc, args[0].clone(), value])?;
+                                        return Ok(PyObject::none());
+                                    }
+                                }
+                            }
+                            if let Some(sa) = lookup_in_class_mro(&inst.class, "__setattr__") {
+                                if matches!(&sa.payload, PyObjectPayload::Function(_)) {
+                                    let method = Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: args[0].clone(),
+                                            method: sa,
+                                        }
+                                    });
+                                    self.call_object(method, vec![PyObject::str_val(CompactString::from(&attr_name)), value])?;
+                                    return Ok(PyObject::none());
+                                }
+                            }
+                        }
+                        return builtins::dispatch("setattr", &args);
+                    }
+                    "delattr" => {
+                        if args.len() != 2 {
+                            return Err(PyException::type_error("delattr() takes exactly 2 arguments"));
+                        }
+                        let attr_name = args[1].py_to_string();
+                        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                            if let Some(desc) = lookup_in_class_mro(&inst.class, &attr_name) {
+                                if let PyObjectPayload::Property { fdel, .. } = &desc.payload {
+                                    if let Some(deleter) = fdel {
+                                        self.call_object(deleter.clone(), vec![args[0].clone()])?;
+                                        return Ok(PyObject::none());
+                                    }
+                                }
+                            }
+                        }
+                        return builtins::dispatch("delattr", &args);
                     }
                     _ => {}
                 }
