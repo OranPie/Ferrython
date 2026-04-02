@@ -5,7 +5,9 @@
 
 use crate::builtins;
 use crate::frame::{BlockKind, Frame, ScopeKind};
-use crate::vm::{constant_to_object, exception_kind_matches, VirtualMachine};
+use crate::vm::exception_kind_matches;
+use crate::vm_helpers::constant_to_object;
+use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
