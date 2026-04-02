@@ -44,6 +44,18 @@ impl VirtualMachine {
     }
 }
 
+/// Check if a class has a user-defined method override (in its own namespace, not inherited).
+impl VirtualMachine {
+    pub(crate) fn class_has_user_override(cls: &PyObjectRef, method_name: &str) -> bool {
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            if let Some(v) = cd.namespace.read().get(method_name) {
+                return matches!(&v.payload, PyObjectPayload::Function(_));
+            }
+        }
+        false
+    }
+}
+
 // ── Group 1: Stack + LoadConst ───────────────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_stack_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
@@ -711,23 +723,29 @@ impl VirtualMachine {
                         return Ok(None);
                     }
                 }
-                // Dict subclass: Instance with dict_storage (before __getitem__ dunder)
+                // Dict subclass: Instance with dict_storage
+                // If the subclass defines its own __getitem__, call it instead of dict_storage
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
                     if let Some(ref ds) = inst.dict_storage {
-                        let hk = self.vm_to_hashable_key(&key)?;
-                        let existing = ds.read().get(&hk).cloned();
-                        if let Some(val) = existing {
-                            self.vm_push(val);
+                        let has_user_getitem = Self::class_has_user_override(&inst.class, "__getitem__");
+                        if has_user_getitem {
+                            // Let dunder dispatch handle it below
                         } else {
-                            // Check for __missing__
-                            if let Some(missing) = obj.get_attr("__missing__") {
-                                let result = self.call_object(missing, vec![key])?;
-                                self.vm_push(result);
+                            let hk = self.vm_to_hashable_key(&key)?;
+                            let existing = ds.read().get(&hk).cloned();
+                            if let Some(val) = existing {
+                                self.vm_push(val);
                             } else {
-                                return Err(PyException::key_error(key.py_to_string()));
+                                // Check for __missing__
+                                if let Some(missing) = obj.get_attr("__missing__") {
+                                    let result = self.call_object(missing, vec![key])?;
+                                    self.vm_push(result);
+                                } else {
+                                    return Err(PyException::key_error(key.py_to_string()));
+                                }
                             }
+                            return Ok(None);
                         }
-                        return Ok(None);
                     }
                 }
                 if let Some(r) = self.try_call_dunder(&obj, "__getitem__", vec![key.clone()])? {
@@ -797,8 +815,15 @@ impl VirtualMachine {
                         attrs.write().insert(key_str, value);
                     }
                     PyObjectPayload::Instance(inst) => {
-                        // Dict subclass: use dict_storage directly
+                        // Dict subclass: use dict_storage if no user override
                         if let Some(ref ds) = inst.dict_storage {
+                            let has_user_setitem = Self::class_has_user_override(&inst.class, "__setitem__");
+                            if has_user_setitem {
+                                if let Some(m) = obj.get_attr("__setitem__") {
+                                    self.call_object(m, vec![key, value])?;
+                                    return Ok(None);
+                                }
+                            }
                             let hk = self.vm_to_hashable_key(&key)?;
                             ds.write().insert(hk, value);
                         } else if let Some(m) = obj.get_attr("__setitem__") {

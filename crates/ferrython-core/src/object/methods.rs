@@ -1419,7 +1419,13 @@ impl PyObjectMethods for PyObjectRef {
                                     }));
                                 }
                                 if let Some(resolved) = crate::object::resolve_builtin_type_method(bt_name.as_str(), name) {
-                                    return Some(resolved);
+                                    // Wrap as BoundMethod so self is prepended
+                                    return Some(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: instance.clone(),
+                                            method: resolved,
+                                        }
+                                    }));
                                 }
                             }
                         }
@@ -1443,7 +1449,12 @@ impl PyObjectMethods for PyObjectRef {
                                     // Check BuiltinType bases (e.g., type, object)
                                     if let PyObjectPayload::BuiltinType(bt_name) = &base.payload {
                                         if let Some(resolved) = crate::object::resolve_builtin_type_method(bt_name.as_str(), name) {
-                                            return Some(resolved);
+                                            return Some(Arc::new(PyObject {
+                                                payload: PyObjectPayload::BoundMethod {
+                                                    receiver: instance.clone(),
+                                                    method: resolved,
+                                                }
+                                            }));
                                         }
                                     }
                                     // Check ExceptionType bases

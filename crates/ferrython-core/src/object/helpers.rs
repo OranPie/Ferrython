@@ -542,6 +542,65 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
         (_, "__init__") => Some(PyObject::native_function("builtin.__init__", |_args| {
             Ok(PyObject::none())
         })),
+        // dict.__getitem__(self, key) — access dict_storage on dict subclass
+        ("dict", "__getitem__") => Some(PyObject::native_function("dict.__getitem__", |args| {
+            if args.len() != 2 {
+                return Err(PyException::type_error("dict.__getitem__() takes exactly 2 arguments"));
+            }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(ref ds) = inst.dict_storage {
+                    let hk = args[1].to_hashable_key()?;
+                    if let Some(val) = ds.read().get(&hk) {
+                        return Ok(val.clone());
+                    }
+                    return Err(PyException::key_error(args[1].py_to_string()));
+                }
+            }
+            Err(PyException::type_error("dict.__getitem__ requires a dict instance"))
+        })),
+        // dict.__setitem__(self, key, value)
+        ("dict", "__setitem__") => Some(PyObject::native_function("dict.__setitem__", |args| {
+            if args.len() != 3 {
+                return Err(PyException::type_error("dict.__setitem__() takes exactly 3 arguments"));
+            }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(ref ds) = inst.dict_storage {
+                    let hk = args[1].to_hashable_key()?;
+                    ds.write().insert(hk, args[2].clone());
+                    return Ok(PyObject::none());
+                }
+            }
+            Err(PyException::type_error("dict.__setitem__ requires a dict instance"))
+        })),
+        // dict.__delitem__(self, key)
+        ("dict", "__delitem__") => Some(PyObject::native_function("dict.__delitem__", |args| {
+            if args.len() != 2 {
+                return Err(PyException::type_error("dict.__delitem__() takes exactly 2 arguments"));
+            }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(ref ds) = inst.dict_storage {
+                    let hk = args[1].to_hashable_key()?;
+                    if ds.write().shift_remove(&hk).is_some() {
+                        return Ok(PyObject::none());
+                    }
+                    return Err(PyException::key_error(args[1].py_to_string()));
+                }
+            }
+            Err(PyException::type_error("dict.__delitem__ requires a dict instance"))
+        })),
+        // dict.__contains__(self, key)
+        ("dict", "__contains__") => Some(PyObject::native_function("dict.__contains__", |args| {
+            if args.len() != 2 {
+                return Err(PyException::type_error("dict.__contains__() takes exactly 2 arguments"));
+            }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(ref ds) = inst.dict_storage {
+                    let hk = args[1].to_hashable_key()?;
+                    return Ok(PyObject::bool_val(ds.read().contains_key(&hk)));
+                }
+            }
+            Ok(PyObject::bool_val(false))
+        })),
         _ => None,
     }
 }
