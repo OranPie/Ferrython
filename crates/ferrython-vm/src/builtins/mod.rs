@@ -7,7 +7,7 @@ mod file_io;
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData};
+use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::sync::Arc;
@@ -244,6 +244,7 @@ pub(crate) fn apply_format_spec(val: &PyObjectRef, spec: &str) -> String {
 
 // ── Argument checking helpers (re-exported from core) ──
 
+#[allow(unused_imports)]
 pub(crate) use ferrython_core::object::{check_args, check_args_min, make_module, make_builtin};
 
 // ── Built-in type method dispatch ──
