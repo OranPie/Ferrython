@@ -297,6 +297,23 @@ impl Analyzer {
         self.scope_stack.last_mut().expect("no scope on stack")
     }
 
+    /// True if the current scope is a function directly inside a class scope.
+    fn is_inside_class_method(&self) -> bool {
+        let len = self.scope_stack.len();
+        if len < 2 { return false; }
+        let current = &self.scope_stack[len - 1];
+        if current.scope_type != ScopeType::Function { return false; }
+        // Walk up: skip comprehension scopes, look for class
+        for i in (0..len - 1).rev() {
+            match self.scope_stack[i].scope_type {
+                ScopeType::Class => return true,
+                ScopeType::Comprehension => continue,
+                _ => return false,
+            }
+        }
+        false
+    }
+
     fn push_scope(&mut self, name: impl Into<String>, scope_type: ScopeType) {
         self.scope_stack.push(Scope::new(name, scope_type));
     }
@@ -378,6 +395,8 @@ impl Analyzer {
                     self.analyze_expression(&kw.value);
                 }
                 self.push_scope(name.as_str(), ScopeType::Class);
+                // Implicitly bind __class__ so methods can use super() without args
+                self.current_scope().mark_assigned("__class__");
                 for s in body {
                     self.analyze_statement(s);
                 }
@@ -573,6 +592,11 @@ impl Analyzer {
         match &expr.node {
             ExpressionKind::Name { id, .. } => {
                 self.current_scope().mark_referenced(id);
+                // Implicit __class__ reference: when a method uses `super`,
+                // it needs __class__ from the enclosing class scope (PEP 3135).
+                if id.as_str() == "super" && self.is_inside_class_method() {
+                    self.current_scope().mark_referenced("__class__");
+                }
             }
 
             ExpressionKind::BoolOp { values, .. } => {

@@ -811,6 +811,16 @@ impl Compiler {
                 self.emit_op(Opcode::PopExcept);
                 self.compile_body(&handler.body)?;
 
+                // Clean up: store None into handler var then delete it (prevents
+                // exception→traceback reference cycles, matching CPython behavior)
+                if handler.name.is_some() {
+                    let name = handler.name.as_ref().unwrap();
+                    let none_idx = self.add_const(ConstantValue::None);
+                    self.emit_arg(Opcode::LoadConst, none_idx);
+                    self.store_name(name);
+                    self.delete_name(name);
+                }
+
                 handler_end_labels.push(self.emit_jump(Opcode::JumpForward));
                 self.patch_jump_here(no_match);
             } else {
@@ -825,6 +835,15 @@ impl Compiler {
 
                 self.emit_op(Opcode::PopExcept);
                 self.compile_body(&handler.body)?;
+
+                // Clean up handler variable (same as typed except path)
+                if handler.name.is_some() {
+                    let name = handler.name.as_ref().unwrap();
+                    let none_idx = self.add_const(ConstantValue::None);
+                    self.emit_arg(Opcode::LoadConst, none_idx);
+                    self.store_name(name);
+                    self.delete_name(name);
+                }
 
                 if i < handlers.len() - 1 {
                     handler_end_labels.push(self.emit_jump(Opcode::JumpForward));

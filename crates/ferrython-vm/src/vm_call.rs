@@ -7,7 +7,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeFlags, CodeObject};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    IteratorData, PyObject, PyObjectMethods,
+    CompareOp, IteratorData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, is_data_descriptor, lookup_in_class_mro,
 };
 use ferrython_core::types::{HashableKey, SharedGlobals};
@@ -238,6 +238,28 @@ impl VirtualMachine {
         pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
     ) -> PyResult<PyObjectRef> {
+        // Enum lookup: Color(2) returns the member with that value
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            if cd.namespace.read().contains_key("__enum__") && pos_args.len() == 1 && kwargs.is_empty() {
+                let target_val = &pos_args[0];
+                let ns = cd.namespace.read();
+                for (_, member) in ns.iter() {
+                    if let PyObjectPayload::Instance(inst) = &member.payload {
+                        if let Some(val) = inst.attrs.read().get("value") {
+                            if val.compare(target_val, CompareOp::Eq)
+                                .map(|r| r.is_truthy())
+                                .unwrap_or(false)
+                            {
+                                return Ok(member.clone());
+                            }
+                        }
+                    }
+                }
+                return Err(PyException::value_error(format!(
+                    "{} is not a valid {}", target_val.repr(), cd.name
+                )));
+            }
+        }
         // Check for abstract methods (ABC support)
         if let PyObjectPayload::Class(cd) = &cls.payload {
             let mut abstract_names: Vec<String> = Vec::new();
@@ -339,7 +361,12 @@ impl VirtualMachine {
                                 arg_idx += 1;
                                 v
                             } else if has_default {
-                                default_val.clone()
+                                // If default is callable (factory), call it
+                                if default_val.is_callable() {
+                                    self.call_object(default_val.clone(), vec![])?
+                                } else {
+                                    default_val.clone()
+                                }
                             } else {
                                 return Err(PyException::type_error(format!(
                                     "__init__() missing required argument: '{}'", name

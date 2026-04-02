@@ -1,6 +1,6 @@
 //! Class building — __build_class__, MRO computation, enum processing.
 
-use crate::frame::{Frame, ScopeKind};
+use crate::frame::{CellRef, Frame, ScopeKind};
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
@@ -42,10 +42,14 @@ impl VirtualMachine {
                 self.call_stack.push(frame);
                 let _ = self.run_frame();
                 let frame = self.call_stack.pop().unwrap();
-                frame.local_names
+                // Capture cells for __class__ patching below (cells are Arc<RwLock>)
+                let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
+                let cells = frame.cells.clone();
+                (frame.local_names, Some((cellvar_names, cells)))
             }
-            _ => IndexMap::new(),
+            _ => (IndexMap::new(), None),
         };
+        let (namespace, class_cell_info) = namespace;
 
         // Build MRO: [self_class, ...linearized_parents, object]
         // Simple C3-like: for single inheritance just chain; for multiple use bases order
@@ -53,6 +57,11 @@ impl VirtualMachine {
         let cls = PyObject::wrap(PyObjectPayload::Class(ClassData {
             name: class_name, bases: bases.clone(), namespace: Arc::new(RwLock::new(namespace)), mro, metaclass: None,
         }));
+
+        // Populate __class__ cell so methods can access it via super() (PEP 3135)
+        if let Some((ref cellvar_names, ref cells)) = class_cell_info {
+            Self::patch_class_cell(cellvar_names, cells, &cls);
+        }
 
         // Call __init_subclass__ on each base class (PEP 487)
         // __init_subclass__(cls) is called on the base's method with cls being the *new* subclass
@@ -217,10 +226,13 @@ impl VirtualMachine {
                 self.call_stack.push(frame);
                 let _ = self.run_frame();
                 let frame = self.call_stack.pop().unwrap();
-                frame.local_names
+                let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
+                let cells = frame.cells.clone();
+                (frame.local_names, Some((cellvar_names, cells)))
             }
-            _ => IndexMap::new(),
+            _ => (IndexMap::new(), None),
         };
+        let (namespace, class_cell_info) = namespace;
 
         if let Some(meta) = metaclass {
             // Metaclass provided: call metaclass.__new__(mcs, name, bases, namespace_dict)
@@ -301,6 +313,10 @@ impl VirtualMachine {
                     }
                 }
             }
+            // Populate __class__ cell (PEP 3135)
+            if let Some((ref cellvar_names, ref cells)) = class_cell_info {
+                Self::patch_class_cell(cellvar_names, cells, &cls);
+            }
             Ok(cls)
         } else {
             // No metaclass: build normally
@@ -330,7 +346,24 @@ impl VirtualMachine {
                     self.call_object(bound, vec![])?;
                 }
             }
+            // Populate __class__ cell (PEP 3135)
+            if let Some((ref cellvar_names, ref cells)) = class_cell_info {
+                Self::patch_class_cell(cellvar_names, cells, &cls);
+            }
             Ok(cls)
+        }
+    }
+
+    /// Populate the __class__ cell in the class body's cell array after class creation (PEP 3135).
+    fn patch_class_cell(cellvar_names: &[CompactString], cells: &[CellRef], cls: &PyObjectRef) {
+        for (i, name) in cellvar_names.iter().enumerate() {
+            if name.as_str() == "__class__" {
+                if let Some(cell) = cells.get(i) {
+                    let mut cell_val = cell.write();
+                    *cell_val = Some(cls.clone());
+                }
+                break;
+            }
         }
     }
 

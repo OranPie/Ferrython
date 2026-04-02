@@ -151,7 +151,23 @@ pub fn create_dataclasses_module() -> PyObjectRef {
     make_module("dataclasses", vec![
         ("dataclass", make_builtin(dataclass_decorator)),
         ("field", make_builtin(|args| {
-            // Return a sentinel field object
+            // field(default=..., default_factory=..., ...)
+            // kwargs passed as trailing dict by VM
+            if let Some(last) = args.last() {
+                if let PyObjectPayload::Dict(kw_map) = &last.payload {
+                    let r = kw_map.read();
+                    // Check for default_factory
+                    if let Some(factory) = r.get(&HashableKey::Str(CompactString::from("default_factory"))) {
+                        // Return a sentinel with __field_factory__ marker
+                        let mut attrs = IndexMap::new();
+                        attrs.insert(CompactString::from("__field_factory__"), factory.clone());
+                        return Ok(PyObject::module_with_attrs(CompactString::from("_field"), attrs));
+                    }
+                    if let Some(default) = r.get(&HashableKey::Str(CompactString::from("default"))) {
+                        return Ok(default.clone());
+                    }
+                }
+            }
             let default = if args.is_empty() { PyObject::none() } else { args[0].clone() };
             Ok(default)
         })),
@@ -202,7 +218,12 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         field_names.push(name.clone());
                         // Check for default value in class namespace
                         if let Some(default) = ns.get(name.as_str()) {
-                            field_defaults.insert(name.clone(), default.clone());
+                            // Check if it's a field() sentinel with factory
+                            if let Some(factory) = default.get_attr("__field_factory__") {
+                                field_defaults.insert(name.clone(), factory);
+                            } else {
+                                field_defaults.insert(name.clone(), default.clone());
+                            }
                         }
                     }
                 }

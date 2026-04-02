@@ -46,6 +46,6 @@ pub enum ParseErrorKind {
     ReturnOutsideFunction,
     #[error("'yield' outside function")]
     YieldOutsideFunction,
-    #[error("too many nested blocks")]
-    TooManyNestedBlocks,
+    #[error("multiple starred expressions in assignment")]
+    MultipleStarredInAssignment,
 }

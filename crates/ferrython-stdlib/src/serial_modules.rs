@@ -16,9 +16,82 @@ pub fn create_json_module() -> PyObjectRef {
 }
 
 fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("json.dumps", args, 1)?;
-    let s = py_to_json(&args[0])?;
+    if args.is_empty() {
+        return Err(PyException::type_error("json.dumps() missing 1 required positional argument: 'obj'"));
+    }
+    // kwargs may be passed as a trailing dict by the VM
+    let mut indent: Option<usize> = None;
+    let mut sort_keys = false;
+    if args.len() > 1 {
+        if let PyObjectPayload::Dict(kw_map) = &args[args.len() - 1].payload {
+            let r = kw_map.read();
+            if let Some(ind) = r.get(&HashableKey::Str(CompactString::from("indent"))) {
+                indent = match &ind.payload {
+                    PyObjectPayload::Int(n) => Some(n.to_i64().unwrap_or(2) as usize),
+                    PyObjectPayload::None => None,
+                    _ => None,
+                };
+            }
+            if let Some(sk) = r.get(&HashableKey::Str(CompactString::from("sort_keys"))) {
+                sort_keys = sk.is_truthy();
+            }
+        } else {
+            // Positional indent arg
+            match &args[1].payload {
+                PyObjectPayload::Int(n) => indent = Some(n.to_i64().unwrap_or(2) as usize),
+                _ => {}
+            }
+        }
+    }
+    let _ = sort_keys; // TODO: implement sort_keys
+    let s = if let Some(indent_size) = indent {
+        py_to_json_pretty(&args[0], 0, indent_size)?
+    } else {
+        py_to_json(&args[0])?
+    };
     Ok(PyObject::str_val(CompactString::from(s)))
+}
+
+fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize) -> PyResult<String> {
+    let pad = " ".repeat(indent * (depth + 1));
+    let pad_close = " ".repeat(indent * depth);
+    match &obj.payload {
+        PyObjectPayload::None => Ok("null".into()),
+        PyObjectPayload::Bool(b) => Ok(if *b { "true" } else { "false" }.into()),
+        PyObjectPayload::Int(n) => Ok(n.to_string()),
+        PyObjectPayload::Float(f) => {
+            if f.is_nan() { return Err(PyException::value_error("NaN is not JSON serializable")); }
+            if f.is_infinite() { return Err(PyException::value_error("Infinity is not JSON serializable")); }
+            Ok(format!("{}", f))
+        }
+        PyObjectPayload::Str(s) => Ok(format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"))),
+        PyObjectPayload::List(items) => {
+            let r = items.read();
+            if r.is_empty() { return Ok("[]".into()); }
+            let parts: Result<Vec<String>, _> = r.iter().map(|i| py_to_json_pretty(i, depth + 1, indent)).collect();
+            Ok(format!("[\n{}{}\n{}]", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
+        }
+        PyObjectPayload::Tuple(items) => {
+            if items.is_empty() { return Ok("[]".into()); }
+            let parts: Result<Vec<String>, _> = items.iter().map(|i| py_to_json_pretty(i, depth + 1, indent)).collect();
+            Ok(format!("[\n{}{}\n{}]", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
+        }
+        PyObjectPayload::Dict(map) => {
+            let r = map.read();
+            if r.is_empty() { return Ok("{}".into()); }
+            let parts: Result<Vec<String>, _> = r.iter().map(|(k, v)| {
+                let key_str = match k {
+                    HashableKey::Str(s) => format!("\"{}\"", s),
+                    HashableKey::Int(n) => format!("\"{}\"", n),
+                    _ => return Err(PyException::type_error("keys must be str")),
+                };
+                let val_str = py_to_json_pretty(v, depth + 1, indent)?;
+                Ok(format!("{}: {}", key_str, val_str))
+            }).collect();
+            Ok(format!("{{\n{}{}\n{}}}", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
+        }
+        _ => py_to_json(obj),
+    }
 }
 
 fn py_to_json(obj: &PyObjectRef) -> PyResult<String> {

@@ -1429,18 +1429,18 @@ impl Parser {
                 }
                 // Parse the expression text
                 let expr = parse_expression_text(&expr_text, loc)?;
+                // Parse format spec: it can itself contain {expr} (e.g. f"{x:.{n}f}")
+                let fmt = if format_spec.is_empty() {
+                    None
+                } else {
+                    let spec_expr = self.parse_fstring_content(&format_spec, loc)?;
+                    Some(Box::new(spec_expr))
+                };
                 values.push(Expression::new(
                     ExpressionKind::FormattedValue {
                         value: Box::new(expr),
                         conversion,
-                        format_spec: if format_spec.is_empty() {
-                            None
-                        } else {
-                            Some(Box::new(Expression::constant(
-                                Constant::Str(CompactString::from(format_spec)),
-                                loc,
-                            )))
-                        },
+                        format_spec: fmt,
                     },
                     loc,
                 ));
@@ -1501,7 +1501,11 @@ impl Parser {
         loop {
             if self.check(TokenKind::Colon) { break; }
 
-            if self.check(TokenKind::Star) {
+            if self.check(TokenKind::Slash) {
+                // Positional-only separator: move all args so far to posonlyargs
+                self.advance();
+                args.posonlyargs.append(&mut args.args);
+            } else if self.check(TokenKind::Star) {
                 self.advance();
                 seen_star = true;
                 if self.check(TokenKind::Comma) || self.check(TokenKind::Colon) {
@@ -1847,6 +1851,16 @@ impl Parser {
                 break;
             }
             elts.push(self.parse_test_or_star()?);
+        }
+        // Validate: at most one starred expression in an assignment target
+        let star_count = elts.iter().filter(|e| {
+            matches!(e.node, ExpressionKind::Starred { .. })
+        }).count();
+        if star_count > 1 {
+            return Err(ParseError::new(
+                ParseErrorKind::MultipleStarredInAssignment,
+                self.peek().span,
+            ));
         }
         Ok(Expression::new(
             ExpressionKind::Tuple {
