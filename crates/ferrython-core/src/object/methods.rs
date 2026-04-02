@@ -1201,6 +1201,10 @@ impl PyObjectMethods for PyObjectRef {
                                 "__subclasses__", "__subclasshook__",
                             ];
                             if BUILTIN_DUNDERS.contains(&name) {
+                                // Check if resolve_builtin_type_method has a real implementation
+                                if let Some(native) = resolve_builtin_type_method(n, name) {
+                                    return Some(native);
+                                }
                                 Some(Arc::new(PyObject {
                                     payload: PyObjectPayload::BuiltinBoundMethod {
                                         receiver: self.clone(),
