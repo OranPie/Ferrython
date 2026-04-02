@@ -1557,16 +1557,27 @@ impl PyObjectMethods for PyObjectRef {
             'f' | 'F' => {
                 let f = self.to_float()?;
                 let inner_spec = &spec[..len - 1];
-                if let Some(dot_pos) = inner_spec.rfind('.') {
-                    let prec: usize = inner_spec[dot_pos + 1..].parse().unwrap_or(6);
+                let use_comma = inner_spec.contains(',');
+                let clean_spec: String = inner_spec.chars().filter(|c| *c != ',').collect();
+                if let Some(dot_pos) = clean_spec.rfind('.') {
+                    let prec: usize = clean_spec[dot_pos + 1..].parse().unwrap_or(6);
                     let num_str = format!("{:.prec$}", f, prec = prec);
-                    let pre_dot = &inner_spec[..dot_pos];
+                    let result = if use_comma {
+                        add_thousands_separator(&num_str, ',')
+                    } else {
+                        num_str
+                    };
+                    let pre_dot = &clean_spec[..dot_pos];
                     if pre_dot.is_empty() {
-                        return Ok(num_str);
+                        return Ok(result);
                     }
-                    return Ok(apply_string_format_spec(&num_str, pre_dot));
+                    return Ok(apply_string_format_spec(&result, pre_dot));
                 }
-                return Ok(format!("{:.6}", f));
+                let num_str = format!("{:.6}", f);
+                if use_comma {
+                    return Ok(add_thousands_separator(&num_str, ','));
+                }
+                return Ok(num_str);
             }
             'e' | 'E' => {
                 let f = self.to_float()?;
@@ -1582,31 +1593,43 @@ impl PyObjectMethods for PyObjectRef {
             }
             'b' => {
                 let n = self.to_int()?;
-                let raw = format!("{:b}", n);
+                let digits = format!("{:b}", n);
                 let inner_spec = &spec[..len - 1];
-                if inner_spec.is_empty() { return Ok(raw); }
-                return Ok(apply_string_format_spec(&raw, inner_spec));
+                let alt = inner_spec.contains('#');
+                let raw = if alt { format!("0b{}", digits) } else { digits };
+                let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
+                if clean_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, &clean_spec));
             }
             'o' => {
                 let n = self.to_int()?;
-                let raw = format!("{:o}", n);
+                let digits = format!("{:o}", n);
                 let inner_spec = &spec[..len - 1];
-                if inner_spec.is_empty() { return Ok(raw); }
-                return Ok(apply_string_format_spec(&raw, inner_spec));
+                let alt = inner_spec.contains('#');
+                let raw = if alt { format!("0o{}", digits) } else { digits };
+                let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
+                if clean_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, &clean_spec));
             }
             'x' => {
                 let n = self.to_int()?;
-                let raw = format!("{:x}", n);
+                let digits = format!("{:x}", n);
                 let inner_spec = &spec[..len - 1];
-                if inner_spec.is_empty() { return Ok(raw); }
-                return Ok(apply_string_format_spec(&raw, inner_spec));
+                let alt = inner_spec.contains('#');
+                let raw = if alt { format!("0x{}", digits) } else { digits };
+                let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
+                if clean_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, &clean_spec));
             }
             'X' => {
                 let n = self.to_int()?;
-                let raw = format!("{:X}", n);
+                let digits = format!("{:X}", n);
                 let inner_spec = &spec[..len - 1];
-                if inner_spec.is_empty() { return Ok(raw); }
-                return Ok(apply_string_format_spec(&raw, inner_spec));
+                let alt = inner_spec.contains('#');
+                let raw = if alt { format!("0X{}", digits) } else { digits };
+                let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
+                if clean_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, &clean_spec));
             }
             's' => {
                 let s = self.py_to_string();
