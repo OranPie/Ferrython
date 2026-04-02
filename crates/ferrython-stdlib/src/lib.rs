@@ -3,7 +3,14 @@
 //! This crate provides all built-in Python standard library modules.
 //! The VM calls `load_module(name)` to resolve `import` statements.
 
-mod modules;
+mod math_modules;
+mod sys_modules;
+mod text_modules;
+mod collection_modules;
+mod serial_modules;
+mod fs_modules;
+mod time_modules;
+mod misc_modules;
 
 use ferrython_core::object::PyObjectRef;
 
@@ -11,54 +18,62 @@ use ferrython_core::object::PyObjectRef;
 /// Returns `Some(module)` if found, `None` otherwise.
 pub fn load_module(name: &str) -> Option<PyObjectRef> {
     match name {
-        "math" => Some(modules::create_math_module()),
-        "sys" => Some(modules::create_sys_module()),
-        "os" => Some(modules::create_os_module()),
-        "os.path" => Some(modules::create_os_path_module()),
-        "string" => Some(modules::create_string_module()),
-        "json" => Some(modules::create_json_module()),
-        "time" => Some(modules::create_time_module()),
-        "random" => Some(modules::create_random_module()),
-        "collections" => Some(modules::create_collections_module()),
-        "functools" => Some(modules::create_functools_module()),
-        "itertools" => Some(modules::create_itertools_module()),
-        "io" => Some(modules::create_io_module()),
-        "re" => Some(modules::create_re_module()),
-        "hashlib" => Some(modules::create_hashlib_module()),
-        "copy" => Some(modules::create_copy_module()),
-        "operator" => Some(modules::create_operator_module()),
-        "typing" => Some(modules::create_typing_module()),
-        "abc" => Some(modules::create_abc_module()),
-        "enum" => Some(modules::create_enum_module()),
-        "contextlib" => Some(modules::create_contextlib_module()),
-        "dataclasses" => Some(modules::create_dataclasses_module()),
-        "struct" => Some(modules::create_struct_module()),
-        "textwrap" => Some(modules::create_textwrap_module()),
-        "traceback" => Some(modules::create_traceback_module()),
-        "warnings" => Some(modules::create_warnings_module()),
-        "decimal" => Some(modules::create_decimal_module()),
-        "statistics" => Some(modules::create_statistics_module()),
-        "numbers" => Some(modules::create_numbers_module()),
-        "platform" => Some(modules::create_platform_module()),
-        "locale" => Some(modules::create_locale_module()),
-        "inspect" => Some(modules::create_inspect_module()),
-        "dis" => Some(modules::create_dis_module()),
-        "logging" => Some(modules::create_logging_module()),
-        "subprocess" => Some(modules::create_subprocess_module()),
-        "pathlib" => Some(modules::create_pathlib_module()),
-        "unittest" => Some(modules::create_unittest_module()),
-        "threading" => Some(modules::create_threading_module()),
-        "csv" => Some(modules::create_csv_module()),
-        "shutil" => Some(modules::create_shutil_module()),
-        "glob" => Some(modules::create_glob_module()),
-        "tempfile" => Some(modules::create_tempfile_module()),
-        "fnmatch" => Some(modules::create_fnmatch_module()),
-        "base64" => Some(modules::create_base64_module()),
-        "pprint" => Some(modules::create_pprint_module()),
-        "argparse" => Some(modules::create_argparse_module()),
-        "datetime" => Some(modules::create_datetime_module()),
-        "weakref" => Some(modules::create_weakref_module()),
-        "gc" => Some(modules::create_gc_module()),
+        // Math & statistics
+        "math" => Some(math_modules::create_math_module()),
+        "statistics" => Some(math_modules::create_statistics_module()),
+        "numbers" => Some(math_modules::create_numbers_module()),
+        "decimal" => Some(math_modules::create_decimal_module()),
+        "random" => Some(math_modules::create_random_module()),
+        // System & OS
+        "sys" => Some(sys_modules::create_sys_module()),
+        "os" => Some(sys_modules::create_os_module()),
+        "os.path" => Some(sys_modules::create_os_path_module()),
+        "platform" => Some(sys_modules::create_platform_module()),
+        "locale" => Some(sys_modules::create_locale_module()),
+        // Text processing
+        "string" => Some(text_modules::create_string_module()),
+        "re" => Some(text_modules::create_re_module()),
+        "textwrap" => Some(text_modules::create_textwrap_module()),
+        "fnmatch" => Some(text_modules::create_fnmatch_module()),
+        // Collections & functional
+        "collections" => Some(collection_modules::create_collections_module()),
+        "functools" => Some(collection_modules::create_functools_module()),
+        "itertools" => Some(collection_modules::create_itertools_module()),
+        // Serialization
+        "json" => Some(serial_modules::create_json_module()),
+        "csv" => Some(serial_modules::create_csv_module()),
+        "base64" => Some(serial_modules::create_base64_module()),
+        "struct" => Some(serial_modules::create_struct_module()),
+        // Filesystem & process
+        "pathlib" => Some(fs_modules::create_pathlib_module()),
+        "shutil" => Some(fs_modules::create_shutil_module()),
+        "glob" => Some(fs_modules::create_glob_module()),
+        "tempfile" => Some(fs_modules::create_tempfile_module()),
+        "io" => Some(fs_modules::create_io_module()),
+        "subprocess" => Some(fs_modules::create_subprocess_module()),
+        // Time & datetime
+        "time" => Some(time_modules::create_time_module()),
+        "datetime" => Some(time_modules::create_datetime_module()),
+        // Misc
+        "typing" => Some(misc_modules::create_typing_module()),
+        "abc" => Some(misc_modules::create_abc_module()),
+        "enum" => Some(misc_modules::create_enum_module()),
+        "contextlib" => Some(misc_modules::create_contextlib_module()),
+        "dataclasses" => Some(misc_modules::create_dataclasses_module()),
+        "copy" => Some(misc_modules::create_copy_module()),
+        "operator" => Some(misc_modules::create_operator_module()),
+        "hashlib" => Some(misc_modules::create_hashlib_module()),
+        "logging" => Some(misc_modules::create_logging_module()),
+        "warnings" => Some(misc_modules::create_warnings_module()),
+        "traceback" => Some(misc_modules::create_traceback_module()),
+        "inspect" => Some(misc_modules::create_inspect_module()),
+        "dis" => Some(misc_modules::create_dis_module()),
+        "threading" => Some(misc_modules::create_threading_module()),
+        "unittest" => Some(misc_modules::create_unittest_module()),
+        "pprint" => Some(misc_modules::create_pprint_module()),
+        "argparse" => Some(misc_modules::create_argparse_module()),
+        "weakref" => Some(misc_modules::create_weakref_module()),
+        "gc" => Some(misc_modules::create_gc_module()),
         _ => None,
     }
 }
