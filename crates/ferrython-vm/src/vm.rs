@@ -144,13 +144,22 @@ impl VirtualMachine {
         pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
         defaults: &[PyObjectRef],
+        kw_defaults: &IndexMap<CompactString, PyObjectRef>,
         globals: SharedGlobals,
         closure: &[Arc<RwLock<Option<PyObjectRef>>>],
     ) -> PyResult<PyObjectRef> {
         let mut frame = Frame::new(code.clone(), globals, self.builtins.clone());
         let nparams = code.arg_count as usize;
+        let nkwonly = code.kwonlyarg_count as usize;
         let has_varargs = code.flags.contains(CodeFlags::VARARGS);
         let has_varkw = code.flags.contains(CodeFlags::VARKEYWORDS);
+
+        // Total named parameters (positional + keyword-only)
+        let _total_named = nparams + nkwonly;
+        // Varargs slot comes after positional params
+        let varargs_slot = nparams;
+        // Keyword-only params start after *args slot (if present)
+        let kwonly_start = if has_varargs { nparams + 1 } else { nparams };
 
         // Assign positional parameters
         let positional_count = pos_args.len().min(nparams);
@@ -162,7 +171,10 @@ impl VirtualMachine {
         let mut extra_kwargs: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
         for (name, val) in &kwargs {
             if let Some(idx) = code.varnames.iter().position(|v| v.as_str() == name.as_str()) {
-                if idx < nparams {
+                // Accept both positional params (< nparams) and kwonly params
+                let is_positional = idx < nparams;
+                let is_kwonly = idx >= kwonly_start && idx < kwonly_start + nkwonly;
+                if is_positional || is_kwonly {
                     frame.set_local(idx, val.clone());
                     continue;
                 }
@@ -186,6 +198,18 @@ impl VirtualMachine {
             }
         }
 
+        // Fill in kw_defaults for missing keyword-only args
+        for i in 0..nkwonly {
+            let slot = kwonly_start + i;
+            if frame.locals.get(slot).map_or(true, |v| v.is_none()) {
+                if let Some(varname) = code.varnames.get(slot) {
+                    if let Some(default_val) = kw_defaults.get(varname.as_str()) {
+                        frame.set_local(slot, default_val.clone());
+                    }
+                }
+            }
+        }
+
         // Pack extra positional args into *args tuple
         if has_varargs {
             let extra: Vec<PyObjectRef> = if pos_args.len() > nparams {
@@ -193,12 +217,12 @@ impl VirtualMachine {
             } else {
                 Vec::new()
             };
-            frame.set_local(nparams, PyObject::tuple(extra));
+            frame.set_local(varargs_slot, PyObject::tuple(extra));
         }
 
         // Pack **kwargs into a dict
         if has_varkw {
-            let kwargs_idx = nparams + if has_varargs { 1 } else { 0 };
+            let kwargs_idx = kwonly_start + nkwonly;
             frame.set_local(kwargs_idx, PyObject::dict(extra_kwargs));
         }
 
@@ -400,8 +424,9 @@ impl VirtualMachine {
                 let code = pyfunc.code.clone();
                 let globals = pyfunc.globals.clone();
                 let defaults = pyfunc.defaults.clone();
+                let kw_defaults = pyfunc.kw_defaults.clone();
                 let closure = pyfunc.closure.clone();
-                self.call_function_kw(&code, pos_args, kwargs, &defaults, globals, &closure)
+                self.call_function_kw(&code, pos_args, kwargs, &defaults, &kw_defaults, globals, &closure)
             }
             PyObjectPayload::BoundMethod { receiver, method } => {
                 let mut bound_args = vec![receiver.clone()];

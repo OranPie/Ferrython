@@ -1050,6 +1050,40 @@ impl PyObjectMethods for PyObjectRef {
                     _ => None,
                 }
             }
+            // Function attributes
+            PyObjectPayload::Function(f) => match name {
+                "__name__" => Some(PyObject::str_val(f.name.clone())),
+                "__qualname__" => Some(PyObject::str_val(f.qualname.clone())),
+                "__defaults__" => {
+                    if f.defaults.is_empty() { Some(PyObject::none()) }
+                    else { Some(PyObject::tuple(f.defaults.clone())) }
+                }
+                "__module__" => Some(PyObject::str_val(CompactString::from("__main__"))),
+                "__doc__" => Some(PyObject::none()),
+                "__dict__" => Some(PyObject::dict(IndexMap::new())),
+                "__annotations__" => {
+                    let mut map = IndexMap::new();
+                    for (k, v) in &f.annotations {
+                        if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
+                            map.insert(hk, v.clone());
+                        }
+                    }
+                    Some(PyObject::dict(map))
+                }
+                "__closure__" => Some(PyObject::none()),
+                "__code__" => Some(PyObject::none()),
+                _ => None,
+            }
+            PyObjectPayload::NativeFunction { name: fname, .. } => match name {
+                "__name__" => Some(PyObject::str_val(CompactString::from(fname.as_str()))),
+                "__qualname__" => Some(PyObject::str_val(CompactString::from(fname.as_str()))),
+                "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
+                "__doc__" => Some(PyObject::none()),
+                _ => None,
+            }
+            PyObjectPayload::BoundMethod { method, .. } => {
+                method.get_attr(name)
+            }
             // Int property-like attributes (return values, not bound methods)
             PyObjectPayload::Int(_n) => match name {
                 "real" | "numerator" => Some(PyObject::wrap(self.payload.clone())),

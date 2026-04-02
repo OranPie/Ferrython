@@ -273,6 +273,10 @@ pub(super) fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
 pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
     match &cls.payload {
         PyObjectPayload::BuiltinFunction(type_name) | PyObjectPayload::BuiltinType(type_name) => {
+            // Everything is an instance of object
+            if type_name.as_str() == "object" {
+                return true;
+            }
             let obj_type = obj.type_name();
             if obj_type == type_name.as_str() {
                 return true;
@@ -280,6 +284,10 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             // Built-in subtype relationships: bool is subclass of int
             if type_name.as_str() == "int" && obj_type == "bool" {
                 return true;
+            }
+            // Check user-defined classes that inherit from builtins
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                return class_is_subclass_of(&inst.class, type_name.as_str());
             }
             false
         }

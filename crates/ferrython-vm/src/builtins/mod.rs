@@ -242,6 +242,11 @@ pub(crate) fn apply_format_spec(val: &PyObjectRef, spec: &str) -> String {
     }
 }
 
+/// Apply format spec to an already-converted string value.
+pub(crate) fn apply_format_spec_str(s: &str, spec: &str) -> String {
+    ferrython_core::object::format_value_spec(s, spec)
+}
+
 
 // ── Argument checking helpers (re-exported from core) ──
 

@@ -154,7 +154,7 @@ pub(super) fn format_float_spec(f: f64, spec: &str) -> String {
     }
 }
 
-pub(super) fn format_str_spec(s: &str, spec: &str) -> String {
+pub fn format_str_spec(s: &str, spec: &str) -> String {
     let left_align = spec.starts_with('-');
     let width_str = spec.trim_start_matches(|c: char| "-+ #0".contains(c));
     // Parse precision (max string length)
@@ -174,6 +174,63 @@ pub(super) fn format_str_spec(s: &str, spec: &str) -> String {
         format!("{:<width$}", display, width = width)
     } else {
         format!("{:>width$}", display, width = width)
+    }
+}
+
+/// Python format spec mini-language: [[fill]align][sign][#][0][width][grouping][.precision][type]
+pub fn format_value_spec(s: &str, spec: &str) -> String {
+    if spec.is_empty() { return s.to_string(); }
+    let chars: Vec<char> = spec.chars().collect();
+    let mut i = 0;
+    // Parse optional fill and align
+    let (fill, align) = if chars.len() >= 2 && matches!(chars[1], '<' | '>' | '^' | '=') {
+        i = 2;
+        (chars[0], chars[1])
+    } else if !chars.is_empty() && matches!(chars[0], '<' | '>' | '^' | '=') {
+        i = 1;
+        (' ', chars[0])
+    } else {
+        (' ', '<') // default: left-align for strings
+    };
+    // Parse width
+    let mut width = 0usize;
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        width = width * 10 + (chars[i] as usize - '0' as usize);
+        i += 1;
+    }
+    // Parse .precision
+    let mut precision: Option<usize> = None;
+    if i < chars.len() && chars[i] == '.' {
+        i += 1;
+        let mut p = 0usize;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            p = p * 10 + (chars[i] as usize - '0' as usize);
+            i += 1;
+        }
+        precision = Some(p);
+    }
+    // Parse type (d, f, s, etc.) — ignored for string formatting
+    // Apply precision (truncation for strings)
+    let display = if let Some(prec) = precision {
+        let chars_vec: Vec<char> = s.chars().collect();
+        if chars_vec.len() > prec { chars_vec[..prec].iter().collect() } else { s.to_string() }
+    } else {
+        s.to_string()
+    };
+    if width == 0 || display.len() >= width { return display; }
+    let pad = width - display.len();
+    match align {
+        '<' => format!("{}{}", display, std::iter::repeat(fill).take(pad).collect::<String>()),
+        '>' => format!("{}{}", std::iter::repeat(fill).take(pad).collect::<String>(), display),
+        '^' => {
+            let left = pad / 2;
+            let right = pad - left;
+            format!("{}{}{}", 
+                std::iter::repeat(fill).take(left).collect::<String>(),
+                display,
+                std::iter::repeat(fill).take(right).collect::<String>())
+        }
+        _ => display,
     }
 }
 

@@ -1348,7 +1348,20 @@ impl VirtualMachine {
                     }
                 } else { Vec::new() };
                 if flags & 0x04 != 0 { frame.pop(); } // annotations
-                if flags & 0x02 != 0 { frame.pop(); } // kwdefaults
+                let kw_defaults = if flags & 0x02 != 0 {
+                    let kwd_obj = frame.pop();
+                    if let PyObjectPayload::Dict(m) = &kwd_obj.payload {
+                        let mut result = IndexMap::new();
+                        for (k, v) in m.read().iter() {
+                            if let HashableKey::Str(name) = k {
+                                result.insert(name.clone(), v.clone());
+                            }
+                        }
+                        result
+                    } else {
+                        IndexMap::new()
+                    }
+                } else { IndexMap::new() };
                 let mut defaults = Vec::new();
                 if flags & 0x01 != 0 {
                     let default_tuple = frame.pop();
@@ -1367,7 +1380,7 @@ impl VirtualMachine {
                     qualname: name_str,
                     code,
                     defaults,
-                    kw_defaults: IndexMap::new(),
+                    kw_defaults,
                     globals: frame.globals.clone(),
                     closure: closure_cells,
                     annotations: IndexMap::new(),

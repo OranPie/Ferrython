@@ -9,7 +9,7 @@ use ferrython_core::object::{
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 
-use super::apply_format_spec;
+use super::apply_format_spec_str;
 
 pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
@@ -397,11 +397,17 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             if c == '}' { break; }
                             field_spec.push(c);
                         }
-                        // Split field_spec on ':' → field_name : format_spec
-                        let (field_name, format_spec) = if let Some(colon_pos) = field_spec.find(':') {
+                        // Split field_spec: {field_name!conversion:format_spec}
+                        let (field_part, format_spec) = if let Some(colon_pos) = field_spec.find(':') {
                             (&field_spec[..colon_pos], Some(&field_spec[colon_pos+1..]))
                         } else {
                             (field_spec.as_str(), None)
+                        };
+                        // Split field_part on '!' for conversion
+                        let (field_name, conversion) = if let Some(bang_pos) = field_part.find('!') {
+                            (&field_part[..bang_pos], Some(&field_part[bang_pos+1..]))
+                        } else {
+                            (field_part, None)
                         };
                         // Resolve the value
                         let value = if field_name.is_empty() {
@@ -414,8 +420,25 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             None
                         };
                         if let Some(val) = value {
-                            if let Some(spec) = format_spec {
-                                result.push_str(&apply_format_spec(&val, spec));
+                            if let Some(conv) = conversion {
+                                // Apply conversion first, then format spec on the string
+                                let converted = match conv {
+                                    "r" => val.repr(),
+                                    "s" => val.py_to_string(),
+                                    "a" => val.repr(),
+                                    _ => val.py_to_string(),
+                                };
+                                if let Some(spec) = format_spec {
+                                    result.push_str(&apply_format_spec_str(&converted, spec));
+                                } else {
+                                    result.push_str(&converted);
+                                }
+                            } else if let Some(spec) = format_spec {
+                                // No conversion — use format_value on the object directly
+                                match val.format_value(spec) {
+                                    Ok(formatted) => result.push_str(&formatted),
+                                    Err(_) => result.push_str(&val.py_to_string()),
+                                }
                             } else {
                                 result.push_str(&val.py_to_string());
                             }
