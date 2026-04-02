@@ -10,8 +10,7 @@ use ferrython_ast::BigInt;
 use compact_str::CompactString;
 
 pub struct Lexer<'src> {
-    #[allow(dead_code)]
-    source: &'src str,
+    _source: &'src str,
     chars: Vec<char>,
     pos: usize,
     line: u32,
@@ -31,7 +30,7 @@ pub struct Lexer<'src> {
 impl<'src> Lexer<'src> {
     pub fn new(source: &'src str) -> Self {
         Self {
-            source,
+            _source: source,
             chars: source.chars().collect(),
             pos: 0,
             line: 1,

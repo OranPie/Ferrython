@@ -241,9 +241,6 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn hashable_key_to_object(key: &HashableKey) -> PyObjectRef { key.to_object() }
-
 /// Public access to get_iter_from_obj for lazy iterator construction.
 pub(crate) fn get_iter_from_obj_pub(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     get_iter_from_obj(obj)

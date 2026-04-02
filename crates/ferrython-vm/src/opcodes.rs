@@ -584,15 +584,25 @@ impl VirtualMachine {
         &mut self, a: &PyObjectRef, b: &PyObjectRef,
         dunder: &str, rdunder: Option<&str>,
     ) -> Result<Option<PyObjectRef>, PyException> {
-        if matches!(&a.payload, PyObjectPayload::Instance(_)) {
-            if let Some(m) = a.get_attr(dunder) {
-                return Ok(Some(self.call_object(m, vec![b.clone()])?));
+        // Look up dunder via class MRO (not instance get_attr) for proper inheritance
+        if let PyObjectPayload::Instance(inst) = &a.payload {
+            if let Some(method) = lookup_in_class_mro(&inst.class, dunder) {
+                let bound = self.bind_method(a, method);
+                let result = self.call_object(bound, vec![b.clone()])?;
+                // If method returns NotImplemented, try the reflected dunder
+                if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                    return Ok(Some(result));
+                }
             }
         }
         if let Some(rd) = rdunder {
-            if matches!(&b.payload, PyObjectPayload::Instance(_)) {
-                if let Some(m) = b.get_attr(rd) {
-                    return Ok(Some(self.call_object(m, vec![a.clone()])?));
+            if let PyObjectPayload::Instance(inst) = &b.payload {
+                if let Some(method) = lookup_in_class_mro(&inst.class, rd) {
+                    let bound = self.bind_method(b, method);
+                    let result = self.call_object(bound, vec![a.clone()])?;
+                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                        return Ok(Some(result));
+                    }
                 }
             }
         }
@@ -603,12 +613,28 @@ impl VirtualMachine {
         &mut self, a: &PyObjectRef, b: &PyObjectRef,
         idunder: &str, dunder: &str,
     ) -> Result<Option<PyObjectRef>, PyException> {
-        if matches!(&a.payload, PyObjectPayload::Instance(_)) {
-            if let Some(m) = a.get_attr(idunder).or_else(|| a.get_attr(dunder)) {
-                return Ok(Some(self.call_object(m, vec![b.clone()])?));
+        if let PyObjectPayload::Instance(inst) = &a.payload {
+            let method = lookup_in_class_mro(&inst.class, idunder)
+                .or_else(|| lookup_in_class_mro(&inst.class, dunder));
+            if let Some(m) = method {
+                let bound = self.bind_method(a, m);
+                return Ok(Some(self.call_object(bound, vec![b.clone()])?));
             }
         }
         Ok(None)
+    }
+
+    /// Create a bound method from an instance receiver and an unbound method.
+    fn bind_method(&self, receiver: &PyObjectRef, method: PyObjectRef) -> PyObjectRef {
+        match &method.payload {
+            PyObjectPayload::BoundMethod { .. } => method,
+            _ => Arc::new(PyObject {
+                payload: PyObjectPayload::BoundMethod {
+                    receiver: receiver.clone(),
+                    method,
+                }
+            }),
+        }
     }
 
     pub(crate) fn exec_binary_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
@@ -913,46 +939,65 @@ impl VirtualMachine {
     pub(crate) fn exec_compare_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         let (a, b) = self.vm_pop2();
         if let op @ 0..=5 = instr.arg {
-            let dunder = match op {
-                0 => "__lt__", 1 => "__le__", 2 => "__eq__",
-                3 => "__ne__", 4 => "__gt__", 5 => "__ge__",
+            let (dunder, rdunder) = match op {
+                0 => ("__lt__", "__gt__"),
+                1 => ("__le__", "__ge__"),
+                2 => ("__eq__", "__eq__"),
+                3 => ("__ne__", "__ne__"),
+                4 => ("__gt__", "__lt__"),
+                5 => ("__ge__", "__le__"),
                 _ => unreachable!()
             };
-            if matches!(&a.payload, PyObjectPayload::Instance(_)) {
-                if let Some(method) = a.get_attr(dunder) {
-                    let r = self.call_object(method, vec![b])?;
-                    self.vm_push(r);
-                    return Ok(None);
+            // Try a's dunder via MRO walk
+            if let PyObjectPayload::Instance(inst) = &a.payload {
+                if let Some(method) = lookup_in_class_mro(&inst.class, dunder) {
+                    let bound = self.bind_method(&a, method);
+                    let r = self.call_object(bound, vec![b.clone()])?;
+                    if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
+                        self.vm_push(r);
+                        return Ok(None);
+                    }
                 }
-                // Dataclass auto-equality
-                if op == 2 || op == 3 {
-                    if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
-                        let cls_a = &inst_a.class;
-                        if cls_a.get_attr("__dataclass__").is_some() {
-                            if let Some(fields) = cls_a.get_attr("__dataclass_fields__") {
-                                if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
-                                    let attrs_a = inst_a.attrs.read();
-                                    let attrs_b = inst_b.attrs.read();
-                                    let mut eq = true;
-                                    for ft in field_tuples {
-                                        if let PyObjectPayload::Tuple(info) = &ft.payload {
-                                            let name = info[0].py_to_string();
-                                            let va = attrs_a.get(name.as_str());
-                                            let vb = attrs_b.get(name.as_str());
-                                            match (va, vb) {
-                                                (Some(x), Some(y)) => {
-                                                    if let Ok(r) = x.compare(y, CompareOp::Eq) {
-                                                        if !r.is_truthy() { eq = false; break; }
-                                                    } else { eq = false; break; }
-                                                }
-                                                _ => { eq = false; break; }
+            }
+            // Try b's reflected dunder via MRO walk
+            if let PyObjectPayload::Instance(inst) = &b.payload {
+                if let Some(method) = lookup_in_class_mro(&inst.class, rdunder) {
+                    let bound = self.bind_method(&b, method);
+                    let r = self.call_object(bound, vec![a.clone()])?;
+                    if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
+                        self.vm_push(r);
+                        return Ok(None);
+                    }
+                }
+            }
+            // Dataclass auto-equality fallback
+            if op == 2 || op == 3 {
+                if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
+                    let cls_a = &inst_a.class;
+                    if cls_a.get_attr("__dataclass__").is_some() {
+                        if let Some(fields) = cls_a.get_attr("__dataclass_fields__") {
+                            if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                                let attrs_a = inst_a.attrs.read();
+                                let attrs_b = inst_b.attrs.read();
+                                let mut eq = true;
+                                for ft in field_tuples {
+                                    if let PyObjectPayload::Tuple(info) = &ft.payload {
+                                        let name = info[0].py_to_string();
+                                        let va = attrs_a.get(name.as_str());
+                                        let vb = attrs_b.get(name.as_str());
+                                        match (va, vb) {
+                                            (Some(x), Some(y)) => {
+                                                if let Ok(r) = x.compare(y, CompareOp::Eq) {
+                                                    if !r.is_truthy() { eq = false; break; }
+                                                } else { eq = false; break; }
                                             }
+                                            _ => { eq = false; break; }
                                         }
                                     }
-                                    let result = if op == 2 { eq } else { !eq };
-                                    self.vm_push(PyObject::bool_val(result));
-                                    return Ok(None);
                                 }
+                                let result = if op == 2 { eq } else { !eq };
+                                self.vm_push(PyObject::bool_val(result));
+                                return Ok(None);
                             }
                         }
                     }

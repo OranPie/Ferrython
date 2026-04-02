@@ -318,10 +318,6 @@ fn os_rename(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .map_err(|e| PyException::os_error(format!("{}", e)))?;
     Ok(PyObject::none())
 }
-#[allow(dead_code)]
-fn os_path_stub(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    Ok(create_os_path_module())
-}
 fn os_getenv(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("os.getenv requires at least 1 argument")); }
     let key = args[0].py_to_string();

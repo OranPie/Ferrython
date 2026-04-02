@@ -209,6 +209,33 @@ impl VirtualMachine {
             .find(|(k, _)| k.as_str() == "metaclass")
             .map(|(_, v)| v.clone());
 
+        // Call __prepare__ on metaclass if available (PEP 3115)
+        let prepared_ns: IndexMap<CompactString, PyObjectRef> = if let Some(ref meta) = metaclass {
+            if let Some(prepare) = meta.get_attr("__prepare__") {
+                let name_obj = PyObject::str_val(class_name.clone());
+                let bases_tuple = PyObject::tuple(bases.clone());
+                let result = self.call_object(prepare, vec![name_obj, bases_tuple])?;
+                // Convert returned dict to IndexMap
+                match &result.payload {
+                    PyObjectPayload::Dict(d) => {
+                        let d = d.read();
+                        let mut ns = IndexMap::new();
+                        for (k, v) in d.iter() {
+                            if let HashableKey::Str(s) = k {
+                                ns.insert(s.clone(), v.clone());
+                            }
+                        }
+                        ns
+                    }
+                    _ => IndexMap::new(),
+                }
+            } else {
+                IndexMap::new()
+            }
+        } else {
+            IndexMap::new()
+        };
+
         // Execute class body to get namespace
         let namespace = match &body_func.payload {
             PyObjectPayload::Function(pyfunc) => {
@@ -216,6 +243,10 @@ impl VirtualMachine {
                 let globals = pyfunc.globals.clone();
                 let mut frame = Frame::new(code, globals, self.builtins.clone());
                 frame.scope_kind = ScopeKind::Class;
+                // Seed with __prepare__ namespace if any
+                for (k, v) in &prepared_ns {
+                    frame.local_names.insert(k.clone(), v.clone());
+                }
                 let n_cell = frame.code.cellvars.len();
                 for (i, cell) in pyfunc.closure.iter().enumerate() {
                     let free_idx = n_cell + i;

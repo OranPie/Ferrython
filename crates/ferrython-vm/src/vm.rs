@@ -72,14 +72,16 @@ impl VirtualMachine {
             match self.execute_one(instr) {
                 Ok(Some(ret)) => return Ok(ret),
                 Ok(None) => {}
-                Err(exc) => {
+                Err(mut exc) => {
+                    // Always attach traceback from the call stack
+                    if exc.traceback.is_empty() {
+                        self.attach_traceback(&mut exc);
+                    }
                     if let Some(handler_ip) = self.unwind_except() {
                         // Store active exception for bare `raise` re-raise
                         self.active_exception = Some(exc.clone());
                         let frame = self.call_stack.last_mut().unwrap();
                         // CPython pushes (traceback, value, type) — 3 items
-                        // If the exception has an original Instance, use it as the value
-                        // and push its class as the type (for proper class-based matching)
                         let (exc_value, exc_type) = if let Some(orig) = &exc.original {
                             let cls = if let PyObjectPayload::Instance(inst) = &orig.payload {
                                 inst.class.clone()
@@ -100,22 +102,16 @@ impl VirtualMachine {
                             } else {
                                 PyObject::exception_instance(cause.kind.clone(), cause.message.clone())
                             };
-                            if let PyObjectPayload::Instance(inst) = &exc_value.payload {
-                                inst.attrs.write().insert(CompactString::from("__cause__"), cause_obj);
-                            } else if let PyObjectPayload::ExceptionInstance { attrs, .. } = &exc_value.payload {
-                                attrs.write().insert(CompactString::from("__cause__"), cause_obj);
-                            }
+                            Self::store_exc_attr(&exc_value, "__cause__", cause_obj);
                         }
-                        frame.push(PyObject::none());     // traceback
+                        // Store __traceback__ on the exception value
+                        let tb_obj = Self::build_traceback_object(&exc.traceback);
+                        Self::store_exc_attr(&exc_value, "__traceback__", tb_obj.clone());
+                        frame.push(tb_obj);               // traceback
                         frame.push(exc_value);            // value
                         frame.push(exc_type);             // type
                         frame.ip = handler_ip;
                     } else {
-                        // Attach traceback entry from the current frame
-                        let mut exc = exc;
-                        if exc.traceback.is_empty() {
-                            self.attach_traceback(&mut exc);
-                        }
                         return Err(exc);
                     }
                 }
@@ -136,6 +132,34 @@ impl VirtualMachine {
                 function: frame.code.name.to_string(),
                 lineno,
             });
+        }
+    }
+
+    /// Build a Python-level traceback object (list of (filename, lineno, funcname) tuples).
+    fn build_traceback_object(entries: &[ferrython_core::error::TracebackEntry]) -> PyObjectRef {
+        if entries.is_empty() {
+            return PyObject::none();
+        }
+        let items: Vec<PyObjectRef> = entries.iter().map(|e| {
+            PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from(&e.filename)),
+                PyObject::int(e.lineno as i64),
+                PyObject::str_val(CompactString::from(&e.function)),
+            ])
+        }).collect();
+        PyObject::wrap(PyObjectPayload::List(Arc::new(RwLock::new(items))))
+    }
+
+    /// Store an attribute on an exception value object (works for both Instance and ExceptionInstance).
+    fn store_exc_attr(exc_value: &PyObjectRef, name: &str, value: PyObjectRef) {
+        match &exc_value.payload {
+            PyObjectPayload::Instance(inst) => {
+                inst.attrs.write().insert(CompactString::from(name), value);
+            }
+            PyObjectPayload::ExceptionInstance { attrs, .. } => {
+                attrs.write().insert(CompactString::from(name), value);
+            }
+            _ => {}
         }
     }
 

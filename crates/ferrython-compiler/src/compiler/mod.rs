@@ -118,8 +118,7 @@ impl Compiler {
         self.unit_stack.last_mut().expect("no compile unit on stack")
     }
 
-    #[allow(dead_code)]
-    pub(super) fn code(&mut self) -> &mut CodeObject {
+    pub(super) fn _code(&mut self) -> &mut CodeObject {
         &mut self.current_unit_mut().code
     }
 
@@ -168,8 +167,7 @@ impl Compiler {
 
     // ── name resolution ─────────────────────────────────────────────
 
-    #[allow(dead_code)]
-    pub(super) fn is_module_scope(&self) -> bool {
+    pub(super) fn _is_module_scope(&self) -> bool {
         self.current_unit().scope.scope_type == ScopeType::Module
     }
 
@@ -177,8 +175,7 @@ impl Compiler {
         self.current_unit().is_function
     }
 
-    #[allow(dead_code)]
-    pub(super) fn globals(&self) -> FxHashSet<&str> {
+    pub(super) fn _globals(&self) -> FxHashSet<&str> {
         self.current_unit().scope.global_names()
     }
 

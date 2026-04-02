@@ -27,8 +27,7 @@ pub fn parse_expression(source: &str, filename: &str) -> Result<Expression, Pars
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
-    #[allow(dead_code)]
-    filename: CompactString,
+    _filename: CompactString,
 }
 
 impl Parser {
@@ -36,7 +35,7 @@ impl Parser {
         Self {
             tokens,
             pos: 0,
-            filename: CompactString::from(filename),
+            _filename: CompactString::from(filename),
         }
     }
 

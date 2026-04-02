@@ -4,6 +4,41 @@ use std::env;
 use std::fs;
 use std::process;
 
+/// Unified error for the parse → compile → execute pipeline.
+enum PipelineError {
+    Parse(ferrython_parser::ParseError),
+    Compile(ferrython_compiler::CompileError),
+    Runtime(ferrython_core::error::PyException),
+}
+
+impl From<ferrython_parser::ParseError> for PipelineError {
+    fn from(e: ferrython_parser::ParseError) -> Self { Self::Parse(e) }
+}
+impl From<ferrython_compiler::CompileError> for PipelineError {
+    fn from(e: ferrython_compiler::CompileError) -> Self { Self::Compile(e) }
+}
+impl From<ferrython_core::error::PyException> for PipelineError {
+    fn from(e: ferrython_core::error::PyException) -> Self { Self::Runtime(e) }
+}
+
+impl PipelineError {
+    fn report(&self, filename: &str) {
+        match self {
+            Self::Parse(e) => {
+                eprintln!("  File \"{}\"", filename);
+                eprintln!("SyntaxError: {}", e);
+            }
+            Self::Compile(e) => {
+                eprintln!("  File \"{}\", compilation error", filename);
+                eprintln!("CompileError: {}", e);
+            }
+            Self::Runtime(e) => {
+                eprintln!("{}", ferrython_debug::format_traceback(e));
+            }
+        }
+    }
+}
+
 fn main() {
     // Initialize GC cycle detection
     ferrython_core::object::init_gc();
@@ -11,12 +46,10 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        // Interactive REPL mode
         ferrython_repl::run_repl();
         return;
     }
 
-    // Check for -c flag
     if args[1] == "-c" {
         if args.len() < 3 {
             eprintln!("Argument expected for the -c option");
@@ -26,7 +59,6 @@ fn main() {
         return;
     }
 
-    // Check for -m flag
     if args[1] == "-m" {
         if args.len() < 3 {
             eprintln!("No module name specified");
@@ -36,13 +68,11 @@ fn main() {
         process::exit(1);
     }
 
-    // Check for --version
     if args[1] == "--version" || args[1] == "-V" {
         println!("Ferrython 0.1.0 (Python 3.8 compatible)");
         return;
     }
 
-    // Check for --dis flag (bytecode disassembly)
     if args[1] == "--dis" {
         if args.len() < 3 {
             eprintln!("Usage: ferrython --dis <script.py>");
@@ -59,9 +89,7 @@ fn main() {
         return;
     }
 
-    // Run a script file
     let filename = &args[1];
-    // Add script directory to import search paths
     if let Some(parent) = std::path::Path::new(filename).parent() {
         ferrython_import::prepend_search_path(parent.to_path_buf());
     }
@@ -74,54 +102,31 @@ fn main() {
     }
 }
 
-fn run_string(source: &str, filename: &str) {
-    // Parse
-    let module = match ferrython_parser::parse(source, filename) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("  File \"{}\"", filename);
-            eprintln!("SyntaxError: {}", e);
-            process::exit(1);
-        }
-    };
-
-    // Compile
-    let code = match ferrython_compiler::compile(&module, filename) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("  File \"{}\", compilation error", filename);
-            eprintln!("CompileError: {}", e);
-            process::exit(1);
-        }
-    };
-
-    // Execute
+fn execute_pipeline(source: &str, filename: &str) -> Result<(), PipelineError> {
+    let module = ferrython_parser::parse(source, filename)?;
+    let code = ferrython_compiler::compile(&module, filename)?;
     let mut vm = ferrython_vm::VirtualMachine::new();
-    match vm.execute(code) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("{}", ferrython_debug::format_traceback(&e));
-            process::exit(1);
-        }
+    vm.execute(code)?;
+    Ok(())
+}
+
+fn run_string(source: &str, filename: &str) {
+    if let Err(e) = execute_pipeline(source, filename) {
+        e.report(filename);
+        process::exit(1);
     }
 }
 
-fn dis_string(source: &str, filename: &str) {
-    let module = match ferrython_parser::parse(source, filename) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("SyntaxError: {}", e);
-            process::exit(1);
-        }
-    };
-
-    let code = match ferrython_compiler::compile(&module, filename) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("CompileError: {}", e);
-            process::exit(1);
-        }
-    };
-
+fn dis_pipeline(source: &str, filename: &str) -> Result<(), PipelineError> {
+    let module = ferrython_parser::parse(source, filename)?;
+    let code = ferrython_compiler::compile(&module, filename)?;
     ferrython_debug::dis_code(&code, 0);
+    Ok(())
+}
+
+fn dis_string(source: &str, filename: &str) {
+    if let Err(e) = dis_pipeline(source, filename) {
+        e.report(filename);
+        process::exit(1);
+    }
 }
