@@ -11,6 +11,7 @@ use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjec
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use std::sync::Arc;
+use parking_lot::RwLock;
 
 use core_fns::*;
 use string_methods::*;
@@ -265,6 +266,7 @@ pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -
         PyObjectPayload::Str(s) => call_str_method(s, method, args),
         PyObjectPayload::List(items) => call_list_method(items.clone(), method, args),
         PyObjectPayload::Dict(map) => call_dict_method(map, method, args),
+        PyObjectPayload::InstanceDict(attrs) => call_instance_dict_method(attrs, method, args),
         PyObjectPayload::Int(_) => call_int_method(receiver, method, args),
         PyObjectPayload::Float(f) => call_float_method(*f, method, args),
         PyObjectPayload::Tuple(items) => call_tuple_method(items, method, args),
@@ -467,6 +469,75 @@ fn call_deque_method(inst: &ferrython_core::object::InstanceData, method: &str, 
             Ok(get_data())
         }
         _ => Err(PyException::attribute_error(format!("deque has no attribute '{}'", method))),
+    }
+}
+
+fn call_instance_dict_method(
+    attrs: &Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
+    method: &str,
+    args: &[PyObjectRef],
+) -> PyResult<PyObjectRef> {
+    match method {
+        "get" => {
+            check_args_min("get", args, 1)?;
+            let key_str = args[0].py_to_string();
+            let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+            Ok(attrs.read().get(key_str.as_str()).cloned().unwrap_or(default))
+        }
+        "keys" => {
+            let guard = attrs.read();
+            let keys: Vec<PyObjectRef> = guard.keys()
+                .map(|k| PyObject::str_val(k.clone()))
+                .collect();
+            Ok(PyObject::list(keys))
+        }
+        "values" => {
+            let guard = attrs.read();
+            let vals: Vec<PyObjectRef> = guard.values().cloned().collect();
+            Ok(PyObject::list(vals))
+        }
+        "items" => {
+            let guard = attrs.read();
+            let items: Vec<PyObjectRef> = guard.iter()
+                .map(|(k, v)| PyObject::tuple(vec![PyObject::str_val(k.clone()), v.clone()]))
+                .collect();
+            Ok(PyObject::list(items))
+        }
+        "__contains__" => {
+            check_args_min("__contains__", args, 1)?;
+            let key_str = args[0].py_to_string();
+            Ok(PyObject::bool_val(attrs.read().contains_key(key_str.as_str())))
+        }
+        "pop" => {
+            check_args_min("pop", args, 1)?;
+            let key_str = CompactString::from(args[0].py_to_string());
+            let default = if args.len() >= 2 { Some(args[1].clone()) } else { None };
+            match attrs.write().swap_remove(&key_str) {
+                Some(v) => Ok(v),
+                None => match default {
+                    Some(d) => Ok(d),
+                    None => Err(PyException::key_error(args[0].repr())),
+                },
+            }
+        }
+        "update" => {
+            check_args_min("update", args, 1)?;
+            if let PyObjectPayload::Dict(other) = &args[0].payload {
+                let other_items = other.read().clone();
+                let mut w = attrs.write();
+                for (k, v) in other_items {
+                    w.insert(CompactString::from(k.to_object().py_to_string()), v);
+                }
+            } else if let PyObjectPayload::InstanceDict(other) = &args[0].payload {
+                let other_items: Vec<_> = other.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut w = attrs.write();
+                for (k, v) in other_items {
+                    w.insert(k, v);
+                }
+            }
+            Ok(PyObject::none())
+        }
+        _ => Err(PyException::attribute_error(format!("'dict' object has no attribute '{}'", method))),
     }
 }
 

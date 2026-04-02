@@ -36,6 +36,8 @@ pub enum PyObjectPayload {
     Set(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     FrozenSet(IndexMap<HashableKey, PyObjectRef>),
     Dict(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
+    /// A dict that is a live view of an instance's __dict__ (shares backing store)
+    InstanceDict(Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>),
     Function(PyFunction),
     BuiltinFunction(CompactString),
     /// Built-in type object (int, str, float, etc.) — callable as constructor
@@ -117,6 +119,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::Generator(_) => write!(f, "Generator(...)"),
             Self::NativeFunction { name, .. } => write!(f, "NativeFunction({name})"),
             Self::NativeClosure { name, .. } => write!(f, "NativeClosure({name})"),
+            Self::InstanceDict(_) => write!(f, "InstanceDict(...)"),
             Self::Partial { .. } => write!(f, "Partial(...)"),
             Self::Property { .. } => write!(f, "Property(...)"),
             Self::StaticMethod(_) => write!(f, "StaticMethod(...)"),

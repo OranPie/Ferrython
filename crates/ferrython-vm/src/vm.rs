@@ -1801,6 +1801,34 @@ impl VirtualMachine {
             }
         }
 
+        // Call __set_name__ on descriptors in the class namespace (PEP 487)
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            let ns_snapshot: Vec<(CompactString, PyObjectRef)> = {
+                let ns = cd.namespace.read();
+                ns.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            };
+            for (attr_name, attr_val) in &ns_snapshot {
+                // Only call __set_name__ on instance objects (descriptors)
+                if !matches!(&attr_val.payload, PyObjectPayload::Instance(_)) {
+                    continue;
+                }
+                if let Some(set_name_method) = attr_val.get_attr("__set_name__") {
+                    let bound = if matches!(&set_name_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                        set_name_method
+                    } else {
+                        Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: attr_val.clone(),
+                                method: set_name_method,
+                            }
+                        })
+                    };
+                    let name_arg = PyObject::str_val(attr_name.clone());
+                    self.call_object(bound, vec![cls.clone(), name_arg])?;
+                }
+            }
+        }
+
         Ok(cls)
     }
 

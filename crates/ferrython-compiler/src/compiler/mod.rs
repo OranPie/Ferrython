@@ -25,6 +25,8 @@ pub(super) struct LoopContext {
     pub(super) continue_target: u32,
     /// Labels that need patching when the loop ends (break targets).
     pub(super) break_labels: Vec<Label>,
+    /// True for `for` loops (iterator on stack needs PopTop on break).
+    pub(super) is_for_loop: bool,
 }
 
 /// Compile state for a single scope (module, function, class, comprehension).

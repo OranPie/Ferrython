@@ -732,6 +732,10 @@ impl VirtualMachine {
                         let hk = self.vm_to_hashable_key(&key)?;
                         map.write().insert(hk, value);
                     }
+                    PyObjectPayload::InstanceDict(attrs) => {
+                        let key_str = CompactString::from(key.py_to_string());
+                        attrs.write().insert(key_str, value);
+                    }
                     PyObjectPayload::Instance(_) => {
                         if let Some(m) = obj.get_attr("__setitem__") {
                             self.call_object(m, vec![key, value])?;
@@ -750,14 +754,39 @@ impl VirtualMachine {
                 let obj = self.vm_pop();
                 match &obj.payload {
                     PyObjectPayload::List(items) => {
-                        let idx = key.to_int()?;
-                        let mut w = items.write();
-                        let len = w.len() as i64;
-                        let actual = if idx < 0 { len + idx } else { idx };
-                        if actual < 0 || actual >= len {
-                            return Err(PyException::index_error("list assignment index out of range"));
+                        if let PyObjectPayload::Slice { start, stop, step } = &key.payload {
+                            let mut w = items.write();
+                            let len = w.len() as i64;
+                            let s = start.as_ref().map(|v| v.to_int().unwrap_or(0)).unwrap_or(0);
+                            let e = stop.as_ref().map(|v| v.to_int().unwrap_or(len)).unwrap_or(len);
+                            let st = step.as_ref().map(|v| v.to_int().unwrap_or(1)).unwrap_or(1);
+                            let s = if s < 0 { (len + s).max(0) } else { s.min(len) };
+                            let e = if e < 0 { (len + e).max(0) } else { e.min(len) };
+                            if st == 1 && s <= e {
+                                w.drain(s as usize..e as usize);
+                            } else if st == -1 && s >= e {
+                                let mut indices: Vec<usize> = ((e + 1) as usize..=(s) as usize).collect();
+                                indices.reverse();
+                                for idx in indices {
+                                    if idx < w.len() { w.remove(idx); }
+                                }
+                            } else if st > 1 {
+                                let mut indices = Vec::new();
+                                let mut i = s;
+                                while i < e { indices.push(i as usize); i += st; }
+                                indices.reverse();
+                                for idx in indices { if idx < w.len() { w.remove(idx); } }
+                            }
+                        } else {
+                            let idx = key.to_int()?;
+                            let mut w = items.write();
+                            let len = w.len() as i64;
+                            let actual = if idx < 0 { len + idx } else { idx };
+                            if actual < 0 || actual >= len {
+                                return Err(PyException::index_error("list assignment index out of range"));
+                            }
+                            w.remove(actual as usize);
                         }
-                        w.remove(actual as usize);
                     }
                     PyObjectPayload::Dict(map) => {
                         let hk = self.vm_to_hashable_key(&key)?;

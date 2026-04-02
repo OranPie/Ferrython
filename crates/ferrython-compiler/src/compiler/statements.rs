@@ -99,6 +99,10 @@ impl Compiler {
                         location: stmt.location,
                     });
                 }
+                // For `for` loops, pop the iterator off the stack before jumping
+                if self.current_unit().loop_stack.last().unwrap().is_for_loop {
+                    self.emit_op(Opcode::PopTop);
+                }
                 let label = self.emit_jump(Opcode::JumpAbsolute);
                 self.current_unit_mut()
                     .loop_stack
@@ -256,6 +260,7 @@ impl Compiler {
         self.current_unit_mut().loop_stack.push(LoopContext {
             continue_target: loop_start,
             break_labels: Vec::new(),
+            is_for_loop: false,
         });
 
         self.compile_body(body)?;
@@ -298,6 +303,7 @@ impl Compiler {
         self.current_unit_mut().loop_stack.push(LoopContext {
             continue_target: loop_start,
             break_labels: Vec::new(),
+            is_for_loop: true,
         });
 
         self.compile_body(body)?;

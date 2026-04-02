@@ -566,4 +566,3 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
         ))),
     }
 }
-

@@ -200,6 +200,7 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::ClassMethod(_) => "classmethod",
             PyObjectPayload::Super { .. } => "super",
             PyObjectPayload::Partial { .. } => "functools.partial",
+            PyObjectPayload::InstanceDict(_) => "dict",
         }
     }
 
@@ -256,6 +257,14 @@ impl PyObjectMethods for PyObjectRef {
                 else { format_set("{", "}", &m) }
             }
             PyObjectPayload::Dict(m) => format_dict(&m.read()),
+            PyObjectPayload::InstanceDict(attrs) => {
+                let attrs = attrs.read();
+                let mut parts = Vec::new();
+                for (k, v) in attrs.iter() {
+                    parts.push(format!("'{}': {}", k, v.repr()));
+                }
+                format!("{{{}}}", parts.join(", "))
+            }
             PyObjectPayload::Ellipsis => "Ellipsis".into(),
             PyObjectPayload::NotImplemented => "NotImplemented".into(),
             PyObjectPayload::Function(f) => format!("<function {}>", f.name),
@@ -350,6 +359,7 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
             PyObjectPayload::Dict(m) => Ok(m.read().keys().map(|k| k.to_object()).collect()),
+            PyObjectPayload::InstanceDict(attrs) => Ok(attrs.read().keys().map(|k| PyObject::str_val(k.clone())).collect()),
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 Ok(b.iter().map(|byte| PyObject::int(*byte as i64)).collect())
             }
@@ -846,14 +856,7 @@ impl PyObjectMethods for PyObjectRef {
                     return Some(inst.class.clone());
                 }
                 if name == "__dict__" {
-                    let attrs = inst.attrs.read();
-                    let mut map = IndexMap::new();
-                    for (k, v) in attrs.iter() {
-                        if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
-                            map.insert(hk, v.clone());
-                        }
-                    }
-                    return Some(PyObject::dict(map));
+                    return Some(PyObject::wrap(PyObjectPayload::InstanceDict(inst.attrs.clone())));
                 }
                 // CPython descriptor protocol:
                 // 1. Data descriptors (has __set__ or __delete__) from class MRO
@@ -1153,7 +1156,7 @@ impl PyObjectMethods for PyObjectRef {
             },
             // Built-in type methods — return bound method names
             PyObjectPayload::Str(_) | PyObjectPayload::List(_) |
-            PyObjectPayload::Dict(_) | PyObjectPayload::Tuple(_) |
+            PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_) | PyObjectPayload::Tuple(_) |
             PyObjectPayload::Set(_) | PyObjectPayload::Bytes(_) => {
                 if name == "__class__" {
                     let type_name = self.type_name();
@@ -1277,6 +1280,12 @@ impl PyObjectMethods for PyObjectRef {
                                 Ok(PyObject::instance(args[0].clone()))
                             }));
                         }
+                        // Builtin __init_subclass__: object.__init_subclass__() is a no-op
+                        if name == "__init_subclass__" {
+                            return Some(PyObject::native_function("__init_subclass__", |_args| {
+                                Ok(PyObject::none())
+                            }));
+                        }
                     }
                 }
                 None
@@ -1391,6 +1400,15 @@ impl PyObjectMethods for PyObjectRef {
                 if actual < 0 || actual >= len { return Err(PyException::index_error("index out of range")); }
                 Ok(PyObject::int(b[actual as usize] as i64))
             }
+            PyObjectPayload::InstanceDict(attrs) => {
+                let key_str = key.py_to_string();
+                let attrs_r = attrs.read();
+                if let Some(val) = attrs_r.get(key_str.as_str()) {
+                    Ok(val.clone())
+                } else {
+                    Err(PyException::key_error(key.repr()))
+                }
+            }
             _ => Err(PyException::type_error(format!("'{}' object is not subscriptable", self.type_name()))),
         }
     }
@@ -1419,6 +1437,10 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Dict(m) => {
                 let hk = item.to_hashable_key()?;
                 Ok(m.read().contains_key(&hk))
+            }
+            PyObjectPayload::InstanceDict(attrs) => {
+                let key_str = item.py_to_string();
+                Ok(attrs.read().contains_key(key_str.as_str()))
             }
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 // Support: int in bytes (single byte) or bytes in bytes (subsequence)
