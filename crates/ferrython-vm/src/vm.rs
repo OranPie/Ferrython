@@ -6,7 +6,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeFlags, CodeObject, ConstantValue};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    ClassData, GeneratorState, PyObject, PyObjectMethods,
+    ClassData, GeneratorState, IteratorData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, SharedGlobals};
@@ -1200,15 +1200,13 @@ impl VirtualMachine {
                         }
                         let func_obj = args[0].clone();
                         if args.len() == 2 {
-                            let iterable = self.collect_iterable(&args[1])?;
-                            let mut result = Vec::new();
-                            for item in iterable {
-                                result.push(self.call_object(func_obj.clone(), vec![item])?);
-                            }
+                            // Create lazy map iterator
+                            let source = builtins::get_iter_from_obj_pub(&args[1])?;
                             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                                Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+                                Arc::new(std::sync::Mutex::new(IteratorData::Map { func: func_obj, source }))
                             )));
                         } else {
+                            // Multi-arg map: collect eagerly (rare case)
                             let mut iters: Vec<Vec<PyObjectRef>> = Vec::new();
                             for a in &args[1..] { iters.push(self.collect_iterable(a)?); }
                             let min_len = iters.iter().map(|v| v.len()).min().unwrap_or(0);
@@ -1218,7 +1216,7 @@ impl VirtualMachine {
                                 result.push(self.call_object(func_obj.clone(), call_args)?);
                             }
                             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                                Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+                                Arc::new(std::sync::Mutex::new(IteratorData::List { items: result, index: 0 }))
                             )));
                         }
                     }
@@ -1227,20 +1225,9 @@ impl VirtualMachine {
                             return Err(PyException::type_error("filter() requires at least 2 arguments"));
                         }
                         let func_obj = args[0].clone();
-                        let iterable = self.collect_iterable(&args[1])?;
-                        let mut result = Vec::new();
-                        for item in iterable {
-                            let keep = if matches!(func_obj.payload, PyObjectPayload::None) {
-                                self.vm_is_truthy(&item)?
-                            } else {
-                                { let r = self.call_object(func_obj.clone(), vec![item.clone()])?; self.vm_is_truthy(&r)? }
-                            };
-                            if keep {
-                                result.push(item);
-                            }
-                        }
+                        let source = builtins::get_iter_from_obj_pub(&args[1])?;
                         return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                            Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+                            Arc::new(std::sync::Mutex::new(IteratorData::Filter { func: func_obj, source }))
                         )));
                     }
                     "iter" => {
@@ -1257,29 +1244,20 @@ impl VirtualMachine {
                         if args.is_empty() {
                             return Err(PyException::type_error("next() requires at least 1 argument"));
                         }
-                        if let PyObjectPayload::Generator(ref gen_arc) = args[0].payload {
-                            let gen_arc = gen_arc.clone();
-                            return match self.resume_generator(&gen_arc, PyObject::none()) {
-                                Ok(value) => Ok(value),
-                                Err(e) if e.kind == ExceptionKind::StopIteration && args.len() > 1 => {
-                                    Ok(args[1].clone()) // default value
+                        // Use vm_iter_next which handles generators, instances, and lazy iterators
+                        match self.vm_iter_next(&args[0]) {
+                            Ok(Some(value)) => return Ok(value),
+                            Ok(None) => {
+                                if args.len() > 1 {
+                                    return Ok(args[1].clone()); // default value
                                 }
-                                Err(e) => Err(e),
-                            };
-                        }
-                        // Instance with __next__
-                        if let PyObjectPayload::Instance(_) = &args[0].payload {
-                            if let Some(next_method) = args[0].get_attr("__next__") {
-                                return match self.call_object(next_method, vec![]) {
-                                    Ok(value) => Ok(value),
-                                    Err(e) if e.kind == ExceptionKind::StopIteration && args.len() > 1 => {
-                                        Ok(args[1].clone())
-                                    }
-                                    Err(e) => Err(e),
-                                };
+                                return Err(PyException::new(ExceptionKind::StopIteration, ""));
                             }
+                            Err(e) if e.kind == ExceptionKind::StopIteration && args.len() > 1 => {
+                                return Ok(args[1].clone());
+                            }
+                            Err(e) => return Err(e),
                         }
-                        // Fall through to regular next() for iterators
                     }
                     "list" => {
                         if args.is_empty() {
@@ -1327,6 +1305,17 @@ impl VirtualMachine {
                         }
                         let items = self.collect_iterable(&args[0])?;
                         return builtins::dispatch("frozenset", &[PyObject::list(items)]);
+                    }
+                    "dict" => {
+                        if args.is_empty() {
+                            return Ok(PyObject::dict(IndexMap::new()));
+                        }
+                        // dict(iterable_of_pairs) or dict(mapping)
+                        if let PyObjectPayload::Dict(_) = &args[0].payload {
+                            return builtins::dispatch("dict", &args);
+                        }
+                        let items = self.collect_iterable(&args[0])?;
+                        return builtins::dispatch("dict", &[PyObject::list(items)]);
                     }
                     "any" => {
                         if !args.is_empty() {
@@ -1377,23 +1366,10 @@ impl VirtualMachine {
                         }
                     }
                     "enumerate" => {
-                        if !args.is_empty() {
-                            let items = self.collect_iterable(&args[0])?;
-                            let mut new_args = vec![PyObject::list(items)];
-                            if args.len() > 1 {
-                                new_args.push(args[1].clone());
-                            }
-                            return builtins::dispatch("enumerate", &new_args);
-                        }
+                        return builtins::dispatch("enumerate", &args);
                     }
                     "zip" => {
-                        if !args.is_empty() {
-                            let mut collected = Vec::new();
-                            for a in args.iter() {
-                                collected.push(PyObject::list(self.collect_iterable(a)?));
-                            }
-                            return builtins::dispatch("zip", &collected);
-                        }
+                        return builtins::dispatch("zip", &args);
                     }
                     "len" => {
                         if args.len() == 1 {
@@ -2058,6 +2034,36 @@ impl VirtualMachine {
                     obj.to_list()
                 }
             }
+            PyObjectPayload::Iterator(iter_data_arc) => {
+                // Check for lazy iterators that need VM context
+                let is_lazy = {
+                    let data = iter_data_arc.lock().unwrap();
+                    matches!(&*data, IteratorData::Enumerate { .. }
+                        | IteratorData::Zip { .. }
+                        | IteratorData::Map { .. }
+                        | IteratorData::Filter { .. })
+                };
+                if is_lazy {
+                    let mut items = Vec::new();
+                    loop {
+                        match self.advance_lazy_iterator(obj)? {
+                            Some(value) => items.push(value),
+                            None => break,
+                        }
+                    }
+                    Ok(items)
+                } else {
+                    // Standard iterators — use iter_advance
+                    let mut items = Vec::new();
+                    loop {
+                        match builtins::iter_advance(obj)? {
+                            Some((_new_iter, value)) => items.push(value),
+                            None => break,
+                        }
+                    }
+                    Ok(items)
+                }
+            }
             _ => obj.to_list(),
         }
     }
@@ -2103,6 +2109,128 @@ impl VirtualMachine {
             gen.finished = true;
             gen.frame = None;
             Err(PyException::new(ExceptionKind::StopIteration, ""))
+        }
+    }
+
+    /// Advance any iterable by one step (generators, iterators, instances with __next__).
+    /// Returns Ok(Some(value)) on success, Ok(None) on exhaustion (StopIteration).
+    pub(crate) fn vm_iter_next(&mut self, iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+        match &iter_obj.payload {
+            PyObjectPayload::Generator(gen_arc) => {
+                match self.resume_generator(gen_arc, PyObject::none()) {
+                    Ok(val) => Ok(Some(val)),
+                    Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
+                    Err(e) => Err(e),
+                }
+            }
+            PyObjectPayload::Instance(_) => {
+                if let Some(next_method) = iter_obj.get_attr("__next__") {
+                    match self.call_object(next_method, vec![]) {
+                        Ok(val) => Ok(Some(val)),
+                        Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    Err(PyException::type_error("iterator has no __next__ method"))
+                }
+            }
+            PyObjectPayload::Iterator(iter_data_arc) => {
+                // Check for lazy iterators first
+                {
+                    let data = iter_data_arc.lock().unwrap();
+                    match &*data {
+                        IteratorData::Enumerate { .. }
+                        | IteratorData::Zip { .. }
+                        | IteratorData::Map { .. }
+                        | IteratorData::Filter { .. } => {
+                            drop(data);
+                            return self.advance_lazy_iterator(iter_obj);
+                        }
+                        _ => {}
+                    }
+                }
+                // Standard iterators
+                match builtins::iter_advance(iter_obj)? {
+                    Some((_new_iter, value)) => Ok(Some(value)),
+                    None => Ok(None),
+                }
+            }
+            _ => Err(PyException::type_error(format!(
+                "'{}' object is not an iterator", iter_obj.type_name()
+            ))),
+        }
+    }
+
+    /// Advance lazy iterator variants (Enumerate, Zip, Map, Filter).
+    pub(crate) fn advance_lazy_iterator(&mut self, iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+        let iter_data_arc = match &iter_obj.payload {
+            PyObjectPayload::Iterator(arc) => arc.clone(),
+            _ => return Err(PyException::type_error("not an iterator")),
+        };
+        let mut data = iter_data_arc.lock().unwrap();
+        match &mut *data {
+            IteratorData::Enumerate { source, index } => {
+                let src = source.clone();
+                let idx = *index;
+                *index += 1;
+                drop(data);
+                match self.vm_iter_next(&src)? {
+                    Some(val) => Ok(Some(PyObject::tuple(vec![PyObject::int(idx), val]))),
+                    None => Ok(None),
+                }
+            }
+            IteratorData::Zip { sources } => {
+                let srcs: Vec<PyObjectRef> = sources.clone();
+                drop(data);
+                let mut items = Vec::with_capacity(srcs.len());
+                for src in &srcs {
+                    match self.vm_iter_next(src)? {
+                        Some(val) => items.push(val),
+                        None => return Ok(None),
+                    }
+                }
+                Ok(Some(PyObject::tuple(items)))
+            }
+            IteratorData::Map { func, source } => {
+                let f = func.clone();
+                let src = source.clone();
+                drop(data);
+                match self.vm_iter_next(&src)? {
+                    Some(val) => {
+                        let result = self.call_object(f, vec![val])?;
+                        Ok(Some(result))
+                    }
+                    None => Ok(None),
+                }
+            }
+            IteratorData::Filter { func, source } => {
+                let f = func.clone();
+                let src = source.clone();
+                drop(data);
+                loop {
+                    match self.vm_iter_next(&src)? {
+                        Some(val) => {
+                            let test_result = if matches!(&f.payload, PyObjectPayload::None) {
+                                self.vm_is_truthy(&val)?
+                            } else {
+                                let r = self.call_object(f.clone(), vec![val.clone()])?;
+                                self.vm_is_truthy(&r)?
+                            };
+                            if test_result {
+                                return Ok(Some(val));
+                            }
+                        }
+                        None => return Ok(None),
+                    }
+                }
+            }
+            _ => {
+                drop(data);
+                match builtins::iter_advance(iter_obj)? {
+                    Some((_new, val)) => Ok(Some(val)),
+                    None => Ok(None),
+                }
+            }
         }
     }
 

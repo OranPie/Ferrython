@@ -226,6 +226,13 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                         Ok(Some((iter_obj.clone(), v)))
                     } else { Ok(None) }
                 }
+                // Lazy iterators need VM context — shouldn't reach here
+                IteratorData::Enumerate { .. }
+                | IteratorData::Zip { .. }
+                | IteratorData::Map { .. }
+                | IteratorData::Filter { .. } => {
+                    Err(PyException::type_error("lazy iterator requires VM-level iteration"))
+                }
             }
         }
         _ => Err(PyException::type_error("iter_advance on non-iterator")),
@@ -234,6 +241,11 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
 
 #[allow(dead_code)]
 pub(crate) fn hashable_key_to_object(key: &HashableKey) -> PyObjectRef { key.to_object() }
+
+/// Public access to get_iter_from_obj for lazy iterator construction.
+pub(crate) fn get_iter_from_obj_pub(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    get_iter_from_obj(obj)
+}
 
 /// Apply format spec to an already-converted string value.
 pub(crate) fn apply_format_spec_str(s: &str, spec: &str) -> String {

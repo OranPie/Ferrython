@@ -370,6 +370,13 @@ impl PyObjectMethods for PyObjectRef {
                     IteratorData::Str { chars, index } => {
                         Ok(chars[*index..].iter().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect())
                     }
+                    // Lazy iterators can't be eagerly collected from core
+                    IteratorData::Enumerate { .. }
+                    | IteratorData::Zip { .. }
+                    | IteratorData::Map { .. }
+                    | IteratorData::Filter { .. } => {
+                        Err(PyException::type_error("lazy iterator requires VM to collect"))
+                    }
                 }
             }
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", self.type_name()))),
@@ -1306,6 +1313,7 @@ impl PyObjectMethods for PyObjectRef {
                     IteratorData::List { items, index } => Ok(items.len() - index),
                     IteratorData::Tuple { items, index } => Ok(items.len() - index),
                     IteratorData::Str { chars, index } => Ok(chars.len() - index),
+                    _ => Err(PyException::type_error("object of type 'iterator' has no len()")),
                 }
             }
             _ => Err(PyException::type_error(format!("object of type '{}' has no len()", self.type_name()))),

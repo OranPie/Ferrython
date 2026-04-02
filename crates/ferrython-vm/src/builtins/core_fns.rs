@@ -4,7 +4,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args, check_args_min,
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -407,36 +407,73 @@ pub(super) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_enumerate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("enumerate", args, 1)?;
-    let items = args[0].to_list()?;
     let start = if args.len() > 1 {
         args[1].as_int().unwrap_or(0)
     } else { 0 };
-    let result: Vec<PyObjectRef> = items.into_iter().enumerate().map(|(i, v)| {
-        PyObject::tuple(vec![PyObject::int(start + i as i64), v])
-    }).collect();
+    // Get an iterator from the source
+    let source = get_iter_from_obj(&args[0])?;
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+        Arc::new(std::sync::Mutex::new(IteratorData::Enumerate { source, index: start }))
     )))
 }
 
 pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-            Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: vec![], index: 0 }))
+            Arc::new(std::sync::Mutex::new(IteratorData::List { items: vec![], index: 0 }))
         )));
     }
-    let lists: Vec<Vec<PyObjectRef>> = args.iter()
-        .map(|a| a.to_list())
+    let sources: Vec<PyObjectRef> = args.iter()
+        .map(|a| get_iter_from_obj(a))
         .collect::<PyResult<Vec<_>>>()?;
-    let min_len = lists.iter().map(|l| l.len()).min().unwrap_or(0);
-    let mut result = Vec::with_capacity(min_len);
-    for i in 0..min_len {
-        let tuple: Vec<PyObjectRef> = lists.iter().map(|l| l[i].clone()).collect();
-        result.push(PyObject::tuple(tuple));
-    }
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items: result, index: 0 }))
+        Arc::new(std::sync::Mutex::new(IteratorData::Zip { sources }))
     )))
+}
+
+/// Get an iterator from any iterable object.
+pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    match &obj.payload {
+        PyObjectPayload::Iterator(_) | PyObjectPayload::Generator(_) => Ok(obj.clone()),
+        PyObjectPayload::List(items) => {
+            let items = items.read().clone();
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::List { items, index: 0 }))
+            )))
+        }
+        PyObjectPayload::Tuple(items) => {
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 }))
+            )))
+        }
+        PyObjectPayload::Str(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::Str { chars, index: 0 }))
+            )))
+        }
+        PyObjectPayload::Set(m) => {
+            let items: Vec<PyObjectRef> = m.read().values().cloned().collect();
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::List { items, index: 0 }))
+            )))
+        }
+        PyObjectPayload::Dict(m) => {
+            let items: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::List { items, index: 0 }))
+            )))
+        }
+        PyObjectPayload::Instance(_) => {
+            // Check for __iter__ method — return the object itself as it likely has __next__
+            if obj.get_attr("__iter__").is_some() || obj.get_attr("__next__").is_some() {
+                Ok(obj.clone())
+            } else {
+                Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
+            }
+        }
+        _ => Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name()))),
+    }
 }
 
 pub(super) fn builtin_range(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

@@ -11,7 +11,8 @@ use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
-    has_descriptor_get, is_data_descriptor, lookup_in_class_mro, CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    has_descriptor_get, is_data_descriptor, lookup_in_class_mro, CompareOp, IteratorData,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyFunction};
 use indexmap::IndexMap;
@@ -997,6 +998,41 @@ impl VirtualMachine {
                         return Ok(None);
                     } else {
                         return Err(PyException::type_error("iterator has no __next__ method"));
+                    }
+                } else if let PyObjectPayload::Iterator(ref iter_data_arc) = iter.payload {
+                    // Check for VM-level lazy iterators
+                    let needs_vm = {
+                        let data = iter_data_arc.lock().unwrap();
+                        matches!(&*data, IteratorData::Enumerate { .. }
+                            | IteratorData::Zip { .. }
+                            | IteratorData::Map { .. }
+                            | IteratorData::Filter { .. })
+                    };
+                    if needs_vm {
+                        match self.advance_lazy_iterator(&iter) {
+                            Ok(Some(value)) => {
+                                self.vm_push(value);
+                            }
+                            Ok(None) => {
+                                let f = self.vm_frame();
+                                f.pop();
+                                f.ip = instr.arg as usize;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                        return Ok(None);
+                    }
+                    let frame = self.vm_frame();
+                    match builtins::iter_advance(&iter)? {
+                        Some((new_iter, value)) => {
+                            frame.pop();
+                            frame.push(new_iter);
+                            frame.push(value);
+                        }
+                        None => {
+                            frame.pop();
+                            frame.ip = instr.arg as usize;
+                        }
                     }
                 } else {
                     let frame = self.vm_frame();

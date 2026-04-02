@@ -178,5 +178,9 @@ pub enum IteratorData {
     Tuple { items: Vec<PyObjectRef>, index: usize },
     Range { current: i64, stop: i64, step: i64 },
     Str { chars: Vec<char>, index: usize },
+    Enumerate { source: PyObjectRef, index: i64 },
+    Zip { sources: Vec<PyObjectRef> },
+    Map { func: PyObjectRef, source: PyObjectRef },
+    Filter { func: PyObjectRef, source: PyObjectRef },
 }
 
