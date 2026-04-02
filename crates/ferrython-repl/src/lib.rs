@@ -22,13 +22,20 @@ pub fn run_repl() {
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
 
-    loop {
-        print!(">>> ");
-        io::stdout().flush().unwrap();
+    let mut pending_line: Option<String> = None;
 
-        let line = match lines.next() {
-            Some(Ok(l)) => l,
-            _ => break,
+    loop {
+        let line = if let Some(pend) = pending_line.take() {
+            print!(">>> ");
+            io::stdout().flush().unwrap();
+            pend
+        } else {
+            print!(">>> ");
+            io::stdout().flush().unwrap();
+            match lines.next() {
+                Some(Ok(l)) => l,
+                _ => break,
+            }
         };
 
         let trimmed = line.trim();
@@ -42,13 +49,38 @@ pub fn run_repl() {
             || trimmed.ends_with('(') || trimmed.ends_with('[') || trimmed.ends_with('{')
         {
             source.push('\n');
+            let mut consecutive_blanks = 0u32;
             loop {
                 print!("... ");
                 io::stdout().flush().unwrap();
                 match lines.next() {
                     Some(Ok(cont)) => {
                         if cont.trim().is_empty() {
+                            consecutive_blanks += 1;
+                            if consecutive_blanks >= 2 {
+                                source.push('\n');
+                                break;
+                            }
                             source.push('\n');
+                            continue;
+                        }
+                        consecutive_blanks = 0;
+                        let leading_spaces = cont.len() - cont.trim_start().len();
+                        let cont_trimmed = cont.trim();
+                        // Continuation keywords that belong to the current compound statement
+                        let is_continuation = cont_trimmed.starts_with("except ")
+                            || cont_trimmed.starts_with("except:")
+                            || cont_trimmed.starts_with("finally:")
+                            || cont_trimmed.starts_with("elif ")
+                            || cont_trimmed.starts_with("else:")
+                            || cont_trimmed == "else"
+                            || cont_trimmed == "finally"
+                            || cont_trimmed == "except";
+                        if leading_spaces == 0 && !cont_trimmed.is_empty() && !is_continuation {
+                            // Dedented back to column 0 — end the block.
+                            // Save this line for the next iteration.
+                            source.push('\n');
+                            pending_line = Some(cont);
                             break;
                         }
                         source.push_str(&cont);

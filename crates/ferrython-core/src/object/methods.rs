@@ -263,6 +263,30 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Code(c) => format!("<code object {}>", c.name),
             PyObjectPayload::Class(cd) => format!("<class '{}'>", cd.name),
             PyObjectPayload::Instance(inst) => {
+                // Check for __str__ method first
+                if let Some(str_fn) = self.get_attr("__str__") {
+                    if !matches!(&str_fn.payload, PyObjectPayload::BuiltinBoundMethod { .. }) {
+                        // __str__ exists but we can't call it from here (no VM)
+                        // Fall through to default
+                    }
+                }
+                // Check for message attribute (common for exception subclasses)
+                if let Some(msg) = inst.attrs.read().get("message") {
+                    let s = msg.py_to_string();
+                    if !s.is_empty() {
+                        return s;
+                    }
+                }
+                // Check for args attribute
+                if let Some(args) = inst.attrs.read().get("args") {
+                    if let PyObjectPayload::Tuple(items) = &args.payload {
+                        if items.len() == 1 {
+                            return items[0].py_to_string();
+                        } else if !items.is_empty() {
+                            return args.py_to_string();
+                        }
+                    }
+                }
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     format!("<{} object>", cd.name)
                 } else { "<object>".into() }
@@ -291,6 +315,27 @@ impl PyObjectMethods for PyObjectRef {
                 } else {
                     format!("{}('{}')", kind, message)
                 }
+            }
+            PyObjectPayload::Instance(inst) => {
+                // Check for __repr__ first
+                if let Some(_) = self.get_attr("__repr__") {
+                    // Can't call from here (no VM), but py_to_string should handle
+                }
+                // For exception-like instances, show ClassName(message)
+                if let Some(args) = inst.attrs.read().get("args") {
+                    if let PyObjectPayload::Tuple(items) = &args.payload {
+                        let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            cd.name.as_str()
+                        } else { "object" };
+                        if items.is_empty() {
+                            return format!("{}()", class_name);
+                        } else {
+                            let args_str: Vec<String> = items.iter().map(|a| a.repr()).collect();
+                            return format!("{}({})", class_name, args_str.join(", "));
+                        }
+                    }
+                }
+                self.py_to_string()
             }
             _ => self.py_to_string(),
         }
@@ -1085,6 +1130,24 @@ impl PyObjectMethods for PyObjectRef {
                                     return Some(v.clone());
                                 }
                             }
+                            // ExceptionType base: provide synthetic __init__/__str__
+                            if matches!(&base.payload, PyObjectPayload::ExceptionType(_)) {
+                                if let Some(resolved) = resolve_exception_type_method(name, instance) {
+                                    // Bind to instance so self is prepended
+                                    return Some(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: instance.clone(),
+                                            method: resolved,
+                                        }
+                                    }));
+                                }
+                            }
+                            // BuiltinType base in MRO
+                            if let PyObjectPayload::BuiltinType(bt_name) = &base.payload {
+                                if let Some(resolved) = crate::object::resolve_builtin_type_method(bt_name.as_str(), name) {
+                                    return Some(resolved);
+                                }
+                            }
                         }
                         // Fallback: if cls not found in MRO, look in cls's own bases
                         if !found_cls {
@@ -1107,6 +1170,17 @@ impl PyObjectMethods for PyObjectRef {
                                     if let PyObjectPayload::BuiltinType(bt_name) = &base.payload {
                                         if let Some(resolved) = crate::object::resolve_builtin_type_method(bt_name.as_str(), name) {
                                             return Some(resolved);
+                                        }
+                                    }
+                                    // Check ExceptionType bases
+                                    if matches!(&base.payload, PyObjectPayload::ExceptionType(_)) {
+                                        if let Some(resolved) = resolve_exception_type_method(name, instance) {
+                                            return Some(Arc::new(PyObject {
+                                                payload: PyObjectPayload::BoundMethod {
+                                                    receiver: instance.clone(),
+                                                    method: resolved,
+                                                }
+                                            }));
                                         }
                                     }
                                 }
@@ -1402,3 +1476,64 @@ impl PyObjectMethods for PyObjectRef {
     }
 }
 
+/// Resolve methods on builtin ExceptionType bases (e.g. Exception.__init__).
+/// Used by super() proxy when the parent class is a builtin exception type.
+fn resolve_exception_type_method(name: &str, _instance: &PyObjectRef) -> Option<PyObjectRef> {
+    match name {
+        "__init__" => {
+            Some(PyObject::native_function("__init__", |args| {
+                // Exception.__init__(self, *args) — set self.args and self.message
+                if args.is_empty() { return Ok(PyObject::none()); }
+                let target = &args[0];
+                if let PyObjectPayload::Instance(idata) = &target.payload {
+                    let mut attrs = idata.attrs.write();
+                    let exc_args: Vec<PyObjectRef> = if args.len() > 1 {
+                        args[1..].to_vec()
+                    } else {
+                        vec![]
+                    };
+                    if !exc_args.is_empty() {
+                        attrs.insert(CompactString::from("message"), exc_args[0].clone());
+                    }
+                    attrs.insert(CompactString::from("args"), PyObject::tuple(exc_args));
+                }
+                Ok(PyObject::none())
+            }))
+        }
+        "__str__" => {
+            Some(PyObject::native_function("__str__", |args| {
+                if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+                let target = &args[0];
+                if let Some(msg) = target.get_attr("message") {
+                    return Ok(PyObject::str_val(CompactString::from(msg.py_to_string())));
+                }
+                if let Some(a) = target.get_attr("args") {
+                    if let PyObjectPayload::Tuple(items) = &a.payload {
+                        if items.len() == 1 {
+                            return Ok(PyObject::str_val(CompactString::from(items[0].py_to_string())));
+                        }
+                    }
+                    return Ok(PyObject::str_val(CompactString::from(a.py_to_string())));
+                }
+                Ok(PyObject::str_val(CompactString::from(String::new())))
+            }))
+        }
+        "__repr__" => {
+            Some(PyObject::native_function("__repr__", |args| {
+                if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("Exception()"))); }
+                let target = &args[0];
+                let cls_name = if let PyObjectPayload::Instance(idata) = &target.payload {
+                    if let PyObjectPayload::Class(cd) = &idata.class.payload {
+                        cd.name.to_string()
+                    } else { "Exception".to_string() }
+                } else { "Exception".to_string() };
+                if let Some(a) = target.get_attr("args") {
+                    Ok(PyObject::str_val(CompactString::from(format!("{}({})", cls_name, a.py_to_string()))))
+                } else {
+                    Ok(PyObject::str_val(CompactString::from(format!("{}()", cls_name))))
+                }
+            }))
+        }
+        _ => None,
+    }
+}

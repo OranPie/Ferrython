@@ -835,6 +835,7 @@ impl VirtualMachine {
             | Opcode::BeforeAsyncWith | Opcode::EndAsyncFor
                 => self.exec_misc_ops(instr),
 
+            #[allow(unreachable_patterns)]
             _ => Err(PyException::runtime_error(format!(
                 "unimplemented opcode: {:?}", instr.op
             ))),
