@@ -267,7 +267,7 @@ pub fn create_itertools_module() -> PyObjectRef {
         ("chain", make_builtin(itertools_chain)),
         ("repeat", make_builtin(itertools_repeat)),
         ("cycle", make_builtin(itertools_cycle)),
-        ("islice", make_builtin(itertools_islice)),
+        ("islice", PyObject::native_function("itertools.islice", itertools_islice)),
         ("zip_longest", make_builtin(itertools_zip_longest)),
         ("product", make_builtin(itertools_product)),
         ("accumulate", make_builtin(itertools_accumulate)),

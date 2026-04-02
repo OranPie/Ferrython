@@ -1417,6 +1417,9 @@ impl VirtualMachine {
                 if name.as_str() == "functools.reduce" {
                     return self.vm_functools_reduce(&args);
                 }
+                if name.as_str() == "itertools.islice" {
+                    return self.vm_itertools_islice(&args);
+                }
                 // type.__call__(cls, *args) — standard class instantiation protocol
                 if name.as_str() == "__type_call__" {
                     if args.is_empty() {

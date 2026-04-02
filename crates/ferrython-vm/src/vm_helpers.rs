@@ -217,6 +217,109 @@ impl VirtualMachine {
         Ok(acc)
     }
 
+    /// VM-level itertools.islice: lazily takes items from any iterable (including generators).
+    pub(crate) fn vm_itertools_islice(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 {
+            return Err(PyException::type_error("islice() requires at least 2 arguments"));
+        }
+        let iterable = &args[0];
+        let (start, stop, step) = if args.len() == 2 {
+            (0usize, args[1].to_int()? as usize, 1usize)
+        } else if args.len() == 3 {
+            let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
+            (s, args[2].to_int()? as usize, 1usize)
+        } else {
+            let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
+            let st = if matches!(&args[3].payload, PyObjectPayload::None) { 1 } else { args[3].to_int()? as usize };
+            (s, args[2].to_int()? as usize, st.max(1))
+        };
+
+        // For generators: consume items one at a time, only up to `stop`
+        if let PyObjectPayload::Generator(gen_arc) = &iterable.payload {
+            let gen_arc = gen_arc.clone();
+            let mut result = Vec::new();
+            let mut idx = 0usize;
+            let mut next_yield = start;
+            loop {
+                if result.len() >= stop - start { break; }
+                if idx >= stop { break; }
+                match self.resume_generator(&gen_arc, PyObject::none()) {
+                    Ok(value) => {
+                        if idx == next_yield {
+                            result.push(value);
+                            next_yield += step;
+                        }
+                        idx += 1;
+                    }
+                    Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                    Err(e) => return Err(e),
+                }
+            }
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::List { items: result, index: 0 }))
+            )));
+        }
+
+        // For iterators with lazy data: advance one at a time
+        if let PyObjectPayload::Iterator(_) = &iterable.payload {
+            let mut result = Vec::new();
+            let mut idx = 0usize;
+            let mut next_yield = start;
+            loop {
+                if idx >= stop { break; }
+                match self.advance_lazy_iterator(iterable) {
+                    Ok(Some(value)) => {
+                        if idx == next_yield {
+                            result.push(value);
+                            next_yield += step;
+                        }
+                        idx += 1;
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        // Try non-lazy advance
+                        match builtins::iter_advance(iterable) {
+                            Ok(Some((_, value))) => {
+                                if idx == next_yield {
+                                    result.push(value);
+                                    next_yield += step;
+                                }
+                                idx += 1;
+                            }
+                            Ok(None) => break,
+                            Err(_) => return Err(e),
+                        }
+                    }
+                }
+            }
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::List { items: result, index: 0 }))
+            )));
+        }
+
+        // For Instance with __iter__/__next__: iterate through VM
+        if let PyObjectPayload::Instance(_) = &iterable.payload {
+            if let Some(iter_method) = iterable.get_attr("__iter__") {
+                let iter_obj = self.call_object(iter_method, vec![])?;
+                // Recurse with the iterator
+                let mut new_args = args.to_vec();
+                new_args[0] = iter_obj;
+                return self.vm_itertools_islice(&new_args);
+            }
+        }
+
+        // Fallback: eagerly collect then slice (works for lists, tuples, etc.)
+        let items = iterable.to_list()?;
+        let result: Vec<PyObjectRef> = items.into_iter()
+            .skip(start)
+            .take(stop - start)
+            .step_by(step)
+            .collect();
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(
+            Arc::new(std::sync::Mutex::new(IteratorData::List { items: result, index: 0 }))
+        )))
+    }
+
     /// Collect all items from any iterable (list, tuple, generator, instance with __iter__/__next__).
     pub(crate) fn collect_iterable(&mut self, obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
         match &obj.payload {

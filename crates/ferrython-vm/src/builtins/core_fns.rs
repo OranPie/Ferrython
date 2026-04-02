@@ -214,15 +214,35 @@ pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Float(f) => {
             if let Some(n) = ndigits {
                 let factor = 10f64.powi(n as i32);
-                Ok(PyObject::float((f * factor).round() / factor))
+                let scaled = f * factor;
+                let rounded = round_half_to_even(scaled);
+                Ok(PyObject::float(rounded / factor))
             } else {
-                Ok(PyObject::int(f.round() as i64))
+                Ok(PyObject::int(round_half_to_even(*f) as i64))
             }
         }
         PyObjectPayload::Bool(b) => Ok(PyObject::int(if *b { 1 } else { 0 })),
         _ => Err(PyException::type_error(format!(
             "type '{}' doesn't define __round__ method", args[0].type_name()
         ))),
+    }
+}
+
+/// IEEE 754 round-half-to-even (banker's rounding).
+/// When the value is exactly halfway between two integers, round to the nearest even integer.
+fn round_half_to_even(x: f64) -> f64 {
+    let rounded = x.round();
+    // Check if we're exactly at a .5 boundary
+    if (x - x.floor() - 0.5).abs() < 1e-9 {
+        // Exactly halfway — round to even
+        if rounded as i64 % 2 != 0 {
+            // rounded is odd, go the other way
+            if x > 0.0 { rounded - 1.0 } else { rounded + 1.0 }
+        } else {
+            rounded
+        }
+    } else {
+        rounded
     }
 }
 
