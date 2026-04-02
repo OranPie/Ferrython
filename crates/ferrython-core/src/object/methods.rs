@@ -304,8 +304,11 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Module(m) => format!("<module '{}'>", m.name),
             PyObjectPayload::Iterator(_) => "<iterator>".into(),
             PyObjectPayload::ExceptionType(kind) => format!("<class '{}'>", kind),
-            PyObjectPayload::ExceptionInstance { kind: _, message, .. } => {
-                // str(exception) returns just the message, like CPython
+            PyObjectPayload::ExceptionInstance { kind, message, args, .. } => {
+                // KeyError wraps its argument in repr() for str()
+                if *kind == crate::error::ExceptionKind::KeyError && args.len() == 1 {
+                    return args[0].repr();
+                }
                 if message.is_empty() {
                     String::new()
                 } else {

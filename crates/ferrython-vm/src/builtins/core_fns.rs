@@ -918,8 +918,12 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
         }
         // BuiltinType subclass (bool is subclass of int)
         (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) => {
-            a == b || (a.as_str() == "bool" && b.as_str() == "int")
+            a == b
+            || (a.as_str() == "bool" && b.as_str() == "int")
+            || b.as_str() == "object"  // everything is a subclass of object
         }
+        // Any type is subclass of object
+        (_, PyObjectPayload::BuiltinType(b)) if b.as_str() == "object" => true,
         _ => false,
     }
 }

@@ -361,7 +361,7 @@ def multi_except(x):
 
 test("multi_except_val", multi_except(0), "caught: val")
 test("multi_except_type", multi_except(1), "caught: typ")
-test("multi_except_key", multi_except(2), "key: key")
+test("multi_except_key", multi_except(2), "key: 'key'")
 
 # ── Enumerate with start ──
 

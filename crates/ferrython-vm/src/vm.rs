@@ -1010,7 +1010,7 @@ impl VirtualMachine {
         false
     }
 
-    fn vm_str(&mut self, obj: &PyObjectRef) -> PyResult<String> {
+    pub(crate) fn vm_str(&mut self, obj: &PyObjectRef) -> PyResult<String> {
         match &obj.payload {
             PyObjectPayload::Instance(_) => {
                 if let Some(str_method) = obj.get_attr("__str__") {
@@ -1044,7 +1044,7 @@ impl VirtualMachine {
     }
 
     /// Produce a repr string for an object, dispatching __repr__ on instances.
-    fn vm_repr(&mut self, obj: &PyObjectRef) -> PyResult<String> {
+    pub(crate) fn vm_repr(&mut self, obj: &PyObjectRef) -> PyResult<String> {
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
                 if let Some(repr_method) = obj.get_attr("__repr__") {

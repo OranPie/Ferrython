@@ -538,16 +538,16 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             if c == '}' { break; }
                             field.push(c);
                         }
-                        // Look up field in mapping
-                        if let Some(val) = mapping.get_attr(&field) {
-                            result.push_str(&val.py_to_string());
-                        } else if let PyObjectPayload::Dict(m) = &mapping.payload {
+                        // Look up field in mapping (dict subscript, not attribute)
+                        if let PyObjectPayload::Dict(m) = &mapping.payload {
                             let key = HashableKey::Str(CompactString::from(&field));
                             if let Some(val) = m.read().get(&key) {
                                 result.push_str(&val.py_to_string());
                             } else {
                                 return Err(PyException::key_error(field));
                             }
+                        } else if let Some(val) = mapping.get_attr(&field) {
+                            result.push_str(&val.py_to_string());
                         } else {
                             return Err(PyException::key_error(field));
                         }

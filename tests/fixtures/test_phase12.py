@@ -366,7 +366,7 @@ def multi_catch():
             results.append("K: " + str(e))
     return results
 
-test("multi_catch", multi_catch(), ["VT: test", "VT: test", "K: test"])
+test("multi_catch", multi_catch(), ["VT: test", "VT: test", "K: 'test'"])
 
 print("========================================")
 print("Tests:", passed + failed, "| Passed:", passed, "| Failed:", failed)

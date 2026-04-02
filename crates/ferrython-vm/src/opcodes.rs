@@ -1862,8 +1862,22 @@ impl VirtualMachine {
                 let value = frame.pop();
                 let conversion = (instr.arg & 0x03) as u8;
                 let base_str = match conversion {
-                    1 => value.py_to_string(),
-                    2 => value.repr(),
+                    1 => {
+                        // !s conversion — use VM-aware str for instances
+                        if matches!(&value.payload, PyObjectPayload::Instance(_)) {
+                            self.vm_str(&value)?
+                        } else {
+                            value.py_to_string()
+                        }
+                    }
+                    2 => {
+                        // !r conversion — use VM-aware repr for instances
+                        if matches!(&value.payload, PyObjectPayload::Instance(_)) {
+                            self.vm_repr(&value)?
+                        } else {
+                            value.repr()
+                        }
+                    }
                     3 => value.py_to_string(),
                     _ => {
                         if !fmt_spec.is_empty() {

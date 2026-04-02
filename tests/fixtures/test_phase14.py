@@ -256,7 +256,7 @@ def multi_except(x):
 
 test("multi_exc0", multi_except(0), "VT:value")
 test("multi_exc1", multi_except(1), "VT:type")
-test("multi_exc2", multi_except(2), "K:key")
+test("multi_exc2", multi_except(2), "K:'key'")
 test("multi_exc3", multi_except(3), "ok")
 
 # ── Nested function scoping ──
