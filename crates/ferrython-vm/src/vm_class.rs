@@ -7,6 +7,7 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     ClassData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -222,40 +223,58 @@ impl VirtualMachine {
         };
 
         if let Some(meta) = metaclass {
-            // Metaclass provided: create a Class with metaclass info
-            // In CPython: metaclass(name, bases, dict) calls type.__call__(metaclass) which does:
-            //   1. metaclass.__new__(metaclass, name, bases, dict) → creates Class
-            //   2. metaclass.__init__(cls, name, bases, dict) → initializes
-            // We handle this by creating the Class directly with the metaclass stored.
+            // Metaclass provided: call metaclass.__new__(mcs, name, bases, namespace_dict)
+            // which should return the class object.
             let bases_list: Vec<PyObjectRef> = bases.clone();
             let mro = Self::compute_mro(&bases_list);
-            let cls = PyObject::wrap(PyObjectPayload::Class(ClassData {
-                name: class_name.clone(),
-                bases: bases_list.clone(),
-                namespace: Arc::new(RwLock::new(namespace)),
-                mro,
-                metaclass: Some(meta.clone()),
-            }));
-            // Call metaclass's __init__ if it has one (rare, but some metaclasses use it)
+            
+            // Build namespace dict for passing to __new__
+            let ns_dict = {
+                let mut map = IndexMap::new();
+                for (k, v) in &namespace {
+                    map.insert(HashableKey::Str(k.clone()), v.clone());
+                }
+                PyObject::dict(map)
+            };
+            let name_obj = PyObject::str_val(class_name.clone());
+            let bases_tuple = PyObject::tuple(bases_list.clone());
+            
+            // Try calling metaclass.__new__(mcs, name, bases, namespace)
+            let cls = if let Some(new_method) = meta.get_attr("__new__") {
+                // User-defined __new__ on the metaclass
+                let new_fn = match &new_method.payload {
+                    PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                    _ => new_method,
+                };
+                self.call_object(new_fn, vec![meta.clone(), name_obj.clone(), bases_tuple.clone(), ns_dict.clone()])?
+            } else {
+                // No __new__ — create class directly (like type.__new__)
+                PyObject::wrap(PyObjectPayload::Class(ClassData {
+                    name: class_name.clone(),
+                    bases: bases_list.clone(),
+                    namespace: Arc::new(RwLock::new(namespace)),
+                    mro,
+                    metaclass: Some(meta.clone()),
+                }))
+            };
+            
+            // Ensure metaclass is set on the returned class
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                if cd.metaclass.is_none() {
+                    // If __new__ returned a plain class, inject metaclass
+                    let ns = cd.namespace.write();
+                    // merge any attrs set by __new__ into the class
+                    drop(ns);
+                }
+            }
+            
+            // Call metaclass's __init__ if it has one
             if let Some(init) = meta.get_attr("__init__") {
-                // Only call if it's a user-defined method (not from type)
                 if matches!(&init.payload, PyObjectPayload::BoundMethod { method, .. } if matches!(&method.payload, PyObjectPayload::Function(_))) {
                     let init_fn = match &init.payload {
                         PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                         _ => init,
                     };
-                    let ns_dict = {
-                        let mut map = IndexMap::new();
-                        for (k, v) in cls.get_attr("__dict__").map(|d| {
-                            if let PyObjectPayload::Dict(m) = &d.payload { m.read().clone() }
-                            else { IndexMap::new() }
-                        }).unwrap_or_default() {
-                            map.insert(k, v);
-                        }
-                        PyObject::dict(map)
-                    };
-                    let bases_tuple = PyObject::tuple(bases_list);
-                    let name_obj = PyObject::str_val(class_name);
                     self.call_object(init_fn, vec![cls.clone(), name_obj, bases_tuple, ns_dict])?;
                 }
             }

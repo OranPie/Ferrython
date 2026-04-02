@@ -1453,6 +1453,10 @@ impl PyObjectMethods for PyObjectRef {
                                     }));
                                 }
                                 if let Some(resolved) = crate::object::resolve_builtin_type_method(bt_name.as_str(), name) {
+                                    // __new__ is a static method: don't bind self
+                                    if name == "__new__" {
+                                        return Some(resolved);
+                                    }
                                     // Wrap as BoundMethod so self is prepended
                                     return Some(Arc::new(PyObject {
                                         payload: PyObjectPayload::BoundMethod {
