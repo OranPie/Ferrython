@@ -1387,15 +1387,32 @@ impl VirtualMachine {
                     frame.push_block(BlockKind::With, instr.arg as usize);
                     frame.push(enter_result);
                 } else {
-                    let exit_method = ctx_mgr.get_attr("__exit__").ok_or_else(||
+                    let exit_raw = ctx_mgr.get_attr("__exit__").ok_or_else(||
                         PyException::attribute_error("__exit__"))?;
-                    self.vm_push(exit_method);
-                    let enter_method = ctx_mgr.get_attr("__enter__").ok_or_else(||
-                        PyException::attribute_error("__enter__"))?;
-                    let enter_args = if matches!(&enter_method.payload, PyObjectPayload::BoundMethod { .. }) {
-                        vec![]
+                    // Bind exit to ctx_mgr so WithCleanupStart passes self correctly
+                    let exit_method = if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                        exit_raw
                     } else {
-                        vec![ctx_mgr.clone()]
+                        Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: ctx_mgr.clone(),
+                                method: exit_raw,
+                            }
+                        })
+                    };
+                    self.vm_push(exit_method);
+                    let enter_raw = ctx_mgr.get_attr("__enter__").ok_or_else(||
+                        PyException::attribute_error("__enter__"))?;
+                    let (enter_method, enter_args) = if matches!(&enter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                        (enter_raw, vec![])
+                    } else {
+                        let bound = Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: ctx_mgr.clone(),
+                                method: enter_raw,
+                            }
+                        });
+                        (bound, vec![])
                     };
                     let enter_result = self.call_object(enter_method, enter_args)?;
                     let frame = self.vm_frame();

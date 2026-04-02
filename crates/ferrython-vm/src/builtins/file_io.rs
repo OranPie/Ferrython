@@ -3,7 +3,6 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    check_args,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use indexmap::IndexMap;
@@ -19,35 +18,17 @@ pub(super) fn builtin_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let path = args[0].py_to_string();
     let mode = if args.len() > 1 { args[1].py_to_string() } else { "r".to_string() };
     
-    let content: Arc<RwLock<FileState>> = Arc::new(RwLock::new(FileState::new(&path, &mode)?));
+    let state: Arc<RwLock<FileState>> = Arc::new(RwLock::new(FileState::new(&path, &mode)?));
+    let ptr = Arc::as_ptr(&state) as usize;
     
-    // Create a module-like object with file methods
-    let mut attrs = IndexMap::new();
-    let state = content.clone();
-    attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(path.clone())));
-    attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(mode.clone())));
-    attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
-    attrs.insert(CompactString::from("_state"), PyObject::int(Arc::as_ptr(&state) as i64));
+    // Register state globally so bound methods can find it via _ptr
+    FILE_STATES.lock().unwrap().insert(ptr, state);
     
-    // Store the file state globally so methods can access it
-    FILE_STATES.lock().unwrap().insert(Arc::as_ptr(&state) as usize, state);
-    
-    let file_obj = PyObject::module_with_attrs(CompactString::from("_file"), attrs);
-    // Add methods via NativeFunction
-    match &file_obj.payload {
-        PyObjectPayload::Module(_md) => {
-            // We can't mutate, so let's create a new module with all attrs
-        }
-        _ => {}
-    }
-    
-    // Better approach: return a module with native function methods
-    let ptr = Arc::as_ptr(&content) as i64;
     let mut all_attrs = IndexMap::new();
     all_attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(path)));
     all_attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(mode)));
     all_attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
-    all_attrs.insert(CompactString::from("_ptr"), PyObject::int(ptr));
+    all_attrs.insert(CompactString::from("_ptr"), PyObject::int(ptr as i64));
     all_attrs.insert(CompactString::from("read"), PyObject::native_function("read", file_read));
     all_attrs.insert(CompactString::from("readline"), PyObject::native_function("readline", file_readline));
     all_attrs.insert(CompactString::from("readlines"), PyObject::native_function("readlines", file_readlines));
@@ -56,10 +37,6 @@ pub(super) fn builtin_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     all_attrs.insert(CompactString::from("close"), PyObject::native_function("close", file_close));
     all_attrs.insert(CompactString::from("__enter__"), PyObject::native_function("__enter__", file_enter));
     all_attrs.insert(CompactString::from("__exit__"), PyObject::native_function("__exit__", file_exit));
-    
-    // Store file state associated with the ptr value
-    CURRENT_FILE_STATE.lock().unwrap().replace(content);
-    
     all_attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
     
     Ok(PyObject::module_with_attrs(CompactString::from("_file"), all_attrs))
@@ -67,9 +44,6 @@ pub(super) fn builtin_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 static FILE_STATES: std::sync::LazyLock<Mutex<IndexMap<usize, Arc<RwLock<FileState>>>>> = 
     std::sync::LazyLock::new(|| Mutex::new(IndexMap::new()));
-
-static CURRENT_FILE_STATE: std::sync::LazyLock<Mutex<Option<Arc<RwLock<FileState>>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(None));
 
 struct FileState {
     content: String,
@@ -103,18 +77,27 @@ impl FileState {
     }
 }
 
-fn get_current_file() -> PyResult<Arc<RwLock<FileState>>> {
-    CURRENT_FILE_STATE.lock().unwrap().clone().ok_or_else(|| {
+/// Extract FileState from the bound self argument (args[0]._ptr → FILE_STATES lookup).
+fn get_file_state(args: &[PyObjectRef]) -> PyResult<Arc<RwLock<FileState>>> {
+    let self_obj = args.first().ok_or_else(|| {
+        PyException::type_error("file method called without self")
+    })?;
+    let ptr_val = self_obj.get_attr("_ptr").ok_or_else(|| {
+        PyException::type_error("not a file object")
+    })?;
+    let ptr = ptr_val.to_int()? as usize;
+    FILE_STATES.lock().unwrap().get(&ptr).cloned().ok_or_else(|| {
         PyException::value_error("I/O operation on closed file")
     })
 }
 
 pub(super) fn file_read(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let state = get_current_file()?;
+    let state = get_file_state(args)?;
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
-    let max_bytes = if !args.is_empty() { 
-        let n = args[0].to_int()?;
+    // args[0]=self, args[1]=optional max_bytes
+    let max_bytes = if args.len() > 1 { 
+        let n = args[1].to_int()?;
         if n < 0 { s.content.len() } else { n as usize }
     } else { 
         s.content.len() 
@@ -125,8 +108,8 @@ pub(super) fn file_read(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::str_val(CompactString::from(result)))
 }
 
-pub(super) fn file_readline(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let state = get_current_file()?;
+pub(super) fn file_readline(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let state = get_file_state(args)?;
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
     if s.position >= s.content.len() {
@@ -139,8 +122,8 @@ pub(super) fn file_readline(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::str_val(CompactString::from(line)))
 }
 
-pub(super) fn file_readlines(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let state = get_current_file()?;
+pub(super) fn file_readlines(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let state = get_file_state(args)?;
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
     let rest = &s.content[s.position..];
@@ -152,33 +135,38 @@ pub(super) fn file_readlines(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn file_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("write", args, 1)?;
-    let state = get_current_file()?;
+    // args[0]=self, args[1]=text
+    if args.len() < 2 {
+        return Err(PyException::type_error("write() missing required argument: 'data'"));
+    }
+    let state = get_file_state(args)?;
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
-    let text = args[0].py_to_string();
+    let text = args[1].py_to_string();
     let len = text.len();
     s.write_buf.push_str(&text);
     Ok(PyObject::int(len as i64))
 }
 
 pub(super) fn file_writelines(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("writelines", args, 1)?;
-    let state = get_current_file()?;
+    // args[0]=self, args[1]=lines
+    if args.len() < 2 {
+        return Err(PyException::type_error("writelines() missing required argument: 'lines'"));
+    }
+    let state = get_file_state(args)?;
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
-    let items = args[0].to_list()?;
+    let items = args[1].to_list()?;
     for item in items {
         s.write_buf.push_str(&item.py_to_string());
     }
     Ok(PyObject::none())
 }
 
-pub(super) fn file_close(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let state = get_current_file()?;
+pub(super) fn file_close(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let state = get_file_state(args)?;
     let mut s = state.write();
     if !s.closed {
-        // Flush write buffer
         if !s.write_buf.is_empty() {
             if s.mode.contains('a') {
                 let mut content = std::fs::read_to_string(&s.path).unwrap_or_default();
@@ -205,7 +193,8 @@ pub(super) fn file_enter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
 }
 
-pub(super) fn file_exit(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    file_close(&[])?;
+pub(super) fn file_exit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // __exit__(self, exc_type, exc_val, exc_tb) — close file, return False
+    file_close(args)?;
     Ok(PyObject::bool_val(false))
 }
