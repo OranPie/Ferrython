@@ -224,6 +224,15 @@ pub(super) fn builtin_divmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hash", args, 1)?;
+    // Check for custom __hash__ on Instance objects first
+    if let PyObjectPayload::Instance(_) = &args[0].payload {
+        if let Some(_hash_fn) = args[0].get_attr("__hash__") {
+            // __hash__ found but we can't call it from here (no VM).
+            // Return identity-based hash instead.
+            let ptr = std::sync::Arc::as_ptr(&args[0]) as usize;
+            return Ok(PyObject::int(ptr as i64));
+        }
+    }
     let key = args[0].to_hashable_key()?;
     let h = match key {
         HashableKey::Int(n) => n.to_i64().unwrap_or(0),
@@ -238,6 +247,7 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         HashableKey::Tuple(_) => 0,
         HashableKey::FrozenSet(_) => 0,
         HashableKey::Bytes(b) => { let mut h: u64 = 5381; for x in b { h = h.wrapping_mul(33).wrapping_add(x as u64); } h as i64 }
+        HashableKey::Identity(ptr) => ptr as i64,
     };
     Ok(PyObject::int(h))
 }

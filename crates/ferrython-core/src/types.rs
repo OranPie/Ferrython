@@ -203,6 +203,9 @@ pub enum HashableKey {
     Bytes(Vec<u8>),
     Tuple(Vec<HashableKey>),
     FrozenSet(Vec<HashableKey>),
+    /// Identity-based key using the Arc pointer address.
+    /// Used for Instance objects (default Python behavior: hash/eq by identity).
+    Identity(usize),
 }
 
 impl HashableKey {
@@ -227,6 +230,24 @@ impl HashableKey {
                 Ok(HashableKey::FrozenSet(keys))
             }
             PyObjectPayload::Ellipsis => Ok(HashableKey::Str(CompactString::from("Ellipsis"))),
+            // Instance objects: hashable by identity (like CPython default)
+            // If __hash__ is defined, it was already called by hash() builtin,
+            // but for dict key usage we use identity for correct eq semantics.
+            PyObjectPayload::Instance(_) => {
+                let ptr = std::sync::Arc::as_ptr(obj) as usize;
+                Ok(HashableKey::Identity(ptr))
+            }
+            // Functions/methods are hashable by identity in CPython
+            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } |
+            PyObjectPayload::BoundMethod { .. } | PyObjectPayload::BuiltinBoundMethod { .. } => {
+                let ptr = std::sync::Arc::as_ptr(obj) as usize;
+                Ok(HashableKey::Identity(ptr))
+            }
+            // Class objects are hashable by identity
+            PyObjectPayload::Class(_) | PyObjectPayload::BuiltinType(_) => {
+                let ptr = std::sync::Arc::as_ptr(obj) as usize;
+                Ok(HashableKey::Identity(ptr))
+            }
             _ => Err(PyException::type_error(format!("unhashable type: '{}'", obj.type_name()))),
         }
     }
@@ -243,6 +264,10 @@ impl HashableKey {
                 let mut map = indexmap::IndexMap::new();
                 for k in keys { map.insert(k.clone(), k.to_object()); }
                 PyObject::frozenset(map)
+            },
+            HashableKey::Identity(ptr) => {
+                // Identity keys can't be reconstructed; return None as placeholder
+                PyObject::int(*ptr as i64)
             },
         }
     }
@@ -262,6 +287,7 @@ impl PartialEq for HashableKey {
             (HashableKey::Bool(b), HashableKey::Int(n)) | (HashableKey::Int(n), HashableKey::Bool(b)) => {
                 *n == PyInt::Small(*b as i64)
             }
+            (HashableKey::Identity(a), HashableKey::Identity(b)) => a == b,
             _ => false,
         }
     }
@@ -279,6 +305,7 @@ impl Hash for HashableKey {
             HashableKey::Bytes(b) => b.hash(state),
             HashableKey::Tuple(items) => items.hash(state),
             HashableKey::FrozenSet(items) => items.hash(state),
+            HashableKey::Identity(ptr) => ptr.hash(state),
         }
     }
 }

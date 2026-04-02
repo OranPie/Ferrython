@@ -630,7 +630,7 @@ impl VirtualMachine {
                     }
                     PyObjectPayload::ExceptionType(kind) => {
                         let msg = if pos_args.is_empty() { String::new() } else { pos_args[0].py_to_string() };
-                        return Ok(PyObject::exception_instance(kind.clone(), msg));
+                        return Ok(PyObject::exception_instance_with_args(kind.clone(), msg, pos_args));
                     }
                     PyObjectPayload::Instance(_) => {
                         if let Some(method) = func.get_attr("__call__") {
@@ -763,12 +763,13 @@ impl VirtualMachine {
         use ferrython_bytecode::opcode::Opcode;
         match instr.op {
             Opcode::Nop | Opcode::PopTop | Opcode::RotTwo | Opcode::RotThree
-            | Opcode::DupTop | Opcode::DupTopTwo | Opcode::LoadConst
+            | Opcode::RotFour | Opcode::DupTop | Opcode::DupTopTwo | Opcode::LoadConst
                 => self.exec_stack_ops(instr),
 
             Opcode::LoadName | Opcode::StoreName | Opcode::DeleteName
             | Opcode::LoadFast | Opcode::StoreFast | Opcode::DeleteFast
-            | Opcode::LoadDeref | Opcode::StoreDeref | Opcode::LoadClosure
+            | Opcode::LoadDeref | Opcode::StoreDeref | Opcode::DeleteDeref
+            | Opcode::LoadClosure | Opcode::LoadClassderef
             | Opcode::LoadGlobal | Opcode::StoreGlobal | Opcode::DeleteGlobal
                 => self.exec_name_ops(instr),
 
@@ -802,7 +803,7 @@ impl VirtualMachine {
             Opcode::JumpForward | Opcode::JumpAbsolute
             | Opcode::PopJumpIfFalse | Opcode::PopJumpIfTrue
             | Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop
-            | Opcode::GetIter | Opcode::ForIter
+            | Opcode::GetIter | Opcode::GetYieldFromIter | Opcode::ForIter
                 => self.exec_jump_ops(instr),
 
             Opcode::BuildTuple | Opcode::BuildList | Opcode::BuildSet
@@ -830,6 +831,8 @@ impl VirtualMachine {
             Opcode::PrintExpr | Opcode::LoadBuildClass | Opcode::SetupAnnotations
             | Opcode::FormatValue | Opcode::ExtendedArg
             | Opcode::YieldValue | Opcode::YieldFrom
+            | Opcode::GetAwaitable | Opcode::GetAiter | Opcode::GetAnext
+            | Opcode::BeforeAsyncWith | Opcode::EndAsyncFor
                 => self.exec_misc_ops(instr),
 
             _ => Err(PyException::runtime_error(format!(
@@ -1318,6 +1321,21 @@ impl VirtualMachine {
                             }
                         }
                     }
+                    "format" => {
+                        if !args.is_empty() {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__format__") {
+                                    let spec = if args.len() > 1 {
+                                        args[1].clone()
+                                    } else {
+                                        PyObject::str_val(CompactString::from(""))
+                                    };
+                                    return self.call_object(method, vec![spec]);
+                                }
+                            }
+                            // Fall through to native format
+                        }
+                    }
                     "int" => {
                         if args.len() == 1 {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
@@ -1540,7 +1558,7 @@ impl VirtualMachine {
                 } else {
                     args[0].py_to_string()
                 };
-                Ok(PyObject::exception_instance(kind.clone(), msg))
+                Ok(PyObject::exception_instance_with_args(kind.clone(), msg, args))
             }
             PyObjectPayload::NativeFunction { func, name } => {
                 // Intercept functions that need VM access to call Python callables

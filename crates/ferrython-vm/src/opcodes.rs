@@ -62,6 +62,16 @@ impl VirtualMachine {
                 frame.push(c);
                 frame.push(b);
             }
+            Opcode::RotFour => {
+                let a = frame.pop();
+                let b = frame.pop();
+                let c = frame.pop();
+                let d = frame.pop();
+                frame.push(a);
+                frame.push(d);
+                frame.push(c);
+                frame.push(b);
+            }
             Opcode::DupTop => {
                 let v = frame.peek().clone();
                 frame.push(v);
@@ -87,6 +97,8 @@ impl VirtualMachine {
 // ── Group 2: Name loading/storing ────────────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_name_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+        let mut del_target: Option<PyObjectRef> = None;
+        {
         let frame = self.vm_frame();
         match instr.op {
             Opcode::LoadName => {
@@ -108,9 +120,18 @@ impl VirtualMachine {
                 }
             }
             Opcode::DeleteName => {
-                let name = &frame.code.names[instr.arg as usize];
+                let name = frame.code.names[instr.arg as usize].clone();
+                let old = frame.local_names.get(name.as_str()).cloned()
+                    .or_else(|| frame.globals.read().get(name.as_str()).cloned());
                 frame.local_names.shift_remove(name.as_str());
                 frame.globals.write().shift_remove(name.as_str());
+                if let Some(ref obj) = old {
+                    if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
+                        if obj.get_attr("__del__").is_some() {
+                            del_target = old;
+                        }
+                    }
+                }
             }
             Opcode::LoadFast => {
                 let idx = instr.arg as usize;
@@ -158,6 +179,35 @@ impl VirtualMachine {
                 let idx = instr.arg as usize;
                 *frame.cells[idx].write() = Some(value);
             }
+            Opcode::DeleteDeref => {
+                let idx = instr.arg as usize;
+                *frame.cells[idx].write() = None;
+            }
+            Opcode::LoadClassderef => {
+                // Like LoadDeref but checks locals first (for class scoping).
+                let idx = instr.arg as usize;
+                let n_cell = frame.code.cellvars.len();
+                let name = if idx < n_cell {
+                    frame.code.cellvars[idx].clone()
+                } else {
+                    frame.code.freevars[idx - n_cell].clone()
+                };
+                // Check local_names first (class namespace)
+                if let Some(v) = frame.local_names.get(name.as_str()).cloned() {
+                    frame.push(v);
+                } else {
+                    // Fall back to cell
+                    let val = frame.cells[idx].read().clone();
+                    match val {
+                        Some(v) => { frame.push(v); }
+                        None => {
+                            return Err(PyException::name_error(format!(
+                                "free variable '{}' referenced before assignment in enclosing scope", name
+                            )));
+                        }
+                    }
+                }
+            }
             Opcode::LoadClosure => {
                 let idx = instr.arg as usize;
                 let cell = frame.cells[idx].clone();
@@ -187,6 +237,13 @@ impl VirtualMachine {
                 frame.globals.write().shift_remove(name.as_str());
             }
             _ => unreachable!(),
+        }
+        } // drop frame borrow
+        // Call __del__ if we captured a deleted object with __del__
+        if let Some(obj) = del_target {
+            if let Some(del_fn) = obj.get_attr("__del__") {
+                let _ = self.call_object(del_fn, vec![]);
+            }
         }
         Ok(None)
     }
@@ -592,8 +649,18 @@ impl VirtualMachine {
     pub(crate) fn exec_subscript_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
             Opcode::BinarySubscr => {
-                let key = self.vm_pop();
+                let raw_key = self.vm_pop();
                 let obj = self.vm_pop();
+                // Resolve __index__ on the key if it's an Instance with __index__
+                let key = if matches!(&raw_key.payload, PyObjectPayload::Instance(_)) {
+                    if let Some(r) = self.try_call_dunder(&raw_key, "__index__", vec![])? {
+                        r
+                    } else {
+                        raw_key
+                    }
+                } else {
+                    raw_key
+                };
                 // __class_getitem__: MyClass[int] → MyClass.__class_getitem__(cls, int)
                 if matches!(&obj.payload, PyObjectPayload::Class(_)) {
                     if let Some(cgi) = obj.get_attr("__class_getitem__") {
@@ -886,6 +953,20 @@ impl VirtualMachine {
                     self.vm_push(r);
                 } else {
                     self.vm_push(obj.get_iter()?);
+                }
+            }
+            Opcode::GetYieldFromIter => {
+                // Like GetIter but for yield from — if it's already a generator, leave it.
+                let obj = self.vm_frame().peek().clone();
+                if matches!(&obj.payload, PyObjectPayload::Generator(_)) {
+                    // Already a generator/coroutine, leave on stack
+                } else {
+                    self.vm_pop();
+                    if let Some(r) = self.try_call_dunder(&obj, "__iter__", vec![])? {
+                        self.vm_push(r);
+                    } else {
+                        self.vm_push(obj.get_iter()?);
+                    }
                 }
             }
             Opcode::ForIter => {
@@ -1443,7 +1524,7 @@ impl VirtualMachine {
                 let raise_exc = |exc: &PyObjectRef| -> PyException {
                     match &exc.payload {
                         PyObjectPayload::ExceptionInstance { kind, message, .. } => {
-                            PyException::new(kind.clone(), message.to_string())
+                            PyException::with_original(kind.clone(), message.to_string(), exc.clone())
                         }
                         PyObjectPayload::ExceptionType(kind) => {
                             PyException::new(kind.clone(), "")
@@ -1758,6 +1839,13 @@ impl VirtualMachine {
                         }
                     }
                 }
+            }
+            // Async opcodes — not yet implemented
+            Opcode::GetAwaitable | Opcode::GetAiter | Opcode::GetAnext |
+            Opcode::BeforeAsyncWith | Opcode::EndAsyncFor => {
+                return Err(PyException::runtime_error(
+                    "async/await is not yet supported"
+                ));
             }
             _ => unreachable!(),
         }

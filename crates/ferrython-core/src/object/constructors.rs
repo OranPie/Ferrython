@@ -85,10 +85,18 @@ impl PyObject {
     }
     pub fn exception_instance(kind: ExceptionKind, message: impl Into<String>) -> PyObjectRef {
         let msg: String = message.into();
+        let args = if msg.is_empty() { vec![] } else { vec![PyObject::str_val(CompactString::from(msg.as_str()))] };
         Self::wrap(PyObjectPayload::ExceptionInstance {
             kind,
             message: CompactString::from(msg),
-            args: vec![],
+            args,
+        })
+    }
+    pub fn exception_instance_with_args(kind: ExceptionKind, message: impl Into<String>, args: Vec<PyObjectRef>) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::ExceptionInstance {
+            kind,
+            message: CompactString::from(message.into()),
+            args,
         })
     }
     pub fn generator(name: CompactString, frame: Box<dyn Any + Send + Sync>) -> PyObjectRef {
