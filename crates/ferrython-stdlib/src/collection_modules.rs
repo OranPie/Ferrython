@@ -7,7 +7,7 @@ use ferrython_core::object::{
     IteratorData,
     make_module, make_builtin,
 };
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
@@ -68,17 +68,25 @@ fn collections_defaultdict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let int_factory = PyObject::builtin_type(CompactString::from("int"));
+    let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+    
     if args.is_empty() {
-        return Ok(PyObject::dict_from_pairs(vec![]));
+        let mut map = IndexMap::new();
+        map.insert(factory_key, int_factory);
+        return Ok(PyObject::dict(map));
     }
     // Handle dict input: Counter({"red": 4, "blue": 2})
     if let PyObjectPayload::Dict(m) = &args[0].payload {
-        let map = m.read();
-        let pairs: Vec<(PyObjectRef, PyObjectRef)> = map.iter()
-            .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__"))
-            .map(|(k, v)| (k.to_object(), v.clone()))
-            .collect();
-        return Ok(PyObject::dict_from_pairs(pairs));
+        let src = m.read();
+        let mut map = IndexMap::new();
+        map.insert(factory_key, int_factory);
+        for (k, v) in src.iter() {
+            if !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__") {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+        return Ok(PyObject::dict(map));
     }
     let items = args[0].to_list()?;
     let mut counts: IndexMap<HashableKey, i64> = IndexMap::new();
@@ -86,35 +94,12 @@ fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let key = item.to_hashable_key()?;
         *counts.entry(key).or_insert(0) += 1;
     }
-    let pairs: Vec<(PyObjectRef, PyObjectRef)> = counts.into_iter()
-        .map(|(k, v)| {
-            let key_obj = match k {
-                HashableKey::Str(s) => PyObject::str_val(s),
-                HashableKey::Int(i) => {
-                    match i {
-                        PyInt::Small(n) => PyObject::int(n),
-                        PyInt::Big(b) => PyObject::big_int(*b),
-                    }
-                }
-                HashableKey::Float(f) => PyObject::float(f.0),
-                HashableKey::Bool(b) => PyObject::bool_val(b),
-                HashableKey::None => PyObject::none(),
-                HashableKey::Bytes(b) => PyObject::bytes(b),
-                HashableKey::Tuple(items) => PyObject::tuple(
-                    items.into_iter().map(|_| PyObject::none()).collect()
-                ),
-                HashableKey::FrozenSet(items) => {
-                    let mut map = indexmap::IndexMap::new();
-                    for k in items { map.insert(k.clone(), k.to_object()); }
-                    PyObject::frozenset(map)
-                },
-                HashableKey::Identity(ptr) => PyObject::int(ptr as i64),
-                HashableKey::Custom { object, .. } => object.clone(),
-            };
-            (key_obj, PyObject::int(v))
-        })
-        .collect();
-    Ok(PyObject::dict_from_pairs(pairs))
+    let mut map = IndexMap::new();
+    map.insert(factory_key, int_factory);
+    for (k, v) in counts {
+        map.insert(k.clone(), PyObject::int(v));
+    }
+    Ok(PyObject::dict(map))
 }
 
 fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

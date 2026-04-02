@@ -713,6 +713,13 @@ impl Compiler {
         generators: &[Comprehension],
         kind: ComprehensionKind,
     ) -> Result<()> {
+        // CPython semantics: the first generator's iterable is evaluated in
+        // the enclosing scope BEFORE the comprehension scope is entered.
+        // We must compile it first to match symbol table child ordering.
+        self.compile_expression(&generators[0].iter)?;
+        self.emit_op(Opcode::GetIter);
+        // Stack: [iter]
+
         let child_scope = self.current_unit_mut().take_child_scope();
         let qualname_prefix = &self.current_unit().qualname_prefix;
         let qualname = if qualname_prefix.is_empty() {
@@ -721,10 +728,9 @@ impl Compiler {
             format!("{}.{}", qualname_prefix, name)
         };
 
-        // First, compile the comprehension function body
+        // Compile the comprehension function body
         self.push_function_unit(name, child_scope, &qualname)?;
 
-        // The comprehension function takes the iterator as its only argument
         {
             let unit = self.current_unit_mut();
             unit.code.arg_count = 1;
@@ -734,7 +740,6 @@ impl Compiler {
             }
         }
 
-        // Build the initial collection
         match kind {
             ComprehensionKind::List => {
                 self.emit_arg(Opcode::BuildList, 0);
@@ -748,16 +753,14 @@ impl Compiler {
             ComprehensionKind::Generator => {}
         }
 
-        // Compile the generators
         self.compile_comprehension_generators(generators, 0, elt, value, kind)?;
 
-        // Return the result
         match kind {
             ComprehensionKind::Generator => {
                 let none_idx = self.add_const(ConstantValue::None);
                 self.emit_arg(Opcode::LoadConst, none_idx);
             }
-            _ => {} // List/Set/Dict are already on stack
+            _ => {}
         }
         self.emit_op(Opcode::ReturnValue);
 
@@ -774,7 +777,7 @@ impl Compiler {
             self.emit_arg(Opcode::BuildTuple, n);
         }
 
-        // Now back in the enclosing scope — emit the function creation
+        // Back in the enclosing scope — emit function creation
         let code_idx = self.add_const(ConstantValue::Code(Box::new(comp_code)));
         self.emit_arg(Opcode::LoadConst, code_idx);
 
@@ -783,10 +786,8 @@ impl Compiler {
 
         self.emit_arg(Opcode::MakeFunction, if has_closure { 0x08 } else { 0 });
 
-        // NOW compute the outermost iterator in the enclosing scope
-        // Stack: [fn] -> [fn, iter]
-        self.compile_expression(&generators[0].iter)?;
-        self.emit_op(Opcode::GetIter);
+        // Stack: [iter, fn] — need [fn, iter] for CallFunction
+        self.emit_op(Opcode::RotTwo);
 
         // Call fn(iter)
         self.emit_arg(Opcode::CallFunction, 1);

@@ -638,8 +638,20 @@ impl Analyzer {
 
             ExpressionKind::ListComp { elt, generators }
             | ExpressionKind::SetComp { elt, generators } => {
+                // First generator's iter is evaluated in enclosing scope (CPython semantics)
+                if let Some(first) = generators.first() {
+                    self.analyze_expression(&first.iter);
+                }
                 self.push_scope("<comprehension>", ScopeType::Comprehension);
-                for gen in generators {
+                // First generator: only target + conditions (iter already analyzed above)
+                if let Some(first) = generators.first() {
+                    self.analyze_target(&first.target);
+                    for cond in &first.ifs {
+                        self.analyze_expression(cond);
+                    }
+                }
+                // Remaining generators are fully inside comprehension scope
+                for gen in generators.iter().skip(1) {
                     self.analyze_comprehension(gen);
                 }
                 self.analyze_expression(elt);
@@ -652,8 +664,17 @@ impl Analyzer {
                 value,
                 generators,
             } => {
+                if let Some(first) = generators.first() {
+                    self.analyze_expression(&first.iter);
+                }
                 self.push_scope("<comprehension>", ScopeType::Comprehension);
-                for gen in generators {
+                if let Some(first) = generators.first() {
+                    self.analyze_target(&first.target);
+                    for cond in &first.ifs {
+                        self.analyze_expression(cond);
+                    }
+                }
+                for gen in generators.iter().skip(1) {
                     self.analyze_comprehension(gen);
                 }
                 self.analyze_expression(key);
@@ -663,8 +684,17 @@ impl Analyzer {
             }
 
             ExpressionKind::GeneratorExp { elt, generators } => {
+                if let Some(first) = generators.first() {
+                    self.analyze_expression(&first.iter);
+                }
                 self.push_scope("<genexpr>", ScopeType::Comprehension);
-                for gen in generators {
+                if let Some(first) = generators.first() {
+                    self.analyze_target(&first.target);
+                    for cond in &first.ifs {
+                        self.analyze_expression(cond);
+                    }
+                }
+                for gen in generators.iter().skip(1) {
                     self.analyze_comprehension(gen);
                 }
                 self.analyze_expression(elt);

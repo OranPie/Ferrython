@@ -1335,7 +1335,38 @@ impl PyObjectMethods for PyObjectRef {
             }
             PyObjectPayload::Dict(map) => {
                 let hk = key.to_hashable_key()?;
-                map.read().get(&hk).cloned().ok_or_else(|| PyException::key_error(key.repr()))
+                let map_r = map.read();
+                if let Some(val) = map_r.get(&hk) {
+                    return Ok(val.clone());
+                }
+                // Check for __defaultdict_factory__ (Counter / defaultdict)
+                let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+                if let Some(factory) = map_r.get(&factory_key) {
+                    let factory = factory.clone();
+                    drop(map_r);
+                    // Create default value by "calling" the factory
+                    // For common factories: int -> 0, list -> [], str -> "", float -> 0.0
+                    let default = match &factory.payload {
+                        PyObjectPayload::BuiltinType(name) => {
+                            match name.as_str() {
+                                "int" => PyObject::int(0),
+                                "float" => PyObject::float(0.0),
+                                "str" => PyObject::str_val(CompactString::new("")),
+                                "list" => PyObject::list(vec![]),
+                                "bool" => PyObject::bool_val(false),
+                                "tuple" => PyObject::tuple(vec![]),
+                                "set" => PyObject::set(IndexMap::new()),
+                                "dict" => PyObject::dict(IndexMap::new()),
+                                _ => return Err(PyException::key_error(key.repr())),
+                            }
+                        }
+                        _ => return Err(PyException::key_error(key.repr())),
+                    };
+                    // Store the default value
+                    map.write().insert(hk, default.clone());
+                    return Ok(default);
+                }
+                Err(PyException::key_error(key.repr()))
             }
             PyObjectPayload::Str(s) => {
                 let idx = key.to_int()?;

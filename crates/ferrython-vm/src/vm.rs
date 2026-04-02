@@ -64,11 +64,13 @@ impl VirtualMachine {
         code: &CodeObject,
         args: Vec<PyObjectRef>,
         defaults: &[PyObjectRef],
+        kw_defaults: &IndexMap<CompactString, PyObjectRef>,
         globals: SharedGlobals,
         closure: &[Arc<RwLock<Option<PyObjectRef>>>],
     ) -> PyResult<PyObjectRef> {
         let mut frame = Frame::new(code.clone(), globals, self.builtins.clone());
         let nparams = code.arg_count as usize;
+        let nkwonly = code.kwonlyarg_count as usize;
         let has_varargs = code.flags.contains(CodeFlags::VARARGS);
         let has_varkw = code.flags.contains(CodeFlags::VARKEYWORDS);
 
@@ -100,10 +102,25 @@ impl VirtualMachine {
             frame.set_local(nparams, PyObject::tuple(extra));
         }
 
+        // Fill in kw_defaults for keyword-only args
+        let kwonly_start = if has_varargs { nparams + 1 } else { nparams };
+        for i in 0..nkwonly {
+            let slot = kwonly_start + i;
+            if frame.locals.get(slot).map_or(true, |v| v.is_none()) {
+                if let Some(varname) = code.varnames.get(slot) {
+                    if let Some(default_val) = kw_defaults.get(varname.as_str()) {
+                        frame.set_local(slot, default_val.clone());
+                    }
+                }
+            }
+        }
+
         // Pack **kwargs into a dict
         if has_varkw {
-            let kwargs_idx = nparams + if has_varargs { 1 } else { 0 };
-            frame.set_local(kwargs_idx, PyObject::dict(IndexMap::new()));
+            let kwargs_idx = kwonly_start + nkwonly;
+            if frame.locals.get(kwargs_idx).map_or(true, |v| v.is_none()) {
+                frame.set_local(kwargs_idx, PyObject::dict(IndexMap::new()));
+            }
         }
 
         // Install closure cells as free vars in this frame.
@@ -1147,8 +1164,9 @@ impl VirtualMachine {
                 let code = pyfunc.code.clone();
                 let globals = pyfunc.globals.clone();
                 let defaults = pyfunc.defaults.clone();
+                let kw_defaults = pyfunc.kw_defaults.clone();
                 let closure = pyfunc.closure.clone();
-                self.call_function(&code, args, &defaults, globals, &closure)
+                self.call_function(&code, args, &defaults, &kw_defaults, globals, &closure)
             }
             PyObjectPayload::BuiltinFunction(name) | PyObjectPayload::BuiltinType(name) => {
                 if name.as_str() == "__build_class__" {
