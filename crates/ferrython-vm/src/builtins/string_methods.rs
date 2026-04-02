@@ -70,14 +70,20 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             Ok(PyObject::list(parts.iter().map(|p| PyObject::str_val(CompactString::from(*p))).collect()))
         }
         "rsplit" => {
+            let max_split = if args.len() > 1 { args[1].to_int().unwrap_or(-1) } else { -1 };
             let parts: Vec<&str> = if args.is_empty() {
                 s.rsplit_terminator(char::is_whitespace).collect()
             } else if let Some(sep) = args[0].as_str() {
-                s.rsplit(sep).collect()
+                if max_split < 0 {
+                    s.rsplit(sep).collect()
+                } else {
+                    s.rsplitn(max_split as usize + 1, sep).collect()
+                }
             } else {
                 return Err(PyException::type_error("rsplit() argument must be str"));
             };
-            Ok(PyObject::list(parts.iter().map(|p| PyObject::str_val(CompactString::from(*p))).collect()))
+            // rsplit collects right-to-left; reverse to get left-to-right order like CPython
+            Ok(PyObject::list(parts.iter().rev().map(|p| PyObject::str_val(CompactString::from(*p))).collect()))
         }
         "join" => {
             check_args_min("join", args, 1)?;

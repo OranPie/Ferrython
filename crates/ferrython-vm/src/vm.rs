@@ -453,7 +453,15 @@ impl VirtualMachine {
 
                 let (runtime_cls, instance_for_super) = match &self_obj.payload {
                     PyObjectPayload::Instance(inst) => (inst.class.clone(), self_obj.clone()),
-                    PyObjectPayload::Class(_) => (self_obj.clone(), self_obj.clone()),
+                    PyObjectPayload::Class(cd) => {
+                        // For metaclass methods: if defining_class_name matches the metaclass,
+                        // use the metaclass as runtime_cls (so super walks metaclass MRO)
+                        if let Some(meta) = &cd.metaclass {
+                            (meta.clone(), self_obj.clone())
+                        } else {
+                            (self_obj.clone(), self_obj.clone())
+                        }
+                    }
                     _ => return Err(PyException::runtime_error("super(): no current class")),
                 };
 
@@ -509,7 +517,19 @@ impl VirtualMachine {
                 bound_args.extend(pos_args);
                 self.call_object_kw(method.clone(), bound_args, kwargs)
             }
-            PyObjectPayload::Class(_class) => {
+            PyObjectPayload::Class(cd) => {
+                // If class has a metaclass with __call__, dispatch through it
+                if let Some(meta) = &cd.metaclass {
+                    if let Some(call_method) = meta.get_attr("__call__") {
+                        let mut call_args = vec![func.clone()];
+                        call_args.extend(pos_args);
+                        if kwargs.is_empty() {
+                            return self.call_object(call_method, call_args);
+                        } else {
+                            return self.call_object_kw(call_method, call_args, kwargs);
+                        }
+                    }
+                }
                 self.instantiate_class(&func, pos_args, kwargs)
             }
             _ => {
@@ -734,6 +754,15 @@ impl VirtualMachine {
                             return Ok(PyObject::wrap(PyObjectPayload::Partial {
                                 func: pf, args: pa, kwargs,
                             }));
+                        }
+                        // type.__call__(cls, *args, **kwargs) — standard class instantiation
+                        if name.as_str() == "__type_call__" {
+                            if pos_args.is_empty() {
+                                return Err(PyException::type_error("type.__call__ requires cls"));
+                            }
+                            let cls = pos_args[0].clone();
+                            let rest = pos_args[1..].to_vec();
+                            return self.instantiate_class(&cls, rest, kwargs);
                         }
                         // Pass kwargs as trailing dict if present
                         if !kwargs.is_empty() {
@@ -1710,7 +1739,15 @@ impl VirtualMachine {
                     ))),
                 }
             }
-            PyObjectPayload::Class(_class) => {
+            PyObjectPayload::Class(cd) => {
+                // If class has a metaclass with __call__, dispatch through it
+                if let Some(meta) = &cd.metaclass {
+                    if let Some(call_method) = meta.get_attr("__call__") {
+                        let mut call_args = vec![func.clone()];
+                        call_args.extend(args);
+                        return self.call_object(call_method, call_args);
+                    }
+                }
                 self.instantiate_class(&func, args, vec![])
             }
             PyObjectPayload::BoundMethod { receiver, method } => {
@@ -1837,6 +1874,15 @@ impl VirtualMachine {
                 if name.as_str() == "functools.reduce" {
                     return self.vm_functools_reduce(&args);
                 }
+                // type.__call__(cls, *args) — standard class instantiation protocol
+                if name.as_str() == "__type_call__" {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("type.__call__ requires cls"));
+                    }
+                    let cls = args[0].clone();
+                    let rest = args[1..].to_vec();
+                    return self.instantiate_class(&cls, rest, vec![]);
+                }
                 func(&args)
             }
             PyObjectPayload::NativeClosure { func, .. } => {
@@ -1928,7 +1974,7 @@ impl VirtualMachine {
         // Simple C3-like: for single inheritance just chain; for multiple use bases order
         let mro = Self::compute_mro(&bases);
         let cls = PyObject::wrap(PyObjectPayload::Class(ClassData {
-            name: class_name, bases: bases.clone(), namespace: Arc::new(RwLock::new(namespace)), mro,
+            name: class_name, bases: bases.clone(), namespace: Arc::new(RwLock::new(namespace)), mro, metaclass: None,
         }));
 
         // Call __init_subclass__ on each base class (PEP 487)
@@ -2100,25 +2146,73 @@ impl VirtualMachine {
         };
 
         if let Some(meta) = metaclass {
-            // Metaclass provided: call meta(name, bases, namespace_dict)
-            let ns_dict = {
-                let mut map = IndexMap::new();
-                for (k, v) in &namespace {
-                    if let Ok(hk) = PyObject::str_val(CompactString::from(k.as_str())).to_hashable_key() {
-                        map.insert(hk, v.clone());
+            // Metaclass provided: create a Class with metaclass info
+            // In CPython: metaclass(name, bases, dict) calls type.__call__(metaclass) which does:
+            //   1. metaclass.__new__(metaclass, name, bases, dict) → creates Class
+            //   2. metaclass.__init__(cls, name, bases, dict) → initializes
+            // We handle this by creating the Class directly with the metaclass stored.
+            let bases_list: Vec<PyObjectRef> = bases.clone();
+            let mro = Self::compute_mro(&bases_list);
+            let cls = PyObject::wrap(PyObjectPayload::Class(ClassData {
+                name: class_name.clone(),
+                bases: bases_list.clone(),
+                namespace: Arc::new(RwLock::new(namespace)),
+                mro,
+                metaclass: Some(meta.clone()),
+            }));
+            // Call metaclass's __init__ if it has one (rare, but some metaclasses use it)
+            if let Some(init) = meta.get_attr("__init__") {
+                // Only call if it's a user-defined method (not from type)
+                if matches!(&init.payload, PyObjectPayload::BoundMethod { method, .. } if matches!(&method.payload, PyObjectPayload::Function(_))) {
+                    let init_fn = match &init.payload {
+                        PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                        _ => init,
+                    };
+                    let ns_dict = {
+                        let mut map = IndexMap::new();
+                        for (k, v) in cls.get_attr("__dict__").map(|d| {
+                            if let PyObjectPayload::Dict(m) = &d.payload { m.read().clone() }
+                            else { IndexMap::new() }
+                        }).unwrap_or_default() {
+                            map.insert(k, v);
+                        }
+                        PyObject::dict(map)
+                    };
+                    let bases_tuple = PyObject::tuple(bases_list);
+                    let name_obj = PyObject::str_val(class_name);
+                    self.call_object(init_fn, vec![cls.clone(), name_obj, bases_tuple, ns_dict])?;
+                }
+            }
+            // __init_subclass__ handling
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                for base in &cd.bases {
+                    if let Some(init_sub) = base.get_attr("__init_subclass__") {
+                        let bound = if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
+                            Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: cls.clone(),
+                                    method: method.clone(),
+                                }
+                            })
+                        } else {
+                            Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: cls.clone(),
+                                    method: init_sub,
+                                }
+                            })
+                        };
+                        self.call_object(bound, vec![])?;
                     }
                 }
-                PyObject::dict(map)
-            };
-            let bases_tuple = PyObject::tuple(bases);
-            let name_obj = PyObject::str_val(class_name);
-            self.call_object(meta, vec![name_obj, bases_tuple, ns_dict])
+            }
+            Ok(cls)
         } else {
             // No metaclass: build normally
             let mro = Self::compute_mro(&bases);
             let cls = PyObject::wrap(PyObjectPayload::Class(ClassData {
                 name: class_name, bases: bases.clone(),
-                namespace: Arc::new(RwLock::new(namespace)), mro,
+                namespace: Arc::new(RwLock::new(namespace)), mro, metaclass: None,
             }));
             // __init_subclass__: bind to new subclass (cls), not parent
             for base in &bases {

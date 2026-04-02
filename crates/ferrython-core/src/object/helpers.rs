@@ -488,6 +488,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                     bases,
                     namespace: std::sync::Arc::new(parking_lot::RwLock::new(namespace)),
                     mro,
+                    metaclass: None,
                 })))
             } else if args.len() == 3 {
                 // type(name, bases, dict) — no mcs
@@ -525,6 +526,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                     bases,
                     namespace: std::sync::Arc::new(parking_lot::RwLock::new(namespace)),
                     mro,
+                    metaclass: None,
                 })))
             } else {
                 Err(PyException::type_error("type.__new__ requires 3 or 4 arguments"))

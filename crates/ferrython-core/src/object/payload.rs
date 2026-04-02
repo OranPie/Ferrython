@@ -161,6 +161,8 @@ pub struct ClassData {
     pub bases: Vec<PyObjectRef>,
     pub namespace: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
     pub mro: Vec<PyObjectRef>,
+    /// Custom metaclass, if any (e.g., SingletonMeta). None = default `type`.
+    pub metaclass: Option<PyObjectRef>,
 }
 
 #[derive(Debug, Clone)]

@@ -963,6 +963,15 @@ impl PyObjectMethods for PyObjectRef {
                 for base in &cd.bases {
                     if let Some(v) = base.get_attr(name) { return Some(v); }
                 }
+                // If class has a metaclass, look in metaclass namespace too
+                // (e.g., cls._instances where _instances is a metaclass class attribute)
+                if let Some(meta) = &cd.metaclass {
+                    if let PyObjectPayload::Class(mcd) = &meta.payload {
+                        if let Some(v) = mcd.namespace.read().get(name).cloned() {
+                            return Some(v);
+                        }
+                    }
+                }
                 None
             }
             PyObjectPayload::Module(m) => m.attrs.get(name).cloned(),
@@ -1265,7 +1274,14 @@ impl PyObjectMethods for PyObjectRef {
                 // super() proxy: look up in the RUNTIME class MRO, skipping up to and including cls
                 let runtime_cls = match &instance.payload {
                     PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
-                    PyObjectPayload::Class(_) => Some(instance.clone()),
+                    PyObjectPayload::Class(cd) => {
+                        // For metaclass methods: walk metaclass MRO, not class MRO
+                        if let Some(meta) = &cd.metaclass {
+                            Some(meta.clone())
+                        } else {
+                            Some(instance.clone())
+                        }
+                    }
                     _ => None,
                 };
                 if let Some(rt_cls) = runtime_cls {
@@ -1310,6 +1326,15 @@ impl PyObjectMethods for PyObjectRef {
                             }
                             // BuiltinType base in MRO
                             if let PyObjectPayload::BuiltinType(bt_name) = &base.payload {
+                                // type.__call__ needs VM access; return a BoundMethod marker
+                                if bt_name.as_str() == "type" && name == "__call__" {
+                                    return Some(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: instance.clone(),
+                                            method: PyObject::native_function("__type_call__", |_| Ok(PyObject::none())),
+                                        }
+                                    }));
+                                }
                                 if let Some(resolved) = crate::object::resolve_builtin_type_method(bt_name.as_str(), name) {
                                     return Some(resolved);
                                 }

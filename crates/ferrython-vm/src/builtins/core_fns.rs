@@ -144,6 +144,7 @@ fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj
         bases,
         namespace: Arc::new(RwLock::new(namespace)),
         mro,
+        metaclass: None,
     })))
 }
 
