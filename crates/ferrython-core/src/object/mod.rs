@@ -9,3 +9,4 @@ mod helpers;
 pub use payload::*;
 pub use methods::*;
 pub use helpers::*;
+pub use constructors::init_gc;

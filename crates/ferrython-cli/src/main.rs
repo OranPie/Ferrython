@@ -5,6 +5,9 @@ use std::fs;
 use std::process;
 
 fn main() {
+    // Initialize GC cycle detection
+    ferrython_core::object::init_gc();
+    
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {

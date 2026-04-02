@@ -599,6 +599,15 @@ pub(super) fn builtin_any(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn builtin_iter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() == 2 {
+        // iter(callable, sentinel) — creates a lazy sentinel iterator
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(
+            Arc::new(std::sync::Mutex::new(IteratorData::Sentinel {
+                callable: args[0].clone(),
+                sentinel: args[1].clone(),
+            }))
+        )));
+    }
     check_args("iter", args, 1)?;
     args[0].get_iter()
 }

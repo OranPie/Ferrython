@@ -185,5 +185,6 @@ pub enum IteratorData {
     Zip { sources: Vec<PyObjectRef> },
     Map { func: PyObjectRef, source: PyObjectRef },
     Filter { func: PyObjectRef, source: PyObjectRef },
+    Sentinel { callable: PyObjectRef, sentinel: PyObjectRef },
 }
 

@@ -6,11 +6,12 @@
 //! # Design
 //!
 //! - `Arc` handles acyclic objects automatically via reference counting
-//! - Cycle detection targets `Instance` objects (user-defined classes)
+//! - Cycle detection uses a registered callback from ferrython-core
 //! - Threshold-based trigger: after N allocations → `collect()`
 //! - Three generations mirroring CPython: gen0 (young), gen1, gen2
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 // ── Global GC state (thread-safe via atomics) ──
 
@@ -27,6 +28,14 @@ static THRESHOLD_GEN2: AtomicU64 = AtomicU64::new(10);
 static GEN0_COLLECTIONS: AtomicU64 = AtomicU64::new(0);
 static GEN1_COLLECTIONS: AtomicU64 = AtomicU64::new(0);
 
+// Cycle collection callback — registered by ferrython-core
+static CYCLE_COLLECTOR: Mutex<Option<Box<dyn Fn() -> usize + Send>>> = Mutex::new(None);
+
+/// Register a cycle collection callback. Called by ferrython-core during init.
+pub fn register_cycle_collector<F: Fn() -> usize + Send + 'static>(f: F) {
+    *CYCLE_COLLECTOR.lock().unwrap() = Some(Box::new(f));
+}
+
 // ── Public API ──
 
 /// Notify the GC that an object was allocated. Returns `true` if a
@@ -41,12 +50,12 @@ pub fn notify_alloc() -> bool {
 }
 
 /// Run a garbage collection cycle. Returns the number of unreachable
-/// objects found (currently 0 — cycle detection not yet implemented).
+/// objects found via cycle detection.
 ///
 /// Resets allocation counter and increments generation counters to match
 /// CPython's generational promotion logic.
 pub fn collect() -> usize {
-    let allocs = ALLOCATION_COUNT.swap(0, Ordering::Relaxed);
+    let _allocs = ALLOCATION_COUNT.swap(0, Ordering::Relaxed);
     COLLECTION_COUNT.fetch_add(1, Ordering::Relaxed);
 
     // Generational promotion: gen0 collection happened
@@ -56,13 +65,15 @@ pub fn collect() -> usize {
         let gen1 = GEN1_COLLECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
         if gen1 >= THRESHOLD_GEN2.load(Ordering::Relaxed) {
             GEN1_COLLECTIONS.store(0, Ordering::Relaxed);
-            // Full (gen2) collection
         }
     }
 
-    // TODO: Actual cycle detection on Instance objects.
-    // For now, Arc refcounting handles all acyclic garbage.
-    let _ = allocs;
+    // Run the registered cycle collector callback
+    if let Ok(guard) = CYCLE_COLLECTOR.lock() {
+        if let Some(ref collector) = *guard {
+            return collector();
+        }
+    }
     0
 }
 

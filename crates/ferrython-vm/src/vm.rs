@@ -1361,6 +1361,12 @@ impl VirtualMachine {
                     }
                     "reversed" => {
                         if !args.is_empty() {
+                            // Check for __reversed__ dunder on instances
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(rev_method) = args[0].get_attr("__reversed__") {
+                                    return self.call_object(rev_method, vec![]);
+                                }
+                            }
                             let items = self.collect_iterable(&args[0])?;
                             return builtins::dispatch("reversed", &[PyObject::list(items)]);
                         }
@@ -2069,7 +2075,8 @@ impl VirtualMachine {
                     matches!(&*data, IteratorData::Enumerate { .. }
                         | IteratorData::Zip { .. }
                         | IteratorData::Map { .. }
-                        | IteratorData::Filter { .. })
+                        | IteratorData::Filter { .. }
+                        | IteratorData::Sentinel { .. })
                 };
                 if is_lazy {
                     let mut items = Vec::new();
@@ -2170,7 +2177,8 @@ impl VirtualMachine {
                         IteratorData::Enumerate { .. }
                         | IteratorData::Zip { .. }
                         | IteratorData::Map { .. }
-                        | IteratorData::Filter { .. } => {
+                        | IteratorData::Filter { .. }
+                        | IteratorData::Sentinel { .. } => {
                             drop(data);
                             return self.advance_lazy_iterator(iter_obj);
                         }
@@ -2250,6 +2258,18 @@ impl VirtualMachine {
                         }
                         None => return Ok(None),
                     }
+                }
+            }
+            IteratorData::Sentinel { callable, sentinel } => {
+                let f = callable.clone();
+                let s = sentinel.clone();
+                drop(data);
+                let val = self.call_object(f, vec![])?;
+                let eq_result = val.compare(&s, ferrython_core::object::CompareOp::Eq)?;
+                if eq_result.is_truthy() {
+                    Ok(None)
+                } else {
+                    Ok(Some(val))
                 }
             }
             _ => {

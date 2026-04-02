@@ -384,7 +384,8 @@ impl PyObjectMethods for PyObjectRef {
                     IteratorData::Enumerate { .. }
                     | IteratorData::Zip { .. }
                     | IteratorData::Map { .. }
-                    | IteratorData::Filter { .. } => {
+                    | IteratorData::Filter { .. }
+                    | IteratorData::Sentinel { .. } => {
                         Err(PyException::type_error("lazy iterator requires VM to collect"))
                     }
                 }
@@ -1023,6 +1024,55 @@ impl PyObjectMethods for PyObjectRef {
                                 }
                             }
                             Ok(PyObject::dict(result_map))
+                        }))
+                    }
+                    // object.__setattr__(instance, name, value) — bypass custom __setattr__
+                    "__setattr__" if n.as_str() == "object" => {
+                        Some(PyObject::native_function("object.__setattr__", |args| {
+                            if args.len() != 3 {
+                                return Err(crate::error::PyException::type_error(
+                                    "object.__setattr__() takes exactly 3 arguments"));
+                            }
+                            let name = args[1].as_str().ok_or_else(||
+                                crate::error::PyException::type_error("attribute name must be string"))?;
+                            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                                inst.attrs.write().insert(CompactString::from(name), args[2].clone());
+                            }
+                            Ok(PyObject::none())
+                        }))
+                    }
+                    // object.__getattribute__(instance, name) — bypass custom __getattribute__
+                    "__getattribute__" if n.as_str() == "object" => {
+                        Some(PyObject::native_function("object.__getattribute__", |args| {
+                            if args.len() != 2 {
+                                return Err(crate::error::PyException::type_error(
+                                    "object.__getattribute__() takes exactly 2 arguments"));
+                            }
+                            let name = args[1].as_str().ok_or_else(||
+                                crate::error::PyException::type_error("attribute name must be string"))?;
+                            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                                if let Some(val) = inst.attrs.read().get(name) {
+                                    return Ok(val.clone());
+                                }
+                            }
+                            args[0].get_attr(name).ok_or_else(||
+                                crate::error::PyException::attribute_error(&format!(
+                                    "'{}' object has no attribute '{}'", args[0].type_name(), name)))
+                        }))
+                    }
+                    // object.__delattr__(instance, name) — bypass custom __delattr__
+                    "__delattr__" if n.as_str() == "object" => {
+                        Some(PyObject::native_function("object.__delattr__", |args| {
+                            if args.len() != 2 {
+                                return Err(crate::error::PyException::type_error(
+                                    "object.__delattr__() takes exactly 2 arguments"));
+                            }
+                            let name = args[1].as_str().ok_or_else(||
+                                crate::error::PyException::type_error("attribute name must be string"))?;
+                            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                                inst.attrs.write().shift_remove(name);
+                            }
+                            Ok(PyObject::none())
                         }))
                     }
                     _ => {
