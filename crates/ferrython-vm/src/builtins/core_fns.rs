@@ -4,14 +4,13 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args, check_args_min,
-    ClassData, InstanceData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-use super::apply_format_spec;
 use super::iter_advance;
 
 pub(super) fn builtin_print(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

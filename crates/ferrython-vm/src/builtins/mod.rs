@@ -7,18 +7,17 @@ mod file_io;
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, ClassData, IteratorData, CompareOp, InstanceData};
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData};
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use core_fns::*;
 use string_methods::*;
 use type_methods::*;
 use file_io::*;
 
-pub(crate) use core_fns::{builtin_abs, builtin_dir, is_instance_of, class_is_subclass_of, check_subclass, is_exception_subclass};
+pub(crate) use core_fns::{builtin_abs, builtin_dir};
 pub(crate) use type_methods::partial_cmp_for_sort;
 
 // ── Builtin registry ──

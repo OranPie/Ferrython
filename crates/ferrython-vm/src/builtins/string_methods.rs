@@ -1,9 +1,9 @@
 //! String method dispatch (upper, lower, split, replace, strip, join, find, format, etc.)
 
 use compact_str::CompactString;
-use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    check_args, check_args_min,
+    check_args_min,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyInt};
