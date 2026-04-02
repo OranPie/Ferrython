@@ -41,9 +41,9 @@ class Color(Enum):
     GREEN = 2
     BLUE = 3
 
-test("enum RED value", Color.RED == 1)
-test("enum GREEN value", Color.GREEN == 2)
-test("enum BLUE value", Color.BLUE == 3)
+test("enum RED value", Color.RED.value == 1)
+test("enum GREEN value", Color.GREEN.value == 2)
+test("enum BLUE value", Color.BLUE.value == 3)
 
 class Direction(Enum):
     NORTH = auto()
@@ -52,8 +52,8 @@ class Direction(Enum):
     WEST = auto()
 
 # auto() should give incrementing values
-test("auto north", Direction.NORTH >= 1)
-test("auto south", Direction.SOUTH >= 2)
+test("auto north", Direction.NORTH.value >= 1)
+test("auto south", Direction.SOUTH.value >= 2)
 
 # ── __format__ protocol ──
 class Currency:

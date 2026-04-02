@@ -842,8 +842,16 @@ impl PyObjectMethods for PyObjectRef {
         }
         let ord = partial_cmp_objects(self, other);
         let result = match op {
-            CompareOp::Eq => ord == Some(std::cmp::Ordering::Equal),
-            CompareOp::Ne => ord != Some(std::cmp::Ordering::Equal),
+            // For Eq/Ne, if types don't define comparison (ord is None),
+            // fall back to identity comparison (like CPython's default __eq__)
+            CompareOp::Eq => match ord {
+                Some(o) => o == std::cmp::Ordering::Equal,
+                None => std::ptr::eq(self.as_ref(), other.as_ref()),
+            },
+            CompareOp::Ne => match ord {
+                Some(o) => o != std::cmp::Ordering::Equal,
+                None => !std::ptr::eq(self.as_ref(), other.as_ref()),
+            },
             CompareOp::Lt => ord == Some(std::cmp::Ordering::Less),
             CompareOp::Le => matches!(ord, Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)),
             CompareOp::Gt => ord == Some(std::cmp::Ordering::Greater),

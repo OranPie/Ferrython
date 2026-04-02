@@ -179,26 +179,25 @@ pub fn create_functools_module() -> PyObjectRef {
         ("reduce", PyObject::native_function("functools.reduce", functools_reduce)),
         ("partial", PyObject::native_function("functools.partial", functools_partial)),
         ("lru_cache", make_builtin(|args| {
-            // lru_cache(func) — bare decorator: return func unchanged
-            // lru_cache(maxsize=N) — called with int arg: return identity decorator
+            // lru_cache(func) or lru_cache(maxsize=N)(func) — returns a cached wrapper
             if args.is_empty() { 
-                // @lru_cache() with no args — return identity decorator
+                // @lru_cache() with no args — return decorator
                 return Ok(make_builtin(|args| {
                     if args.is_empty() { return Ok(PyObject::none()); }
-                    Ok(args[0].clone())
+                    Ok(create_cached_function(args[0].clone()))
                 }));
             }
-            // If first arg is a callable (function), apply directly
             match &args[0].payload {
                 PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } 
                 | PyObjectPayload::BuiltinFunction(_) => {
-                    Ok(args[0].clone())
+                    // @lru_cache directly on function
+                    Ok(create_cached_function(args[0].clone()))
                 }
                 _ => {
-                    // Called with maxsize parameter — return identity decorator
+                    // Called with maxsize parameter — return decorator
                     Ok(make_builtin(|args| {
                         if args.is_empty() { return Ok(PyObject::none()); }
-                        Ok(args[0].clone())
+                        Ok(create_cached_function(args[0].clone()))
                     }))
                 }
             }
@@ -588,6 +587,22 @@ fn itertools_tee(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let n = if args.len() > 1 { args[1].as_int().unwrap_or(2) } else { 2 };
     let copies: Vec<PyObjectRef> = (0..n).map(|_| PyObject::list(items.clone())).collect();
     Ok(PyObject::tuple(copies))
+}
+
+/// Create a cached wrapper function for lru_cache.
+/// Returns an Instance with __wrapped__ (original func) and _cache (dict).
+/// The VM intercepts __call__ on instances with _cache to implement caching.
+fn create_cached_function(func: PyObjectRef) -> PyObjectRef {
+    let cache_class = PyObject::class(
+        CompactString::from("_lru_wrapper"),
+        vec![],
+        IndexMap::new(),
+    );
+    let cache_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("__wrapped__"), func);
+    attrs.insert(CompactString::from("_cache"), PyObject::dict(cache_dict));
+    PyObject::instance_with_attrs(cache_class, attrs)
 }
 
 

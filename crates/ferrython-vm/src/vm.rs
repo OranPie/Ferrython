@@ -1796,7 +1796,25 @@ impl VirtualMachine {
                     self.call_object(partial_func, combined_args)
                 }
             }
-            PyObjectPayload::Instance(_) => {
+            PyObjectPayload::Instance(_inst) => {
+                // lru_cache wrapper: check _cache + __wrapped__
+                if let Some(cache_obj) = func.get_attr("_cache") {
+                    if let Some(wrapped) = func.get_attr("__wrapped__") {
+                        if let PyObjectPayload::Dict(cache_map) = &cache_obj.payload {
+                            // Build cache key from stringified args
+                            let key_str = args.iter().map(|a| a.repr()).collect::<Vec<_>>().join(",");
+                            let cache_key = HashableKey::Str(CompactString::from(&key_str));
+                            // Check cache
+                            if let Some(cached) = cache_map.read().get(&cache_key) {
+                                return Ok(cached.clone());
+                            }
+                            // Cache miss: call the wrapped function
+                            let result = self.call_object(wrapped, args)?;
+                            cache_map.write().insert(cache_key, result.clone());
+                            return Ok(result);
+                        }
+                    }
+                }
                 // Callable instances: check for __call__
                 if let Some(method) = func.get_attr("__call__") {
                     self.call_object(method, args)
@@ -1913,7 +1931,69 @@ impl VirtualMachine {
             }
         }
 
+        // Enum metaclass behavior: transform class attributes into enum members
+        self.process_enum_class(&cls, &bases)?;
+
         Ok(cls)
+    }
+
+    /// Process enum class: transform simple attributes into enum member instances.
+    fn process_enum_class(&mut self, cls: &PyObjectRef, bases: &[PyObjectRef]) -> PyResult<()> {
+        // Check if any base has __enum__ marker
+        let is_enum = bases.iter().any(|b| {
+            if let Some(marker) = b.get_attr("__enum__") {
+                marker.is_truthy()
+            } else {
+                false
+            }
+        });
+        if !is_enum { return Ok(()); }
+
+        let cd = match &cls.payload {
+            PyObjectPayload::Class(cd) => cd,
+            _ => return Ok(()),
+        };
+
+        // Collect user-defined attributes (skip dunder and callables)
+        let members: Vec<(CompactString, PyObjectRef)> = {
+            let ns = cd.namespace.read();
+            ns.iter()
+                .filter(|(k, v)| {
+                    !k.starts_with('_')
+                    && !matches!(&v.payload,
+                        PyObjectPayload::Function(_) |
+                        PyObjectPayload::NativeFunction { .. } |
+                        PyObjectPayload::BuiltinFunction(_))
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        };
+
+        // For each member, create an instance of the enum class with name and value
+        let mut ns = cd.namespace.write();
+        let mut member_map = IndexMap::new();
+
+        for (name, value) in &members {
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
+            attrs.insert(CompactString::from("value"), value.clone());
+            attrs.insert(CompactString::from("_name_"), PyObject::str_val(name.clone()));
+            attrs.insert(CompactString::from("_value_"), value.clone());
+            let member = PyObject::instance_with_attrs(cls.clone(), attrs);
+            ns.insert(name.clone(), member.clone());
+            member_map.insert(name.clone(), member);
+        }
+
+        // Add __members__ dict
+        let pairs: Vec<(PyObjectRef, PyObjectRef)> = member_map.iter()
+            .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
+            .collect();
+        ns.insert(CompactString::from("__members__"), PyObject::dict_from_pairs(pairs));
+
+        // Mark as enum
+        ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
+
+        Ok(())
     }
 
     /// Handle __build_class__ with keyword args (e.g., metaclass=Meta).
