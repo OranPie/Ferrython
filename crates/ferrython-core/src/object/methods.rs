@@ -471,6 +471,9 @@ impl PyObjectMethods for PyObjectRef {
             (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
                 let mut r = a.clone(); r.extend(b.iter().cloned()); Ok(PyObject::tuple(r))
             }
+            (PyObjectPayload::Bytes(a), PyObjectPayload::Bytes(b)) | (PyObjectPayload::ByteArray(a), PyObjectPayload::Bytes(b)) | (PyObjectPayload::Bytes(a), PyObjectPayload::ByteArray(b)) => {
+                let mut r = a.clone(); r.extend(b); Ok(PyObject::bytes(r))
+            }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for +: '{}' and '{}'", self.type_name(), other.type_name()))),
         }
     }
@@ -555,6 +558,12 @@ impl PyObjectMethods for PyObjectRef {
                 let mut result = Vec::with_capacity(items.len() * count);
                 for _ in 0..count { result.extend(items.iter().cloned()); }
                 Ok(PyObject::tuple(result))
+            }
+            (PyObjectPayload::Bytes(b), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::Bytes(b)) => {
+                let count = n.to_i64().unwrap_or(0).max(0) as usize;
+                let mut result = Vec::with_capacity(b.len() * count);
+                for _ in 0..count { result.extend(b); }
+                Ok(PyObject::bytes(result))
             }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for *: '{}' and '{}'", self.type_name(), other.type_name()))),
         }
