@@ -1488,7 +1488,11 @@ impl VirtualMachine {
                     }
                     "len" => {
                         if args.len() == 1 {
-                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                                // Dict subclass: use dict_storage length
+                                if let Some(ref ds) = inst.dict_storage {
+                                    return Ok(PyObject::int(ds.read().len() as i64));
+                                }
                                 if let Some(method) = args[0].get_attr("__len__") {
                                     return self.call_object(method, vec![]);
                                 }
@@ -2331,6 +2335,10 @@ impl VirtualMachine {
                 Ok(items)
             }
             PyObjectPayload::Instance(inst) => {
+                // Dict subclass: iterate over keys
+                if let Some(ref ds) = inst.dict_storage {
+                    return Ok(ds.read().keys().map(|k| k.to_object()).collect());
+                }
                 // Deque: directly return internal data as list
                 if inst.attrs.read().contains_key("__deque__") {
                     if let Some(data) = inst.attrs.read().get("_data").cloned() {

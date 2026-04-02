@@ -288,6 +288,10 @@ pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -
 }
 
 fn call_instance_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Dict subclass: delegate dict methods to dict_storage
+    if let Some(ref ds) = inst.dict_storage {
+        return call_dict_method(ds, method, args);
+    }
     // Namedtuple methods
     if inst.class.get_attr("__namedtuple__").is_some() {
         return call_namedtuple_method(inst, method, args);

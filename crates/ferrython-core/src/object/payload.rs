@@ -169,6 +169,8 @@ pub struct ClassData {
 pub struct InstanceData {
     pub class: PyObjectRef,
     pub attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
+    /// Internal dict storage for dict subclasses
+    pub dict_storage: Option<Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>>,
 }
 
 #[derive(Debug, Clone)]

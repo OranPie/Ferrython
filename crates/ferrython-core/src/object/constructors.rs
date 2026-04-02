@@ -157,14 +157,38 @@ impl PyObject {
         Self::wrap(PyObjectPayload::Class(ClassData { name, bases, namespace: Arc::new(RwLock::new(namespace)), mro: Vec::new(), metaclass: None }))
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
-        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(IndexMap::new())) }));
+        let dict_storage = Self::detect_dict_subclass(&class);
+        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(IndexMap::new())), dict_storage }));
         track_instance(&obj);
         obj
     }
     pub fn instance_with_attrs(class: PyObjectRef, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
-        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(attrs)) }));
+        let dict_storage = Self::detect_dict_subclass(&class);
+        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(attrs)), dict_storage }));
         track_instance(&obj);
         obj
+    }
+
+    /// Check if a class inherits from dict and return dict storage if so
+    fn detect_dict_subclass(class: &PyObjectRef) -> Option<Arc<RwLock<IndexMap<crate::types::HashableKey, PyObjectRef>>>> {
+        if let PyObjectPayload::Class(cd) = &class.payload {
+            for base in &cd.bases {
+                let is_dict = match &base.payload {
+                    PyObjectPayload::BuiltinType(n) => n.as_str() == "dict",
+                    PyObjectPayload::Class(bcd) => bcd.name.as_str() == "dict",
+                    _ => false,
+                };
+                if is_dict {
+                    return Some(Arc::new(RwLock::new(IndexMap::new())));
+                }
+                // Recurse into base classes
+                if let Some(storage) = Self::detect_dict_subclass(base) {
+                    drop(storage); // We create fresh storage for each instance
+                    return Some(Arc::new(RwLock::new(IndexMap::new())));
+                }
+            }
+        }
+        None
     }
     pub fn module(name: CompactString) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: IndexMap::new() }))

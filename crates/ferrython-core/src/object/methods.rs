@@ -122,6 +122,15 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
         })
     };
 
+    // Dict subclass: expose dict methods bound to the instance
+    if inst.dict_storage.is_some() {
+        if matches!(name, "keys" | "values" | "items" | "get" | "pop" | "update"
+            | "setdefault" | "clear" | "copy" | "popitem" | "fromkeys")
+        {
+            return Some(make_bound(name));
+        }
+    }
+
     // Namedtuple
     if inst.class.get_attr("__namedtuple__").is_some() {
         if name == "_fields" {
@@ -273,6 +282,10 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Code(c) => format!("<code object {}>", c.name),
             PyObjectPayload::Class(cd) => format!("<class '{}'>", cd.name),
             PyObjectPayload::Instance(inst) => {
+                // Dict subclass: display like a dict
+                if let Some(ref ds) = inst.dict_storage {
+                    return format_dict(&ds.read());
+                }
                 // Check for __str__ method first
                 if let Some(str_fn) = self.get_attr("__str__") {
                     if !matches!(&str_fn.payload, PyObjectPayload::BuiltinBoundMethod { .. }) {
@@ -330,6 +343,13 @@ impl PyObjectMethods for PyObjectRef {
                 }
             }
             PyObjectPayload::Instance(inst) => {
+                // Dict subclass: repr like a dict
+                if let Some(ref ds) = inst.dict_storage {
+                    let items: Vec<String> = ds.read().iter()
+                        .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr()))
+                        .collect();
+                    return format!("{{{}}}", items.join(", "));
+                }
                 // Check for __repr__ first
                 if let Some(_) = self.get_attr("__repr__") {
                     // Can't call from here (no VM), but py_to_string should handle
@@ -362,6 +382,9 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
             PyObjectPayload::Dict(m) => Ok(m.read().keys().map(|k| k.to_object()).collect()),
+            PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
+                Ok(inst.dict_storage.as_ref().unwrap().read().keys().map(|k| k.to_object()).collect())
+            }
             PyObjectPayload::InstanceDict(attrs) => Ok(attrs.read().keys().map(|k| PyObject::str_val(k.clone())).collect()),
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 Ok(b.iter().map(|byte| PyObject::int(*byte as i64)).collect())
@@ -886,6 +909,12 @@ impl PyObjectMethods for PyObjectRef {
                 if name == "__dict__" {
                     return Some(PyObject::wrap(PyObjectPayload::InstanceDict(inst.attrs.clone())));
                 }
+                // Dict subclass: intercept dict method lookups before MRO returns BuiltinType methods
+                if inst.dict_storage.is_some() {
+                    if let Some(result) = instance_builtin_method(self, inst, name) {
+                        return Some(result);
+                    }
+                }
                 // CPython descriptor protocol:
                 // 1. Data descriptors (has __set__ or __delete__) from class MRO
                 // 2. Instance __dict__
@@ -960,6 +989,20 @@ impl PyObjectMethods for PyObjectRef {
                         }
                     }
                     return Some(PyObject::dict(map));
+                }
+                if name == "__module__" {
+                    // Check namespace first for explicitly set __module__
+                    if let Some(v) = cd.namespace.read().get("__module__") {
+                        return Some(v.clone());
+                    }
+                    return Some(PyObject::str_val(CompactString::from("__main__")));
+                }
+                if name == "__qualname__" {
+                    // Check namespace first
+                    if let Some(v) = cd.namespace.read().get("__qualname__") {
+                        return Some(v.clone());
+                    }
+                    return Some(PyObject::str_val(cd.name.clone()));
                 }
                 // Check own namespace first, then bases
                 if let Some(v) = cd.namespace.read().get(name).cloned() {
@@ -1433,6 +1476,12 @@ impl PyObjectMethods for PyObjectRef {
                 let hidden = if map.contains_key(&HashableKey::Str(CompactString::from("__defaultdict_factory__"))) { 1 } else { 0 };
                 Ok(map.len() - hidden)
             },
+            PyObjectPayload::Instance(inst) => {
+                if let Some(ref ds) = inst.dict_storage {
+                    return Ok(ds.read().len());
+                }
+                Err(PyException::type_error(format!("object of type '{}' has no len()", self.type_name())))
+            },
             PyObjectPayload::Iterator(iter_data) => {
                 let data = iter_data.lock().unwrap();
                 match &*data {
@@ -1564,6 +1613,10 @@ impl PyObjectMethods for PyObjectRef {
                 let hk = item.to_hashable_key()?;
                 Ok(m.read().contains_key(&hk))
             }
+            PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
+                let hk = item.to_hashable_key()?;
+                Ok(inst.dict_storage.as_ref().unwrap().read().contains_key(&hk))
+            }
             PyObjectPayload::InstanceDict(attrs) => {
                 let key_str = item.py_to_string();
                 Ok(attrs.read().contains_key(key_str.as_str()))
@@ -1616,6 +1669,10 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
             PyObjectPayload::Dict(m) => {
                 let keys: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
+            }
+            PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
+                let keys: Vec<PyObjectRef> = inst.dict_storage.as_ref().unwrap().read().keys().map(|k| k.to_object()).collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
             }
             PyObjectPayload::Set(m) => {

@@ -707,11 +707,30 @@ impl VirtualMachine {
                         return Ok(None);
                     }
                 }
+                // Dict subclass: Instance with dict_storage (before __getitem__ dunder)
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if let Some(ref ds) = inst.dict_storage {
+                        let hk = self.vm_to_hashable_key(&key)?;
+                        let existing = ds.read().get(&hk).cloned();
+                        if let Some(val) = existing {
+                            self.vm_push(val);
+                        } else {
+                            // Check for __missing__
+                            if let Some(missing) = obj.get_attr("__missing__") {
+                                let result = self.call_object(missing, vec![key])?;
+                                self.vm_push(result);
+                            } else {
+                                return Err(PyException::key_error(key.py_to_string()));
+                            }
+                        }
+                        return Ok(None);
+                    }
+                }
                 if let Some(r) = self.try_call_dunder(&obj, "__getitem__", vec![key.clone()])? {
                     self.vm_push(r);
                     return Ok(None);
                 }
-                if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
+                if let PyObjectPayload::Instance(_) = &obj.payload {
                     if let Some(tup) = obj.get_attr("_tuple") {
                         self.vm_push(tup.get_item(&key)?);
                         return Ok(None);
@@ -773,8 +792,12 @@ impl VirtualMachine {
                         let key_str = CompactString::from(key.py_to_string());
                         attrs.write().insert(key_str, value);
                     }
-                    PyObjectPayload::Instance(_) => {
-                        if let Some(m) = obj.get_attr("__setitem__") {
+                    PyObjectPayload::Instance(inst) => {
+                        // Dict subclass: use dict_storage directly
+                        if let Some(ref ds) = inst.dict_storage {
+                            let hk = self.vm_to_hashable_key(&key)?;
+                            ds.write().insert(hk, value);
+                        } else if let Some(m) = obj.get_attr("__setitem__") {
                             self.call_object(m, vec![key, value])?;
                             return Ok(None);
                         } else {
@@ -831,13 +854,20 @@ impl VirtualMachine {
                             return Err(PyException::key_error(key.repr()));
                         }
                     }
-                    PyObjectPayload::Instance(_) => {
+                    PyObjectPayload::Instance(inst) => {
                         if let Some(method) = obj.get_attr("__delitem__") {
                             self.call_object(method, vec![key])?;
                             return Ok(None);
                         }
+                        if let Some(ref ds) = inst.dict_storage {
+                            let hk = self.vm_to_hashable_key(&key)?;
+                            if ds.write().swap_remove(&hk).is_none() {
+                                return Err(PyException::key_error(key.repr()));
+                            }
+                            return Ok(None);
+                        }
                         return Err(PyException::type_error(format!(
-                            "'{}' object does not support item deletion", obj.type_name())));
+                            "'{}'  object does not support item deletion", obj.type_name())));
                     }
                     _ => return Err(PyException::type_error(format!(
                         "'{}' object does not support item deletion", obj.type_name()))),
@@ -902,7 +932,13 @@ impl VirtualMachine {
         }
         // 'in' / 'not in' with __contains__
         if instr.arg == 6 || instr.arg == 7 {
-            if matches!(&b.payload, PyObjectPayload::Instance(_)) {
+            if let PyObjectPayload::Instance(inst) = &b.payload {
+                // Dict subclass: use contains() directly
+                if inst.dict_storage.is_some() {
+                    let val = if instr.arg == 6 { b.contains(&a)? } else { !b.contains(&a)? };
+                    self.vm_push(PyObject::bool_val(val));
+                    return Ok(None);
+                }
                 if let Some(method) = b.get_attr("__contains__") {
                     let r = self.call_object(method, vec![a])?;
                     let val = if instr.arg == 6 { r.is_truthy() } else { !r.is_truthy() };
@@ -1016,6 +1052,13 @@ impl VirtualMachine {
             }
             Opcode::GetIter => {
                 let obj = self.vm_pop();
+                // Dict subclass: use get_iter directly (dict_storage handles it)
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if inst.dict_storage.is_some() {
+                        self.vm_push(obj.get_iter()?);
+                        return Ok(None);
+                    }
+                }
                 if let Some(r) = self.try_call_dunder(&obj, "__iter__", vec![])? {
                     self.vm_push(r);
                 } else {

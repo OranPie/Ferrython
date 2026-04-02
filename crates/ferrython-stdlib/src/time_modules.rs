@@ -179,6 +179,7 @@ fn date_today(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
+        dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -229,6 +230,7 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
+        dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -252,6 +254,7 @@ fn datetime_time_obj(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
+        dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -272,6 +275,7 @@ fn datetime_timedelta(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
+        dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();

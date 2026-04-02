@@ -266,6 +266,7 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             Ok(PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: inst.class.clone(),
                 attrs: Arc::new(RwLock::new(inst.attrs.read().clone())),
+                dict_storage: inst.dict_storage.as_ref().map(|ds| Arc::new(RwLock::new(ds.read().clone()))),
             })))
         }
         _ => Ok(obj.clone()),
@@ -526,6 +527,7 @@ fn make_hash_object(name: &str, digest_hex: String, digest_bytes: Vec<u8>, block
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class: class.clone(),
         attrs: Arc::new(RwLock::new(attrs)),
+        dict_storage: None,
     }));
     {
         let a = if let PyObjectPayload::Instance(ref d) = inst.payload { d.attrs.clone() } else { unreachable!() };
