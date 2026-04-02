@@ -1979,7 +1979,9 @@ impl VirtualMachine {
                         Err(e) if e.kind == ExceptionKind::StopIteration => {
                             let frame = self.vm_frame();
                             frame.pop();
-                            frame.push(PyObject::none());
+                            // yield from captures StopIteration.value as the result
+                            let return_val = e.value.unwrap_or_else(|| PyObject::none());
+                            frame.push(return_val);
                         }
                         Err(e) => return Err(e),
                     }

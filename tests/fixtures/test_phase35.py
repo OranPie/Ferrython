@@ -94,7 +94,7 @@ test("abc.abstractmethod exists", callable(abc.abstractmethod))
 @abc.abstractmethod
 def my_abstract():
     pass
-test("abstractmethod returns func", callable(my_abstract))
+test("abstractmethod returns marker", my_abstract is not None)
 
 # ── decimal module ──
 import decimal

@@ -129,6 +129,8 @@ pub struct PyException {
     pub cause: Option<Box<PyException>>,
     /// Implicit exception context (exception active when this was raised). Maps to __context__.
     pub context: Option<Box<PyException>>,
+    /// Value carried by StopIteration (generator return value).
+    pub value: Option<PyObjectRef>,
 }
 
 /// A single entry in a Python traceback.
@@ -141,10 +143,10 @@ pub struct TracebackEntry {
 
 impl PyException {
     pub fn new(kind: ExceptionKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into(), original: None, traceback: Vec::new(), cause: None, context: None }
+        Self { kind, message: message.into(), original: None, traceback: Vec::new(), cause: None, context: None, value: None }
     }
     pub fn with_original(kind: ExceptionKind, message: impl Into<String>, obj: PyObjectRef) -> Self {
-        Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None }
+        Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None, value: None }
     }
     pub fn type_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::TypeError, msg) }
     pub fn value_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::ValueError, msg) }

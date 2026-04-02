@@ -54,6 +54,15 @@ fn py_to_json(obj: &PyObjectRef) -> PyResult<String> {
             }).collect();
             Ok(format!("{{{}}}", parts?.join(", ")))
         }
+        PyObjectPayload::InstanceDict(attrs) => {
+            let r = attrs.read();
+            let parts: Result<Vec<String>, _> = r.iter().map(|(k, v)| {
+                let key_str = format!("\"{}\"", k);
+                let val_str = py_to_json(v)?;
+                Ok(format!("{}: {}", key_str, val_str))
+            }).collect();
+            Ok(format!("{{{}}}", parts?.join(", ")))
+        }
         _ => Err(PyException::type_error(format!("Object of type {} is not JSON serializable", obj.type_name()))),
     }
 }

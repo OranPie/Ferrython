@@ -281,6 +281,56 @@ impl VirtualMachine {
         pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
     ) -> PyResult<PyObjectRef> {
+        // Check for abstract methods (ABC support)
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            let mut abstract_names: Vec<String> = Vec::new();
+            // Check this class's own namespace for abstract markers
+            {
+                let ns = cd.namespace.read();
+                for (name, val) in ns.iter() {
+                    if let PyObjectPayload::Tuple(items) = &val.payload {
+                        if items.len() == 2 {
+                            if let Some(s) = items[0].as_str() {
+                                if s == "__abstract__" {
+                                    abstract_names.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Also check base classes for abstract methods not overridden
+            for base in &cd.bases {
+                if let PyObjectPayload::Class(base_cd) = &base.payload {
+                    let base_ns = base_cd.namespace.read();
+                    for (name, val) in base_ns.iter() {
+                        if let PyObjectPayload::Tuple(items) = &val.payload {
+                            if items.len() == 2 {
+                                if let Some(s) = items[0].as_str() {
+                                    if s == "__abstract__" {
+                                        let overridden = cd.namespace.read().get(name.as_str())
+                                            .map(|v| !matches!(&v.payload, PyObjectPayload::Tuple(t) if t.len() == 2 && t[0].as_str() == Some("__abstract__")))
+                                            .unwrap_or(false);
+                                        if !overridden && !abstract_names.contains(&name.to_string()) {
+                                            abstract_names.push(name.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !abstract_names.is_empty() {
+                abstract_names.sort();
+                return Err(PyException::type_error(format!(
+                    "Can't instantiate abstract class {} with abstract method{}{}",
+                    cd.name,
+                    if abstract_names.len() > 1 { "s " } else { " " },
+                    abstract_names.join(", ")
+                )));
+            }
+        }
         // __new__
         let instance = if let Some(new_method) = cls.get_attr("__new__") {
             // If __new__ is from a BuiltinType base (dict, list, etc.), just create instance
@@ -2307,10 +2357,15 @@ impl VirtualMachine {
             gen.frame = Some(Box::new(saved_frame));
             result // Ok(yielded_value)
         } else {
-            // Generator returned — mark finished, raise StopIteration
+            // Generator returned — mark finished, raise StopIteration with return value
             gen.finished = true;
             gen.frame = None;
-            Err(PyException::new(ExceptionKind::StopIteration, ""))
+            // The return value from the generator function is carried in StopIteration
+            let return_val = result.ok();
+            let mut exc = PyException::new(ExceptionKind::StopIteration, "");
+            // Store return value in a special field for yield-from to capture
+            exc.value = return_val;
+            Err(exc)
         }
     }
 
