@@ -81,7 +81,36 @@ pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRe
     None
 }
 
-/// Check if an instance has built-in methods from special types (namedtuple, deque, hashlib).
+/// Check if an object is a data descriptor (has __set__ or __delete__).
+/// Data descriptors take priority over instance __dict__ in attribute lookup.
+pub fn is_data_descriptor(obj: &PyObjectRef) -> bool {
+    match &obj.payload {
+        PyObjectPayload::Property { .. } => true,
+        PyObjectPayload::Instance(inst) => {
+            has_method_in_class(&inst.class, "__set__")
+                || has_method_in_class(&inst.class, "__delete__")
+        }
+        _ => false,
+    }
+}
+
+/// Check if an object has __get__ (i.e. is any kind of descriptor).
+pub fn has_descriptor_get(obj: &PyObjectRef) -> bool {
+    match &obj.payload {
+        PyObjectPayload::Property { .. } => true,
+        PyObjectPayload::Instance(inst) => {
+            has_method_in_class(&inst.class, "__get__")
+        }
+        _ => false,
+    }
+}
+
+/// Check if a class (or its MRO) has a method by name.
+fn has_method_in_class(class: &PyObjectRef, name: &str) -> bool {
+    lookup_in_class_mro(class, name).is_some()
+}
+
+
 /// Returns a BuiltinBoundMethod if the method name matches, None otherwise.
 fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -> Option<PyObjectRef> {
     let make_bound = |name: &str| -> PyObjectRef {
@@ -732,11 +761,15 @@ impl PyObjectMethods for PyObjectRef {
                     }
                     return Some(PyObject::dict(map));
                 }
-                // Check class MRO for data descriptors (Property) first
-                if let Some(v) = lookup_in_class_mro(&inst.class, name) {
+                // CPython descriptor protocol:
+                // 1. Data descriptors (has __set__ or __delete__) from class MRO
+                // 2. Instance __dict__
+                // 3. Non-data descriptors (has __get__ only) and other class attrs
+                let class_attr = lookup_in_class_mro(&inst.class, name);
+                if let Some(ref v) = class_attr {
                     match &v.payload {
                         PyObjectPayload::Property { .. } => {
-                            // Return the property descriptor — VM will call fget
+                            // Property is always a data descriptor — VM calls fget
                             return Some(v.clone());
                         }
                         PyObjectPayload::StaticMethod(func) => {
@@ -750,13 +783,20 @@ impl PyObjectMethods for PyObjectRef {
                                 }
                             }));
                         }
-                        _ => {}
+                        _ => {
+                            // Check if this is a custom data descriptor (has __set__ or __delete__)
+                            if is_data_descriptor(v) {
+                                // Data descriptor takes priority over instance dict
+                                // Return it; VM's LoadAttr will call __get__
+                                return Some(v.clone());
+                            }
+                        }
                     }
                 }
-                // Instance attributes
+                // Instance attributes (between data and non-data descriptors)
                 if let Some(v) = inst.attrs.read().get(name) { return Some(v.clone()); }
-                // Walk the MRO for methods/class attrs
-                if let Some(v) = lookup_in_class_mro(&inst.class, name) {
+                // Non-data descriptors and other class attrs
+                if let Some(v) = class_attr {
                     if matches!(&v.payload, PyObjectPayload::Function(_)) {
                         return Some(Arc::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {

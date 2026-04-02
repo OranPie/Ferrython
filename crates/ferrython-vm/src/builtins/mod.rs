@@ -8,7 +8,7 @@ mod file_io;
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use std::sync::Arc;
 
@@ -476,3 +476,103 @@ fn call_hashlib_method(inst: &ferrython_core::object::InstanceData, method: &str
     }
 }
 
+/// Resolve class-level methods on builtin types (e.g., dict.fromkeys, int.from_bytes).
+pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<PyObjectRef> {
+    match (type_name, method_name) {
+        ("dict", "fromkeys") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("dict.fromkeys"),
+            func: builtin_dict_fromkeys,
+        })),
+        ("int", "from_bytes") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("int.from_bytes"),
+            func: builtin_int_from_bytes,
+        })),
+        ("str", "maketrans") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("str.maketrans"),
+            func: builtin_str_maketrans,
+        })),
+        ("bytes", "fromhex") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("bytes.fromhex"),
+            func: builtin_bytes_fromhex,
+        })),
+        _ => None,
+    }
+}
+
+fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("int.from_bytes requires at least 1 argument"));
+    }
+    let bytes = match &args[0].payload {
+        PyObjectPayload::Bytes(b) => b.clone(),
+        _ => return Err(PyException::type_error("expected bytes")),
+    };
+    let byteorder = if args.len() >= 2 {
+        args[1].py_to_string()
+    } else {
+        "big".to_string()
+    };
+    let mut result: i64 = 0;
+    match byteorder.as_str() {
+        "big" => {
+            for &b in &bytes {
+                result = result * 256 + b as i64;
+            }
+        }
+        "little" => {
+            for (i, &b) in bytes.iter().enumerate() {
+                result += (b as i64) << (8 * i);
+            }
+        }
+        _ => return Err(PyException::value_error("byteorder must be 'big' or 'little'")),
+    }
+    Ok(PyObject::int(result))
+}
+
+fn builtin_str_maketrans(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("str.maketrans requires at least 1 argument"));
+    }
+    let mut map = IndexMap::new();
+    if args.len() >= 2 {
+        let from = args[0].py_to_string();
+        let to = args[1].py_to_string();
+        for (fc, tc) in from.chars().zip(to.chars()) {
+            map.insert(
+                HashableKey::Int(PyInt::Small(fc as i64)),
+                PyObject::str_val(CompactString::from(tc.to_string())),
+            );
+        }
+        if args.len() >= 3 {
+            let delete = args[2].py_to_string();
+            for c in delete.chars() {
+                map.insert(HashableKey::Int(PyInt::Small(c as i64)), PyObject::none());
+            }
+        }
+    } else if let PyObjectPayload::Dict(d) = &args[0].payload {
+        let r = d.read();
+        for (k, v) in r.iter() {
+            map.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(PyObject::dict(map))
+}
+
+fn builtin_bytes_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("bytes.fromhex requires 1 argument"));
+    }
+    let hex_str = args[0].py_to_string();
+    let clean: String = hex_str.chars().filter(|c| !c.is_whitespace()).collect();
+    if clean.len() % 2 != 0 {
+        return Err(PyException::value_error("non-hexadecimal number found in fromhex() arg"));
+    }
+    let mut bytes = Vec::new();
+    for i in (0..clean.len()).step_by(2) {
+        match u8::from_str_radix(&clean[i..i+2], 16) {
+            Ok(b) => bytes.push(b),
+            Err(_) => return Err(PyException::value_error("non-hexadecimal number found in fromhex() arg")),
+        }
+    }
+    Ok(PyObject::bytes(bytes))
+}

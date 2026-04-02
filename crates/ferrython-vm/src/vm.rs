@@ -1576,8 +1576,27 @@ impl VirtualMachine {
         // Simple C3-like: for single inheritance just chain; for multiple use bases order
         let mro = Self::compute_mro(&bases);
         let cls = PyObject::wrap(PyObjectPayload::Class(ClassData {
-            name: class_name, bases, namespace: Arc::new(RwLock::new(namespace)), mro,
+            name: class_name, bases: bases.clone(), namespace: Arc::new(RwLock::new(namespace)), mro,
         }));
+
+        // Call __init_subclass__ on each base class (PEP 487)
+        for base in &bases {
+            if let Some(init_sub) = base.get_attr("__init_subclass__") {
+                let bound = if matches!(&init_sub.payload, PyObjectPayload::BoundMethod { .. }) {
+                    init_sub
+                } else {
+                    Arc::new(PyObject {
+                        payload: PyObjectPayload::BoundMethod {
+                            receiver: base.clone(),
+                            method: init_sub,
+                        }
+                    })
+                };
+                // __init_subclass__(cls) where cls is the new subclass
+                self.call_object(bound, vec![cls.clone()])?;
+            }
+        }
+
         Ok(cls)
     }
 

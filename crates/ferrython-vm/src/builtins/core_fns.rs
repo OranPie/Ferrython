@@ -883,3 +883,47 @@ pub(super) fn builtin_super(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Simplified: return None for now
     Ok(PyObject::none())
 }
+
+/// dict.fromkeys(iterable, value=None) — create dict with keys from iterable
+pub(super) fn builtin_dict_fromkeys(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("dict.fromkeys", args, 1)?;
+    let iterable = &args[0];
+    let value = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+    let mut map = IndexMap::new();
+    match &iterable.payload {
+        PyObjectPayload::List(items) => {
+            for item in items.read().iter() {
+                let hk = item.to_hashable_key()?;
+                map.insert(hk, value.clone());
+            }
+        }
+        PyObjectPayload::Tuple(items) => {
+            for item in items.iter() {
+                let hk = item.to_hashable_key()?;
+                map.insert(hk, value.clone());
+            }
+        }
+        PyObjectPayload::Set(items) => {
+            for (item, _) in items.read().iter() {
+                map.insert(item.clone(), value.clone());
+            }
+        }
+        PyObjectPayload::Str(s) => {
+            for ch in s.chars() {
+                let hk = HashableKey::Str(CompactString::from(ch.to_string()));
+                map.insert(hk, value.clone());
+            }
+        }
+        PyObjectPayload::Dict(d) => {
+            for key in d.read().keys() {
+                map.insert(key.clone(), value.clone());
+            }
+        }
+        _ => {
+            return Err(PyException::type_error(format!(
+                "'{}' object is not iterable", iterable.type_name()
+            )));
+        }
+    }
+    Ok(PyObject::dict(map))
+}

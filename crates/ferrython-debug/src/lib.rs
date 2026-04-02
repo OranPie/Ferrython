@@ -30,6 +30,16 @@ pub fn resolve_lineno(code: &CodeObject, instruction_index: usize) -> u32 {
 /// ```
 pub fn format_traceback(exc: &PyException) -> String {
     let mut out = String::new();
+    // Print cause chain first (deepest cause printed first)
+    if let Some(ref cause) = exc.cause {
+        out.push_str(&format_traceback(cause));
+        out.push('\n');
+        out.push_str("\nThe above exception was the direct cause of the following exception:\n\n");
+    } else if let Some(ref context) = exc.context {
+        out.push_str(&format_traceback(context));
+        out.push('\n');
+        out.push_str("\nDuring handling of the above exception, another exception occurred:\n\n");
+    }
     if !exc.traceback.is_empty() {
         out.push_str("Traceback (most recent call last):\n");
         for entry in &exc.traceback {

@@ -11,7 +11,7 @@ use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
-    lookup_in_class_mro, CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    has_descriptor_get, is_data_descriptor, lookup_in_class_mro, CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::{HashableKey, PyFunction};
 use indexmap::IndexMap;
@@ -200,6 +200,37 @@ impl VirtualMachine {
                 let frame = self.vm_frame();
                 let name = frame.code.names[instr.arg as usize].clone();
                 let obj = frame.pop();
+                // __getattribute__ override: called before normal lookup
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if let Some(ga) = lookup_in_class_mro(&inst.class, "__getattribute__") {
+                        if matches!(&ga.payload, PyObjectPayload::Function(_)) {
+                            let method = Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: obj.clone(),
+                                    method: ga,
+                                }
+                            });
+                            let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
+                            match self.call_object(method, vec![name_arg]) {
+                                Ok(result) => {
+                                    self.vm_push(result);
+                                    return Ok(None);
+                                }
+                                Err(e) if e.kind == ExceptionKind::AttributeError => {
+                                    // Fall through to __getattr__
+                                    if let Some(ga2) = obj.get_attr("__getattr__") {
+                                        let name_arg2 = PyObject::str_val(CompactString::from(name.as_str()));
+                                        let result = self.call_object(ga2, vec![name_arg2])?;
+                                        self.vm_push(result);
+                                        return Ok(None);
+                                    }
+                                    return Err(e);
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    }
+                }
                 match obj.get_attr(&name) {
                     Some(v) => {
                         if let PyObjectPayload::Property { fget, .. } = &v.payload {
@@ -212,6 +243,26 @@ impl VirtualMachine {
                                     "unreadable attribute '{}'", name
                                 )));
                             }
+                        } else if has_descriptor_get(&v) {
+                            // Custom descriptor protocol: call __get__(self, instance, owner)
+                            let get_method = v.get_attr("__get__").unwrap();
+                            let owner = if let PyObjectPayload::Instance(inst) = &obj.payload {
+                                inst.class.clone()
+                            } else {
+                                PyObject::none()
+                            };
+                            let get_method_bound = if matches!(&get_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                                get_method
+                            } else {
+                                Arc::new(PyObject {
+                                    payload: PyObjectPayload::BoundMethod {
+                                        receiver: v.clone(),
+                                        method: get_method,
+                                    }
+                                })
+                            };
+                            let result = self.call_object(get_method_bound, vec![obj, owner])?;
+                            self.vm_push(result);
                         } else if matches!(&obj.payload, PyObjectPayload::Module(_))
                             && matches!(&v.payload, PyObjectPayload::NativeFunction { .. })
                             && obj.get_attr("_bind_methods").is_some()
@@ -227,6 +278,13 @@ impl VirtualMachine {
                         }
                     }
                     None => {
+                        // Type method access: e.g., dict.fromkeys, int.from_bytes
+                        if let PyObjectPayload::NativeFunction { name: fn_name, .. } = &obj.payload {
+                            if let Some(type_method) = builtins::resolve_type_class_method(fn_name, &name) {
+                                self.vm_push(type_method);
+                                return Ok(None);
+                            }
+                        }
                         if let PyObjectPayload::Instance(_) = &obj.payload {
                             if let Some(ga) = obj.get_attr("__getattr__") {
                                 let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
@@ -257,6 +315,23 @@ impl VirtualMachine {
                                 return Err(PyException::attribute_error(format!(
                                     "can't set attribute '{}'", name
                                 )));
+                            }
+                        }
+                        // Custom data descriptor with __set__
+                        if is_data_descriptor(&desc) {
+                            if let Some(set_method) = desc.get_attr("__set__") {
+                                let set_bound = if matches!(&set_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                                    set_method
+                                } else {
+                                    Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: desc,
+                                            method: set_method,
+                                        }
+                                    })
+                                };
+                                self.call_object(set_bound, vec![obj, value])?;
+                                return Ok(None);
                             }
                         }
                     }
@@ -498,6 +573,14 @@ impl VirtualMachine {
             Opcode::BinarySubscr => {
                 let key = self.vm_pop();
                 let obj = self.vm_pop();
+                // __class_getitem__: MyClass[int] → MyClass.__class_getitem__(int)
+                if matches!(&obj.payload, PyObjectPayload::Class(_)) {
+                    if let Some(cgi) = obj.get_attr("__class_getitem__") {
+                        let result = self.call_object(cgi, vec![key])?;
+                        self.vm_push(result);
+                        return Ok(None);
+                    }
+                }
                 if let Some(r) = self.try_call_dunder(&obj, "__getitem__", vec![key.clone()])? {
                     self.vm_push(r);
                     return Ok(None);
@@ -1367,9 +1450,12 @@ impl VirtualMachine {
                         return Err(raise_exc(&exc));
                     }
                     2 => {
-                        let _cause = frame.pop();
+                        let cause = frame.pop();
                         let exc = frame.pop();
-                        return Err(raise_exc(&exc));
+                        let mut py_exc = raise_exc(&exc);
+                        let cause_exc = raise_exc(&cause);
+                        py_exc.cause = Some(Box::new(cause_exc));
+                        return Err(py_exc);
                     }
                     _ => return Err(PyException::runtime_error("bad RAISE_VARARGS arg")),
                 }
