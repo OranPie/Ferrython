@@ -53,7 +53,7 @@ pub enum PyObjectPayload {
     /// Exception type object (e.g. ValueError, TypeError)
     ExceptionType(ExceptionKind),
     /// Exception instance (raised exception with kind, message, and optional args)
-    ExceptionInstance { kind: ExceptionKind, message: CompactString, args: Vec<PyObjectRef> },
+    ExceptionInstance { kind: ExceptionKind, message: CompactString, args: Vec<PyObjectRef>, attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>> },
     /// Generator object (suspended coroutine with opaque frame storage)
     Generator(Arc<RwLock<GeneratorState>>),
     /// Native Rust function callable from Python (for module functions)

@@ -235,13 +235,6 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
 #[allow(dead_code)]
 pub(crate) fn hashable_key_to_object(key: &HashableKey) -> PyObjectRef { key.to_object() }
 
-pub(crate) fn apply_format_spec(val: &PyObjectRef, spec: &str) -> String {
-    match val.format_value(spec) {
-        Ok(s) => s,
-        Err(_) => val.py_to_string(),
-    }
-}
-
 /// Apply format spec to an already-converted string value.
 pub(crate) fn apply_format_spec_str(s: &str, spec: &str) -> String {
     ferrython_core::object::format_value_spec(s, spec)
@@ -265,6 +258,13 @@ pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -
         PyObjectPayload::Tuple(items) => call_tuple_method(items, method, args),
         PyObjectPayload::Set(m) => call_set_method(m, method, args),
         PyObjectPayload::Bytes(b) => call_bytes_method(b, method, args),
+        PyObjectPayload::Complex { real, imag } => {
+            match method {
+                "conjugate" => Ok(PyObject::complex(*real, -*imag)),
+                "__abs__" => Ok(PyObject::float((real * real + imag * imag).sqrt())),
+                _ => Err(PyException::attribute_error(format!("'complex' object has no attribute '{}'", method))),
+            }
+        }
         PyObjectPayload::Instance(inst) => call_instance_method(inst, method, args),
         _ => Err(PyException::attribute_error(format!(
             "'{}' object has no attribute '{}'", receiver.type_name(), method

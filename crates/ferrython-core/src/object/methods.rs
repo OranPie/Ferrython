@@ -955,6 +955,7 @@ impl PyObjectMethods for PyObjectRef {
                 match name {
                     "real" => Some(PyObject::float(*real)),
                     "imag" => Some(PyObject::float(*imag)),
+                    "__class__" => Some(PyObject::builtin_type(CompactString::from("complex"))),
                     "conjugate" => Some(Arc::new(PyObject {
                         payload: PyObjectPayload::BuiltinBoundMethod {
                             receiver: self.clone(),
@@ -1042,7 +1043,7 @@ impl PyObjectMethods for PyObjectRef {
                     _ => None,
                 }
             }
-            PyObjectPayload::ExceptionInstance { kind, message, args } => {
+            PyObjectPayload::ExceptionInstance { kind, message, args, attrs } => {
                 match name {
                     "args" => {
                         if args.is_empty() {
@@ -1056,7 +1057,10 @@ impl PyObjectMethods for PyObjectRef {
                         }
                     }
                     "__class__" => Some(PyObject::exception_type(kind.clone())),
-                    _ => None,
+                    _ => {
+                        // Check user-set attrs (e.g., __cause__)
+                        attrs.read().get(name).cloned()
+                    }
                 }
             }
             // Function attributes
@@ -1135,6 +1139,10 @@ impl PyObjectMethods for PyObjectRef {
             PyObjectPayload::Str(_) | PyObjectPayload::List(_) |
             PyObjectPayload::Dict(_) | PyObjectPayload::Tuple(_) |
             PyObjectPayload::Set(_) | PyObjectPayload::Bytes(_) => {
+                if name == "__class__" {
+                    let type_name = self.type_name();
+                    return Some(PyObject::builtin_type(CompactString::from(type_name)));
+                }
                 Some(Arc::new(PyObject {
                     payload: PyObjectPayload::BuiltinBoundMethod {
                         receiver: self.clone(),
@@ -1165,7 +1173,10 @@ impl PyObjectMethods for PyObjectRef {
                 if let Some(rt_cls) = runtime_cls {
                     if let PyObjectPayload::Class(cd) = &rt_cls.payload {
                         let mro = &cd.mro;
-                        let mut found_cls = false;
+                        // If cls IS the runtime class itself, start from index 0.
+                        // Otherwise, skip entries up to and including cls in the MRO.
+                        let cls_is_self = std::sync::Arc::ptr_eq(cls, &rt_cls);
+                        let mut found_cls = cls_is_self;
                         for base in mro {
                             if !found_cls {
                                 if std::sync::Arc::ptr_eq(base, cls) {
@@ -1499,10 +1510,34 @@ impl PyObjectMethods for PyObjectRef {
                     return Ok(format!("{:.prec$E}", f, prec = prec));
                 }
             }
-            'b' => return Ok(format!("{:b}", self.to_int()?)),
-            'o' => return Ok(format!("{:o}", self.to_int()?)),
-            'x' => return Ok(format!("{:x}", self.to_int()?)),
-            'X' => return Ok(format!("{:X}", self.to_int()?)),
+            'b' => {
+                let n = self.to_int()?;
+                let raw = format!("{:b}", n);
+                let inner_spec = &spec[..len - 1];
+                if inner_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, inner_spec));
+            }
+            'o' => {
+                let n = self.to_int()?;
+                let raw = format!("{:o}", n);
+                let inner_spec = &spec[..len - 1];
+                if inner_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, inner_spec));
+            }
+            'x' => {
+                let n = self.to_int()?;
+                let raw = format!("{:x}", n);
+                let inner_spec = &spec[..len - 1];
+                if inner_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, inner_spec));
+            }
+            'X' => {
+                let n = self.to_int()?;
+                let raw = format!("{:X}", n);
+                let inner_spec = &spec[..len - 1];
+                if inner_spec.is_empty() { return Ok(raw); }
+                return Ok(apply_string_format_spec(&raw, inner_spec));
+            }
             's' => {
                 let s = self.py_to_string();
                 let inner_spec = &spec[..len - 1];

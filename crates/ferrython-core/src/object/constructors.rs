@@ -90,6 +90,7 @@ impl PyObject {
             kind,
             message: CompactString::from(msg),
             args,
+            attrs: Arc::new(RwLock::new(IndexMap::new())),
         })
     }
     pub fn exception_instance_with_args(kind: ExceptionKind, message: impl Into<String>, args: Vec<PyObjectRef>) -> PyObjectRef {
@@ -97,6 +98,7 @@ impl PyObject {
             kind,
             message: CompactString::from(message.into()),
             args,
+            attrs: Arc::new(RwLock::new(IndexMap::new())),
         })
     }
     pub fn generator(name: CompactString, frame: Box<dyn Any + Send + Sync>) -> PyObjectRef {

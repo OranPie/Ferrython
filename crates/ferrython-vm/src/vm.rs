@@ -711,6 +711,19 @@ impl VirtualMachine {
                                 PyObject::exception_type(exc.kind.clone()),
                             )
                         };
+                        // Attach __cause__ from exception chaining (raise X from Y)
+                        if let Some(cause) = &exc.cause {
+                            let cause_obj = if let Some(corig) = &cause.original {
+                                corig.clone()
+                            } else {
+                                PyObject::exception_instance(cause.kind.clone(), cause.message.clone())
+                            };
+                            if let PyObjectPayload::Instance(inst) = &exc_value.payload {
+                                inst.attrs.write().insert(CompactString::from("__cause__"), cause_obj);
+                            } else if let PyObjectPayload::ExceptionInstance { attrs, .. } = &exc_value.payload {
+                                attrs.write().insert(CompactString::from("__cause__"), cause_obj);
+                            }
+                        }
                         frame.push(PyObject::none());     // traceback
                         frame.push(exc_value);            // value
                         frame.push(exc_type);             // type
@@ -1424,23 +1437,45 @@ impl VirtualMachine {
                         if args.is_empty() || args.len() > 3 {
                             return Err(PyException::type_error("exec() takes 1 to 3 arguments"));
                         }
-                        let code_str = args[0].as_str().ok_or_else(||
-                            PyException::type_error("exec() arg 1 must be a string"))?;
-                        match ferrython_parser::parse(code_str, "<string>") {
-                            Ok(module) => {
-                                let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
-                                match compiler.compile_module(&module) {
-                                    Ok(code) => {
-                                        // Execute in same globals
-                                        let globals = self.call_stack.last().unwrap().globals.clone();
-                                        self.execute_with_globals(code, globals)?;
-                                        return Ok(PyObject::none());
-                                    }
-                                    Err(_) => return Err(PyException::syntax_error("exec: compilation failed")),
+                        // Support both string and code object
+                        let code = if let PyObjectPayload::Code(co) = &args[0].payload {
+                            (**co).clone()
+                        } else {
+                            let code_str = args[0].as_str().ok_or_else(||
+                                PyException::type_error("exec() arg 1 must be a string or code object"))?;
+                            let module = ferrython_parser::parse(code_str, "<string>")
+                                .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?;
+                            let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
+                            compiler.compile_module(&module)
+                                .map_err(|_| PyException::syntax_error("exec: compilation failed"))?
+                        };
+                        if args.len() >= 2 {
+                            if let PyObjectPayload::Dict(ref map) = args[1].payload {
+                                let mut new_globals = IndexMap::new();
+                                let m = map.read();
+                                for (k, v) in m.iter() {
+                                    let key_str = match k {
+                                        HashableKey::Str(s) => s.clone(),
+                                        _ => CompactString::from(format!("{:?}", k)),
+                                    };
+                                    new_globals.insert(key_str, v.clone());
                                 }
+                                drop(m);
+                                let shared = Arc::new(RwLock::new(new_globals));
+                                self.execute_with_globals(code, shared.clone())?;
+                                let results = shared.read();
+                                let mut m = map.write();
+                                for (k, v) in results.iter() {
+                                    m.insert(HashableKey::Str(k.clone()), v.clone());
+                                }
+                            } else {
+                                return Err(PyException::type_error("exec() globals must be a dict"));
                             }
-                            Err(e) => return Err(PyException::syntax_error(format!("exec: {}", e))),
+                        } else {
+                            let globals = self.call_stack.last().unwrap().globals.clone();
+                            self.execute_with_globals(code, globals)?;
                         }
+                        return Ok(PyObject::none());
                     }
                     "eval" => {
                         if args.is_empty() || args.len() > 3 {
@@ -1466,6 +1501,28 @@ impl VirtualMachine {
                                 }
                             }
                             Err(e) => return Err(PyException::syntax_error(format!("eval: {}", e))),
+                        }
+                    }
+                    "compile" => {
+                        // compile(source, filename, mode) -> code object
+                        if args.len() < 3 {
+                            return Err(PyException::type_error("compile() requires at least 3 arguments"));
+                        }
+                        let source = args[0].as_str().ok_or_else(||
+                            PyException::type_error("compile() arg 1 must be a string"))?;
+                        let filename = args[1].py_to_string();
+                        let _mode = args[2].py_to_string();
+                        match ferrython_parser::parse(source, &filename) {
+                            Ok(module) => {
+                                let mut compiler = ferrython_compiler::Compiler::new(filename);
+                                match compiler.compile_module(&module) {
+                                    Ok(code) => {
+                                        return Ok(PyObject::wrap(PyObjectPayload::Code(Box::new(code))));
+                                    }
+                                    Err(_) => return Err(PyException::syntax_error("compile: compilation failed")),
+                                }
+                            }
+                            Err(e) => return Err(PyException::syntax_error(format!("compile: {}", e))),
                         }
                     }
                     "globals" => {
@@ -1697,20 +1754,33 @@ impl VirtualMachine {
         }));
 
         // Call __init_subclass__ on each base class (PEP 487)
+        // __init_subclass__(cls) is called on the base's method with cls being the *new* subclass
         for base in &bases {
             if let Some(init_sub) = base.get_attr("__init_subclass__") {
+                // If it's already a BoundMethod (e.g., classmethod), call with cls as arg
+                // Otherwise, bind to the NEW class (cls) so `self` is the subclass
                 let bound = if matches!(&init_sub.payload, PyObjectPayload::BoundMethod { .. }) {
-                    init_sub
+                    // Re-bind to the new subclass
+                    if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
+                        Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: cls.clone(),
+                                method: method.clone(),
+                            }
+                        })
+                    } else {
+                        init_sub
+                    }
                 } else {
                     Arc::new(PyObject {
                         payload: PyObjectPayload::BoundMethod {
-                            receiver: base.clone(),
+                            receiver: cls.clone(),
                             method: init_sub,
                         }
                     })
                 };
                 // __init_subclass__(cls) where cls is the new subclass
-                self.call_object(bound, vec![cls.clone()])?;
+                self.call_object(bound, vec![])?;
             }
         }
 
@@ -1782,20 +1852,25 @@ impl VirtualMachine {
                 name: class_name, bases: bases.clone(),
                 namespace: Arc::new(RwLock::new(namespace)), mro,
             }));
-            // __init_subclass__
+            // __init_subclass__: bind to new subclass (cls), not parent
             for base in &bases {
                 if let Some(init_sub) = base.get_attr("__init_subclass__") {
-                    let bound = if matches!(&init_sub.payload, PyObjectPayload::BoundMethod { .. }) {
-                        init_sub
+                    let bound = if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
+                        Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: cls.clone(),
+                                method: method.clone(),
+                            }
+                        })
                     } else {
                         Arc::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
-                                receiver: base.clone(),
+                                receiver: cls.clone(),
                                 method: init_sub,
                             }
                         })
                     };
-                    self.call_object(bound, vec![cls.clone()])?;
+                    self.call_object(bound, vec![])?;
                 }
             }
             Ok(cls)
@@ -1815,6 +1890,7 @@ impl VirtualMachine {
             if let PyObjectPayload::Class(cd) = &base.payload {
                 l.extend(cd.mro.iter().cloned());
             }
+            // ExceptionType/BuiltinType bases: no child MRO, just include them
             linearizations.push(l);
         }
         linearizations.push(bases.to_vec());

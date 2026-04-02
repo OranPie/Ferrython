@@ -706,6 +706,19 @@ pub(super) fn builtin_vars(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 .collect();
             Ok(PyObject::dict_from_pairs(pairs))
         }
+        PyObjectPayload::Class(cd) => {
+            let ns = cd.namespace.read();
+            let pairs: Vec<(PyObjectRef, PyObjectRef)> = ns.iter()
+                .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
+                .collect();
+            Ok(PyObject::dict_from_pairs(pairs))
+        }
+        PyObjectPayload::Module(md) => {
+            let pairs: Vec<(PyObjectRef, PyObjectRef)> = md.attrs.iter()
+                .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
+                .collect();
+            Ok(PyObject::dict_from_pairs(pairs))
+        }
         _ => Err(PyException::type_error("vars() argument must have __dict__ attribute")),
     }
 }
@@ -800,11 +813,9 @@ pub(super) fn builtin_bytearray(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn builtin_complex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // Stub: complex(real, imag) → just return float for now
     let real = if !args.is_empty() { args[0].to_float().unwrap_or(0.0) } else { 0.0 };
-    let _imag = if args.len() > 1 { args[1].to_float().unwrap_or(0.0) } else { 0.0 };
-    // TODO: proper complex type
-    Ok(PyObject::float(real))
+    let imag = if args.len() > 1 { args[1].to_float().unwrap_or(0.0) } else { 0.0 };
+    Ok(PyObject::complex(real, imag))
 }
 
 pub(super) fn builtin_issubclass(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
