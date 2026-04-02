@@ -1,7 +1,7 @@
 //! Ferrython interactive REPL.
 //!
 //! Provides the `>>> ` prompt with multi-line input, persistent globals,
-//! automatic expression result printing, and `_` for last result.
+//! automatic expression result printing (via `PrintExpr`), and `_` for last result.
 
 use std::io::{self, Write, BufRead};
 
@@ -12,6 +12,13 @@ pub fn run_repl() {
 
     let mut vm = ferrython_vm::VirtualMachine::new();
     let globals = ferrython_vm::VirtualMachine::new_globals();
+
+    // Initialize _ = None in globals
+    globals.write().insert(
+        compact_str::CompactString::from("_"),
+        ferrython_core::object::PyObject::none(),
+    );
+
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
 
@@ -30,7 +37,10 @@ pub fn run_repl() {
 
         // Collect multi-line blocks (if line ends with ':' or starts with '@')
         let mut source = line.clone();
-        if trimmed.ends_with(':') || trimmed.starts_with('@') {
+        if trimmed.ends_with(':') || trimmed.starts_with('@')
+            || trimmed.ends_with('\\') || trimmed.ends_with(',')
+            || trimmed.ends_with('(') || trimmed.ends_with('[') || trimmed.ends_with('{')
+        {
             source.push('\n');
             loop {
                 print!("... ");
@@ -49,14 +59,14 @@ pub fn run_repl() {
             }
         }
 
-        // Parse and execute
+        // Parse and compile in interactive mode
         match ferrython_parser::parse(&source, "<stdin>") {
             Ok(module) => {
-                match ferrython_compiler::compile(&module, "<stdin>") {
+                match ferrython_compiler::compile_interactive(&module, "<stdin>") {
                     Ok(code) => {
                         match vm.execute_with_globals(code, globals.clone()) {
                             Ok(_) => {}
-                            Err(e) => eprintln!("{}: {}", e.kind, e.message),
+                            Err(e) => eprintln!("{}", ferrython_debug::format_traceback(&e)),
                         }
                     }
                     Err(e) => eprintln!("CompileError: {}", e),

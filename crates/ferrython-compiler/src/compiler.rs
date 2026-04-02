@@ -81,6 +81,8 @@ pub struct Compiler {
     filename: String,
     /// Stack of compile units; the top is the current scope being compiled.
     unit_stack: Vec<CompileUnit>,
+    /// When true, top-level expression statements emit PrintExpr instead of PopTop.
+    interactive: bool,
 }
 
 impl Compiler {
@@ -88,7 +90,14 @@ impl Compiler {
         Self {
             filename: filename.into(),
             unit_stack: Vec::new(),
+            interactive: false,
         }
+    }
+
+    /// Set interactive mode. In this mode, top-level expression statements
+    /// emit `PrintExpr` instead of `PopTop`, and store the result in `_`.
+    pub fn set_interactive(&mut self, interactive: bool) {
+        self.interactive = interactive;
     }
 
     // ── scope helpers ───────────────────────────────────────────────
@@ -351,7 +360,15 @@ impl Compiler {
         match &stmt.node {
             StatementKind::Expr { value } => {
                 self.compile_expression(value)?;
-                self.emit_op(Opcode::PopTop);
+                if self.interactive && self.unit_stack.len() == 1 {
+                    // Interactive: dup for _ assignment, print, then store _
+                    self.emit_op(Opcode::DupTop);
+                    self.emit_op(Opcode::PrintExpr);
+                    let name_idx = self.add_name("_");
+                    self.emit_arg(Opcode::StoreName, name_idx);
+                } else {
+                    self.emit_op(Opcode::PopTop);
+                }
             }
 
             StatementKind::Assign { targets, value, .. } => {

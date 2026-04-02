@@ -224,10 +224,20 @@ pub fn create_sys_module() -> PyObjectRef {
         ("platform", PyObject::str_val(CompactString::from(std::env::consts::OS))),
         ("executable", PyObject::str_val(CompactString::from("ferrython"))),
         ("argv", PyObject::list(vec![PyObject::str_val(CompactString::from(""))])),
-        ("path", PyObject::list(vec![
-            PyObject::str_val(CompactString::from("")),
-            PyObject::str_val(CompactString::from(".")),
-        ])),
+        ("path", {
+            // Build sys.path from PYTHONPATH env + cwd
+            let mut path_items: Vec<PyObjectRef> = Vec::new();
+            path_items.push(PyObject::str_val(CompactString::from("")));
+            if let Ok(pypath) = std::env::var("PYTHONPATH") {
+                for p in std::env::split_paths(&pypath) {
+                    path_items.push(PyObject::str_val(
+                        CompactString::from(p.to_string_lossy().as_ref()),
+                    ));
+                }
+            }
+            path_items.push(PyObject::str_val(CompactString::from(".")));
+            PyObject::list(path_items)
+        }),
         ("modules", PyObject::dict_from_pairs(vec![])),
         ("maxsize", PyObject::int(i64::MAX)),
         ("maxunicode", PyObject::int(0x10FFFF)),
@@ -3591,6 +3601,75 @@ pub fn create_weakref_module() -> PyObjectRef {
         ("WeakValueDictionary", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
         ("WeakKeyDictionary", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
         ("WeakSet", make_builtin(|_| Ok(PyObject::set(IndexMap::new())))),
+    ])
+}
+
+// ── gc module ──
+
+pub fn create_gc_module() -> PyObjectRef {
+    make_module("gc", vec![
+        ("enable", make_builtin(|_| {
+            ferrython_gc::enable();
+            Ok(PyObject::none())
+        })),
+        ("disable", make_builtin(|_| {
+            ferrython_gc::disable();
+            Ok(PyObject::none())
+        })),
+        ("isenabled", make_builtin(|_| {
+            Ok(PyObject::bool_val(ferrython_gc::is_enabled()))
+        })),
+        ("collect", make_builtin(|_| {
+            let collected = ferrython_gc::collect();
+            Ok(PyObject::int(collected as i64))
+        })),
+        ("get_threshold", make_builtin(|_| {
+            let (g0, g1, g2) = ferrython_gc::get_threshold();
+            Ok(PyObject::tuple(vec![
+                PyObject::int(g0 as i64),
+                PyObject::int(g1 as i64),
+                PyObject::int(g2 as i64),
+            ]))
+        })),
+        ("set_threshold", make_builtin(|args| {
+            check_args_min("gc.set_threshold", args, 1)?;
+            let g0 = args[0].as_int().ok_or_else(|| {
+                PyException::type_error("threshold must be an integer")
+            })? as u64;
+            let g1 = args.get(1).and_then(|a| a.as_int()).unwrap_or(10) as u64;
+            let g2 = args.get(2).and_then(|a| a.as_int()).unwrap_or(10) as u64;
+            ferrython_gc::set_threshold(g0, g1, g2);
+            Ok(PyObject::none())
+        })),
+        ("get_stats", make_builtin(|_| {
+            let stats = ferrython_gc::get_stats();
+            let entry = PyObject::dict({
+                let mut m = IndexMap::new();
+                m.insert(
+                    HashableKey::Str(CompactString::from("collections")),
+                    PyObject::int(stats.collections as i64),
+                );
+                m.insert(
+                    HashableKey::Str(CompactString::from("collected")),
+                    PyObject::int(0),
+                );
+                m.insert(
+                    HashableKey::Str(CompactString::from("uncollectable")),
+                    PyObject::int(0),
+                );
+                m
+            });
+            // CPython returns a list of 3 dicts, one per generation
+            Ok(PyObject::list(vec![entry.clone(), entry.clone(), entry]))
+        })),
+        ("get_count", make_builtin(|_| {
+            let stats = ferrython_gc::get_stats();
+            Ok(PyObject::tuple(vec![
+                PyObject::int(stats.allocations as i64),
+                PyObject::int(0),
+                PyObject::int(0),
+            ]))
+        })),
     ])
 }
 

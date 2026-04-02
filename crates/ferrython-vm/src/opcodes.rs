@@ -41,7 +41,7 @@ impl VirtualMachine {
     }
 }
 
-// ── Stack operations ─────────────────────────────────────────────────
+// ── Group 1: Stack + LoadConst ───────────────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_stack_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         let frame = self.vm_frame();
@@ -72,23 +72,23 @@ impl VirtualMachine {
                 frame.push(second);
                 frame.push(top);
             }
-            _ => unreachable!(),
-        }
-        Ok(None)
-    }
-}
-
-// ── Name / variable operations ───────────────────────────────────────
-impl VirtualMachine {
-    pub(crate) fn exec_name_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
-        let frame = self.vm_frame();
-        match instr.op {
             Opcode::LoadConst => {
                 let idx = instr.arg as usize;
                 let constant = &frame.code.constants[idx];
                 let obj = constant_to_object(constant);
                 frame.push(obj);
             }
+            _ => unreachable!(),
+        }
+        Ok(None)
+    }
+}
+
+// ── Group 2: Name loading/storing ────────────────────────────────────
+impl VirtualMachine {
+    pub(crate) fn exec_name_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+        let frame = self.vm_frame();
+        match instr.op {
             Opcode::LoadName => {
                 let name = &frame.code.names[instr.arg as usize];
                 match frame.load_name(name) {
@@ -130,6 +130,10 @@ impl VirtualMachine {
             Opcode::StoreFast => {
                 let value = frame.pop();
                 frame.set_local(instr.arg as usize, value);
+            }
+            Opcode::DeleteFast => {
+                let idx = instr.arg as usize;
+                frame.locals[idx] = None;
             }
             Opcode::LoadDeref => {
                 let idx = instr.arg as usize;
@@ -178,10 +182,6 @@ impl VirtualMachine {
                 let value = frame.pop();
                 frame.globals.write().insert(name, value);
             }
-            Opcode::DeleteFast => {
-                let idx = instr.arg as usize;
-                frame.locals[idx] = None;
-            }
             Opcode::DeleteGlobal => {
                 let name = &frame.code.names[instr.arg as usize];
                 frame.globals.write().shift_remove(name.as_str());
@@ -192,7 +192,7 @@ impl VirtualMachine {
     }
 }
 
-// ── Attribute operations ─────────────────────────────────────────────
+// ── Group 3: Attribute operations ────────────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_attr_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
@@ -332,7 +332,7 @@ impl VirtualMachine {
     }
 }
 
-// ── Unary operations ─────────────────────────────────────────────────
+// ── Group 4: Unary operations ────────────────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_unary_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
@@ -371,9 +371,8 @@ impl VirtualMachine {
     }
 }
 
-// ── Binary / inplace arithmetic ──────────────────────────────────────
+// ── Group 5: Binary / inplace arithmetic ─────────────────────────────
 impl VirtualMachine {
-    /// Try a dunder on `a`, then reflected dunder on `b`, then fall back.
     fn try_binary_dunder(
         &mut self, a: &PyObjectRef, b: &PyObjectRef,
         dunder: &str, rdunder: Option<&str>,
@@ -393,7 +392,6 @@ impl VirtualMachine {
         Ok(None)
     }
 
-    /// Try an inplace dunder on `a`, falling back to normal.
     fn try_inplace_dunder(
         &mut self, a: &PyObjectRef, b: &PyObjectRef,
         idunder: &str, dunder: &str,
@@ -477,6 +475,15 @@ impl VirtualMachine {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__xor__", None)? { r }
                 else { a.bit_xor(&b)? }
             }
+            Opcode::BinaryMatrixMultiply | Opcode::InplaceMatrixMultiply => {
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__matmul__", Some("__rmatmul__"))? { r }
+                else {
+                    return Err(PyException::type_error(format!(
+                        "unsupported operand type(s) for @: '{}' and '{}'",
+                        a.type_name(), b.type_name()
+                    )));
+                }
+            }
             _ => unreachable!(),
         };
         self.vm_push(result);
@@ -484,7 +491,7 @@ impl VirtualMachine {
     }
 }
 
-// ── Subscript operations ─────────────────────────────────────────────
+// ── Group 6: Subscript operations ────────────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_subscript_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
@@ -604,11 +611,10 @@ impl VirtualMachine {
     }
 }
 
-// ── Compare operations ───────────────────────────────────────────────
+// ── Group 7: Comparison ──────────────────────────────────────────────
 impl VirtualMachine {
-    pub(crate) fn exec_compare_op(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_compare_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         let (a, b) = self.vm_pop2();
-        // Dunder compare methods for instances
         if let op @ 0..=5 = instr.arg {
             let dunder = match op {
                 0 => "__lt__", 1 => "__le__", 2 => "__eq__",
@@ -735,7 +741,7 @@ impl VirtualMachine {
     }
 }
 
-// ── Jump / control flow ──────────────────────────────────────────────
+// ── Group 8: Jumps + Iterator ────────────────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_jump_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
@@ -770,16 +776,6 @@ impl VirtualMachine {
                     self.vm_pop();
                 }
             }
-            _ => unreachable!(),
-        }
-        Ok(None)
-    }
-}
-
-// ── Iterator operations ──────────────────────────────────────────────
-impl VirtualMachine {
-    pub(crate) fn exec_iter_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
-        match instr.op {
             Opcode::GetIter => {
                 let obj = self.vm_pop();
                 if let Some(r) = self.try_call_dunder(&obj, "__iter__", vec![])? {
@@ -838,7 +834,7 @@ impl VirtualMachine {
     }
 }
 
-// ── Build operations ─────────────────────────────────────────────────
+// ── Group 9: Container building ──────────────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_build_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         let frame = self.vm_frame();
@@ -1037,7 +1033,7 @@ impl VirtualMachine {
     }
 }
 
-// ── Call operations ──────────────────────────────────────────────────
+// ── Group 10: Function calls ─────────────────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_call_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
@@ -1140,88 +1136,81 @@ impl VirtualMachine {
                     ))),
                 }
             }
+            Opcode::MakeFunction => {
+                let frame = self.vm_frame();
+                let qualname = frame.pop();
+                let code_obj = frame.pop();
+                let flags = instr.arg;
+                let closure_cells = if flags & 0x08 != 0 {
+                    let closure_tuple = frame.pop();
+                    match &closure_tuple.payload {
+                        PyObjectPayload::Tuple(items) => {
+                            items.iter().map(|item| {
+                                match &item.payload {
+                                    PyObjectPayload::Cell(cell) => cell.clone(),
+                                    _ => Arc::new(RwLock::new(Some(item.clone()))),
+                                }
+                            }).collect()
+                        }
+                        _ => Vec::new(),
+                    }
+                } else { Vec::new() };
+                if flags & 0x04 != 0 { frame.pop(); } // annotations
+                if flags & 0x02 != 0 { frame.pop(); } // kwdefaults
+                let mut defaults = Vec::new();
+                if flags & 0x01 != 0 {
+                    let default_tuple = frame.pop();
+                    defaults = default_tuple.to_list().unwrap_or_default();
+                }
+                let code = match &code_obj.payload {
+                    PyObjectPayload::Code(c) => *c.clone(),
+                    _ => return Err(PyException::type_error(
+                        "expected code object for MAKE_FUNCTION",
+                    )),
+                };
+                let name_str = qualname.as_str().map(CompactString::from)
+                    .unwrap_or_else(|| code.name.clone());
+                let func = PyFunction {
+                    name: name_str.clone(),
+                    qualname: name_str,
+                    code,
+                    defaults,
+                    kw_defaults: IndexMap::new(),
+                    globals: frame.globals.clone(),
+                    closure: closure_cells,
+                    annotations: IndexMap::new(),
+                };
+                frame.push(PyObject::function(func));
+            }
             _ => unreachable!(),
         }
         Ok(None)
     }
 }
 
-// ── Function construction + return ───────────────────────────────────
+// ── Group 11: Return + Import ────────────────────────────────────────
 impl VirtualMachine {
-    pub(crate) fn exec_make_function(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
-        let frame = self.vm_frame();
-        let qualname = frame.pop();
-        let code_obj = frame.pop();
-        let flags = instr.arg;
-        let closure_cells = if flags & 0x08 != 0 {
-            let closure_tuple = frame.pop();
-            match &closure_tuple.payload {
-                PyObjectPayload::Tuple(items) => {
-                    items.iter().map(|item| {
-                        match &item.payload {
-                            PyObjectPayload::Cell(cell) => cell.clone(),
-                            _ => Arc::new(RwLock::new(Some(item.clone()))),
-                        }
-                    }).collect()
-                }
-                _ => Vec::new(),
-            }
-        } else { Vec::new() };
-        if flags & 0x04 != 0 { frame.pop(); } // annotations
-        if flags & 0x02 != 0 { frame.pop(); } // kwdefaults
-        let mut defaults = Vec::new();
-        if flags & 0x01 != 0 {
-            let default_tuple = frame.pop();
-            defaults = default_tuple.to_list().unwrap_or_default();
-        }
-        let code = match &code_obj.payload {
-            PyObjectPayload::Code(c) => *c.clone(),
-            _ => return Err(PyException::type_error(
-                "expected code object for MAKE_FUNCTION",
-            )),
-        };
-        let name_str = qualname.as_str().map(CompactString::from)
-            .unwrap_or_else(|| code.name.clone());
-        let func = PyFunction {
-            name: name_str.clone(),
-            qualname: name_str,
-            code,
-            defaults,
-            kw_defaults: IndexMap::new(),
-            globals: frame.globals.clone(),
-            closure: closure_cells,
-            annotations: IndexMap::new(),
-        };
-        frame.push(PyObject::function(func));
-        Ok(None)
-    }
-
-    pub(crate) fn exec_return_value(&mut self) -> Result<Option<PyObjectRef>, PyException> {
-        let frame = self.vm_frame();
-        let value = frame.pop();
-        while let Some(block) = frame.block_stack.last() {
-            if block.kind == BlockKind::Finally {
-                let handler = block.handler;
-                frame.block_stack.pop();
-                frame.pending_return = Some(value.clone());
-                frame.push(PyObject::none());
-                frame.ip = handler;
-                break;
-            } else {
-                frame.block_stack.pop();
-            }
-        }
-        if frame.pending_return.is_none() {
-            return Ok(Some(value));
-        }
-        Ok(None)
-    }
-}
-
-// ── Import operations ────────────────────────────────────────────────
-impl VirtualMachine {
-    pub(crate) fn exec_import_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_return_import(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
+            Opcode::ReturnValue => {
+                let frame = self.vm_frame();
+                let value = frame.pop();
+                while let Some(block) = frame.block_stack.last() {
+                    if block.kind == BlockKind::Finally {
+                        let handler = block.handler;
+                        frame.block_stack.pop();
+                        frame.pending_return = Some(value.clone());
+                        frame.push(PyObject::none());
+                        frame.ip = handler;
+                        break;
+                    } else {
+                        frame.block_stack.pop();
+                    }
+                }
+                if frame.pending_return.is_none() {
+                    return Ok(Some(value));
+                }
+            }
             Opcode::ImportName => {
                 let frame = self.vm_frame();
                 let _fromlist = frame.pop();
@@ -1283,20 +1272,20 @@ impl VirtualMachine {
     }
 }
 
-// ── Exception handling ───────────────────────────────────────────────
+// ── Group 12: Exception handling + With ──────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_exception_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
-        let frame = self.vm_frame();
         match instr.op {
             Opcode::SetupFinally => {
-                frame.push_block(BlockKind::Finally, instr.arg as usize);
+                self.vm_frame().push_block(BlockKind::Finally, instr.arg as usize);
             }
             Opcode::SetupExcept => {
-                frame.push_block(BlockKind::Except, instr.arg as usize);
+                self.vm_frame().push_block(BlockKind::Except, instr.arg as usize);
             }
-            Opcode::PopBlock => { frame.pop_block(); }
-            Opcode::PopExcept => { frame.pop_block(); }
+            Opcode::PopBlock => { self.vm_frame().pop_block(); }
+            Opcode::PopExcept => { self.vm_frame().pop_block(); }
             Opcode::EndFinally => {
+                let frame = self.vm_frame();
                 if let Some(ret_val) = frame.pending_return.take() {
                     let mut has_finally = false;
                     while let Some(block) = frame.block_stack.last() {
@@ -1337,9 +1326,10 @@ impl VirtualMachine {
                 }
             }
             Opcode::BeginFinally => {
-                frame.push(PyObject::none());
+                self.vm_frame().push(PyObject::none());
             }
             Opcode::RaiseVarargs => {
+                let frame = self.vm_frame();
                 let raise_exc = |exc: &PyObjectRef| -> PyException {
                     match &exc.payload {
                         PyObjectPayload::ExceptionInstance { kind, message, .. } => {
@@ -1378,16 +1368,6 @@ impl VirtualMachine {
                     _ => return Err(PyException::runtime_error("bad RAISE_VARARGS arg")),
                 }
             }
-            _ => unreachable!(),
-        }
-        Ok(None)
-    }
-}
-
-// ── With statement ───────────────────────────────────────────────────
-impl VirtualMachine {
-    pub(crate) fn exec_with_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
-        match instr.op {
             Opcode::SetupWith => {
                 let ctx_mgr = self.vm_pop();
                 if let PyObjectPayload::Generator(gen_arc) = &ctx_mgr.payload {
@@ -1499,10 +1479,86 @@ impl VirtualMachine {
     }
 }
 
-// ── Yield operations ─────────────────────────────────────────────────
+// ── Group 13: Misc ops ───────────────────────────────────────────────
 impl VirtualMachine {
-    pub(crate) fn exec_yield_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+    pub(crate) fn exec_misc_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         match instr.op {
+            Opcode::PrintExpr => {
+                let frame = self.vm_frame();
+                let value = frame.pop();
+                if !matches!(value.payload, PyObjectPayload::None) {
+                    println!("{}", value.repr());
+                }
+            }
+            Opcode::LoadBuildClass => {
+                self.vm_frame().push(PyObject::builtin_function(
+                    CompactString::from("__build_class__")));
+            }
+            Opcode::SetupAnnotations => {
+                let frame = self.vm_frame();
+                if !frame.local_names.contains_key("__annotations__") {
+                    frame.store_name(
+                        CompactString::from("__annotations__"),
+                        PyObject::dict(IndexMap::new()),
+                    );
+                }
+            }
+            Opcode::FormatValue => {
+                let frame = self.vm_frame();
+                let fmt_spec = if instr.arg & 0x04 != 0 {
+                    let spec_obj = frame.pop();
+                    spec_obj.as_str().unwrap_or("").to_string()
+                } else {
+                    String::new()
+                };
+                let value = frame.pop();
+                let conversion = (instr.arg & 0x03) as u8;
+                let base_str = match conversion {
+                    1 => value.py_to_string(),
+                    2 => value.repr(),
+                    3 => value.py_to_string(),
+                    _ => {
+                        if !fmt_spec.is_empty() {
+                            if matches!(&value.payload, PyObjectPayload::Instance(_)) {
+                                if let Some(format_method) = value.get_attr("__format__") {
+                                    let spec = PyObject::str_val(CompactString::from(&fmt_spec));
+                                    let r = self.call_object(format_method, vec![spec])?;
+                                    self.vm_push(PyObject::str_val(CompactString::from(r.py_to_string())));
+                                    return Ok(None);
+                                }
+                            }
+                            match value.format_value(&fmt_spec) {
+                                Ok(s) => s,
+                                Err(_) => value.py_to_string(),
+                            }
+                        } else {
+                            if matches!(&value.payload, PyObjectPayload::Instance(_)) {
+                                if let Some(format_method) = value.get_attr("__format__") {
+                                    let spec = PyObject::str_val(CompactString::from(""));
+                                    let r = self.call_object(format_method, vec![spec])?;
+                                    self.vm_push(PyObject::str_val(CompactString::from(r.py_to_string())));
+                                    return Ok(None);
+                                }
+                                if let Some(str_method) = value.get_attr("__str__") {
+                                    let r = self.call_object(str_method, vec![])?;
+                                    let s = r.py_to_string();
+                                    self.vm_push(PyObject::str_val(CompactString::from(s)));
+                                    return Ok(None);
+                                }
+                            }
+                            value.py_to_string()
+                        }
+                    }
+                };
+                let formatted = if !fmt_spec.is_empty() && conversion != 0 {
+                    use ferrython_core::object::apply_string_format_spec;
+                    apply_string_format_spec(&base_str, &fmt_spec)
+                } else {
+                    base_str
+                };
+                self.vm_push(PyObject::str_val(CompactString::from(formatted)));
+            }
+            Opcode::ExtendedArg => {}
             Opcode::YieldValue => {
                 let frame = self.vm_frame();
                 let value = frame.pop();
@@ -1569,96 +1625,6 @@ impl VirtualMachine {
             }
             _ => unreachable!(),
         }
-        Ok(None)
-    }
-}
-
-// ── Misc operations ──────────────────────────────────────────────────
-impl VirtualMachine {
-    pub(crate) fn exec_misc_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
-        let frame = self.vm_frame();
-        match instr.op {
-            Opcode::PrintExpr => {
-                let value = frame.pop();
-                if !matches!(value.payload, PyObjectPayload::None) {
-                    println!("{}", value.repr());
-                }
-            }
-            Opcode::LoadBuildClass => {
-                frame.push(PyObject::builtin_function(
-                    CompactString::from("__build_class__")));
-            }
-            Opcode::SetupAnnotations => {
-                if !frame.local_names.contains_key("__annotations__") {
-                    frame.store_name(
-                        CompactString::from("__annotations__"),
-                        PyObject::dict(IndexMap::new()),
-                    );
-                }
-            }
-            Opcode::ExtendedArg => {}
-            _ => unreachable!(),
-        }
-        Ok(None)
-    }
-}
-
-// ── Format value ─────────────────────────────────────────────────────
-impl VirtualMachine {
-    pub(crate) fn exec_format_value(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
-        let frame = self.vm_frame();
-        let fmt_spec = if instr.arg & 0x04 != 0 {
-            let spec_obj = frame.pop();
-            spec_obj.as_str().unwrap_or("").to_string()
-        } else {
-            String::new()
-        };
-        let value = frame.pop();
-        let conversion = (instr.arg & 0x03) as u8;
-        let base_str = match conversion {
-            1 => value.py_to_string(),
-            2 => value.repr(),
-            3 => value.py_to_string(),
-            _ => {
-                if !fmt_spec.is_empty() {
-                    if matches!(&value.payload, PyObjectPayload::Instance(_)) {
-                        if let Some(format_method) = value.get_attr("__format__") {
-                            let spec = PyObject::str_val(CompactString::from(&fmt_spec));
-                            let r = self.call_object(format_method, vec![spec])?;
-                            self.vm_push(PyObject::str_val(CompactString::from(r.py_to_string())));
-                            return Ok(None);
-                        }
-                    }
-                    match value.format_value(&fmt_spec) {
-                        Ok(s) => s,
-                        Err(_) => value.py_to_string(),
-                    }
-                } else {
-                    if matches!(&value.payload, PyObjectPayload::Instance(_)) {
-                        if let Some(format_method) = value.get_attr("__format__") {
-                            let spec = PyObject::str_val(CompactString::from(""));
-                            let r = self.call_object(format_method, vec![spec])?;
-                            self.vm_push(PyObject::str_val(CompactString::from(r.py_to_string())));
-                            return Ok(None);
-                        }
-                        if let Some(str_method) = value.get_attr("__str__") {
-                            let r = self.call_object(str_method, vec![])?;
-                            let s = r.py_to_string();
-                            self.vm_push(PyObject::str_val(CompactString::from(s)));
-                            return Ok(None);
-                        }
-                    }
-                    value.py_to_string()
-                }
-            }
-        };
-        let formatted = if !fmt_spec.is_empty() && conversion != 0 {
-            use ferrython_core::object::apply_string_format_spec;
-            apply_string_format_spec(&base_str, &fmt_spec)
-        } else {
-            base_str
-        };
-        self.vm_push(PyObject::str_val(CompactString::from(formatted)));
         Ok(None)
     }
 }

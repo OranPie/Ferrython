@@ -142,6 +142,7 @@ static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObje
 
 impl PyObject {
     pub fn wrap(payload: PyObjectPayload) -> PyObjectRef {
+        ferrython_gc::notify_alloc();
         Arc::new(PyObject { payload })
     }
     pub fn none() -> PyObjectRef { NONE_SINGLETON.clone() }

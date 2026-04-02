@@ -7,4 +7,6 @@ description = "Rust-native FFI framework for Ferrython"
 
 [dependencies]
 ferrython-core = { workspace = true }
+compact_str = { workspace = true }
+parking_lot = { workspace = true }
 thiserror = { workspace = true }

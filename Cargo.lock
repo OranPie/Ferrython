@@ -185,7 +185,9 @@ dependencies = [
 name = "ferrython-ffi"
 version = "0.1.0"
 dependencies = [
+ "compact_str",
  "ferrython-core",
+ "parking_lot",
  "thiserror",
 ]
 
@@ -206,9 +208,11 @@ dependencies = [
  "ferrython-bytecode",
  "ferrython-compiler",
  "ferrython-core",
+ "ferrython-ffi",
  "ferrython-parser",
  "ferrython-stdlib",
  "indexmap",
+ "parking_lot",
  "thiserror",
 ]
 
@@ -239,8 +243,10 @@ dependencies = [
 name = "ferrython-repl"
 version = "0.1.0"
 dependencies = [
+ "compact_str",
  "ferrython-compiler",
  "ferrython-core",
+ "ferrython-debug",
  "ferrython-parser",
  "ferrython-vm",
  "thiserror",
@@ -253,6 +259,7 @@ dependencies = [
  "compact_str",
  "digest",
  "ferrython-core",
+ "ferrython-gc",
  "indexmap",
  "md-5",
  "num-bigint",
@@ -273,6 +280,7 @@ dependencies = [
  "ferrython-bytecode",
  "ferrython-compiler",
  "ferrython-core",
+ "ferrython-debug",
  "ferrython-import",
  "ferrython-parser",
  "ferrython-stdlib",

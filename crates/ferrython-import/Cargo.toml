@@ -8,9 +8,11 @@ description = "Import system and module loader for Ferrython"
 [dependencies]
 ferrython-core = { workspace = true }
 ferrython-stdlib = { workspace = true }
+ferrython-ffi = { workspace = true }
 ferrython-parser = { workspace = true }
 ferrython-compiler = { workspace = true }
 ferrython-bytecode = { workspace = true }
 compact_str = { workspace = true }
 indexmap = { workspace = true }
+parking_lot = { workspace = true }
 thiserror = { workspace = true }

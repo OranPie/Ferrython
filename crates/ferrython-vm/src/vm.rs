@@ -667,10 +667,31 @@ impl VirtualMachine {
                         frame.push(exc_type);             // type
                         frame.ip = handler_ip;
                     } else {
+                        // Attach traceback entry from the current frame
+                        let mut exc = exc;
+                        if exc.traceback.is_empty() {
+                            self.attach_traceback(&mut exc);
+                        }
                         return Err(exc);
                     }
                 }
             }
+        }
+    }
+
+    /// Attach traceback entries from the current call stack to an exception.
+    fn attach_traceback(&self, exc: &mut PyException) {
+        use ferrython_core::error::TracebackEntry;
+        for frame in &self.call_stack {
+            let lineno = ferrython_debug::resolve_lineno(
+                &frame.code,
+                frame.ip.saturating_sub(1),
+            );
+            exc.traceback.push(TracebackEntry {
+                filename: frame.code.filename.to_string(),
+                function: frame.code.name.to_string(),
+                lineno,
+            });
         }
     }
 
@@ -717,103 +738,74 @@ impl VirtualMachine {
     fn execute_one(&mut self, instr: ferrython_bytecode::Instruction) -> Result<Option<PyObjectRef>, PyException> {
         use ferrython_bytecode::opcode::Opcode;
         match instr.op {
-            // Stack ops
-            Opcode::Nop | Opcode::PopTop | Opcode::RotTwo | Opcode::RotThree |
-            Opcode::DupTop | Opcode::DupTopTwo
+            Opcode::Nop | Opcode::PopTop | Opcode::RotTwo | Opcode::RotThree
+            | Opcode::DupTop | Opcode::DupTopTwo | Opcode::LoadConst
                 => self.exec_stack_ops(instr),
 
-            // Name / variable ops
-            Opcode::LoadConst | Opcode::LoadName | Opcode::StoreName | Opcode::DeleteName |
-            Opcode::LoadFast | Opcode::StoreFast | Opcode::LoadDeref | Opcode::StoreDeref |
-            Opcode::LoadClosure | Opcode::LoadGlobal | Opcode::StoreGlobal |
-            Opcode::DeleteFast | Opcode::DeleteGlobal
+            Opcode::LoadName | Opcode::StoreName | Opcode::DeleteName
+            | Opcode::LoadFast | Opcode::StoreFast | Opcode::DeleteFast
+            | Opcode::LoadDeref | Opcode::StoreDeref | Opcode::LoadClosure
+            | Opcode::LoadGlobal | Opcode::StoreGlobal | Opcode::DeleteGlobal
                 => self.exec_name_ops(instr),
 
-            // Attribute ops
             Opcode::LoadAttr | Opcode::StoreAttr | Opcode::DeleteAttr
                 => self.exec_attr_ops(instr),
 
-            // Unary ops
-            Opcode::UnaryPositive | Opcode::UnaryNegative |
-            Opcode::UnaryNot | Opcode::UnaryInvert
+            Opcode::UnaryPositive | Opcode::UnaryNegative
+            | Opcode::UnaryNot | Opcode::UnaryInvert
                 => self.exec_unary_ops(instr),
 
-            // Binary / inplace arithmetic
-            Opcode::BinaryAdd | Opcode::InplaceAdd |
-            Opcode::BinarySubtract | Opcode::InplaceSubtract |
-            Opcode::BinaryMultiply | Opcode::InplaceMultiply |
-            Opcode::BinaryTrueDivide | Opcode::InplaceTrueDivide |
-            Opcode::BinaryFloorDivide | Opcode::InplaceFloorDivide |
-            Opcode::BinaryModulo | Opcode::InplaceModulo |
-            Opcode::BinaryPower | Opcode::InplacePower |
-            Opcode::BinaryLshift | Opcode::InplaceLshift |
-            Opcode::BinaryRshift | Opcode::InplaceRshift |
-            Opcode::BinaryAnd | Opcode::InplaceAnd |
-            Opcode::BinaryOr | Opcode::InplaceOr |
-            Opcode::BinaryXor | Opcode::InplaceXor
+            Opcode::BinaryAdd | Opcode::InplaceAdd
+            | Opcode::BinarySubtract | Opcode::InplaceSubtract
+            | Opcode::BinaryMultiply | Opcode::InplaceMultiply
+            | Opcode::BinaryTrueDivide | Opcode::InplaceTrueDivide
+            | Opcode::BinaryFloorDivide | Opcode::InplaceFloorDivide
+            | Opcode::BinaryModulo | Opcode::InplaceModulo
+            | Opcode::BinaryPower | Opcode::InplacePower
+            | Opcode::BinaryLshift | Opcode::InplaceLshift
+            | Opcode::BinaryRshift | Opcode::InplaceRshift
+            | Opcode::BinaryAnd | Opcode::InplaceAnd
+            | Opcode::BinaryOr | Opcode::InplaceOr
+            | Opcode::BinaryXor | Opcode::InplaceXor
+            | Opcode::BinaryMatrixMultiply | Opcode::InplaceMatrixMultiply
                 => self.exec_binary_ops(instr),
 
-            // Subscript ops
             Opcode::BinarySubscr | Opcode::StoreSubscr | Opcode::DeleteSubscr
                 => self.exec_subscript_ops(instr),
 
-            // Compare
-            Opcode::CompareOp => self.exec_compare_op(instr),
+            Opcode::CompareOp => self.exec_compare_ops(instr),
 
-            // Jump / control flow
-            Opcode::JumpForward | Opcode::JumpAbsolute |
-            Opcode::PopJumpIfFalse | Opcode::PopJumpIfTrue |
-            Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop
+            Opcode::JumpForward | Opcode::JumpAbsolute
+            | Opcode::PopJumpIfFalse | Opcode::PopJumpIfTrue
+            | Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop
+            | Opcode::GetIter | Opcode::ForIter
                 => self.exec_jump_ops(instr),
 
-            // Iterator
-            Opcode::GetIter | Opcode::ForIter
-                => self.exec_iter_ops(instr),
-
-            // Build ops
-            Opcode::BuildTuple | Opcode::BuildList | Opcode::BuildSet |
-            Opcode::BuildMap | Opcode::BuildConstKeyMap | Opcode::BuildString |
-            Opcode::ListAppend | Opcode::SetAdd | Opcode::MapAdd |
-            Opcode::DictUpdate | Opcode::DictMerge |
-            Opcode::ListExtend | Opcode::SetUpdate | Opcode::ListToTuple |
-            Opcode::BuildSlice | Opcode::UnpackSequence | Opcode::UnpackEx
+            Opcode::BuildTuple | Opcode::BuildList | Opcode::BuildSet
+            | Opcode::BuildMap | Opcode::BuildConstKeyMap | Opcode::BuildString
+            | Opcode::ListAppend | Opcode::SetAdd | Opcode::MapAdd
+            | Opcode::DictUpdate | Opcode::DictMerge | Opcode::ListExtend
+            | Opcode::SetUpdate | Opcode::ListToTuple | Opcode::BuildSlice
+            | Opcode::UnpackSequence | Opcode::UnpackEx
                 => self.exec_build_ops(instr),
 
-            // Call ops
-            Opcode::CallFunction | Opcode::CallFunctionKw |
-            Opcode::CallMethod | Opcode::CallFunctionEx | Opcode::LoadMethod
+            Opcode::CallFunction | Opcode::CallFunctionKw | Opcode::CallMethod
+            | Opcode::CallFunctionEx | Opcode::LoadMethod | Opcode::MakeFunction
                 => self.exec_call_ops(instr),
 
-            // Function construction
-            Opcode::MakeFunction => self.exec_make_function(instr),
+            Opcode::ReturnValue | Opcode::ImportName | Opcode::ImportFrom
+            | Opcode::ImportStar
+                => self.exec_return_import(instr),
 
-            // Return
-            Opcode::ReturnValue => self.exec_return_value(),
-
-            // Import
-            Opcode::ImportName | Opcode::ImportFrom | Opcode::ImportStar
-                => self.exec_import_ops(instr),
-
-            // Exception handling
-            Opcode::SetupFinally | Opcode::SetupExcept |
-            Opcode::PopBlock | Opcode::PopExcept |
-            Opcode::EndFinally | Opcode::BeginFinally | Opcode::RaiseVarargs
+            Opcode::SetupFinally | Opcode::SetupExcept | Opcode::PopBlock
+            | Opcode::PopExcept | Opcode::EndFinally | Opcode::BeginFinally
+            | Opcode::RaiseVarargs | Opcode::SetupWith
+            | Opcode::WithCleanupStart | Opcode::WithCleanupFinish
                 => self.exec_exception_ops(instr),
 
-            // With statement
-            Opcode::SetupWith | Opcode::WithCleanupStart | Opcode::WithCleanupFinish
-                => self.exec_with_ops(instr),
-
-            // Yield
-            Opcode::YieldValue | Opcode::YieldFrom
-                => self.exec_yield_ops(instr),
-
-            // Format
-            Opcode::FormatValue => self.exec_format_value(instr),
-
-            // Misc
-            Opcode::PrintExpr | Opcode::LoadBuildClass |
-            Opcode::SetupAnnotations | Opcode::ExtendedArg
+            Opcode::PrintExpr | Opcode::LoadBuildClass | Opcode::SetupAnnotations
+            | Opcode::FormatValue | Opcode::ExtendedArg
+            | Opcode::YieldValue | Opcode::YieldFrom
                 => self.exec_misc_ops(instr),
 
             _ => Err(PyException::runtime_error(format!(

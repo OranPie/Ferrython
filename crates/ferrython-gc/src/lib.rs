@@ -1,50 +1,117 @@
 //! Ferrython garbage collector — hybrid ref counting + cycle collector.
 //!
-//! # Current Status
-//!
 //! Primary memory management uses `Arc<PyObject>` (reference counting).
-//! This module provides the API surface for future cycle detection on Instance objects.
+//! This module tracks allocations and provides the Python `gc` module API.
 //!
 //! # Design
 //!
-//! - Cycle detection only needed for `Instance` objects (user-defined classes)
-//! - Trigger after N allocations or on explicit `gc.collect()`
-//! - Mark-and-sweep on Instance graph only (primitives are acyclic by construction)
+//! - `Arc` handles acyclic objects automatically via reference counting
+//! - Cycle detection targets `Instance` objects (user-defined classes)
+//! - Threshold-based trigger: after N allocations → `collect()`
+//! - Three generations mirroring CPython: gen0 (young), gen1, gen2
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+// ── Global GC state (thread-safe via atomics) ──
+
+static ENABLED: AtomicBool = AtomicBool::new(true);
 static ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
-static COLLECTION_THRESHOLD: AtomicU64 = AtomicU64::new(10_000);
+static COLLECTION_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Notify the GC that an object was allocated. Returns `true` if collection
-/// should be triggered (allocation count exceeded threshold).
+// CPython default thresholds: (700, 10, 10) — gen0=700 allocs, gen1=10 gen0 cycles, gen2=10 gen1 cycles
+static THRESHOLD_GEN0: AtomicU64 = AtomicU64::new(700);
+static THRESHOLD_GEN1: AtomicU64 = AtomicU64::new(10);
+static THRESHOLD_GEN2: AtomicU64 = AtomicU64::new(10);
+
+// Generation collection counters
+static GEN0_COLLECTIONS: AtomicU64 = AtomicU64::new(0);
+static GEN1_COLLECTIONS: AtomicU64 = AtomicU64::new(0);
+
+// ── Public API ──
+
+/// Notify the GC that an object was allocated. Returns `true` if a
+/// generation-0 collection should be triggered.
+#[inline]
 pub fn notify_alloc() -> bool {
-    let count = ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
-    count >= COLLECTION_THRESHOLD.load(Ordering::Relaxed)
+    if !ENABLED.load(Ordering::Relaxed) {
+        return false;
+    }
+    let count = ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    count >= THRESHOLD_GEN0.load(Ordering::Relaxed)
 }
 
-/// Run a garbage collection cycle. Returns the number of objects collected.
+/// Run a garbage collection cycle. Returns the number of unreachable
+/// objects found (currently 0 — cycle detection not yet implemented).
 ///
-/// Currently a no-op — cycle collection is not yet implemented.
+/// Resets allocation counter and increments generation counters to match
+/// CPython's generational promotion logic.
 pub fn collect() -> usize {
-    ALLOCATION_COUNT.store(0, Ordering::Relaxed);
-    0 // No cycles collected yet
+    let allocs = ALLOCATION_COUNT.swap(0, Ordering::Relaxed);
+    COLLECTION_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Generational promotion: gen0 collection happened
+    let gen0 = GEN0_COLLECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
+    if gen0 >= THRESHOLD_GEN1.load(Ordering::Relaxed) {
+        GEN0_COLLECTIONS.store(0, Ordering::Relaxed);
+        let gen1 = GEN1_COLLECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
+        if gen1 >= THRESHOLD_GEN2.load(Ordering::Relaxed) {
+            GEN1_COLLECTIONS.store(0, Ordering::Relaxed);
+            // Full (gen2) collection
+        }
+    }
+
+    // TODO: Actual cycle detection on Instance objects.
+    // For now, Arc refcounting handles all acyclic garbage.
+    let _ = allocs;
+    0
 }
 
-/// Check whether a collection should be triggered.
-pub fn should_collect() -> bool {
-    ALLOCATION_COUNT.load(Ordering::Relaxed) >= COLLECTION_THRESHOLD.load(Ordering::Relaxed)
+/// Enable garbage collection.
+pub fn enable() {
+    ENABLED.store(true, Ordering::Relaxed);
 }
 
-/// Set the allocation threshold that triggers automatic collection.
-pub fn set_threshold(threshold: u64) {
-    COLLECTION_THRESHOLD.store(threshold, Ordering::Relaxed);
+/// Disable garbage collection.
+pub fn disable() {
+    ENABLED.store(false, Ordering::Relaxed);
 }
 
-/// Get the current allocation count and threshold.
-pub fn get_stats() -> (u64, u64) {
+/// Return whether GC is currently enabled.
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Get the current collection thresholds as `(gen0, gen1, gen2)`.
+pub fn get_threshold() -> (u64, u64, u64) {
     (
-        ALLOCATION_COUNT.load(Ordering::Relaxed),
-        COLLECTION_THRESHOLD.load(Ordering::Relaxed),
+        THRESHOLD_GEN0.load(Ordering::Relaxed),
+        THRESHOLD_GEN1.load(Ordering::Relaxed),
+        THRESHOLD_GEN2.load(Ordering::Relaxed),
     )
+}
+
+/// Set the collection thresholds `(gen0, gen1, gen2)`.
+pub fn set_threshold(gen0: u64, gen1: u64, gen2: u64) {
+    THRESHOLD_GEN0.store(gen0, Ordering::Relaxed);
+    THRESHOLD_GEN1.store(gen1, Ordering::Relaxed);
+    THRESHOLD_GEN2.store(gen2, Ordering::Relaxed);
+}
+
+/// Get GC statistics: `(alloc_count, total_collections, enabled)`.
+pub fn get_stats() -> GcStats {
+    GcStats {
+        allocations: ALLOCATION_COUNT.load(Ordering::Relaxed),
+        collections: COLLECTION_COUNT.load(Ordering::Relaxed),
+        enabled: ENABLED.load(Ordering::Relaxed),
+        threshold: get_threshold(),
+    }
+}
+
+/// Snapshot of GC state for the `gc.get_stats()` Python function.
+#[derive(Debug, Clone)]
+pub struct GcStats {
+    pub allocations: u64,
+    pub collections: u64,
+    pub enabled: bool,
+    pub threshold: (u64, u64, u64),
 }

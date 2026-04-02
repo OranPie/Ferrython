@@ -72,11 +72,16 @@ impl ExceptionKind {
             "GeneratorExit" => Some(Self::GeneratorExit),
             "Exception" => Some(Self::Exception),
             "StopIteration" => Some(Self::StopIteration),
+            "StopAsyncIteration" => Some(Self::StopAsyncIteration),
             "ArithmeticError" => Some(Self::ArithmeticError),
+            "FloatingPointError" => Some(Self::FloatingPointError),
             "OverflowError" => Some(Self::OverflowError),
             "ZeroDivisionError" => Some(Self::ZeroDivisionError),
             "AssertionError" => Some(Self::AssertionError),
             "AttributeError" => Some(Self::AttributeError),
+            "BlockingIOError" => Some(Self::BlockingIOError),
+            "BrokenPipeError" => Some(Self::BrokenPipeError),
+            "BufferError" => Some(Self::BufferError),
             "EOFError" => Some(Self::EOFError),
             "FileExistsError" => Some(Self::FileExistsError),
             "FileNotFoundError" => Some(Self::FileNotFoundError),
@@ -91,6 +96,7 @@ impl ExceptionKind {
             "OSError" | "IOError" => Some(Self::OSError),
             "PermissionError" => Some(Self::PermissionError),
             "RecursionError" => Some(Self::RecursionError),
+            "ReferenceError" => Some(Self::ReferenceError),
             "RuntimeError" => Some(Self::RuntimeError),
             "SyntaxError" => Some(Self::SyntaxError),
             "SystemError" => Some(Self::SystemError),
@@ -117,14 +123,24 @@ pub struct PyException {
     pub message: String,
     /// Original Python object (Instance) if raised from a custom exception class.
     pub original: Option<PyObjectRef>,
+    /// Call stack frames at point of raise: `(filename, function, lineno)`.
+    pub traceback: Vec<TracebackEntry>,
+}
+
+/// A single entry in a Python traceback.
+#[derive(Debug, Clone)]
+pub struct TracebackEntry {
+    pub filename: String,
+    pub function: String,
+    pub lineno: u32,
 }
 
 impl PyException {
     pub fn new(kind: ExceptionKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into(), original: None }
+        Self { kind, message: message.into(), original: None, traceback: Vec::new() }
     }
     pub fn with_original(kind: ExceptionKind, message: impl Into<String>, obj: PyObjectRef) -> Self {
-        Self { kind, message: message.into(), original: Some(obj) }
+        Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new() }
     }
     pub fn type_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::TypeError, msg) }
     pub fn value_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::ValueError, msg) }

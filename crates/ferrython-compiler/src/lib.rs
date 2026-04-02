@@ -25,3 +25,11 @@ pub fn compile(module: &Module, filename: &str) -> Result<CodeObject, CompileErr
     let mut compiler = Compiler::new(filename);
     compiler.compile_module(module)
 }
+
+/// Compile in interactive (REPL) mode. Expression statements emit `PrintExpr`
+/// and store the result in `_`.
+pub fn compile_interactive(module: &Module, filename: &str) -> Result<CodeObject, CompileError> {
+    let mut compiler = Compiler::new(filename);
+    compiler.set_interactive(true);
+    compiler.compile_module(module)
+}

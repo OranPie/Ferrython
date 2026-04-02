@@ -8,6 +8,8 @@ description = "Interactive REPL for Ferrython"
 [dependencies]
 ferrython-vm = { workspace = true }
 ferrython-core = { workspace = true }
+ferrython-debug = { workspace = true }
 ferrython-parser = { workspace = true }
 ferrython-compiler = { workspace = true }
+compact_str = { workspace = true }
 thiserror = { workspace = true }

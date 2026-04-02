@@ -12,6 +12,7 @@ ferrython-compiler = { workspace = true }
 ferrython-parser = { workspace = true }
 ferrython-stdlib = { workspace = true }
 ferrython-import = { workspace = true }
+ferrython-debug = { workspace = true }
 compact_str = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }

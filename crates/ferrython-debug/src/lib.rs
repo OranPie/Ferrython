@@ -1,7 +1,72 @@
-//! Ferrython developer tools — bytecode disassembly, profiling hooks, and debug utilities.
+//! Ferrython developer tools — bytecode disassembly, line number resolution,
+//! and traceback formatting.
 
 use ferrython_bytecode::code::{CodeObject, ConstantValue};
 use ferrython_bytecode::opcode::Opcode;
+use ferrython_core::error::{PyException, TracebackEntry};
+
+/// Resolve an instruction index to a source line number using the code object's
+/// line number table. Returns `first_line_number` if no entry is found.
+pub fn resolve_lineno(code: &CodeObject, instruction_index: usize) -> u32 {
+    let idx = instruction_index as u32;
+    let mut lineno = code.first_line_number;
+    for &(offset, line) in &code.line_number_table {
+        if offset > idx {
+            break;
+        }
+        lineno = line;
+    }
+    lineno
+}
+
+/// Format a Python-style traceback string from a `PyException`.
+///
+/// Example output:
+/// ```text
+/// Traceback (most recent call last):
+///   File "test.py", line 5, in <module>
+///   File "test.py", line 2, in foo
+/// TypeError: unsupported operand
+/// ```
+pub fn format_traceback(exc: &PyException) -> String {
+    let mut out = String::new();
+    if !exc.traceback.is_empty() {
+        out.push_str("Traceback (most recent call last):\n");
+        for entry in &exc.traceback {
+            out.push_str(&format!(
+                "  File \"{}\", line {}, in {}\n",
+                entry.filename, entry.lineno, entry.function,
+            ));
+        }
+    }
+    out.push_str(&format!("{}: {}", exc.kind, exc.message));
+    out
+}
+
+/// Build traceback entries from the VM call stack. Each entry is
+/// `(filename, function_name, instruction_pointer)` from the call stack.
+pub fn build_traceback(
+    frames: &[(String, String, usize, Vec<(u32, u32)>, u32)],
+) -> Vec<TracebackEntry> {
+    frames
+        .iter()
+        .map(|(filename, function, ip, lno_table, first_line)| {
+            let mut lineno = *first_line;
+            let idx = *ip as u32;
+            for &(offset, line) in lno_table {
+                if offset > idx {
+                    break;
+                }
+                lineno = line;
+            }
+            TracebackEntry {
+                filename: filename.clone(),
+                function: function.clone(),
+                lineno,
+            }
+        })
+        .collect()
+}
 
 /// Disassemble a `CodeObject` to stdout, recursing into nested code objects.
 pub fn dis_code(code: &CodeObject, indent: usize) {

@@ -58,6 +58,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "argparse" => Some(modules::create_argparse_module()),
         "datetime" => Some(modules::create_datetime_module()),
         "weakref" => Some(modules::create_weakref_module()),
+        "gc" => Some(modules::create_gc_module()),
         _ => None,
     }
 }

@@ -59,6 +59,10 @@ fn main() {
 
     // Run a script file
     let filename = &args[1];
+    // Add script directory to import search paths
+    if let Some(parent) = std::path::Path::new(filename).parent() {
+        ferrython_import::prepend_search_path(parent.to_path_buf());
+    }
     match fs::read_to_string(filename) {
         Ok(source) => run_string(&source, filename),
         Err(e) => {
@@ -94,9 +98,7 @@ fn run_string(source: &str, filename: &str) {
     match vm.execute(code) {
         Ok(_) => {}
         Err(e) => {
-            eprintln!("Traceback (most recent call last):");
-            eprintln!("  File \"{}\"", filename);
-            eprintln!("{}: {}", e.kind, e.message);
+            eprintln!("{}", ferrython_debug::format_traceback(&e));
             process::exit(1);
         }
     }
