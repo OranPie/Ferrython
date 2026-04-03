@@ -6,6 +6,7 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, CompareOp,
     make_module, make_builtin, check_args, check_args_min,
 };
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
 pub fn create_math_module() -> PyObjectRef {
@@ -46,6 +47,24 @@ pub fn create_math_module() -> PyObjectRef {
         ("fmod", make_builtin(math_fmod)),
         ("frexp", make_builtin(math_frexp)),
         ("ldexp", make_builtin(math_ldexp)),
+        ("isclose", make_builtin(math_isclose)),
+        ("comb", make_builtin(math_comb)),
+        ("perm", make_builtin(math_perm)),
+        ("prod", make_builtin(math_prod)),
+        ("lcm", make_builtin(math_lcm)),
+        ("remainder", make_builtin(math_remainder)),
+        ("expm1", make_builtin(math_expm1)),
+        ("log1p", make_builtin(math_log1p)),
+        ("sinh", make_builtin(math_sinh)),
+        ("cosh", make_builtin(math_cosh)),
+        ("tanh", make_builtin(math_tanh)),
+        ("asinh", make_builtin(math_asinh)),
+        ("acosh", make_builtin(math_acosh)),
+        ("atanh", make_builtin(math_atanh)),
+        ("erf", make_builtin(math_erf)),
+        ("erfc", make_builtin(math_erfc)),
+        ("gamma", make_builtin(math_gamma)),
+        ("lgamma", make_builtin(math_lgamma)),
     ])
 }
 
@@ -196,6 +215,197 @@ fn math_ldexp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let x = args[0].to_float()?;
     let i = args[1].to_int()? as i32;
     Ok(PyObject::float(x * (2.0f64).powi(i)))
+}
+
+fn math_isclose(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("isclose() requires at least 2 arguments"));
+    }
+    let a = args[0].to_float()?;
+    let b = args[1].to_float()?;
+    // Extract rel_tol and abs_tol from positional args or trailing kwargs dict
+    let mut rel_tol = 1e-9;
+    let mut abs_tol = 0.0;
+    let remaining = &args[2..];
+    for arg in remaining {
+        if let PyObjectPayload::Dict(d) = &arg.payload {
+            let map = d.read();
+            if let Some(v) = map.get(&HashableKey::Str(CompactString::from("rel_tol"))) {
+                rel_tol = v.to_float()?;
+            }
+            if let Some(v) = map.get(&HashableKey::Str(CompactString::from("abs_tol"))) {
+                abs_tol = v.to_float()?;
+            }
+        } else if rel_tol == 1e-9 && abs_tol == 0.0 {
+            // First non-dict remaining arg = rel_tol
+            rel_tol = arg.to_float()?;
+        } else {
+            abs_tol = arg.to_float()?;
+        }
+    }
+    if a == b { return Ok(PyObject::bool_val(true)); }
+    if a.is_infinite() || b.is_infinite() { return Ok(PyObject::bool_val(false)); }
+    let diff = (a - b).abs();
+    Ok(PyObject::bool_val(diff <= (rel_tol * a.abs().max(b.abs())).max(abs_tol)))
+}
+
+fn math_comb(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.comb", args, 2)?;
+    let n = args[0].to_int()?;
+    let k = args[1].to_int()?;
+    if k < 0 || n < 0 { return Ok(PyObject::int(0)); }
+    if k > n { return Ok(PyObject::int(0)); }
+    let k = k.min(n - k) as u64;
+    let mut result: u64 = 1;
+    for i in 0..k {
+        result = result * (n as u64 - i) / (i + 1);
+    }
+    Ok(PyObject::int(result as i64))
+}
+
+fn math_perm(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(PyException::type_error("perm() requires 1 or 2 arguments"));
+    }
+    let n = args[0].to_int()?;
+    let k = if args.len() == 2 { args[1].to_int()? } else { n };
+    if k < 0 || n < 0 || k > n { return Ok(PyObject::int(0)); }
+    let mut result: i64 = 1;
+    for i in 0..k {
+        result *= n - i;
+    }
+    Ok(PyObject::int(result))
+}
+
+fn math_prod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("prod() requires at least 1 argument"));
+    }
+    let items = args[0].to_list()?;
+    let start = if args.len() >= 2 { args[1].to_float()? } else { 1.0 };
+    let mut is_int = args.len() < 2;
+    let mut product_f = start;
+    let mut product_i: i64 = if args.len() >= 2 { start as i64 } else { 1 };
+    for item in &items {
+        if let Ok(v) = item.to_int() {
+            if is_int { product_i *= v; }
+            product_f *= v as f64;
+        } else {
+            is_int = false;
+            product_f *= item.to_float()?;
+        }
+    }
+    if is_int { Ok(PyObject::int(product_i)) } else { Ok(PyObject::float(product_f)) }
+}
+
+fn math_lcm(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Ok(PyObject::int(0)); }
+    fn gcd(a: i64, b: i64) -> i64 { if b == 0 { a.abs() } else { gcd(b, a % b) } }
+    let mut result = args[0].to_int()?.abs();
+    for arg in &args[1..] {
+        let b = arg.to_int()?.abs();
+        if b == 0 { return Ok(PyObject::int(0)); }
+        result = result / gcd(result, b) * b;
+    }
+    Ok(PyObject::int(result))
+}
+
+fn math_remainder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.remainder", args, 2)?;
+    let x = args[0].to_float()?;
+    let y = args[1].to_float()?;
+    if y == 0.0 { return Err(PyException::value_error("math domain error")); }
+    Ok(PyObject::float(x - (x / y).round() * y))
+}
+
+fn math_expm1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.expm1", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.exp_m1()))
+}
+
+fn math_log1p(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.log1p", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.ln_1p()))
+}
+
+fn math_sinh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.sinh", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.sinh()))
+}
+fn math_cosh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.cosh", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.cosh()))
+}
+fn math_tanh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.tanh", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.tanh()))
+}
+fn math_asinh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.asinh", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.asinh()))
+}
+fn math_acosh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.acosh", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.acosh()))
+}
+fn math_atanh(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.atanh", args, 1)?;
+    Ok(PyObject::float(args[0].to_float()?.atanh()))
+}
+
+fn math_erf(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.erf", args, 1)?;
+    let x = args[0].to_float()?;
+    // Abramowitz and Stegun approximation (7.1.26)
+    let t = 1.0 / (1.0 + 0.3275911 * x.abs());
+    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    let erf = 1.0 - poly * (-x * x).exp();
+    Ok(PyObject::float(if x < 0.0 { -erf } else { erf }))
+}
+fn math_erfc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.erfc", args, 1)?;
+    let x = args[0].to_float()?;
+    let t = 1.0 / (1.0 + 0.3275911 * x.abs());
+    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    let erf = 1.0 - poly * (-x * x).exp();
+    Ok(PyObject::float(if x < 0.0 { 1.0 + erf } else { 1.0 - erf }))
+}
+fn math_gamma(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.gamma", args, 1)?;
+    let x = args[0].to_float()?;
+    if x <= 0.0 && x == x.floor() {
+        return Err(PyException::value_error("math domain error"));
+    }
+    // Lanczos approximation
+    Ok(PyObject::float(lanczos_gamma(x)))
+}
+fn math_lgamma(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.lgamma", args, 1)?;
+    let x = args[0].to_float()?;
+    if x <= 0.0 && x == x.floor() {
+        return Err(PyException::value_error("math domain error"));
+    }
+    Ok(PyObject::float(lanczos_gamma(x).abs().ln()))
+}
+
+fn lanczos_gamma(x: f64) -> f64 {
+    if x < 0.5 {
+        std::f64::consts::PI / ((std::f64::consts::PI * x).sin() * lanczos_gamma(1.0 - x))
+    } else {
+        let g = 7.0;
+        let coefs = [
+            0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+            771.32342877765313, -176.61502916214059, 12.507343278686905,
+            -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
+        ];
+        let z = x - 1.0;
+        let mut sum = coefs[0];
+        for (i, &c) in coefs[1..].iter().enumerate() {
+            sum += c / (z + i as f64 + 1.0);
+        }
+        let t = z + g + 0.5;
+        (2.0 * std::f64::consts::PI).sqrt() * t.powf(z + 0.5) * (-t).exp() * sum
+    }
 }
 
 fn frexp(x: f64) -> (f64, i32) {

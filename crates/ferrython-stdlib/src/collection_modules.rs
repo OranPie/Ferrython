@@ -343,9 +343,23 @@ fn functools_cmp_to_key(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 
 pub fn create_itertools_module() -> PyObjectRef {
+    // chain is a callable object with a from_iterable class method attribute
+    let chain_class = PyObject::class(
+        CompactString::from("chain"),
+        vec![],
+        IndexMap::new(),
+    );
+    let chain_inst = PyObject::instance(chain_class);
+    if let PyObjectPayload::Instance(ref d) = chain_inst.payload {
+        let mut attrs = d.attrs.write();
+        attrs.insert(CompactString::from("__call__"), make_builtin(itertools_chain));
+        attrs.insert(CompactString::from("from_iterable"), make_builtin(itertools_chain_from_iterable));
+        attrs.insert(CompactString::from("__itertools_chain__"), PyObject::bool_val(true));
+    }
+
     make_module("itertools", vec![
         ("count", make_builtin(itertools_count)),
-        ("chain", make_builtin(itertools_chain)),
+        ("chain", chain_inst),
         ("repeat", make_builtin(itertools_repeat)),
         ("cycle", make_builtin(itertools_cycle)),
         ("islice", PyObject::native_function("itertools.islice", itertools_islice)),
@@ -357,10 +371,10 @@ pub fn create_itertools_module() -> PyObjectRef {
         ("combinations", make_builtin(itertools_combinations)),
         ("permutations", make_builtin(itertools_permutations)),
         ("groupby", make_builtin(itertools_groupby)),
-        ("chain.from_iterable", make_builtin(itertools_chain_from_iterable)),
+        ("filterfalse", make_builtin(itertools_filterfalse)),
         ("compress", make_builtin(itertools_compress)),
         ("tee", make_builtin(itertools_tee)),
-        ("starmap", make_builtin(|_args| Ok(PyObject::none()))),
+        ("starmap", PyObject::native_function("itertools.starmap", itertools_starmap)),
     ])
 }
 
@@ -668,6 +682,25 @@ fn itertools_tee(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let n = if args.len() > 1 { args[1].as_int().unwrap_or(2) } else { 2 };
     let copies: Vec<PyObjectRef> = (0..n).map(|_| PyObject::list(items.clone())).collect();
     Ok(PyObject::tuple(copies))
+}
+
+fn itertools_filterfalse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // filterfalse(predicate, iterable) — VM-intercepted for callable predicates
+    if args.len() < 2 { return Err(PyException::type_error("filterfalse requires predicate and iterable")); }
+    let items = args[1].to_list()?;
+    // If predicate is None, filter out truthy values
+    if matches!(args[0].payload, PyObjectPayload::None) {
+        let result: Vec<PyObjectRef> = items.into_iter().filter(|x| !x.is_truthy()).collect();
+        return Ok(PyObject::list(result));
+    }
+    // For NativeFunction/BuiltinFn predicates, call directly
+    Err(PyException::type_error("filterfalse with callable predicate requires VM dispatch"))
+}
+
+fn itertools_starmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // starmap(func, iterable) — VM-intercepted for callable functions
+    if args.len() < 2 { return Err(PyException::type_error("starmap requires function and iterable")); }
+    Err(PyException::type_error("starmap requires VM dispatch"))
 }
 
 /// Create a cached wrapper function for lru_cache.
