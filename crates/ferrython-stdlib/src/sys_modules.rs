@@ -258,6 +258,7 @@ pub fn create_os_module() -> PyObjectRef {
         ("mkdir", make_builtin(os_mkdir)),
         ("makedirs", make_builtin(os_makedirs)),
         ("remove", make_builtin(os_remove)),
+        ("unlink", make_builtin(os_remove)),
         ("rmdir", make_builtin(os_rmdir)),
         ("rename", make_builtin(os_rename)),
         ("path", create_os_path_module()),

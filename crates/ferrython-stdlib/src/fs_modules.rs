@@ -6,6 +6,7 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin,
 };
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
 pub fn create_pathlib_module() -> PyObjectRef {
@@ -186,6 +187,109 @@ pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
 
 // ── tempfile module (basic) ──
 
+use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
+
+static TMPFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Shared write buffers for NamedTemporaryFile instances, keyed by path.
+static TMPFILE_BUFFERS: std::sync::LazyLock<Mutex<IndexMap<String, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(IndexMap::new()));
+
+fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Extract keyword args (mode, suffix, prefix, delete)
+    let mut mode = String::from("w");
+    let mut suffix = String::from("");
+    let mut delete = true;
+    // Check for trailing Dict kwargs
+    if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(d) = &last.payload {
+            let d = d.read();
+            for (k, v) in d.iter() {
+                let key_s = match k {
+                    HashableKey::Str(s) => s.as_str().to_string(),
+                    _ => continue,
+                };
+                match key_s.as_str() {
+                    "mode" => mode = v.py_to_string(),
+                    "suffix" => suffix = v.py_to_string(),
+                    "prefix" => { /* ignored for now */ },
+                    "delete" => delete = v.is_truthy(),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let n = TMPFILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir()
+        .join(format!("ferrython_ntf_{}{}{}", std::process::id(), n, suffix));
+    let path_str = path.to_string_lossy().to_string();
+
+    // Create the file on disk
+    std::fs::File::create(&path).map_err(|e|
+        PyException::runtime_error(format!("tempfile: {}", e)))?;
+
+    // Register a write buffer
+    TMPFILE_BUFFERS.lock().unwrap().insert(path_str.clone(), String::new());
+
+    let ps = path_str.clone();
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(path_str.clone())));
+    attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(mode.clone())));
+    attrs.insert(CompactString::from("_delete"), PyObject::bool_val(delete));
+    attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
+
+    // write method
+    let ps_w = ps.clone();
+    attrs.insert(CompactString::from("write"), PyObject::native_closure("write", move |a| {
+        let text = if !a.is_empty() { a[0].py_to_string() } else { String::new() };
+        let mut bufs = TMPFILE_BUFFERS.lock().unwrap();
+        if let Some(buf) = bufs.get_mut(&ps_w) {
+            buf.push_str(&text);
+        }
+        Ok(PyObject::int(text.len() as i64))
+    }));
+
+    // flush method — write buffer to disk
+    let ps_f = ps.clone();
+    attrs.insert(CompactString::from("flush"), PyObject::native_closure("flush", move |_| {
+        let bufs = TMPFILE_BUFFERS.lock().unwrap();
+        if let Some(buf) = bufs.get(&ps_f) {
+            std::fs::write(&ps_f, buf).ok();
+        }
+        Ok(PyObject::none())
+    }));
+
+    // close — flush + mark closed
+    let ps_c = ps.clone();
+    attrs.insert(CompactString::from("close"), PyObject::native_closure("close", move |_| {
+        let content = TMPFILE_BUFFERS.lock().unwrap().shift_remove(&ps_c).unwrap_or_default();
+        std::fs::write(&ps_c, &content).ok();
+        Ok(PyObject::none())
+    }));
+
+    // __enter__ returns self (arg[0] is self when _bind_methods is set)
+    attrs.insert(CompactString::from("__enter__"), PyObject::native_function("__enter__", |args| {
+        if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
+    }));
+
+    // __exit__ — flush and optionally delete
+    let ps_e = ps.clone();
+    let del_flag = delete;
+    attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("__exit__", move |_| {
+        let content = TMPFILE_BUFFERS.lock().unwrap().shift_remove(&ps_e).unwrap_or_default();
+        std::fs::write(&ps_e, &content).ok();
+        if del_flag {
+            std::fs::remove_file(&ps_e).ok();
+        }
+        Ok(PyObject::bool_val(false))
+    }));
+
+    attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
+
+    Ok(PyObject::module_with_attrs(CompactString::from("_tempfile"), attrs))
+}
+
 
 pub fn create_tempfile_module() -> PyObjectRef {
     make_module("tempfile", vec![
@@ -199,7 +303,7 @@ pub fn create_tempfile_module() -> PyObjectRef {
             std::fs::create_dir_all(&dir).ok();
             Ok(PyObject::str_val(CompactString::from(dir.to_string_lossy().to_string())))
         })),
-        ("NamedTemporaryFile", make_builtin(|_| Ok(PyObject::none()))),
+        ("NamedTemporaryFile", make_builtin(named_temporary_file)),
         ("TemporaryDirectory", make_builtin(|_| Ok(PyObject::none()))),
         ("mkstemp", make_builtin(|_| {
             let path = std::env::temp_dir().join(format!("ferrython_{}", std::process::id()));

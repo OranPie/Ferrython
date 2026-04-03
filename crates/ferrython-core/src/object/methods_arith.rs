@@ -343,6 +343,13 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                 for (k, v) in b.iter() { result.insert(k.clone(), v.clone()); }
                 Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
             }
+            // PEP 584: dict | dict
+            (PyObjectPayload::Dict(a), PyObjectPayload::Dict(b)) => {
+                let ra = a.read(); let rb = b.read();
+                let mut result = ra.clone();
+                for (k, v) in rb.iter() { result.insert(k.clone(), v.clone()); }
+                Ok(PyObject::dict(result))
+            }
             _ => int_bitop(a, b, "|", |a, b| a | b),
         }
 }
