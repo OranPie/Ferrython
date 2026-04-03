@@ -320,7 +320,26 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("csv.reader requires an iterable"));
     }
-    let lines = args[0].to_list()?;
+    // Try to get lines from the iterable
+    let lines = match args[0].to_list() {
+        Ok(items) => items,
+        Err(_) => {
+            // Handle StringIO-like objects: read the full text and split into lines
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if inst.attrs.read().contains_key("__stringio__") {
+                    let attrs = inst.attrs.read();
+                    let buf = attrs.get("_buffer").map(|b| b.py_to_string()).unwrap_or_default();
+                    buf.lines()
+                        .map(|l| PyObject::str_val(CompactString::from(l)))
+                        .collect()
+                } else {
+                    return Err(PyException::type_error("csv.reader requires an iterable"));
+                }
+            } else {
+                return Err(PyException::type_error("csv.reader requires an iterable"));
+            }
+        }
+    };
     let mut rows = Vec::new();
     for line in &lines {
         let s = line.py_to_string();

@@ -1317,6 +1317,33 @@ fn call_stringio_method(inst: &ferrython_core::object::InstanceData, method: &st
             inst.attrs.write().insert(CompactString::from("_closed"), PyObject::bool_val(true));
             Ok(PyObject::none())
         }
+        "__iter__" => {
+            // StringIO is its own iterator — reconstruct self
+            let cls = inst.class.clone();
+            let inst_obj = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(new_inst) = &inst_obj.payload {
+                *new_inst.attrs.write() = inst.attrs.read().clone();
+            }
+            Ok(inst_obj)
+        }
+        "__next__" => {
+            // Read next line, raise StopIteration when exhausted
+            let mut attrs = inst.attrs.write();
+            let buf = attrs.get("_buffer").map(|b| b.py_to_string()).unwrap_or_default();
+            let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
+            if pos >= buf.len() {
+                return Err(PyException::stop_iteration());
+            }
+            let remaining = &buf[pos..];
+            let line = if let Some(nl) = remaining.find('\n') {
+                &remaining[..=nl]
+            } else {
+                remaining
+            };
+            let result = line.to_string();
+            attrs.insert(CompactString::from("_pos"), PyObject::int((pos + result.len()) as i64));
+            Ok(PyObject::str_val(CompactString::from(&result)))
+        }
         _ => Err(PyException::attribute_error(format!("'StringIO' object has no attribute '{}'", method))),
     }
 }

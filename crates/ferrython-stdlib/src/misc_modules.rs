@@ -703,6 +703,20 @@ pub fn create_operator_module() -> PyObjectRef {
             let b = args[1].to_float()?;
             Ok(PyObject::float(a % b))
         })),
+        // Also register as "mod" for getattr(operator, "mod") usage
+        ("mod", make_builtin(|args| {
+            check_args_min("mod", args, 2)?;
+            let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_)) || matches!(&args[1].payload, PyObjectPayload::Float(_));
+            if !either_float {
+                if let (Ok(a), Ok(b)) = (args[0].to_int(), args[1].to_int()) {
+                    if b == 0 { return Err(PyException::zero_division_error("integer division or modulo by zero")); }
+                    return Ok(PyObject::int(a.rem_euclid(b)));
+                }
+            }
+            let a = args[0].to_float()?;
+            let b = args[1].to_float()?;
+            Ok(PyObject::float(a % b))
+        })),
         ("neg", make_builtin(|args| {
             check_args_min("neg", args, 1)?;
             if matches!(&args[0].payload, PyObjectPayload::Float(_)) {
@@ -712,6 +726,21 @@ pub fn create_operator_module() -> PyObjectRef {
             } else {
                 Ok(PyObject::float(-args[0].to_float()?))
             }
+        })),
+        ("pow", make_builtin(|args| {
+            check_args_min("pow", args, 2)?;
+            let either_float = matches!(&args[0].payload, PyObjectPayload::Float(_)) || matches!(&args[1].payload, PyObjectPayload::Float(_));
+            if !either_float {
+                if let (Ok(a), Ok(b)) = (args[0].to_int(), args[1].to_int()) {
+                    if b >= 0 {
+                        return Ok(PyObject::int(a.pow(b as u32)));
+                    }
+                    return Ok(PyObject::float((a as f64).powf(b as f64)));
+                }
+            }
+            let a = args[0].to_float()?;
+            let b = args[1].to_float()?;
+            Ok(PyObject::float(a.powf(b)))
         })),
         ("pos", make_builtin(|args| {
             check_args_min("pos", args, 1)?;
