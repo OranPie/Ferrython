@@ -132,18 +132,71 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
 
     // pathlib.Path
     if inst.attrs.read().contains_key("__pathlib_path__") {
-        if matches!(name, "name" | "stem" | "suffix" | "parent" | "exists" | "is_file" | "is_dir"
-            | "__str__" | "__fspath__" | "resolve" | "absolute" | "parts" | "with_suffix" | "with_name")
+        // Check instance attrs first for properties (name, stem, suffix, suffixes, parts, parent)
+        if let Some(v) = inst.attrs.read().get(name).cloned() {
+            return Some(v);
+        }
+        // Methods are returned as bound methods
+        if matches!(name, "exists" | "is_file" | "is_dir" | "is_absolute"
+            | "__str__" | "__fspath__" | "__repr__"
+            | "resolve" | "absolute" | "with_suffix" | "with_name"
+            | "read_text" | "read_bytes" | "write_text" | "write_bytes"
+            | "mkdir" | "rmdir" | "unlink" | "iterdir" | "glob" | "stat"
+            | "joinpath" | "__truediv__")
         {
             return Some(make_bound(name));
         }
-        return inst.attrs.read().get(name).cloned();
+        return None;
     }
 
     // Hashlib hash objects
     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.as_str() } else { "" };
     if matches!(class_name, "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
         if matches!(name, "hexdigest" | "digest" | "update" | "copy") {
+            return Some(make_bound(name));
+        }
+        return inst.attrs.read().get(name).cloned();
+    }
+
+    // CSV writer
+    if inst.attrs.read().contains_key("__csv_writer__") {
+        if matches!(name, "writerow" | "writerows") {
+            return Some(make_bound(name));
+        }
+        return inst.attrs.read().get(name).cloned();
+    }
+
+    // CSV DictWriter
+    if inst.attrs.read().contains_key("__csv_dictwriter__") {
+        if matches!(name, "writeheader" | "writerow" | "writerows") {
+            return Some(make_bound(name));
+        }
+        return inst.attrs.read().get(name).cloned();
+    }
+
+    // datetime instances
+    if inst.attrs.read().contains_key("__datetime__") {
+        if matches!(name, "strftime" | "isoformat" | "timestamp" | "replace" | "date" | "time"
+            | "timetuple" | "weekday" | "isoweekday" | "toordinal" | "__str__" | "__repr__")
+        {
+            return Some(make_bound(name));
+        }
+        return inst.attrs.read().get(name).cloned();
+    }
+
+    // timedelta instances
+    if inst.attrs.read().contains_key("__timedelta__") {
+        if matches!(name, "total_seconds" | "__str__" | "__repr__") {
+            return Some(make_bound(name));
+        }
+        return inst.attrs.read().get(name).cloned();
+    }
+
+    // queue instances
+    if inst.attrs.read().contains_key("__queue__") {
+        if matches!(name, "put" | "get" | "empty" | "full" | "qsize" | "get_nowait" | "put_nowait"
+            | "task_done" | "join")
+        {
             return Some(make_bound(name));
         }
         return inst.attrs.read().get(name).cloned();

@@ -321,6 +321,14 @@ fn call_instance_method(inst: &ferrython_core::object::InstanceData, method: &st
     if inst.attrs.read().contains_key("__queue__") {
         return call_queue_method(inst, method, args);
     }
+    // CSV writer methods
+    if inst.attrs.read().contains_key("__csv_writer__") {
+        return call_csv_writer_method(inst, method, args);
+    }
+    // CSV DictWriter methods
+    if inst.attrs.read().contains_key("__csv_dictwriter__") {
+        return call_csv_dictwriter_method(inst, method, args);
+    }
     // Hashlib hash object methods
     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.to_string() } else { String::new() };
     if matches!(class_name.as_str(), "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
@@ -745,6 +753,118 @@ fn call_instance_dict_method(
             Ok(PyObject::none())
         }
         _ => Err(PyException::attribute_error(format!("'dict' object has no attribute '{}'", method))),
+    }
+}
+
+fn call_csv_writer_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let attrs = inst.attrs.read();
+    let fileobj = attrs.get("_fileobj").cloned().unwrap_or_else(PyObject::none);
+    let rows = attrs.get("_rows").cloned().unwrap_or_else(|| PyObject::list(vec![]));
+    drop(attrs);
+
+    match method {
+        "writerow" => {
+            if args.is_empty() { return Err(PyException::type_error("writerow() requires a sequence")); }
+            let items = args[0].to_list()?;
+            let fields: Vec<String> = items.iter().map(|item| {
+                let s = item.py_to_string();
+                if s.contains(',') || s.contains('"') || s.contains('\n') {
+                    format!("\"{}\"", s.replace('"', "\"\""))
+                } else {
+                    s
+                }
+            }).collect();
+            let line = format!("{}\r\n", fields.join(","));
+            // Write to the file object's write method or accumulate in _rows
+            if let PyObjectPayload::Instance(fobj_inst) = &fileobj.payload {
+                // StringIO write
+                if fobj_inst.attrs.read().contains_key("__stringio__") {
+                    let mut fobj_attrs = fobj_inst.attrs.write();
+                    if let Some(buf) = fobj_attrs.get("_buffer") {
+                        let existing = buf.py_to_string();
+                        fobj_attrs.insert(CompactString::from("_buffer"),
+                            PyObject::str_val(CompactString::from(format!("{}{}", existing, line))));
+                    }
+                }
+            }
+            // Also store in _rows
+            if let PyObjectPayload::List(row_list) = &rows.payload {
+                row_list.write().push(PyObject::str_val(CompactString::from(&line)));
+            }
+            Ok(PyObject::none())
+        }
+        "writerows" => {
+            if args.is_empty() { return Err(PyException::type_error("writerows() requires an iterable")); }
+            let rows_list = args[0].to_list()?;
+            for row in rows_list {
+                // Recursively call writerow
+                call_csv_writer_method(inst, "writerow", &[row])?;
+            }
+            Ok(PyObject::none())
+        }
+        _ => Err(PyException::attribute_error(format!("'csv.writer' object has no attribute '{}'", method))),
+    }
+}
+
+fn call_csv_dictwriter_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let attrs = inst.attrs.read();
+    let fileobj = attrs.get("_fileobj").cloned().unwrap_or_else(PyObject::none);
+    let fieldnames = attrs.get("_fieldnames").cloned().unwrap_or_else(|| PyObject::list(vec![]));
+    drop(attrs);
+
+    let field_list = fieldnames.to_list()?;
+    let names: Vec<String> = field_list.iter().map(|f| f.py_to_string()).collect();
+
+    match method {
+        "writeheader" => {
+            let line = format!("{}\r\n", names.join(","));
+            if let PyObjectPayload::Instance(fobj_inst) = &fileobj.payload {
+                if fobj_inst.attrs.read().contains_key("__stringio__") {
+                    let mut fobj_attrs = fobj_inst.attrs.write();
+                    if let Some(buf) = fobj_attrs.get("_buffer") {
+                        let existing = buf.py_to_string();
+                        fobj_attrs.insert(CompactString::from("_buffer"),
+                            PyObject::str_val(CompactString::from(format!("{}{}", existing, line))));
+                    }
+                }
+            }
+            Ok(PyObject::none())
+        }
+        "writerow" => {
+            if args.is_empty() { return Err(PyException::type_error("writerow() requires a dict")); }
+            let row_dict = &args[0];
+            let mut fields = Vec::new();
+            for name in &names {
+                let val = row_dict.get_attr(name).unwrap_or_else(|| {
+                    // Try dict key lookup
+                    if let PyObjectPayload::Dict(map) = &row_dict.payload {
+                        map.read().get(&HashableKey::Str(CompactString::from(name.as_str())))
+                            .cloned().unwrap_or_else(PyObject::none)
+                    } else {
+                        PyObject::none()
+                    }
+                });
+                let s = val.py_to_string();
+                if s.contains(',') || s.contains('"') || s.contains('\n') {
+                    fields.push(format!("\"{}\"", s.replace('"', "\"\"")));
+                } else {
+                    fields.push(s);
+                }
+            }
+            let line = format!("{}\r\n", fields.join(","));
+            if let PyObjectPayload::Instance(fobj_inst) = &fileobj.payload {
+                if fobj_inst.attrs.read().contains_key("__stringio__") {
+                    let mut fobj_attrs = fobj_inst.attrs.write();
+                    if let Some(buf) = fobj_attrs.get("_buffer") {
+                        let existing = buf.py_to_string();
+                        fobj_attrs.insert(CompactString::from("_buffer"),
+                            PyObject::str_val(CompactString::from(format!("{}{}", existing, line))));
+                    }
+                }
+            }
+            Ok(PyObject::none())
+        }
+        _ => Err(PyException::attribute_error(format!("'csv.DictWriter' object has no attribute '{}'", method))),
     }
 }
 

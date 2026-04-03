@@ -25,15 +25,39 @@ fn pathlib_path(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     ns.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(
         path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
     )));
-    ns.insert(CompactString::from("stem"), PyObject::str_val(CompactString::from(
-        path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
-    )));
+    // Python's Path.stem — everything before the last suffix (e.g. "test.tar" for "test.tar.gz")
+    let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let (stem_val, suffixes_vec) = if file_name.starts_with('.') && !file_name[1..].contains('.') {
+        // Dotfile like ".gitignore" — stem is the whole name, no suffix
+        (file_name.clone(), vec![])
+    } else {
+        let parts: Vec<&str> = file_name.splitn(2, '.').collect();
+        if parts.len() > 1 {
+            let _stem = parts[0].to_string();
+            let suffixes: Vec<String> = parts[1].split('.').map(|s| format!(".{}", s)).collect();
+            // Python stem = everything before the LAST dot suffix
+            let last_dot = file_name.rfind('.').unwrap_or(file_name.len());
+            let py_stem = file_name[..last_dot].to_string();
+            (py_stem, suffixes)
+        } else {
+            (file_name.clone(), vec![])
+        }
+    };
+    ns.insert(CompactString::from("stem"), PyObject::str_val(CompactString::from(&stem_val)));
     ns.insert(CompactString::from("suffix"), PyObject::str_val(CompactString::from(
-        path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default()
+        suffixes_vec.last().cloned().unwrap_or_default()
     )));
+    ns.insert(CompactString::from("suffixes"), PyObject::list(
+        suffixes_vec.iter().map(|s| PyObject::str_val(CompactString::from(s.as_str()))).collect()
+    ));
     ns.insert(CompactString::from("parent"), PyObject::str_val(CompactString::from(
         path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
     )));
+    // parts — tuple of path components
+    let parts: Vec<PyObjectRef> = path.components()
+        .map(|c| PyObject::str_val(CompactString::from(c.as_os_str().to_string_lossy().to_string())))
+        .collect();
+    ns.insert(CompactString::from("parts"), PyObject::tuple(parts));
     // Methods that need the path are implemented via BuiltinBoundMethod in the VM
     ns.insert(CompactString::from("__pathlib_path__"), PyObject::bool_val(true));
 

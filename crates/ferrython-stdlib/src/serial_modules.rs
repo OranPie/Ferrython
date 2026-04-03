@@ -394,6 +394,9 @@ fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__csv_dictwriter__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_fileobj"), args[0].clone());
+        attrs.insert(CompactString::from("_fieldnames"), PyObject::list(
+            fieldnames.iter().map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect()
+        ));
         attrs.insert(CompactString::from("fieldnames"), PyObject::list(
             fieldnames.iter().map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect()
         ));
