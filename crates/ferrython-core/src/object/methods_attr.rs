@@ -681,7 +681,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             // Built-in type methods — return bound method names
             PyObjectPayload::Str(_) | PyObjectPayload::List(_) |
             PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_) | PyObjectPayload::Tuple(_) |
-            PyObjectPayload::Set(_) | PyObjectPayload::Bytes(_) => {
+            PyObjectPayload::Set(_) | PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => {
                 if name == "__class__" {
                     let type_name = obj.type_name();
                     return Some(PyObject::builtin_type(CompactString::from(type_name)));

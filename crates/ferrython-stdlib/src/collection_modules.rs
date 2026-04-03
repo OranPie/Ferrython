@@ -184,7 +184,7 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     
     let cls = PyObject::class(
         CompactString::from(typename.as_str()),
-        vec![],
+        vec![PyObject::builtin_type(CompactString::from("tuple"))],
         namespace,
     );
     

@@ -62,6 +62,7 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
         }
         (PyObjectPayload::Bytes(a), PyObjectPayload::Bytes(b)) => a.partial_cmp(b),
         (PyObjectPayload::ByteArray(a), PyObjectPayload::ByteArray(b)) => a.partial_cmp(b),
+        (PyObjectPayload::Bytes(a), PyObjectPayload::ByteArray(b)) | (PyObjectPayload::ByteArray(a), PyObjectPayload::Bytes(b)) => a.partial_cmp(b),
         (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
             if ar == br && ai == bi { Some(std::cmp::Ordering::Equal) } else { None }
         }
@@ -586,6 +587,26 @@ pub(super) fn get_slice_impl(
         }
         _ => Err(PyException::type_error(format!("'{}' object is not subscriptable", obj.type_name()))),
     }
+}
+
+/// Format a bytes literal like b'...' with proper escaping (shared by bytes and bytearray repr).
+pub(super) fn format_bytes_literal(b: &[u8], prefix: &str) -> String {
+    let mut out = String::new();
+    out.push_str(prefix);
+    out.push('\'');
+    for &byte in b {
+        match byte {
+            b'\\' => out.push_str("\\\\"),
+            b'\'' => out.push_str("\\'"),
+            b'\t' => out.push_str("\\t"),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            0x20..=0x7e => out.push(byte as char),
+            _ => out.push_str(&format!("\\x{:02x}", byte)),
+        }
+    }
+    out.push('\'');
+    out
 }
 
 pub(super) fn format_collection(open: &str, close: &str, items: &[PyObjectRef]) -> String {

@@ -1150,3 +1150,96 @@ pub(crate) fn partial_cmp_for_sort(a: &PyObjectRef, b: &PyObjectRef) -> Option<s
     }
 }
 
+/// Bytearray-specific method dispatch (mutable operations + delegates immutable ones to call_bytes_method).
+pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match method {
+        "append" => {
+            if args.is_empty() { return Err(PyException::type_error("append() takes exactly one argument")); }
+            let byte_val = args[0].to_int()? as u8;
+            // Safety: single-threaded access, Vec is owned inside Arc<PyObject>
+            unsafe {
+                let ptr = b as *const [u8] as *const Vec<u8>;
+                // Go from slice ptr back to Vec ptr (payload stores Vec<u8>)
+                let vec_ptr = &receiver.payload as *const PyObjectPayload;
+                if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
+                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    (*vp).push(byte_val);
+                }
+            }
+            Ok(PyObject::none())
+        }
+        "extend" => {
+            if args.is_empty() { return Err(PyException::type_error("extend() takes exactly one argument")); }
+            let new_bytes: Vec<u8> = match &args[0].payload {
+                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                PyObjectPayload::List(items) => {
+                    items.read().iter().map(|i| i.to_int().unwrap_or(0) as u8).collect()
+                }
+                _ => args[0].to_list()?.iter().map(|i| i.to_int().unwrap_or(0) as u8).collect(),
+            };
+            unsafe {
+                let vec_ptr = &receiver.payload as *const PyObjectPayload;
+                if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
+                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    (*vp).extend_from_slice(&new_bytes);
+                }
+            }
+            Ok(PyObject::none())
+        }
+        "pop" => {
+            unsafe {
+                let vec_ptr = &receiver.payload as *const PyObjectPayload;
+                if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
+                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    if let Some(idx) = if args.is_empty() { Some((*vp).len().wrapping_sub(1)) } else { Some(args[0].to_int()? as usize) } {
+                        if idx < (*vp).len() {
+                            let val = (*vp).remove(idx);
+                            return Ok(PyObject::int(val as i64));
+                        }
+                    }
+                    return Err(PyException::index_error("pop index out of range"));
+                }
+            }
+            Err(PyException::index_error("pop from empty bytearray"))
+        }
+        "insert" => {
+            if args.len() < 2 { return Err(PyException::type_error("insert() takes exactly 2 arguments")); }
+            let idx = args[0].to_int()?;
+            let byte_val = args[1].to_int()? as u8;
+            unsafe {
+                let vec_ptr = &receiver.payload as *const PyObjectPayload;
+                if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
+                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    let len = (*vp).len() as i64;
+                    let actual = if idx < 0 { (len + idx).max(0) as usize } else { (idx as usize).min((*vp).len()) };
+                    (*vp).insert(actual, byte_val);
+                }
+            }
+            Ok(PyObject::none())
+        }
+        "clear" => {
+            unsafe {
+                let vec_ptr = &receiver.payload as *const PyObjectPayload;
+                if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
+                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    (*vp).clear();
+                }
+            }
+            Ok(PyObject::none())
+        }
+        "reverse" => {
+            unsafe {
+                let vec_ptr = &receiver.payload as *const PyObjectPayload;
+                if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
+                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    (*vp).reverse();
+                }
+            }
+            Ok(PyObject::none())
+        }
+        "copy" => Ok(PyObject::bytearray(b.to_vec())),
+        // Delegate immutable methods to bytes
+        _ => call_bytes_method(b, method, args),
+    }
+}
+

@@ -109,12 +109,10 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             }
             PyObjectPayload::Str(s) => s.to_string(),
             PyObjectPayload::Bytes(b) => {
-                let s = String::from_utf8_lossy(b);
-                if s.contains('\'') && !s.contains('"') {
-                    format!("b\"{}\"", s)
-                } else {
-                    format!("b'{}'", s.replace('\'', "\\'"))
-                }
+                format_bytes_literal(b, "b")
+            }
+            PyObjectPayload::ByteArray(b) => {
+                format!("bytearray({})", format_bytes_literal(b, "b"))
             }
             PyObjectPayload::List(items) => format_collection("[", "]", &items.read()),
             PyObjectPayload::Tuple(items) => {
