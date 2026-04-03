@@ -11,6 +11,14 @@ use indexmap::IndexMap;
 
 use super::apply_format_spec_str;
 
+fn normalize_index(idx: i64, len: i64) -> usize {
+    if idx < 0 {
+        (len + idx).max(0) as usize
+    } else {
+        (idx as usize).min(len as usize)
+    }
+}
+
 pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "upper" => Ok(PyObject::str_val(CompactString::from(s.to_uppercase()))),
@@ -132,7 +140,11 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
         "count" => {
             check_args_min("count", args, 1)?;
             let sub = args[0].as_str().ok_or_else(|| PyException::type_error("count() argument must be str"))?;
-            Ok(PyObject::int(s.matches(sub).count() as i64))
+            let len = s.chars().count() as i64;
+            let start = if args.len() >= 2 { normalize_index(args[1].as_int().unwrap_or(0), len) } else { 0usize };
+            let end = if args.len() >= 3 { normalize_index(args[2].as_int().unwrap_or(len), len) } else { len as usize };
+            let slice: String = s.chars().skip(start).take(end.saturating_sub(start)).collect();
+            Ok(PyObject::int(slice.matches(sub).count() as i64))
         }
         "startswith" => {
             check_args_min("startswith", args, 1)?;
@@ -214,8 +226,8 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             let len = s.chars().count();
             if width <= len { return Ok(PyObject::str_val(CompactString::from(s))); }
             let pad = width - len;
-            let left = pad / 2;
-            let right = pad - left;
+            let right = pad / 2;
+            let left = pad - right;
             let result = format!("{}{}{}", fillchar.to_string().repeat(left), s, fillchar.to_string().repeat(right));
             Ok(PyObject::str_val(CompactString::from(result)))
         }
@@ -259,7 +271,7 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             let mut col = 0usize;
             for ch in s.chars() {
                 if ch == '\t' {
-                    let spaces = tabsize - (col % tabsize);
+                    let spaces = if tabsize == 0 { 0 } else { tabsize - (col % tabsize) };
                     result.extend(std::iter::repeat(' ').take(spaces));
                     col += spaces;
                 } else if ch == '\n' || ch == '\r' {

@@ -248,10 +248,8 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn collections_chainmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // ChainMap(*maps) — group multiple dicts for first-found lookup
     let maps: Vec<PyObjectRef> = args.to_vec();
     let mut merged = IndexMap::new();
-    // Iterate in reverse: last map has lowest priority
     for m in maps.iter().rev() {
         if let PyObjectPayload::Dict(dict) = &m.payload {
             let rd = dict.read();
@@ -260,7 +258,6 @@ fn collections_chainmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }
     }
-    // Store as a dict subclass with __chainmap__ marker and .maps attribute
     let cls = PyObject::class(CompactString::from("ChainMap"), vec![], IndexMap::new());
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class: cls,
@@ -270,7 +267,33 @@ fn collections_chainmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
         w.insert(CompactString::from("__chainmap__"), PyObject::bool_val(true));
-        w.insert(CompactString::from("maps"), PyObject::list(maps));
+        let maps_list = PyObject::list(maps.clone());
+        w.insert(CompactString::from("maps"), maps_list);
+        // new_child(m=None) — creates new ChainMap with m followed by current maps
+        let captured_maps = maps.clone();
+        w.insert(CompactString::from("new_child"), PyObject::native_closure(
+            "ChainMap.new_child", move |call_args| {
+                let child_map = if !call_args.is_empty() {
+                    call_args[0].clone()
+                } else {
+                    PyObject::dict(IndexMap::new())
+                };
+                let mut new_maps = vec![child_map];
+                new_maps.extend(captured_maps.iter().cloned());
+                collections_chainmap(&new_maps)
+            }
+        ));
+        // parents — lazy property that creates ChainMap of all maps except first
+        let parent_maps = maps.clone();
+        w.insert(CompactString::from("parents"), PyObject::native_closure(
+            "ChainMap.parents", move |_args| {
+                if parent_maps.len() > 1 {
+                    collections_chainmap(&parent_maps[1..])
+                } else {
+                    collections_chainmap(&[])
+                }
+            }
+        ));
     }
     Ok(inst)
 }
@@ -630,24 +653,41 @@ fn itertools_product(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("accumulate requires an iterable")); }
     let items = args[0].to_list()?;
-    if items.is_empty() { return Ok(PyObject::list(vec![])); }
     // Optional binary function as second arg
     let func = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
         Some(args[1].clone())
     } else {
         None
     };
+    // Optional initial value as third arg
+    let initial = if args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::None) {
+        Some(args[2].clone())
+    } else {
+        None
+    };
+    let has_initial = initial.is_some();
+    if items.is_empty() {
+        return if let Some(init) = initial {
+            Ok(PyObject::list(vec![init]))
+        } else {
+            Ok(PyObject::list(vec![]))
+        };
+    }
     let mut result = Vec::new();
-    let mut acc = items[0].clone();
-    result.push(acc.clone());
-    for item in &items[1..] {
+    let mut acc = if let Some(init) = initial {
+        result.push(init.clone());
+        init
+    } else {
+        result.push(items[0].clone());
+        items[0].clone()
+    };
+    let iter_items = if has_initial { &items[..] } else { &items[1..] };
+    for item in iter_items {
         acc = if let Some(ref f) = func {
-            // Try calling the function directly (works for NativeFunction/NativeClosure)
             match &f.payload {
                 PyObjectPayload::NativeFunction { func: nf, .. } => nf(&[acc, item.clone()])?,
                 PyObjectPayload::NativeClosure { func: nf, .. } => nf(&[acc, item.clone()])?,
                 _ => {
-                    // Fallback to addition for Python functions (needs VM dispatch)
                     let a = acc.to_float().unwrap_or(acc.as_int().unwrap_or(0) as f64);
                     let b = item.to_float().unwrap_or(item.as_int().unwrap_or(0) as f64);
                     let sum = a + b;
@@ -882,6 +922,24 @@ fn create_cached_function(func: PyObjectRef) -> PyObjectRef {
     let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("__wrapped__"), func);
     attrs.insert(CompactString::from("_cache"), PyObject::dict(cache_dict));
+    attrs.insert(CompactString::from("_hits"), PyObject::int(0));
+    attrs.insert(CompactString::from("_misses"), PyObject::int(0));
+    attrs.insert(CompactString::from("cache_info"), PyObject::native_function("cache_info", |_args| {
+        // Returns a simple object with hits, misses, maxsize, currsize
+        let info_class = PyObject::class(CompactString::from("CacheInfo"), vec![], IndexMap::new());
+        let info = PyObject::instance(info_class);
+        if let PyObjectPayload::Instance(ref d) = info.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("hits"), PyObject::int(0));
+            w.insert(CompactString::from("misses"), PyObject::int(0));
+            w.insert(CompactString::from("maxsize"), PyObject::int(128));
+            w.insert(CompactString::from("currsize"), PyObject::int(0));
+        }
+        Ok(info)
+    }));
+    attrs.insert(CompactString::from("cache_clear"), PyObject::native_function("cache_clear", |_args| {
+        Ok(PyObject::none())
+    }));
     PyObject::instance_with_attrs(cache_class, attrs)
 }
 

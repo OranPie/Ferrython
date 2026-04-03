@@ -485,6 +485,70 @@ impl VirtualMachine {
         }
     }
 
+    /// Throw an exception into a generator.
+    /// Resumes the generator with an exception injected at the yield point.
+    pub(crate) fn gen_throw(
+        &mut self,
+        gen_arc: &Arc<RwLock<GeneratorState>>,
+        kind: ExceptionKind,
+        msg: String,
+    ) -> PyResult<PyObjectRef> {
+        let mut gen = gen_arc.write();
+        if gen.finished {
+            return Err(PyException::new(kind, msg));
+        }
+        let mut frame = match gen.frame.take() {
+            Some(f) => *f.downcast::<Frame>().expect("generator frame downcast"),
+            None => return Err(PyException::runtime_error("generator already executing")),
+        };
+        gen.started = true;
+        drop(gen);
+
+        // Set up exception on the frame so VM will unwind to handler
+        let exc = PyException::new(kind.clone(), msg.clone());
+        self.call_stack.push(frame);
+        let exc_result = Err(exc);
+        let exc_obj = PyObject::exception_instance(kind.clone(), msg.clone());
+        let exc_type = PyObject::exception_type(kind.clone());
+        let tb = PyObject::none();
+
+        // Try to find an exception handler in the generator's frame
+        if let Some(handler_ip) = self.unwind_except() {
+            self.active_exception = Some(PyException::new(kind, msg));
+            let frame_ref = self.call_stack.last_mut().unwrap();
+            frame_ref.push(tb);
+            frame_ref.push(exc_obj);
+            frame_ref.push(exc_type);
+            frame_ref.ip = handler_ip;
+
+            let result = self.run_frame();
+            let frame = self.call_stack.pop().unwrap();
+
+            let mut gen = gen_arc.write();
+            if frame.yielded {
+                let mut saved_frame = frame;
+                saved_frame.yielded = false;
+                gen.frame = Some(Box::new(saved_frame));
+                result
+            } else {
+                gen.finished = true;
+                gen.frame = None;
+                let return_val = result.ok();
+                let msg = return_val.as_ref().map(|v| v.py_to_string()).unwrap_or_default();
+                let mut exc = PyException::new(ExceptionKind::StopIteration, msg);
+                exc.value = return_val;
+                Err(exc)
+            }
+        } else {
+            // No handler — pop frame and re-raise
+            self.call_stack.pop();
+            let mut gen = gen_arc.write();
+            gen.finished = true;
+            gen.frame = None;
+            exc_result
+        }
+    }
+
     /// Advance any iterable by one step (generators, iterators, instances with __next__).
     /// Returns Ok(Some(value)) on success, Ok(None) on exhaustion (StopIteration).
     pub(crate) fn vm_iter_next(&mut self, iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {

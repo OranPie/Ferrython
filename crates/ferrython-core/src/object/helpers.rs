@@ -85,6 +85,23 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
             }
             Some(std::cmp::Ordering::Equal)
         }
+        // frozenset == set cross-type
+        (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
+            let rb = b.read();
+            if a.len() != rb.len() { return None; }
+            for k in a.keys() {
+                if !rb.contains_key(k) { return None; }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
+        (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
+            let ra = a.read();
+            if ra.len() != b.len() { return None; }
+            for k in ra.keys() {
+                if !b.contains_key(k) { return None; }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
         (PyObjectPayload::Dict(a), PyObjectPayload::Dict(b)) => {
             let a = a.read(); let b = b.read();
             if a.len() != b.len() { return None; }

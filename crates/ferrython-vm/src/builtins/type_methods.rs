@@ -591,6 +591,94 @@ pub(super) fn call_set_method(m: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>
     }
 }
 
+pub(super) fn call_frozenset_method(m: &IndexMap<HashableKey, PyObjectRef>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match method {
+        "copy" => Ok(PyObject::frozenset(m.clone())),
+        "union" | "__or__" => {
+            check_args_min("union", args, 1)?;
+            let mut result = m.clone();
+            let other_list = args[0].to_list()?;
+            for item in other_list {
+                let hk = item.to_hashable_key()?;
+                result.entry(hk).or_insert(item);
+            }
+            Ok(PyObject::frozenset(result))
+        }
+        "intersection" | "__and__" => {
+            check_args_min("intersection", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let result: IndexMap<HashableKey, PyObjectRef> = m.iter()
+                .filter(|(_, v)| other_keys.contains(&v.py_to_string()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(PyObject::frozenset(result))
+        }
+        "difference" | "__sub__" => {
+            check_args_min("difference", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let result: IndexMap<HashableKey, PyObjectRef> = m.iter()
+                .filter(|(_, v)| !other_keys.contains(&v.py_to_string()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(PyObject::frozenset(result))
+        }
+        "symmetric_difference" | "__xor__" => {
+            check_args_min("symmetric_difference", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let self_keys: std::collections::HashSet<String> = m.values()
+                .map(|x| x.py_to_string()).collect();
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let mut result = IndexMap::new();
+            for (k, v) in m.iter() {
+                if !other_keys.contains(&v.py_to_string()) {
+                    result.insert(k.clone(), v.clone());
+                }
+            }
+            for item in &other_items {
+                if !self_keys.contains(&item.py_to_string()) {
+                    if let Ok(hk) = item.to_hashable_key() {
+                        result.insert(hk, item.clone());
+                    }
+                }
+            }
+            Ok(PyObject::frozenset(result))
+        }
+        "issubset" => {
+            check_args_min("issubset", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let all_in = m.values().all(|v| other_keys.contains(&v.py_to_string()));
+            Ok(PyObject::bool_val(all_in))
+        }
+        "issuperset" => {
+            check_args_min("issuperset", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let self_keys: std::collections::HashSet<String> = m.values()
+                .map(|x| x.py_to_string()).collect();
+            let all_in = other_items.iter().all(|v| self_keys.contains(&v.py_to_string()));
+            Ok(PyObject::bool_val(all_in))
+        }
+        "isdisjoint" => {
+            check_args_min("isdisjoint", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let self_keys: std::collections::HashSet<String> = m.values()
+                .map(|x| x.py_to_string()).collect();
+            let none_in = other_items.iter().all(|v| !self_keys.contains(&v.py_to_string()));
+            Ok(PyObject::bool_val(none_in))
+        }
+        "__len__" => Ok(PyObject::int(m.len() as i64)),
+        _ => Err(PyException::attribute_error(format!(
+            "'frozenset' object has no attribute '{}'", method
+        ))),
+    }
+}
+
 pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "bit_length" => {

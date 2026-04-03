@@ -551,6 +551,20 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     _ => None,
                 }
             }
+            PyObjectPayload::Partial { func, args, kwargs } => {
+                match name {
+                    "func" => Some(func.clone()),
+                    "args" => Some(PyObject::tuple(args.clone())),
+                    "keywords" => {
+                        let mut map = indexmap::IndexMap::new();
+                        for (k, v) in kwargs {
+                            map.insert(crate::types::HashableKey::Str(k.clone()), v.clone());
+                        }
+                        Some(PyObject::dict(map))
+                    }
+                    _ => None,
+                }
+            }
             PyObjectPayload::ExceptionType(kind) => {
                 match name {
                     "__name__" => Some(PyObject::str_val(CompactString::from(format!("{:?}", kind)))),
@@ -571,6 +585,16 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }
                     }
                     "__class__" => Some(PyObject::exception_type(kind.clone())),
+                    "value" => {
+                        // StopIteration.value — check attrs first, then args[0], then None
+                        if let Some(v) = attrs.read().get("value").cloned() {
+                            Some(v)
+                        } else if !args.is_empty() {
+                            Some(args[0].clone())
+                        } else {
+                            Some(PyObject::none())
+                        }
+                    }
                     _ => {
                         // Check user-set attrs (e.g., __cause__)
                         attrs.read().get(name).cloned()
@@ -681,7 +705,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             // Built-in type methods — return bound method names
             PyObjectPayload::Str(_) | PyObjectPayload::List(_) |
             PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_) | PyObjectPayload::Tuple(_) |
-            PyObjectPayload::Set(_) | PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => {
+            PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_) | PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => {
                 if name == "__class__" {
                     let type_name = obj.type_name();
                     return Some(PyObject::builtin_type(CompactString::from(type_name)));

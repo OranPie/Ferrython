@@ -271,6 +271,7 @@ pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -
         PyObjectPayload::Float(f) => call_float_method(*f, method, args),
         PyObjectPayload::Tuple(items) => call_tuple_method(items, method, args),
         PyObjectPayload::Set(m) => call_set_method(m, method, args),
+        PyObjectPayload::FrozenSet(m) => call_frozenset_method(m, method, args),
         PyObjectPayload::Bytes(b) => call_bytes_method(b, method, args),
         PyObjectPayload::ByteArray(b) => call_bytearray_method(receiver, b, method, args),
         PyObjectPayload::Complex { real, imag } => {

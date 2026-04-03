@@ -580,7 +580,7 @@ impl VirtualMachine {
 
 // ── Group 5: Binary / inplace arithmetic ─────────────────────────────
 impl VirtualMachine {
-    fn try_binary_dunder(
+    pub(crate) fn try_binary_dunder(
         &mut self, a: &PyObjectRef, b: &PyObjectRef,
         dunder: &str, rdunder: Option<&str>,
     ) -> Result<Option<PyObjectRef>, PyException> {

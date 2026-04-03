@@ -885,6 +885,123 @@ pub fn create_operator_module() -> PyObjectRef {
                 }
             }))
         })),
+        ("and_", make_builtin(|args| {
+            check_args_min("and_", args, 2)?;
+            let a = args[0].to_int()?;
+            let b = args[1].to_int()?;
+            Ok(PyObject::int(a & b))
+        })),
+        ("or_", make_builtin(|args| {
+            check_args_min("or_", args, 2)?;
+            let a = args[0].to_int()?;
+            let b = args[1].to_int()?;
+            Ok(PyObject::int(a | b))
+        })),
+        ("xor", make_builtin(|args| {
+            check_args_min("xor", args, 2)?;
+            let a = args[0].to_int()?;
+            let b = args[1].to_int()?;
+            Ok(PyObject::int(a ^ b))
+        })),
+        ("lshift", make_builtin(|args| {
+            check_args_min("lshift", args, 2)?;
+            let a = args[0].to_int()?;
+            let b = args[1].to_int()?;
+            Ok(PyObject::int(a << b))
+        })),
+        ("rshift", make_builtin(|args| {
+            check_args_min("rshift", args, 2)?;
+            let a = args[0].to_int()?;
+            let b = args[1].to_int()?;
+            Ok(PyObject::int(a >> b))
+        })),
+        ("invert", make_builtin(|args| {
+            check_args_min("invert", args, 1)?;
+            let a = args[0].to_int()?;
+            Ok(PyObject::int(!a))
+        })),
+        ("inv", make_builtin(|args| {
+            check_args_min("inv", args, 1)?;
+            let a = args[0].to_int()?;
+            Ok(PyObject::int(!a))
+        })),
+        ("truth", make_builtin(|args| {
+            check_args_min("truth", args, 1)?;
+            Ok(PyObject::bool_val(args[0].is_truthy()))
+        })),
+        ("is_", make_builtin(|args| {
+            check_args_min("is_", args, 2)?;
+            Ok(PyObject::bool_val(std::sync::Arc::ptr_eq(&args[0], &args[1])))
+        })),
+        ("is_not", make_builtin(|args| {
+            check_args_min("is_not", args, 2)?;
+            Ok(PyObject::bool_val(!std::sync::Arc::ptr_eq(&args[0], &args[1])))
+        })),
+        ("index", make_builtin(|args| {
+            check_args_min("index", args, 1)?;
+            args[0].to_int().map(PyObject::int)
+        })),
+        ("setitem", make_builtin(|args| {
+            check_args_min("setitem", args, 3)?;
+            match &args[0].payload {
+                PyObjectPayload::List(items) => {
+                    let idx = args[1].to_int()? as usize;
+                    let mut w = items.write();
+                    if idx < w.len() {
+                        w[idx] = args[2].clone();
+                        Ok(PyObject::none())
+                    } else {
+                        Err(PyException::index_error("list assignment index out of range"))
+                    }
+                }
+                PyObjectPayload::Dict(map) => {
+                    let key = args[1].to_hashable_key()?;
+                    map.write().insert(key, args[2].clone());
+                    Ok(PyObject::none())
+                }
+                _ => Err(PyException::type_error("object does not support item assignment")),
+            }
+        })),
+        ("delitem", make_builtin(|args| {
+            check_args_min("delitem", args, 2)?;
+            match &args[0].payload {
+                PyObjectPayload::Dict(map) => {
+                    let key = args[1].to_hashable_key()?;
+                    map.write().shift_remove(&key);
+                    Ok(PyObject::none())
+                }
+                _ => Err(PyException::type_error("object does not support item deletion")),
+            }
+        })),
+        ("concat", make_builtin(|args| {
+            check_args_min("concat", args, 2)?;
+            args[0].add(&args[1])
+        })),
+        ("iadd", make_builtin(|args| {
+            check_args_min("iadd", args, 2)?;
+            args[0].add(&args[1])
+        })),
+        ("methodcaller", make_builtin(|args| {
+            check_args_min("methodcaller", args, 1)?;
+            let method_name = args[0].py_to_string();
+            let extra_args: Vec<PyObjectRef> = if args.len() > 1 { args[1..].to_vec() } else { vec![] };
+            Ok(PyObject::native_closure("operator.methodcaller", move |call_args| {
+                if call_args.is_empty() {
+                    return Err(PyException::type_error("methodcaller expected 1 argument, got 0"));
+                }
+                let obj = &call_args[0];
+                let method = obj.get_attr(&method_name)
+                    .ok_or_else(|| PyException::attribute_error(format!(
+                        "'{}' object has no attribute '{}'", obj.type_name(), method_name
+                    )))?;
+                // We can't call through VM from native closure, so just return the method bound
+                match &method.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => func(&extra_args),
+                    PyObjectPayload::NativeClosure { func, .. } => func(&extra_args),
+                    _ => Ok(method),
+                }
+            }))
+        })),
     ])
 }
 

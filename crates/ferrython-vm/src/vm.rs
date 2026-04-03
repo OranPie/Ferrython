@@ -97,6 +97,10 @@ impl VirtualMachine {
                                 PyObject::exception_type(exc.kind.clone()),
                             )
                         };
+                        // Store StopIteration.value if present
+                        if let Some(val) = &exc.value {
+                            Self::store_exc_attr(&exc_value, "value", val.clone());
+                        }
                         // Attach __cause__ from exception chaining (raise X from Y)
                         if let Some(cause) = &exc.cause {
                             let cause_obj = if let Some(corig) = &cause.original {
@@ -179,7 +183,7 @@ impl VirtualMachine {
     }
 
     /// Find an exception handler on the block stack. Returns handler IP if found.
-    fn unwind_except(&mut self) -> Option<usize> {
+    pub(crate) fn unwind_except(&mut self) -> Option<usize> {
         let frame = self.call_stack.last_mut()?;
         while let Some(block) = frame.pop_block() {
             match block.kind {

@@ -463,6 +463,18 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                 for (k, v) in b.iter() { result.insert(k.clone(), v.clone()); }
                 Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
             }
+            (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
+                let mut result = a.clone();
+                let rb = b.read();
+                for (k, v) in rb.iter() { result.insert(k.clone(), v.clone()); }
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            }
+            (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
+                let ra = a.read();
+                let mut result = ra.clone();
+                for (k, v) in b.iter() { result.insert(k.clone(), v.clone()); }
+                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+            }
             // PEP 584: dict | dict
             (PyObjectPayload::Dict(a), PyObjectPayload::Dict(b)) => {
                 let ra = a.read(); let rb = b.read();

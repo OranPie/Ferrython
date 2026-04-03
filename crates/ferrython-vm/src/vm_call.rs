@@ -839,6 +839,19 @@ impl VirtualMachine {
                             let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
                             return self.vm_itertools_groupby(&pos_args, key_fn);
                         }
+                        // itertools.accumulate with initial kwarg
+                        if name.as_str() == "itertools.accumulate" && !kwargs.is_empty() {
+                            let initial = kwargs.iter().find(|(k, _)| k.as_str() == "initial").map(|(_, v)| v.clone());
+                            let func_arg = if pos_args.len() >= 2 && !matches!(&pos_args[1].payload, PyObjectPayload::None) {
+                                Some(pos_args[1].clone())
+                            } else {
+                                None
+                            };
+                            let mut all = vec![pos_args[0].clone()];
+                            all.push(func_arg.unwrap_or_else(PyObject::none));
+                            all.push(initial.unwrap_or_else(PyObject::none));
+                            return nf(&all);
+                        }
                         // re.split with maxsplit kwarg
                         if name.as_str() == "re.split" && !kwargs.is_empty() {
                             let mut all = pos_args.clone();
@@ -1058,7 +1071,12 @@ impl VirtualMachine {
                         let start = if args.len() > 1 { args[1].clone() } else { PyObject::int(0) };
                         let mut total = start;
                         for item in items {
-                            total = total.add(&item)?;
+                            // Use VM-level add to support __add__/__radd__
+                            if let Some(r) = self.try_binary_dunder(&total, &item, "__add__", Some("__radd__"))? {
+                                total = r;
+                            } else {
+                                total = total.add(&item)?;
+                            }
                         }
                         return Ok(total);
                     }
@@ -1441,20 +1459,15 @@ impl VirtualMachine {
                             let kind = if !args.is_empty() {
                                 if let PyObjectPayload::ExceptionType(k) = &args[0].payload {
                                     k.clone()
+                                } else if let PyObjectPayload::BuiltinType(name) = &args[0].payload {
+                                    ExceptionKind::from_name(name).unwrap_or(ExceptionKind::RuntimeError)
                                 } else {
                                     ExceptionKind::RuntimeError
                                 }
                             } else {
                                 ExceptionKind::RuntimeError
                             };
-                            // Throw the exception into the generator
-                            let mut gen = gen_arc.write();
-                            if gen.finished {
-                                return Err(PyException::new(kind, msg));
-                            }
-                            gen.finished = true;
-                            gen.frame = None;
-                            return Err(PyException::new(kind, msg));
+                            return self.gen_throw(gen_arc, kind, msg);
                         }
                         "close" => {
                             let mut gen = gen_arc.write();
