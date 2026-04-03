@@ -192,22 +192,27 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let items = if args.is_empty() {
+    // Extract maxlen from last arg if it's a kwargs dict
+    let has_trailing_kwargs = !args.is_empty() && matches!(&args[args.len() - 1].payload, PyObjectPayload::Dict(_));
+    let kwargs_idx = if has_trailing_kwargs { args.len() - 1 } else { args.len() };
+    
+    let items = if kwargs_idx == 0 || args.is_empty() {
         vec![]
     } else {
         args[0].to_list()?
     };
+    
     // Extract maxlen from positional arg or trailing kwargs dict
-    let maxlen = if args.len() >= 2 {
+    let maxlen = if has_trailing_kwargs {
         if let PyObjectPayload::Dict(map) = &args[args.len() - 1].payload {
             let map = map.read();
             map.get(&HashableKey::Str(CompactString::from("maxlen")))
                 .and_then(|v| if matches!(&v.payload, PyObjectPayload::None) { None } else { Some(v.to_int().unwrap_or(0) as usize) })
-        } else if !matches!(&args[1].payload, PyObjectPayload::None) {
-            Some(args[1].to_int()? as usize)
         } else {
             None
         }
+    } else if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
+        Some(args[1].to_int()? as usize)
     } else {
         None
     };

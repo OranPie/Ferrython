@@ -160,43 +160,112 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
         }
         "update" => {
             check_args_min("update", args, 1)?;
+            // Check if this is a Counter (has __counter__ key)
+            let is_counter = map.read().contains_key(&HashableKey::Str(CompactString::from("__counter__")));
+            if is_counter {
+                // Counter.update: add counts from iterable or mapping
+                match &args[0].payload {
+                    PyObjectPayload::Str(s) => {
+                        let mut w = map.write();
+                        for ch in s.chars() {
+                            let key = HashableKey::Str(CompactString::from(ch.to_string()));
+                            let count = w.get(&key).and_then(|v| v.as_int()).unwrap_or(0);
+                            w.insert(key, PyObject::int(count + 1));
+                        }
+                    }
+                    PyObjectPayload::Dict(other) => {
+                        let other_items = other.read().clone();
+                        let mut w = map.write();
+                        for (k, v) in other_items {
+                            if matches!(&k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__") { continue; }
+                            let existing = w.get(&k).and_then(|v| v.as_int()).unwrap_or(0);
+                            let add = v.as_int().unwrap_or(0);
+                            w.insert(k, PyObject::int(existing + add));
+                        }
+                    }
+                    PyObjectPayload::List(items) => {
+                        let items = items.read().clone();
+                        let mut w = map.write();
+                        for item in &items {
+                            let key = item.to_hashable_key()?;
+                            let count = w.get(&key).and_then(|v| v.as_int()).unwrap_or(0);
+                            w.insert(key, PyObject::int(count + 1));
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                match &args[0].payload {
+                    PyObjectPayload::Dict(other) => {
+                        let other_items = other.read().clone();
+                        let mut w = map.write();
+                        for (k, v) in other_items {
+                            w.insert(k, v);
+                        }
+                    }
+                    PyObjectPayload::List(items) => {
+                        let items = items.read().clone();
+                        let mut w = map.write();
+                        for item in &items {
+                            match &item.payload {
+                                PyObjectPayload::Tuple(pair) if pair.len() == 2 => {
+                                    let key = pair[0].to_hashable_key()?;
+                                    w.insert(key, pair[1].clone());
+                                }
+                                PyObjectPayload::List(pair_items) => {
+                                    let pair = pair_items.read();
+                                    if pair.len() == 2 {
+                                        let key = pair[0].to_hashable_key()?;
+                                        w.insert(key, pair[1].clone());
+                                    } else {
+                                        return Err(PyException::value_error(
+                                            format!("dictionary update sequence element has length {}; 2 is required", pair.len())
+                                        ));
+                                    }
+                                }
+                                _ => {
+                                    return Err(PyException::type_error("cannot convert dictionary update sequence element to a sequence"));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(PyObject::none())
+        }
+        "subtract" => {
+            // Counter.subtract — subtract counts from iterable or mapping
+            check_args_min("subtract", args, 1)?;
             match &args[0].payload {
                 PyObjectPayload::Dict(other) => {
                     let other_items = other.read().clone();
                     let mut w = map.write();
                     for (k, v) in other_items {
-                        w.insert(k, v);
+                        if matches!(&k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__") { continue; }
+                        let existing = w.get(&k).and_then(|v| v.as_int()).unwrap_or(0);
+                        let sub = v.as_int().unwrap_or(0);
+                        w.insert(k, PyObject::int(existing - sub));
+                    }
+                }
+                PyObjectPayload::Str(s) => {
+                    let mut w = map.write();
+                    for ch in s.chars() {
+                        let key = HashableKey::Str(CompactString::from(ch.to_string()));
+                        let count = w.get(&key).and_then(|v| v.as_int()).unwrap_or(0);
+                        w.insert(key, PyObject::int(count - 1));
                     }
                 }
                 PyObjectPayload::List(items) => {
                     let items = items.read().clone();
                     let mut w = map.write();
                     for item in &items {
-                        match &item.payload {
-                            PyObjectPayload::Tuple(pair) if pair.len() == 2 => {
-                                let key = pair[0].to_hashable_key()?;
-                                w.insert(key, pair[1].clone());
-                            }
-                            PyObjectPayload::List(pair_items) => {
-                                let pair = pair_items.read();
-                                if pair.len() == 2 {
-                                    let key = pair[0].to_hashable_key()?;
-                                    w.insert(key, pair[1].clone());
-                                } else {
-                                    return Err(PyException::value_error(
-                                        format!("dictionary update sequence element has length {}; 2 is required", pair.len())
-                                    ));
-                                }
-                            }
-                            _ => {
-                                return Err(PyException::type_error("cannot convert dictionary update sequence element to a sequence"));
-                            }
-                        }
+                        let key = item.to_hashable_key()?;
+                        let count = w.get(&key).and_then(|v| v.as_int()).unwrap_or(0);
+                        w.insert(key, PyObject::int(count - 1));
                     }
                 }
-                _ => {
-                    // Silently ignore non-dict, non-list (like None)
-                }
+                _ => {}
             }
             Ok(PyObject::none())
         }
