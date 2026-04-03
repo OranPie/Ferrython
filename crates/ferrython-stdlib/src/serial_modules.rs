@@ -22,6 +22,8 @@ fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // kwargs may be passed as a trailing dict by the VM
     let mut indent: Option<usize> = None;
     let mut sort_keys = false;
+    let mut item_sep = ", ".to_string();
+    let mut kv_sep = ": ".to_string();
     if args.len() > 1 {
         if let PyObjectPayload::Dict(kw_map) = &args[args.len() - 1].payload {
             let r = kw_map.read();
@@ -35,6 +37,14 @@ fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if let Some(sk) = r.get(&HashableKey::Str(CompactString::from("sort_keys"))) {
                 sort_keys = sk.is_truthy();
             }
+            if let Some(seps) = r.get(&HashableKey::Str(CompactString::from("separators"))) {
+                if let PyObjectPayload::Tuple(parts) = &seps.payload {
+                    if parts.len() == 2 {
+                        item_sep = parts[0].py_to_string();
+                        kv_sep = parts[1].py_to_string();
+                    }
+                }
+            }
         } else {
             // Positional indent arg
             match &args[1].payload {
@@ -47,7 +57,7 @@ fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let s = if let Some(indent_size) = indent {
         py_to_json_pretty(&args[0], 0, indent_size)?
     } else {
-        py_to_json(&args[0])?
+        py_to_json_sep(&args[0], &item_sep, &kv_sep)?
     };
     Ok(PyObject::str_val(CompactString::from(s)))
 }
@@ -95,6 +105,10 @@ fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize) -> PyResult
 }
 
 fn py_to_json(obj: &PyObjectRef) -> PyResult<String> {
+    py_to_json_sep(obj, ", ", ": ")
+}
+
+fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str) -> PyResult<String> {
     match &obj.payload {
         PyObjectPayload::None => Ok("null".into()),
         PyObjectPayload::Bool(b) => Ok(if *b { "true" } else { "false" }.into()),
@@ -107,12 +121,12 @@ fn py_to_json(obj: &PyObjectRef) -> PyResult<String> {
         PyObjectPayload::Str(s) => Ok(format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"))),
         PyObjectPayload::List(items) => {
             let r = items.read();
-            let parts: Result<Vec<String>, _> = r.iter().map(|i| py_to_json(i)).collect();
-            Ok(format!("[{}]", parts?.join(", ")))
+            let parts: Result<Vec<String>, _> = r.iter().map(|i| py_to_json_sep(i, item_sep, kv_sep)).collect();
+            Ok(format!("[{}]", parts?.join(item_sep)))
         }
         PyObjectPayload::Tuple(items) => {
-            let parts: Result<Vec<String>, _> = items.iter().map(|i| py_to_json(i)).collect();
-            Ok(format!("[{}]", parts?.join(", ")))
+            let parts: Result<Vec<String>, _> = items.iter().map(|i| py_to_json_sep(i, item_sep, kv_sep)).collect();
+            Ok(format!("[{}]", parts?.join(item_sep)))
         }
         PyObjectPayload::Dict(map) => {
             let r = map.read();
@@ -122,19 +136,19 @@ fn py_to_json(obj: &PyObjectRef) -> PyResult<String> {
                     HashableKey::Int(n) => format!("\"{}\"", n),
                     _ => return Err(PyException::type_error("keys must be str")),
                 };
-                let val_str = py_to_json(v)?;
-                Ok(format!("{}: {}", key_str, val_str))
+                let val_str = py_to_json_sep(v, item_sep, kv_sep)?;
+                Ok(format!("{}{}{}", key_str, kv_sep, val_str))
             }).collect();
-            Ok(format!("{{{}}}", parts?.join(", ")))
+            Ok(format!("{{{}}}", parts?.join(item_sep)))
         }
         PyObjectPayload::InstanceDict(attrs) => {
             let r = attrs.read();
             let parts: Result<Vec<String>, _> = r.iter().map(|(k, v)| {
                 let key_str = format!("\"{}\"", k);
-                let val_str = py_to_json(v)?;
-                Ok(format!("{}: {}", key_str, val_str))
+                let val_str = py_to_json_sep(v, item_sep, kv_sep)?;
+                Ok(format!("{}{}{}", key_str, kv_sep, val_str))
             }).collect();
-            Ok(format!("{{{}}}", parts?.join(", ")))
+            Ok(format!("{{{}}}", parts?.join(item_sep)))
         }
         _ => Err(PyException::type_error(format!("Object of type {} is not JSON serializable", obj.type_name()))),
     }
