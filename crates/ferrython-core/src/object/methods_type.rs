@@ -85,9 +85,14 @@ pub(super) fn py_is_callable(obj: &PyObjectRef) -> bool {
 }
 
 pub(super) fn py_is_same(a: &PyObjectRef, b: &PyObjectRef) -> bool {
-        Arc::ptr_eq(a, b) || matches!(
+        Arc::ptr_eq(a, b)
+        || matches!(
             (&a.payload, &b.payload),
             (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) if a == b
+        )
+        || matches!(
+            (&a.payload, &b.payload),
+            (PyObjectPayload::ExceptionType(a), PyObjectPayload::ExceptionType(b)) if a == b
         )
 }
 

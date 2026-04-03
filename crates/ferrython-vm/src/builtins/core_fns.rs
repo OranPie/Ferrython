@@ -371,10 +371,18 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
         PyObjectPayload::ExceptionType(kind) => {
             // Check if obj is an exception instance of this type
             if let PyObjectPayload::ExceptionInstance { kind: obj_kind, .. } = &obj.payload {
-                obj_kind == kind
-            } else {
-                false
+                if obj_kind == kind {
+                    return true;
+                }
+                // Check exception hierarchy
+                return exception_is_subclass_of(obj_kind.clone(), &format!("{:?}", kind));
             }
+            // Check if obj is a user-defined class instance that inherits from this exception
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                let kind_name = format!("{:?}", kind);
+                return class_is_subclass_of(&inst.class, &kind_name);
+            }
+            false
         }
         _ => false,
     }
@@ -398,7 +406,25 @@ pub(crate) fn class_is_subclass_of(cls: &PyObjectRef, target_name: &str) -> bool
         PyObjectPayload::BuiltinFunction(name) | PyObjectPayload::BuiltinType(name) => {
             name.as_str() == target_name
         }
+        // Handle exception type bases (e.g., class AppError(Exception))
+        PyObjectPayload::ExceptionType(kind) => {
+            let kind_name = format!("{:?}", kind);
+            if kind_name == target_name {
+                return true;
+            }
+            // Walk up the exception hierarchy
+            exception_is_subclass_of(kind.clone(), target_name)
+        }
         _ => false,
+    }
+}
+
+/// Check if an ExceptionKind is a subclass of a target by name.
+fn exception_is_subclass_of(kind: ExceptionKind, target_name: &str) -> bool {
+    if let Some(target_kind) = ExceptionKind::from_name(target_name) {
+        is_exception_subclass(&kind, &target_kind)
+    } else {
+        false
     }
 }
 
