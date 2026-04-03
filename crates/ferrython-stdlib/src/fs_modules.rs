@@ -392,15 +392,59 @@ fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if cmd_parts.is_empty() {
         return Err(PyException::value_error("empty command"));
     }
-    let output = std::process::Command::new(&cmd_parts[0])
-        .args(&cmd_parts[1..])
-        .output();
+
+    // Parse kwargs (last arg may be dict from VM kwarg passing)
+    let mut text_mode = false;
+    let mut capture = false;
+    let mut cwd: Option<String> = None;
+    let mut shell = false;
+    for arg in &args[1..] {
+        if let PyObjectPayload::Dict(kw_map) = &arg.payload {
+            let r = kw_map.read();
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("text"))) {
+                text_mode = v.is_truthy();
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("capture_output"))) {
+                capture = v.is_truthy();
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("cwd"))) {
+                cwd = Some(v.py_to_string());
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("shell"))) {
+                shell = v.is_truthy();
+            }
+        }
+    }
+
+    let mut cmd = if shell {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(cmd_parts.join(" "));
+        c
+    } else {
+        let mut c = std::process::Command::new(&cmd_parts[0]);
+        c.args(&cmd_parts[1..]);
+        c
+    };
+
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+
+    let output = cmd.output();
     match output {
         Ok(out) => {
             let mut ns = IndexMap::new();
             ns.insert(CompactString::from("returncode"), PyObject::int(out.status.code().unwrap_or(-1) as i64));
-            ns.insert(CompactString::from("stdout"), PyObject::bytes(out.stdout));
-            ns.insert(CompactString::from("stderr"), PyObject::bytes(out.stderr));
+            // If text=True, decode stdout/stderr as UTF-8 strings
+            if text_mode {
+                ns.insert(CompactString::from("stdout"),
+                    PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stdout).as_ref())));
+                ns.insert(CompactString::from("stderr"),
+                    PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stderr).as_ref())));
+            } else {
+                ns.insert(CompactString::from("stdout"), PyObject::bytes(out.stdout));
+                ns.insert(CompactString::from("stderr"), PyObject::bytes(out.stderr));
+            }
             let cls = PyObject::class(CompactString::from("CompletedProcess"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
             if let PyObjectPayload::Instance(inst_data) = &inst.payload {

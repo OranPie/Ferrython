@@ -919,6 +919,16 @@ impl VirtualMachine {
                         return nf(&pos_args);
                     }
                     PyObjectPayload::NativeClosure { func, .. } => {
+                        // Pass kwargs as trailing dict if present (same as NativeFunction)
+                        if !kwargs.is_empty() {
+                            let mut all_args = pos_args;
+                            let mut kw_map = IndexMap::new();
+                            for (k, v) in kwargs {
+                                kw_map.insert(HashableKey::Str(k), v);
+                            }
+                            all_args.push(PyObject::dict(kw_map));
+                            return func(&all_args);
+                        }
                         return func(&pos_args);
                     }
                     PyObjectPayload::Partial { func: partial_func, args: partial_args, kwargs: partial_kwargs } => {
@@ -1801,7 +1811,13 @@ impl VirtualMachine {
                 func(&args)
             }
             PyObjectPayload::NativeClosure { func, .. } => {
-                func(&args)
+                let result = func(&args)?;
+                // Execute any deferred calls (e.g., Thread.start() calling Python functions)
+                let deferred = ferrython_stdlib::drain_deferred_calls();
+                for (dfunc, dargs) in deferred {
+                    self.call_object(dfunc, dargs)?;
+                }
+                Ok(result)
             }
             PyObjectPayload::Partial { func: partial_func, args: partial_args, kwargs: partial_kwargs } => {
                 let partial_func = partial_func.clone();

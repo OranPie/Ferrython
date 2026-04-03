@@ -9,9 +9,24 @@ use ferrython_core::object::{
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use super::serial_modules::extract_bytes;
+
+// Deferred call mechanism for NativeClosures that need the VM to call Python functions.
+// Thread.start() pushes (target, args) here; the VM drains and executes them after NativeClosure returns.
+thread_local! {
+    pub static DEFERRED_CALLS: RefCell<Vec<(PyObjectRef, Vec<PyObjectRef>)>> = RefCell::new(Vec::new());
+}
+
+pub fn push_deferred_call(func: PyObjectRef, args: Vec<PyObjectRef>) {
+    DEFERRED_CALLS.with(|dc| dc.borrow_mut().push((func, args)));
+}
+
+pub fn drain_deferred_calls() -> Vec<(PyObjectRef, Vec<PyObjectRef>)> {
+    DEFERRED_CALLS.with(|dc| std::mem::take(&mut *dc.borrow_mut()))
+}
 
 pub fn create_typing_module() -> PyObjectRef {
     // TypeVar(name) — returns a placeholder object with __name__
@@ -71,7 +86,18 @@ pub fn create_typing_module() -> PyObjectRef {
         ("Final", make_typing_alias("Final")),
         ("Literal", make_typing_alias("Literal")),
         ("NamedTuple", PyObject::builtin_type(CompactString::from("NamedTuple"))),
-        ("get_type_hints", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
+        ("get_type_hints", make_builtin(|args: &[PyObjectRef]| {
+            // Return __annotations__ dict from the function/class, or empty dict
+            if args.is_empty() {
+                return Ok(PyObject::dict(IndexMap::new()));
+            }
+            let obj = &args[0];
+            if let Some(ann) = obj.get_attr("__annotations__") {
+                Ok(ann)
+            } else {
+                Ok(PyObject::dict(IndexMap::new()))
+            }
+        })),
         ("cast", make_builtin(|args: &[PyObjectRef]| {
             check_args("cast", args, 2)?;
             Ok(args[1].clone())
@@ -1177,36 +1203,95 @@ pub fn create_logging_module() -> PyObjectRef {
     let sh_cls = stream_handler_cls.clone();
     let stream_handler_fn = PyObject::native_closure("StreamHandler", move |args: &[PyObjectRef]| {
         let inst = PyObject::instance(sh_cls.clone());
+        let stream = if args.is_empty() { PyObject::none() } else { args[0].clone() };
+        // Shared state for formatter and level
+        let formatter_ref: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
+        let level_ref: Arc<RwLock<i64>> = Arc::new(RwLock::new(0));
+
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
-            let stream = if args.is_empty() { PyObject::none() } else { args[0].clone() };
-            attrs.insert(CompactString::from("stream"), stream);
+            attrs.insert(CompactString::from("stream"), stream.clone());
             attrs.insert(CompactString::from("level"), PyObject::int(0));
             attrs.insert(CompactString::from("formatter"), PyObject::none());
-            attrs.insert(CompactString::from("setLevel"), make_builtin(|args: &[PyObjectRef]| {
-                if args.len() >= 2 {
-                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
-                        d.attrs.write().insert(CompactString::from("level"), args[1].clone());
+
+            let lr = level_ref.clone();
+            attrs.insert(CompactString::from("setLevel"), PyObject::native_closure(
+                "setLevel", move |args: &[PyObjectRef]| {
+                    if let Some(v) = args.first() {
+                        if let Some(n) = v.as_int() { *lr.write() = n; }
                     }
+                    Ok(PyObject::none())
                 }
-                Ok(PyObject::none())
-            }));
-            attrs.insert(CompactString::from("setFormatter"), make_builtin(|args: &[PyObjectRef]| {
-                if args.len() >= 2 {
-                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
-                        d.attrs.write().insert(CompactString::from("formatter"), args[1].clone());
+            ));
+            let fr = formatter_ref.clone();
+            attrs.insert(CompactString::from("setFormatter"), PyObject::native_closure(
+                "setFormatter", move |args: &[PyObjectRef]| {
+                    if let Some(v) = args.first() {
+                        *fr.write() = v.clone();
                     }
+                    Ok(PyObject::none())
                 }
-                Ok(PyObject::none())
-            }));
-            attrs.insert(CompactString::from("emit"), make_builtin(|args: &[PyObjectRef]| {
-                if args.len() >= 2 {
-                    let record = &args[1];
-                    let msg = record.py_to_string();
-                    eprintln!("{}", msg);
+            ));
+            // emit(record) — write formatted message to stream or stderr
+            let fr2 = formatter_ref.clone();
+            let stream2 = stream.clone();
+            attrs.insert(CompactString::from("emit"), PyObject::native_closure(
+                "emit", move |args: &[PyObjectRef]| {
+                    // args[0] may be handler (from logger dispatch) or record (direct call)
+                    // Detect: if called with 2 args, args[0]=handler, args[1]=record
+                    // If called with 1 arg, args[0]=record
+                    let record = if args.len() >= 2 { &args[1] } else if !args.is_empty() { &args[0] } else {
+                        return Ok(PyObject::none());
+                    };
+
+                    let msg = if let Some(m) = record.get_attr("message") {
+                        m.py_to_string()
+                    } else if let Some(m) = record.get_attr("msg") {
+                        m.py_to_string()
+                    } else {
+                        record.py_to_string()
+                    };
+
+                    // Apply formatter if set
+                    let fmt = fr2.read().clone();
+                    let formatted = if !matches!(&fmt.payload, PyObjectPayload::None) {
+                        if let Some(fmt_str) = fmt.get_attr("_fmt") {
+                            let fs = fmt_str.py_to_string();
+                            let mut result = fs.clone();
+                            result = result.replace("%(message)s", &msg);
+                            let levelname = if let Some(ln) = record.get_attr("levelname") {
+                                ln.py_to_string()
+                            } else { "INFO".to_string() };
+                            let name = if let Some(n) = record.get_attr("name") {
+                                n.py_to_string()
+                            } else { "root".to_string() };
+                            result = result.replace("%(levelname)s", &levelname);
+                            result = result.replace("%(name)s", &name);
+                            result
+                        } else { msg.clone() }
+                    } else { msg.clone() };
+
+                    // Write to stream (directly to StringIO buffer)
+                    if let PyObjectPayload::Instance(ref si) = stream2.payload {
+                        let attrs_r = si.attrs.read();
+                        if attrs_r.contains_key("__stringio__") {
+                            drop(attrs_r);
+                            let mut attrs_w = si.attrs.write();
+                            let line = format!("{}\n", formatted);
+                            if let Some(buf) = attrs_w.get("_buffer") {
+                                let cur = buf.py_to_string();
+                                attrs_w.insert(
+                                    CompactString::from("_buffer"),
+                                    PyObject::str_val(CompactString::from(format!("{}{}", cur, line))),
+                                );
+                            }
+                            return Ok(PyObject::none());
+                        }
+                    }
+                    eprintln!("{}", formatted);
+                    Ok(PyObject::none())
                 }
-                Ok(PyObject::none())
-            }));
+            ));
         }
         Ok(inst)
     });
@@ -1354,53 +1439,88 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         CompactString::from(args[0].py_to_string())
     };
-    // Return a logger object (Instance of a Logger class)
     let mut ns = IndexMap::new();
     ns.insert(CompactString::from("name"), PyObject::str_val(logger_name.clone()));
     ns.insert(CompactString::from("level"), PyObject::int(30)); // WARNING default
-    ns.insert(CompactString::from("handlers"), PyObject::list(vec![]));
-    // Logger methods — stored as NativeFunction attrs
-    ns.insert(CompactString::from("debug"), make_builtin(move |args| logging_log(10, args)));
-    ns.insert(CompactString::from("info"), make_builtin(move |args| logging_log(20, args)));
-    ns.insert(CompactString::from("warning"), make_builtin(move |args| logging_log(30, args)));
-    ns.insert(CompactString::from("error"), make_builtin(move |args| logging_log(40, args)));
-    ns.insert(CompactString::from("critical"), make_builtin(move |args| logging_log(50, args)));
-    // setLevel(level) — set minimum log level on instance
-    ns.insert(CompactString::from("setLevel"), make_builtin(|args: &[PyObjectRef]| {
-        if args.len() >= 2 {
-            if let PyObjectPayload::Instance(ref d) = args[0].payload {
-                d.attrs.write().insert(CompactString::from("level"), args[1].clone());
+    let handlers_list = PyObject::list(vec![]);
+    ns.insert(CompactString::from("handlers"), handlers_list.clone());
+
+    // Create log methods that capture the shared handlers list
+    let make_log_method = |level: i64, level_name: &'static str, handlers: PyObjectRef, name: CompactString| -> PyObjectRef {
+        PyObject::native_closure(level_name, move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            let msg = args[0].py_to_string();
+
+            // Create a LogRecord-like instance
+            let rec_cls = PyObject::class(CompactString::from("LogRecord"), vec![], IndexMap::new());
+            let record = PyObject::instance(rec_cls);
+            if let PyObjectPayload::Instance(ref rd) = record.payload {
+                let mut ra = rd.attrs.write();
+                ra.insert(CompactString::from("levelname"), PyObject::str_val(CompactString::from(level_name)));
+                ra.insert(CompactString::from("levelno"), PyObject::int(level));
+                ra.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
+                ra.insert(CompactString::from("message"), PyObject::str_val(CompactString::from(msg.clone())));
+                ra.insert(CompactString::from("msg"), PyObject::str_val(CompactString::from(msg.clone())));
             }
-        }
-        Ok(PyObject::none())
-    }));
-    // addHandler(handler) — store handler in logger's handler list
-    ns.insert(CompactString::from("addHandler"), make_builtin(|args: &[PyObjectRef]| {
-        if args.len() >= 2 {
-            if let Some(handlers) = args[0].get_attr("handlers") {
-                if let PyObjectPayload::List(items) = &handlers.payload {
-                    items.write().push(args[1].clone());
+
+            // Dispatch to handlers via shared list
+            let mut dispatched = false;
+            if let PyObjectPayload::List(items) = &handlers.payload {
+                let items_r = items.read();
+                for handler in items_r.iter() {
+                    if let Some(emit_fn) = handler.get_attr("emit") {
+                        match &emit_fn.payload {
+                            PyObjectPayload::NativeFunction { func, .. } => {
+                                let _ = func(&[handler.clone(), record.clone()]);
+                                dispatched = true;
+                            }
+                            PyObjectPayload::NativeClosure { func, .. } => {
+                                let _ = func(&[handler.clone(), record.clone()]);
+                                dispatched = true;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
+            if !dispatched {
+                eprintln!("{}:{}:{}", level_name, name, msg);
+            }
+            Ok(PyObject::none())
+        })
+    };
+
+    ns.insert(CompactString::from("debug"), make_log_method(10, "DEBUG", handlers_list.clone(), logger_name.clone()));
+    ns.insert(CompactString::from("info"), make_log_method(20, "INFO", handlers_list.clone(), logger_name.clone()));
+    ns.insert(CompactString::from("warning"), make_log_method(30, "WARNING", handlers_list.clone(), logger_name.clone()));
+    ns.insert(CompactString::from("error"), make_log_method(40, "ERROR", handlers_list.clone(), logger_name.clone()));
+    ns.insert(CompactString::from("critical"), make_log_method(50, "CRITICAL", handlers_list.clone(), logger_name.clone()));
+
+    ns.insert(CompactString::from("setLevel"), make_builtin(|_| Ok(PyObject::none())));
+    // addHandler — push to shared handlers list
+    let hl = handlers_list.clone();
+    ns.insert(CompactString::from("addHandler"), PyObject::native_closure(
+        "addHandler", move |args: &[PyObjectRef]| {
+            if !args.is_empty() {
+                if let PyObjectPayload::List(items) = &hl.payload {
+                    items.write().push(args[0].clone());
+                }
+            }
+            Ok(PyObject::none())
         }
-        Ok(PyObject::none())
-    }));
+    ));
     ns.insert(CompactString::from("removeHandler"), make_builtin(|_| Ok(PyObject::none())));
-    ns.insert(CompactString::from("hasHandlers"), make_builtin(|args: &[PyObjectRef]| {
-        if let Some(handlers) = args.first().and_then(|a| a.get_attr("handlers")) {
-            if let PyObjectPayload::List(items) = &handlers.payload {
+    let hl2 = handlers_list.clone();
+    ns.insert(CompactString::from("hasHandlers"), PyObject::native_closure(
+        "hasHandlers", move |_: &[PyObjectRef]| {
+            if let PyObjectPayload::List(items) = &hl2.payload {
                 return Ok(PyObject::bool_val(!items.read().is_empty()));
             }
+            Ok(PyObject::bool_val(false))
         }
-        Ok(PyObject::bool_val(false))
-    }));
+    ));
     ns.insert(CompactString::from("isEnabledFor"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-    ns.insert(CompactString::from("getEffectiveLevel"), make_builtin(|args: &[PyObjectRef]| {
-        if let Some(level) = args.first().and_then(|a| a.get_attr("level")) {
-            return Ok(level);
-        }
-        Ok(PyObject::int(30))
-    }));
+    ns.insert(CompactString::from("getEffectiveLevel"), make_builtin(|_| Ok(PyObject::int(30))));
     
     let cls = PyObject::class(CompactString::from("Logger"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
@@ -1447,19 +1567,38 @@ pub fn create_warnings_module() -> PyObjectRef {
         Ok(PyObject::none())
     });
 
-    // catch_warnings() — context manager that saves/restores warning filters
-    let catch_warnings_fn = make_builtin(|_args: &[PyObjectRef]| {
+    // catch_warnings(record=False) — context manager that saves/restores warning filters
+    // When record=True, __enter__ returns a list that collects WarningMessage objects
+    let catch_warnings_fn = make_builtin(|args: &[PyObjectRef]| {
+        // Check for record=True (positional arg or kwarg)
+        let record = if !args.is_empty() {
+            args[0].is_truthy()
+        } else {
+            false
+        };
         let cls = PyObject::class(CompactString::from("catch_warnings"), vec![], IndexMap::new());
         let mut attrs = IndexMap::new();
-        attrs.insert(CompactString::from("__enter__"), PyObject::native_function(
-            "catch_warnings.__enter__", |args: &[PyObjectRef]| {
-                if args.is_empty() { return Ok(PyObject::none()); }
-                Ok(args[0].clone())
-            }
-        ));
+        let warning_list = PyObject::list(vec![]);
+        attrs.insert(CompactString::from("_record"), PyObject::bool_val(record));
+        attrs.insert(CompactString::from("_warnings"), warning_list.clone());
+        if record {
+            // __enter__ returns the warning list for `with ... as w:`
+            let wl = warning_list.clone();
+            attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "catch_warnings.__enter__", move |_args: &[PyObjectRef]| {
+                    Ok(wl.clone())
+                }
+            ));
+        } else {
+            attrs.insert(CompactString::from("__enter__"), PyObject::native_function(
+                "catch_warnings.__enter__", |args: &[PyObjectRef]| {
+                    if args.is_empty() { return Ok(PyObject::none()); }
+                    Ok(args[0].clone())
+                }
+            ));
+        }
         attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
             "catch_warnings.__exit__", |_args: &[PyObjectRef]| {
-                // Restore saved warning filters (no-op in this impl)
                 Ok(PyObject::bool_val(false))
             }
         ));
@@ -1609,11 +1748,145 @@ pub fn create_dis_module() -> PyObjectRef {
 
 
 pub fn create_threading_module() -> PyObjectRef {
+    // Thread class constructor — accepts target=, args=, kwargs=, daemon=
+    let thread_cls = PyObject::class(CompactString::from("Thread"), vec![], IndexMap::new());
+    let tc = thread_cls.clone();
+    let thread_fn = PyObject::native_closure("Thread", move |args: &[PyObjectRef]| {
+        let inst = PyObject::instance(tc.clone());
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            // Parse kwargs — VM passes kwargs dict as last arg
+            let mut target = PyObject::none();
+            let mut thread_args = PyObject::tuple(vec![]);
+            let mut daemon = PyObject::bool_val(false);
+            let mut name = PyObject::str_val(CompactString::from("Thread"));
+            // Check for kwargs dict as last argument
+            if let Some(last) = args.last() {
+                if let PyObjectPayload::Dict(kw_map) = &last.payload {
+                    let r = kw_map.read();
+                    if let Some(t) = r.get(&HashableKey::Str(CompactString::from("target"))) {
+                        target = t.clone();
+                    }
+                    if let Some(a) = r.get(&HashableKey::Str(CompactString::from("args"))) {
+                        thread_args = a.clone();
+                    }
+                    if let Some(d) = r.get(&HashableKey::Str(CompactString::from("daemon"))) {
+                        daemon = d.clone();
+                    }
+                    if let Some(n) = r.get(&HashableKey::Str(CompactString::from("name"))) {
+                        name = n.clone();
+                    }
+                }
+            }
+            attrs.insert(CompactString::from("name"), name.clone());
+            attrs.insert(CompactString::from("daemon"), daemon);
+
+            // Shared state for thread lifecycle
+            let alive = Arc::new(RwLock::new(false));
+            let started = Arc::new(RwLock::new(false));
+
+            // start() — call target(*args) synchronously (single-threaded interpreter)
+            let tgt = target.clone();
+            let targs = thread_args.clone();
+            let a1 = alive.clone();
+            let s1 = started.clone();
+            attrs.insert(CompactString::from("start"), PyObject::native_closure(
+                "start", move |_: &[PyObjectRef]| {
+                    *s1.write() = true;
+                    *a1.write() = true;
+                    if !matches!(&tgt.payload, PyObjectPayload::None) {
+                        let call_args: Vec<PyObjectRef> = match &targs.payload {
+                            PyObjectPayload::Tuple(items) => items.clone(),
+                            PyObjectPayload::List(items) => items.read().clone(),
+                            _ => vec![],
+                        };
+                        match &tgt.payload {
+                            PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&call_args); }
+                            PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&call_args); }
+                            _ => {
+                                // Python function — defer to VM via thread-local
+                                push_deferred_call(tgt.clone(), call_args);
+                            }
+                        }
+                    }
+                    *a1.write() = false;
+                    Ok(PyObject::none())
+                }
+            ));
+            attrs.insert(CompactString::from("join"), make_builtin(|_| Ok(PyObject::none())));
+            let a2 = alive.clone();
+            attrs.insert(CompactString::from("is_alive"), PyObject::native_closure(
+                "is_alive", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::bool_val(*a2.read()))
+                }
+            ));
+            let nm = name.clone();
+            attrs.insert(CompactString::from("getName"), PyObject::native_closure(
+                "getName", move |_: &[PyObjectRef]| {
+                    Ok(nm.clone())
+                }
+            ));
+            attrs.insert(CompactString::from("setDaemon"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("ident"), PyObject::none());
+        }
+        Ok(inst)
+    });
+
+    // Lock/RLock — context managers with acquire/release using shared state
+    let lock_cls = PyObject::class(CompactString::from("Lock"), vec![], IndexMap::new());
+    let lc = lock_cls.clone();
+    let lock_fn = PyObject::native_closure("Lock", move |_args: &[PyObjectRef]| {
+        let inst = PyObject::instance(lc.clone());
+        let locked = Arc::new(RwLock::new(false));
+        let inst_ref = inst.clone(); // for __enter__ closure
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            let l1 = locked.clone();
+            attrs.insert(CompactString::from("acquire"), PyObject::native_closure(
+                "acquire", move |_: &[PyObjectRef]| { *l1.write() = true; Ok(PyObject::bool_val(true)) }));
+            let l2 = locked.clone();
+            attrs.insert(CompactString::from("release"), PyObject::native_closure(
+                "release", move |_: &[PyObjectRef]| { *l2.write() = false; Ok(PyObject::none()) }));
+            let l3 = locked.clone();
+            attrs.insert(CompactString::from("locked"), PyObject::native_closure(
+                "locked", move |_: &[PyObjectRef]| { Ok(PyObject::bool_val(*l3.read())) }));
+            let l4 = locked.clone();
+            attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "__enter__", move |_: &[PyObjectRef]| { *l4.write() = true; Ok(inst_ref.clone()) }));
+            let l5 = locked.clone();
+            attrs.insert(CompactString::from("__exit__"), PyObject::native_closure(
+                "__exit__", move |_: &[PyObjectRef]| { *l5.write() = false; Ok(PyObject::bool_val(false)) }));
+        }
+        Ok(inst)
+    });
+
+    // Event — simple threading event using shared state
+    let event_cls = PyObject::class(CompactString::from("Event"), vec![], IndexMap::new());
+    let ec = event_cls.clone();
+    let event_fn = PyObject::native_closure("Event", move |_args: &[PyObjectRef]| {
+        let inst = PyObject::instance(ec.clone());
+        let flag = Arc::new(RwLock::new(false));
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            let f1 = flag.clone();
+            attrs.insert(CompactString::from("set"), PyObject::native_closure(
+                "set", move |_: &[PyObjectRef]| { *f1.write() = true; Ok(PyObject::none()) }));
+            let f2 = flag.clone();
+            attrs.insert(CompactString::from("clear"), PyObject::native_closure(
+                "clear", move |_: &[PyObjectRef]| { *f2.write() = false; Ok(PyObject::none()) }));
+            let f3 = flag.clone();
+            attrs.insert(CompactString::from("is_set"), PyObject::native_closure(
+                "is_set", move |_: &[PyObjectRef]| { Ok(PyObject::bool_val(*f3.read())) }));
+            attrs.insert(CompactString::from("wait"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        }
+        Ok(inst)
+    });
+
     make_module("threading", vec![
-        ("Thread", make_builtin(|_| Ok(PyObject::none()))),
-        ("Lock", make_builtin(|_| Ok(PyObject::none()))),
-        ("RLock", make_builtin(|_| Ok(PyObject::none()))),
-        ("Event", make_builtin(|_| Ok(PyObject::none()))),
+        ("Thread", thread_fn),
+        ("Lock", lock_fn.clone()),
+        ("RLock", lock_fn),
+        ("Event", event_fn),
         ("Semaphore", make_builtin(|_| Ok(PyObject::none()))),
         ("BoundedSemaphore", make_builtin(|_| Ok(PyObject::none()))),
         ("Condition", make_builtin(|_| Ok(PyObject::none()))),
@@ -1638,7 +1911,6 @@ pub fn create_threading_module() -> PyObjectRef {
         ("enumerate", make_builtin(|_| Ok(PyObject::list(vec![])))),
         ("main_thread", make_builtin(|_| Ok(PyObject::none()))),
         ("local", make_builtin(|_| {
-            // Thread-local storage — return a simple object
             let cls = PyObject::class(CompactString::from("local"), vec![], IndexMap::new());
             Ok(PyObject::instance(cls))
         })),
@@ -1699,14 +1971,121 @@ pub fn create_pprint_module() -> PyObjectRef {
 
 
 pub fn create_argparse_module() -> PyObjectRef {
-    let mut ap_ns = IndexMap::new();
-    ap_ns.insert(CompactString::from("__argparse__"), PyObject::bool_val(true));
-    let argument_parser = PyObject::class(CompactString::from("ArgumentParser"), vec![], ap_ns);
+    // ArgumentParser class — functional constructor
+    let ap_cls = PyObject::class(CompactString::from("ArgumentParser"), vec![], IndexMap::new());
+    let apc = ap_cls.clone();
+    let argument_parser_fn = PyObject::native_closure("ArgumentParser", move |args: &[PyObjectRef]| {
+        let inst = PyObject::instance(apc.clone());
+        // Shared argument storage between add_argument and parse_args
+        let arg_defs: Arc<RwLock<Vec<(Vec<String>, IndexMap<CompactString, PyObjectRef>)>>> =
+            Arc::new(RwLock::new(Vec::new()));
+
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            // Store description, prog from kwargs
+            let mut description = CompactString::from("");
+            let mut prog = CompactString::from("");
+            if let Some(last) = args.last() {
+                if let PyObjectPayload::Dict(kw_map) = &last.payload {
+                    let r = kw_map.read();
+                    if let Some(d) = r.get(&HashableKey::Str(CompactString::from("description"))) {
+                        description = CompactString::from(d.py_to_string());
+                    }
+                    if let Some(p) = r.get(&HashableKey::Str(CompactString::from("prog"))) {
+                        prog = CompactString::from(p.py_to_string());
+                    }
+                }
+            }
+            attrs.insert(CompactString::from("description"), PyObject::str_val(description));
+            attrs.insert(CompactString::from("prog"), PyObject::str_val(prog));
+
+            // add_argument(*name_or_flags, **kwargs) — closure captures shared arg_defs
+            let ad = arg_defs.clone();
+            attrs.insert(CompactString::from("add_argument"), PyObject::native_closure(
+                "add_argument", move |args: &[PyObjectRef]| {
+                    let mut names: Vec<String> = Vec::new();
+                    let mut kwargs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+                    for arg in args {
+                        match &arg.payload {
+                            PyObjectPayload::Str(s) => { names.push(s.to_string()); }
+                            PyObjectPayload::Dict(kw_map) => {
+                                let r = kw_map.read();
+                                for (k, v) in r.iter() {
+                                    if let HashableKey::Str(ks) = k {
+                                        kwargs.insert(ks.clone(), v.clone());
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    ad.write().push((names, kwargs));
+                    Ok(PyObject::none())
+                }
+            ));
+
+            // parse_args(args=None) — closure captures shared arg_defs
+            let pa = arg_defs.clone();
+            attrs.insert(CompactString::from("parse_args"), PyObject::native_closure(
+                "parse_args", move |_args: &[PyObjectRef]| {
+                    let ns_cls = PyObject::class(CompactString::from("Namespace"), vec![], IndexMap::new());
+                    let ns_inst = PyObject::instance(ns_cls);
+                    // Set defaults from stored argument definitions
+                    let defs = pa.read();
+                    for (names, kwargs) in defs.iter() {
+                        let dest = if let Some(d) = kwargs.get("dest") {
+                            d.py_to_string()
+                        } else {
+                            // Prefer long option names (--verbose) over short (-v)
+                            let long = names.iter().find(|n| n.starts_with("--"));
+                            let chosen = long.or(names.first());
+                            if let Some(n) = chosen {
+                                n.trim_start_matches('-').replace('-', "_")
+                            } else { continue; }
+                        };
+                        let default = kwargs.get("default").cloned().unwrap_or_else(PyObject::none);
+                        if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
+                            nd.attrs.write().insert(CompactString::from(dest.as_str()), default);
+                        }
+                    }
+                    Ok(ns_inst)
+                }
+            ));
+
+            attrs.insert(CompactString::from("add_subparsers"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("add_mutually_exclusive_group"), make_builtin(|_| Ok(PyObject::none())));
+        }
+        Ok(inst)
+    });
+
+    // Namespace class
+    let ns_cls = PyObject::class(CompactString::from("Namespace"), vec![], IndexMap::new());
+    let nsc = ns_cls.clone();
+    let namespace_fn = PyObject::native_closure("Namespace", move |args: &[PyObjectRef]| {
+        let inst = PyObject::instance(nsc.clone());
+        // Accept kwargs
+        if let Some(last) = args.last() {
+            if let PyObjectPayload::Dict(kw_map) = &last.payload {
+                if let PyObjectPayload::Instance(ref id) = inst.payload {
+                    let mut attrs = id.attrs.write();
+                    let r = kw_map.read();
+                    for (k, v) in r.iter() {
+                        if let HashableKey::Str(ks) = k {
+                            attrs.insert(ks.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(inst)
+    });
 
     make_module("argparse", vec![
-        ("ArgumentParser", argument_parser),
-        ("Namespace", make_builtin(|_| Ok(PyObject::none()))),
+        ("ArgumentParser", argument_parser_fn),
+        ("Namespace", namespace_fn),
         ("Action", make_builtin(|_| Ok(PyObject::none()))),
+        ("HelpFormatter", make_builtin(|_| Ok(PyObject::none()))),
+        ("RawDescriptionHelpFormatter", make_builtin(|_| Ok(PyObject::none()))),
     ])
 }
 
