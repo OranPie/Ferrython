@@ -1152,6 +1152,31 @@ impl VirtualMachine {
                         }
                     }
                 }
+                // namedtuple == plain tuple: compare underlying _tuple with tuple
+                if let PyObjectPayload::Instance(inst) = &a.payload {
+                    if inst.class.get_attr("__namedtuple__").is_some() {
+                        if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
+                            if matches!(b.payload, PyObjectPayload::Tuple(_)) {
+                                let result = tup.compare(&b, CompareOp::Eq)?;
+                                let val = if op == 2 { result.is_truthy() } else { !result.is_truthy() };
+                                self.vm_push(PyObject::bool_val(val));
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
+                if let PyObjectPayload::Instance(inst) = &b.payload {
+                    if inst.class.get_attr("__namedtuple__").is_some() {
+                        if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
+                            if matches!(a.payload, PyObjectPayload::Tuple(_)) {
+                                let result = a.compare(&tup, CompareOp::Eq)?;
+                                let val = if op == 2 { result.is_truthy() } else { !result.is_truthy() };
+                                self.vm_push(PyObject::bool_val(val));
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
             }
             // IntEnum/enum value-based comparison fallback
             if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
