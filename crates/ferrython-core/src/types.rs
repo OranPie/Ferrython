@@ -15,9 +15,11 @@ use std::cell::RefCell;
 /// Thread-local dispatch for calling Python __eq__ from PartialEq on HashableKey.
 /// The VM sets this before any dict/set operation that may compare Custom keys.
 type EqDispatchFn = Box<dyn FnMut(&PyObjectRef, &PyObjectRef) -> Option<bool>>;
+type HashDispatchFn = Box<dyn FnMut(&PyObjectRef) -> Option<i64>>;
 
 thread_local! {
     static EQ_DISPATCH: RefCell<Option<EqDispatchFn>> = RefCell::new(None);
+    static HASH_DISPATCH: RefCell<Option<HashDispatchFn>> = RefCell::new(None);
 }
 
 /// Install an __eq__ dispatch callback (called by VM before dict/set ops).
@@ -27,11 +29,29 @@ pub fn set_eq_dispatch<F: FnMut(&PyObjectRef, &PyObjectRef) -> Option<bool> + 's
     });
 }
 
+/// Install a __hash__ dispatch callback (called from HashableKey::from_object for Instance).
+pub fn set_hash_dispatch<F: FnMut(&PyObjectRef) -> Option<i64> + 'static>(f: F) {
+    HASH_DISPATCH.with(|cell| {
+        *cell.borrow_mut() = Some(Box::new(f));
+    });
+}
+
 /// Call the installed __eq__ dispatch, if any.
 fn call_eq_dispatch(a: &PyObjectRef, b: &PyObjectRef) -> Option<bool> {
     EQ_DISPATCH.with(|cell| {
         if let Some(ref mut f) = *cell.borrow_mut() {
             f(a, b)
+        } else {
+            None
+        }
+    })
+}
+
+/// Call the installed __hash__ dispatch, if any.
+fn call_hash_dispatch(obj: &PyObjectRef) -> Option<i64> {
+    HASH_DISPATCH.with(|cell| {
+        if let Some(ref mut f) = *cell.borrow_mut() {
+            f(obj)
         } else {
             None
         }
@@ -266,12 +286,17 @@ impl HashableKey {
                 Ok(HashableKey::FrozenSet(keys))
             }
             PyObjectPayload::Ellipsis => Ok(HashableKey::Str(CompactString::from("Ellipsis"))),
-            // Instance objects: hashable by identity (like CPython default)
-            // If __hash__ is defined, it was already called by hash() builtin,
-            // but for dict key usage we use identity for correct eq semantics.
+            // Instance objects: use __hash__ if available via dispatch, else identity
             PyObjectPayload::Instance(_) => {
-                let ptr = std::sync::Arc::as_ptr(obj) as usize;
-                Ok(HashableKey::Identity(ptr))
+                if let Some(hash_val) = call_hash_dispatch(obj) {
+                    Ok(HashableKey::Custom {
+                        hash_value: hash_val,
+                        object: obj.clone(),
+                    })
+                } else {
+                    let ptr = std::sync::Arc::as_ptr(obj) as usize;
+                    Ok(HashableKey::Identity(ptr))
+                }
             }
             // Functions/methods are hashable by identity in CPython
             PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } |

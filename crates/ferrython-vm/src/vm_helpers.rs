@@ -15,6 +15,32 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 impl VirtualMachine {
+    /// Install thread-local __hash__ and __eq__ dispatch callbacks for HashableKey.
+    /// Called once at VM creation so all set/dict operations can resolve custom hashing.
+    pub(crate) fn install_hash_eq_dispatch(&mut self) {
+        let vm_ptr = self as *mut VirtualMachine;
+        ferrython_core::types::set_eq_dispatch(move |a: &PyObjectRef, b: &PyObjectRef| {
+            let vm = unsafe { &mut *vm_ptr };
+            if let Some(eq_method) = a.get_attr("__eq__") {
+                if let Ok(result) = vm.call_object(eq_method, vec![b.clone()]) {
+                    return Some(result.is_truthy());
+                }
+            }
+            None
+        });
+
+        let vm_ptr2 = self as *mut VirtualMachine;
+        ferrython_core::types::set_hash_dispatch(move |obj: &PyObjectRef| {
+            let vm = unsafe { &mut *vm_ptr2 };
+            if let Some(hash_method) = obj.get_attr("__hash__") {
+                if let Ok(result) = vm.call_object(hash_method, vec![]) {
+                    return Some(result.as_int().unwrap_or(0));
+                }
+            }
+            None
+        });
+    }
+
     pub(crate) fn is_exception_class(cls: &PyObjectRef) -> bool {
         if matches!(&cls.payload, PyObjectPayload::ExceptionType(_)) {
             return true;
@@ -166,34 +192,8 @@ impl VirtualMachine {
     }
 
     /// Convert a Python object to a HashableKey, calling __hash__/__eq__ on instances.
-    /// Also installs the thread-local __eq__ dispatch so Custom key comparisons work.
+    /// Dispatches are installed at VM init, so from_object will use them automatically.
     pub(crate) fn vm_to_hashable_key(&mut self, obj: &PyObjectRef) -> PyResult<HashableKey> {
-        // Install __eq__ dispatch using a raw pointer to self.
-        // SAFETY: The dispatch is only called during dict/set operations while self is alive.
-        let vm_ptr = self as *mut VirtualMachine;
-        ferrython_core::types::set_eq_dispatch(move |a: &PyObjectRef, b: &PyObjectRef| {
-            let vm = unsafe { &mut *vm_ptr };
-            if let Some(eq_method) = a.get_attr("__eq__") {
-                // get_attr returns BoundMethod(self=a, __eq__), so only pass other
-                if let Ok(result) = vm.call_object(eq_method, vec![b.clone()]) {
-                    return Some(result.is_truthy());
-                }
-            }
-            None
-        });
-
-        if let PyObjectPayload::Instance(_) = &obj.payload {
-            // Check for __hash__ method
-            if let Some(hash_method) = obj.get_attr("__hash__") {
-                let hash_result = self.call_object(hash_method, vec![])?;
-                let hash_value = hash_result.as_int()
-                    .ok_or_else(|| PyException::type_error("__hash__ must return int"))?;
-                return Ok(HashableKey::Custom {
-                    hash_value,
-                    object: obj.clone(),
-                });
-            }
-        }
         obj.to_hashable_key()
     }
 

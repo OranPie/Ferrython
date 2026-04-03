@@ -284,15 +284,6 @@ pub(super) fn builtin_divmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hash", args, 1)?;
-    // Check for custom __hash__ on Instance objects first
-    if let PyObjectPayload::Instance(_) = &args[0].payload {
-        if let Some(_hash_fn) = args[0].get_attr("__hash__") {
-            // __hash__ found but we can't call it from here (no VM).
-            // Return identity-based hash instead.
-            let ptr = std::sync::Arc::as_ptr(&args[0]) as usize;
-            return Ok(PyObject::int(ptr as i64));
-        }
-    }
     let key = args[0].to_hashable_key()?;
     let h = match key {
         HashableKey::Int(n) => n.to_i64().unwrap_or(0),
@@ -803,7 +794,9 @@ pub(super) fn builtin_ascii(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let s = args[0].py_to_string();
     let escaped: String = s.chars().map(|c| {
         if c.is_ascii() { c.to_string() }
-        else { format!("\\u{:04x}", c as u32) }
+        else if (c as u32) <= 0xff { format!("\\x{:02x}", c as u32) }
+        else if (c as u32) <= 0xffff { format!("\\u{:04x}", c as u32) }
+        else { format!("\\U{:08x}", c as u32) }
     }).collect();
     Ok(PyObject::str_val(CompactString::from(format!("'{}'", escaped))))
 }
@@ -986,9 +979,50 @@ pub(super) fn builtin_bytearray(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn builtin_complex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() == 1 {
+        if let PyObjectPayload::Str(s) = &args[0].payload {
+            let s = s.trim().replace(" ", "");
+            return parse_complex_string(&s);
+        }
+    }
     let real = if !args.is_empty() { args[0].to_float().unwrap_or(0.0) } else { 0.0 };
     let imag = if args.len() > 1 { args[1].to_float().unwrap_or(0.0) } else { 0.0 };
     Ok(PyObject::complex(real, imag))
+}
+
+fn parse_complex_string(s: &str) -> PyResult<PyObjectRef> {
+    // Handle pure imaginary: "2j", "-3j"
+    if s.ends_with('j') || s.ends_with('J') {
+        let body = &s[..s.len()-1];
+        // Pure imaginary like "2j"
+        if let Ok(imag) = body.parse::<f64>() {
+            return Ok(PyObject::complex(0.0, imag));
+        }
+        // "1+2j" or "1-2j"
+        if let Some(pos) = body.rfind('+') {
+            if pos > 0 {
+                let real_s = &body[..pos];
+                let imag_s = &body[pos+1..];
+                if let (Ok(r), Ok(i)) = (real_s.parse::<f64>(), imag_s.parse::<f64>()) {
+                    return Ok(PyObject::complex(r, i));
+                }
+            }
+        }
+        if let Some(pos) = body.rfind('-') {
+            if pos > 0 {
+                let real_s = &body[..pos];
+                let imag_s = &body[pos..]; // includes the minus
+                if let (Ok(r), Ok(i)) = (real_s.parse::<f64>(), imag_s.parse::<f64>()) {
+                    return Ok(PyObject::complex(r, i));
+                }
+            }
+        }
+    }
+    // Pure real
+    if let Ok(r) = s.parse::<f64>() {
+        return Ok(PyObject::complex(r, 0.0));
+    }
+    Err(PyException::value_error(format!("complex() arg is a malformed string: '{}'", s)))
 }
 
 pub(super) fn builtin_issubclass(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

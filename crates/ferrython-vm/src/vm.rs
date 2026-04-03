@@ -39,6 +39,7 @@ impl VirtualMachine {
 
     /// Execute a code object (module-level).
     pub fn execute(&mut self, code: CodeObject) -> PyResult<PyObjectRef> {
+        self.install_hash_eq_dispatch();
         let globals = Arc::new(RwLock::new(IndexMap::new()));
         // Set __name__ = "__main__" for top-level scripts
         globals.write().insert(
@@ -50,6 +51,7 @@ impl VirtualMachine {
 
     /// Execute a code object with shared globals (for REPL).
     pub fn execute_with_globals(&mut self, code: CodeObject, globals: SharedGlobals) -> PyResult<PyObjectRef> {
+        self.install_hash_eq_dispatch();
         let frame = Frame::new(code, globals, self.builtins.clone());
         self.call_stack.push(frame);
         let result = self.run_frame();
