@@ -829,6 +829,21 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 Ok(PyObject::none())
                             }));
                         }
+                        // Builtin __setattr__: object.__setattr__(self, name, value)
+                        if name == "__setattr__" {
+                            let inst = instance.clone();
+                            return Some(PyObject::native_closure("__setattr__", move |args: &[PyObjectRef]| {
+                                if args.len() < 2 {
+                                    return Err(PyException::type_error("__setattr__ requires name and value"));
+                                }
+                                let attr_name = args[0].py_to_string();
+                                let value = args[1].clone();
+                                if let PyObjectPayload::Instance(data) = &inst.payload {
+                                    data.attrs.write().insert(CompactString::from(attr_name.as_str()), value);
+                                }
+                                Ok(PyObject::none())
+                            }));
+                        }
                     }
                 }
                 None
