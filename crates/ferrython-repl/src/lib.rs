@@ -44,12 +44,14 @@ pub fn run_repl() {
 
         // Collect multi-line blocks (if line ends with ':' or starts with '@')
         let mut source = line.clone();
-        if trimmed.ends_with(':') || trimmed.starts_with('@')
+        let is_decorator_start = trimmed.starts_with('@');
+        if trimmed.ends_with(':') || is_decorator_start
             || trimmed.ends_with('\\') || trimmed.ends_with(',')
             || trimmed.ends_with('(') || trimmed.ends_with('[') || trimmed.ends_with('{')
         {
             source.push('\n');
             let mut consecutive_blanks = 0u32;
+            let mut after_decorator = is_decorator_start;
             loop {
                 print!("... ");
                 io::stdout().flush().unwrap();
@@ -75,7 +77,11 @@ pub fn run_repl() {
                             || cont_trimmed.starts_with("else:")
                             || cont_trimmed == "else"
                             || cont_trimmed == "finally"
-                            || cont_trimmed == "except";
+                            || cont_trimmed == "except"
+                            || (after_decorator && (cont_trimmed.starts_with("def ") || cont_trimmed.starts_with("class ") || cont_trimmed.starts_with("@")));
+                        if after_decorator && (cont_trimmed.starts_with("def ") || cont_trimmed.starts_with("class ")) {
+                            after_decorator = false;
+                        }
                         if leading_spaces == 0 && !cont_trimmed.is_empty() && !is_continuation {
                             // Dedented back to column 0 — end the block.
                             // Save this line for the next iteration.
