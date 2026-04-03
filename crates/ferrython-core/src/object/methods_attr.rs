@@ -637,7 +637,16 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }
                         Some(PyObject::dict(map))
                     }
-                    "__closure__" => Some(PyObject::none()),
+                    "__closure__" => {
+                        if f.closure.is_empty() {
+                            Some(PyObject::none())
+                        } else {
+                            let cells: Vec<PyObjectRef> = f.closure.iter().map(|cell| {
+                                cell.read().clone().unwrap_or_else(PyObject::none)
+                            }).collect();
+                            Some(PyObject::tuple(cells))
+                        }
+                    }
                     "__code__" => Some(PyObject::none()),
                     _ => None,
                 }

@@ -17,6 +17,8 @@ use std::sync::LazyLock;
 static NONE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::None }));
 static TRUE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Bool(true) }));
 static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Bool(false) }));
+static ELLIPSIS_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Ellipsis }));
+static NOT_IMPLEMENTED_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::NotImplemented }));
 
 // ── GC Tracking for Instance objects (cycle detection) ──
 static TRACKED_INSTANCES: LazyLock<Mutex<Vec<Weak<PyObject>>>> = LazyLock::new(|| Mutex::new(Vec::new()));
@@ -135,8 +137,8 @@ impl PyObject {
         Arc::new(PyObject { payload })
     }
     pub fn none() -> PyObjectRef { NONE_SINGLETON.clone() }
-    pub fn ellipsis() -> PyObjectRef { Self::wrap(PyObjectPayload::Ellipsis) }
-    pub fn not_implemented() -> PyObjectRef { Self::wrap(PyObjectPayload::NotImplemented) }
+    pub fn ellipsis() -> PyObjectRef { ELLIPSIS_SINGLETON.clone() }
+    pub fn not_implemented() -> PyObjectRef { NOT_IMPLEMENTED_SINGLETON.clone() }
     pub fn bool_val(v: bool) -> PyObjectRef { if v { TRUE_SINGLETON.clone() } else { FALSE_SINGLETON.clone() } }
     pub fn int(v: i64) -> PyObjectRef { Self::wrap(PyObjectPayload::Int(PyInt::Small(v))) }
     pub fn big_int(v: BigInt) -> PyObjectRef { Self::wrap(PyObjectPayload::Int(PyInt::Big(Box::new(v)))) }

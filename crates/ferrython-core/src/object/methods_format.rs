@@ -241,6 +241,52 @@ pub(super) fn py_dir(obj: &PyObjectRef) -> Vec<CompactString> {
             }
             PyObjectPayload::Class(cd) => { let mut n: Vec<_> = cd.namespace.read().keys().cloned().collect(); n.sort(); n }
             PyObjectPayload::Module(m) => { let mut n: Vec<_> = m.attrs.keys().cloned().collect(); n.sort(); n }
+            PyObjectPayload::List(_) => {
+                vec!["__class__", "append", "clear", "copy", "count", "extend",
+                     "index", "insert", "pop", "remove", "reverse", "sort"]
+                    .into_iter().map(CompactString::from).collect()
+            }
+            PyObjectPayload::Dict(_) => {
+                vec!["__class__", "clear", "copy", "get", "items", "keys",
+                     "pop", "popitem", "setdefault", "update", "values"]
+                    .into_iter().map(CompactString::from).collect()
+            }
+            PyObjectPayload::Str(_) => {
+                vec!["__class__", "capitalize", "casefold", "center", "count", "encode",
+                     "endswith", "expandtabs", "find", "format", "format_map", "index",
+                     "isalnum", "isalpha", "isascii", "isdecimal", "isdigit", "isidentifier",
+                     "islower", "isnumeric", "isprintable", "isspace", "istitle", "isupper",
+                     "join", "ljust", "lower", "lstrip", "maketrans", "partition", "replace",
+                     "rfind", "rindex", "rjust", "rpartition", "rsplit", "rstrip", "split",
+                     "splitlines", "startswith", "strip", "swapcase", "title", "translate",
+                     "upper", "zfill"]
+                    .into_iter().map(CompactString::from).collect()
+            }
+            PyObjectPayload::Int(_) | PyObjectPayload::Bool(_) => {
+                vec!["__class__", "bit_length", "conjugate", "denominator", "imag",
+                     "numerator", "real"]
+                    .into_iter().map(CompactString::from).collect()
+            }
+            PyObjectPayload::Float(_) => {
+                vec!["__class__", "as_integer_ratio", "conjugate", "hex", "imag",
+                     "is_integer", "real"]
+                    .into_iter().map(CompactString::from).collect()
+            }
+            PyObjectPayload::Tuple(_) => {
+                vec!["__class__", "count", "index"]
+                    .into_iter().map(CompactString::from).collect()
+            }
+            PyObjectPayload::Set(_) => {
+                vec!["__class__", "add", "clear", "copy", "difference", "discard",
+                     "intersection", "isdisjoint", "issubset", "issuperset", "pop",
+                     "remove", "symmetric_difference", "union", "update"]
+                    .into_iter().map(CompactString::from).collect()
+            }
+            PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => {
+                vec!["__class__", "count", "decode", "endswith", "find", "hex",
+                     "index", "join", "replace", "split", "startswith", "strip"]
+                    .into_iter().map(CompactString::from).collect()
+            }
             _ => vec![],
         }
 }
