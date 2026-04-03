@@ -210,7 +210,20 @@ pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("round", args, 1)?;
     let ndigits = if args.len() >= 2 { Some(args[1].to_int()?) } else { None };
     match &args[0].payload {
-        PyObjectPayload::Int(_) => Ok(args[0].clone()),
+        PyObjectPayload::Int(i) => {
+            if let Some(n) = ndigits {
+                if n < 0 {
+                    let f = i.to_f64();
+                    let factor = 10f64.powi((-n) as i32);
+                    let rounded = ((f / factor).round() * factor) as i64;
+                    Ok(PyObject::int(rounded))
+                } else {
+                    Ok(args[0].clone())
+                }
+            } else {
+                Ok(args[0].clone())
+            }
+        }
         PyObjectPayload::Float(f) => {
             if let Some(n) = ndigits {
                 let factor = 10f64.powi(n as i32);
@@ -326,6 +339,10 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             if type_name.as_str() == "int" && obj_type == "bool" {
                 return true;
             }
+            // collections.abc structural checks (duck typing)
+            if check_abc_structural(obj, type_name.as_str()) {
+                return true;
+            }
             // Check user-defined classes that inherit from builtins
             if let PyObjectPayload::Instance(inst) = &obj.payload {
                 return class_is_subclass_of(&inst.class, type_name.as_str());
@@ -333,6 +350,10 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             false
         }
         PyObjectPayload::Class(target_cd) => {
+            // Check collections.abc structural typing for Class-based ABCs
+            if check_abc_structural(obj, target_cd.name.as_str()) {
+                return true;
+            }
             // User-defined class check: walk the instance's class MRO
             if let PyObjectPayload::Instance(inst) = &obj.payload {
                 class_is_subclass_of(&inst.class, &target_cd.name)
@@ -354,17 +375,70 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
 
 /// Check if a class (or any of its bases) has the given name.
 pub(crate) fn class_is_subclass_of(cls: &PyObjectRef, target_name: &str) -> bool {
-    if let PyObjectPayload::Class(cd) = &cls.payload {
-        if cd.name.as_str() == target_name {
-            return true;
-        }
-        for base in &cd.bases {
-            if class_is_subclass_of(base, target_name) {
+    match &cls.payload {
+        PyObjectPayload::Class(cd) => {
+            if cd.name.as_str() == target_name {
                 return true;
             }
+            for base in &cd.bases {
+                if class_is_subclass_of(base, target_name) {
+                    return true;
+                }
+            }
+            false
         }
+        // Handle builtin type bases (e.g., class MyList(list))
+        PyObjectPayload::BuiltinFunction(name) | PyObjectPayload::BuiltinType(name) => {
+            name.as_str() == target_name
+        }
+        _ => false,
     }
-    false
+}
+
+/// Structural (duck-type) check for collections.abc ABCs.
+fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
+    match abc_name {
+        "Iterable" => {
+            matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range")
+                || obj.get_attr("__iter__").is_some()
+        }
+        "Iterator" => {
+            obj.get_attr("__next__").is_some()
+        }
+        "Mapping" | "MutableMapping" => {
+            matches!(obj.type_name(), "dict")
+                || (obj.get_attr("__getitem__").is_some() && obj.get_attr("keys").is_some())
+        }
+        "Sequence" | "MutableSequence" => {
+            matches!(obj.type_name(), "list" | "tuple" | "str" | "bytes" | "bytearray" | "range")
+        }
+        "Set" | "MutableSet" => {
+            matches!(obj.type_name(), "set" | "frozenset")
+        }
+        "Callable" => {
+            obj.is_callable()
+        }
+        "Hashable" => {
+            !matches!(obj.type_name(), "list" | "dict" | "set" | "bytearray")
+        }
+        "Sized" => {
+            matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range")
+                || obj.get_attr("__len__").is_some()
+        }
+        "Collection" => {
+            check_abc_structural(obj, "Sized") && check_abc_structural(obj, "Iterable")
+                && obj.get_attr("__contains__").is_some()
+                || matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range")
+        }
+        "Reversible" => {
+            matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "bytes" | "bytearray" | "range")
+        }
+        "Container" => {
+            matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range")
+                || obj.get_attr("__contains__").is_some()
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn builtin_callable(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
