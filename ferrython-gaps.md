@@ -162,9 +162,9 @@ works correctly with `list()`, `for` loops, etc.
 |--------|-------------|---------|-----------|-------|
 | `__bytes__` | `bytes(obj)` | ✅ | ✅ | Fixed — dispatches to `__bytes__` dunder |
 | `__round__` | `round(obj, n)` | ✅ | ✅ | Fixed — dispatches to `__round__` dunder |
-| `__trunc__` | `math.trunc(obj)` | ✅ | ❌ | `TypeError: float() argument must be... 'N'` |
-| `__floor__` | `math.floor(obj)` | ✅ | ❌ | `TypeError: float() argument must be... 'N'` |
-| `__ceil__` | `math.ceil(obj)` | ✅ | ❌ | `TypeError: float() argument must be... 'N'` |
+| `__trunc__` | `math.trunc(obj)` | ✅ | ✅ | Fixed — VM dispatches to `__trunc__` dunder |
+| `__floor__` | `math.floor(obj)` | ✅ | ✅ | Fixed — VM dispatches to `__floor__` dunder |
+| `__ceil__` | `math.ceil(obj)` | ✅ | ✅ | Fixed — VM dispatches to `__ceil__` dunder |
 
 ### 4.7 `format()` Builtin — Works ✅ `[CORRECTED]`
 
@@ -183,7 +183,7 @@ dir(D())       # CPython: ['custom']
                # (doesn't call __dir__; returns internal attrs)
 ```
 
-### 4.9 `__fspath__` / `os.fspath()` — Not Implemented ❌
+### 4.9 `__fspath__` / `os.fspath()` — Implemented ✅
 
 ```python
 os.fspath(my_path_obj)  # AttributeError: 'module' object has no attribute 'fspath'
@@ -300,7 +300,7 @@ every cycle. Cycle detection only covers `Instance` objects, not bare `Dict`/`Li
 | `eval("expr")` | ✅ basic eval works | — |
 | `eval("expr", globals)` | ✅ [FIXED] | Globals dict properly used | |
 | `dir(builtin)` | ✅ [FIXED] | Returns method lists for builtins | |
-| `dir(user_obj)` | ❌ | Ignores `__dir__`; returns internal attrs |
+| `dir(user_obj)` | ✅ | Fixed — calls `__dir__` if present |
 | `format(obj, spec)` | ✅ works | — |
 | `round(n)` | ✅ for floats | — |
 | `round(custom_obj, n)` | ✅ | Fixed — dispatches to `__round__` dunder |
@@ -330,10 +330,10 @@ The `...` literal and the `Ellipsis` name both exist, but they are not the same 
 | `sys.version_info[:2]` | ✅ returns `(3, 8)` | — |
 | `sys.exit()` | ✅ raises `SystemExit` | — |
 | `sys.getrecursionlimit()` | ✅ returns 1000 | — |
-| `sys.setrecursionlimit(n)` | ❌ | Silently ignored — limit does not change |
+| `sys.setrecursionlimit(n)` | ✅ | Fixed — stores and retrieves via atomic |
 | `sys.exc_info()` | ✅ [FIXED] | Returns (None, None, None) stub |
 | `sys.stdout` (read) | ✅ | — |
-| `sys.stdout = buf` (write) | ❌ | `AttributeError: 'module' object does not support attribute assignment` |
+| `sys.stdout = buf` (write) | ✅ | Fixed — ModuleData.attrs now uses RwLock, supports assignment |
 | `sys._getframe()` | ✅ [FIXED] | Returns minimal frame object |
 | `sys.stdin`, `sys.stderr` | ✅ [FIXED] | Exposed as stdio objects | |
 | `sys.modules` | ✅ exists | — |
