@@ -748,6 +748,14 @@ impl VirtualMachine {
                         self.vm_push(result);
                         return Ok(None);
                     }
+                    // Generic fallback: Class[X] returns the class itself (PEP 585)
+                    self.vm_push(obj.clone());
+                    return Ok(None);
+                }
+                // BuiltinType subscript: list[int], dict[str, int] → returns the type (PEP 585)
+                if matches!(&obj.payload, PyObjectPayload::BuiltinType(_)) {
+                    self.vm_push(obj.clone());
+                    return Ok(None);
                 }
                 // Dict subclass: Instance with dict_storage
                 // If the subclass defines its own __getitem__, call it instead of dict_storage
