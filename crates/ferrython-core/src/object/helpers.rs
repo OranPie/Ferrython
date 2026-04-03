@@ -357,6 +357,58 @@ pub fn apply_numeric_sign(value_str: &str, spec: &str) -> String {
     }
 }
 
+/// Apply formatting to a prefixed number (0x, 0o, 0b). Handles zero-padding between prefix and digits.
+pub fn apply_prefixed_format(digits: &str, prefix: &str, spec: &str) -> String {
+    if spec.is_empty() {
+        return format!("{}{}", prefix, digits);
+    }
+    let chars: Vec<char> = spec.chars().collect();
+    let mut i = 0;
+    let mut fill = ' ';
+    let mut align = None;
+
+    // Check for fill+align
+    if chars.len() >= 2 && "<>^=".contains(chars[1]) {
+        fill = chars[0];
+        align = Some(chars[1]);
+        i = 2;
+    } else if !chars.is_empty() && "<>^=".contains(chars[0]) {
+        align = Some(chars[0]);
+        i = 1;
+    }
+    // Skip sign
+    if i < chars.len() && "+-  ".contains(chars[i]) { i += 1; }
+    // Check for 0 fill
+    if i < chars.len() && chars[i] == '0' && align.is_none() {
+        fill = '0';
+        align = Some('=');
+        i += 1;
+    }
+    // Parse width
+    let width_str: String = chars[i..].iter().take_while(|c| c.is_ascii_digit()).collect();
+    let width: usize = width_str.parse().unwrap_or(0);
+
+    let full = format!("{}{}", prefix, digits);
+    if width == 0 || full.len() >= width {
+        return full;
+    }
+
+    let pad_len = width - full.len();
+    match align.unwrap_or('>') {
+        '=' | '>' if fill == '0' => {
+            format!("{}{}{}", prefix, std::iter::repeat('0').take(pad_len).collect::<String>(), digits)
+        }
+        '<' => format!("{}{}", full, std::iter::repeat(fill).take(pad_len).collect::<String>()),
+        '>' => format!("{}{}", std::iter::repeat(fill).take(pad_len).collect::<String>(), full),
+        '^' => {
+            let left = pad_len / 2;
+            let right = pad_len - left;
+            format!("{}{}{}", std::iter::repeat(fill).take(left).collect::<String>(), full, std::iter::repeat(fill).take(right).collect::<String>())
+        }
+        _ => full,
+    }
+}
+
 pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
     if spec.is_empty() { return s.to_string(); }
     let chars: Vec<char> = spec.chars().collect();

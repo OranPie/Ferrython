@@ -119,40 +119,40 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
                 let digits = format!("{:b}", n);
                 let inner_spec = &spec[..len - 1];
                 let alt = inner_spec.contains('#');
-                let raw = if alt { format!("0b{}", digits) } else { digits };
                 let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
-                if clean_spec.is_empty() { return Ok(raw); }
-                return Ok(apply_string_format_spec(&raw, &clean_spec));
+                if alt { return Ok(apply_prefixed_format(&digits, "0b", &clean_spec)); }
+                if clean_spec.is_empty() { return Ok(digits); }
+                return Ok(apply_numeric_sign(&digits, &clean_spec));
             }
             'o' => {
                 let n = obj.to_int()?;
                 let digits = format!("{:o}", n);
                 let inner_spec = &spec[..len - 1];
                 let alt = inner_spec.contains('#');
-                let raw = if alt { format!("0o{}", digits) } else { digits };
                 let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
-                if clean_spec.is_empty() { return Ok(raw); }
-                return Ok(apply_string_format_spec(&raw, &clean_spec));
+                if alt { return Ok(apply_prefixed_format(&digits, "0o", &clean_spec)); }
+                if clean_spec.is_empty() { return Ok(digits); }
+                return Ok(apply_numeric_sign(&digits, &clean_spec));
             }
             'x' => {
                 let n = obj.to_int()?;
                 let digits = format!("{:x}", n);
                 let inner_spec = &spec[..len - 1];
                 let alt = inner_spec.contains('#');
-                let raw = if alt { format!("0x{}", digits) } else { digits };
                 let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
-                if clean_spec.is_empty() { return Ok(raw); }
-                return Ok(apply_string_format_spec(&raw, &clean_spec));
+                if alt { return Ok(apply_prefixed_format(&digits, "0x", &clean_spec)); }
+                if clean_spec.is_empty() { return Ok(digits); }
+                return Ok(apply_numeric_sign(&digits, &clean_spec));
             }
             'X' => {
                 let n = obj.to_int()?;
                 let digits = format!("{:X}", n);
                 let inner_spec = &spec[..len - 1];
                 let alt = inner_spec.contains('#');
-                let raw = if alt { format!("0X{}", digits) } else { digits };
                 let clean_spec: String = inner_spec.chars().filter(|c| *c != '#').collect();
-                if clean_spec.is_empty() { return Ok(raw); }
-                return Ok(apply_string_format_spec(&raw, &clean_spec));
+                if alt { return Ok(apply_prefixed_format(&digits, "0X", &clean_spec)); }
+                if clean_spec.is_empty() { return Ok(digits); }
+                return Ok(apply_numeric_sign(&digits, &clean_spec));
             }
             's' => {
                 let s = obj.py_to_string();
