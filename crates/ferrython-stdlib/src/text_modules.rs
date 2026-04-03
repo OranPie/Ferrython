@@ -7,6 +7,7 @@ use ferrython_core::object::{
     IteratorData,
     make_module, make_builtin, check_args_min,
 };
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::sync::Arc;
 
@@ -23,7 +24,105 @@ pub fn create_string_module() -> PyObjectRef {
         ("punctuation", PyObject::str_val(CompactString::from("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"))),
         ("whitespace", PyObject::str_val(CompactString::from(" \t\n\r\x0b\x0c"))),
         ("printable", PyObject::str_val(CompactString::from("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\x0b\x0c"))),
+        ("Template", PyObject::native_function("string.Template", template_new)),
     ])
+}
+
+fn template_substitute(template: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>, safe: bool) -> PyResult<String> {
+    let mut result = String::new();
+    let chars: Vec<char> = template.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    while i < len {
+        if chars[i] == '$' && i + 1 < len {
+            if chars[i + 1] == '$' {
+                // Escaped $$
+                result.push('$');
+                i += 2;
+            } else if chars[i + 1] == '{' {
+                // ${name} form
+                let start = i + 2;
+                if let Some(end_pos) = chars[start..].iter().position(|&c| c == '}') {
+                    let name: String = chars[start..start + end_pos].iter().collect();
+                    let key = HashableKey::Str(CompactString::from(&name));
+                    if let Some(val) = kwargs.get(&key) {
+                        result.push_str(&val.py_to_string());
+                    } else if safe {
+                        result.push_str(&format!("${{{}}}", name));
+                    } else {
+                        return Err(PyException::key_error(format!("'{}'", name)));
+                    }
+                    i = start + end_pos + 1;
+                } else {
+                    result.push('$');
+                    i += 1;
+                }
+            } else if chars[i + 1].is_alphanumeric() || chars[i + 1] == '_' {
+                // $name form
+                let start = i + 1;
+                let mut end = start;
+                while end < len && (chars[end].is_alphanumeric() || chars[end] == '_') {
+                    end += 1;
+                }
+                let name: String = chars[start..end].iter().collect();
+                let key = HashableKey::Str(CompactString::from(&name));
+                if let Some(val) = kwargs.get(&key) {
+                    result.push_str(&val.py_to_string());
+                } else if safe {
+                    result.push('$');
+                    result.push_str(&name);
+                } else {
+                    return Err(PyException::key_error(format!("'{}'", name)));
+                }
+                i = end;
+            } else {
+                result.push('$');
+                i += 1;
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    Ok(result)
+}
+
+fn extract_kwargs_dict(args: &[PyObjectRef]) -> IndexMap<HashableKey, PyObjectRef> {
+    for arg in args.iter().rev() {
+        if let PyObjectPayload::Dict(d) = &arg.payload {
+            return d.read().clone();
+        }
+    }
+    IndexMap::new()
+}
+
+fn template_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("Template() requires a template string")); }
+    let tmpl_str = args[0].py_to_string();
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("template"), PyObject::str_val(CompactString::from(tmpl_str)));
+    attrs.insert(CompactString::from("substitute"), PyObject::native_function("Template.substitute", template_substitute_method));
+    attrs.insert(CompactString::from("safe_substitute"), PyObject::native_function("Template.safe_substitute", template_safe_substitute_method));
+    attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
+    Ok(PyObject::module_with_attrs(CompactString::from("Template"), attrs))
+}
+
+fn template_substitute_method(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("substitute() needs self")); }
+    let self_obj = &args[0];
+    let tmpl = self_obj.get_attr("template").ok_or(PyException::attribute_error("template"))?.py_to_string();
+    let kwargs = extract_kwargs_dict(&args[1..]);
+    let result = template_substitute(&tmpl, &kwargs, false)?;
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn template_safe_substitute_method(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("safe_substitute() needs self")); }
+    let self_obj = &args[0];
+    let tmpl = self_obj.get_attr("template").ok_or(PyException::attribute_error("template"))?.py_to_string();
+    let kwargs = extract_kwargs_dict(&args[1..]);
+    let result = template_substitute(&tmpl, &kwargs, true)?;
+    Ok(PyObject::str_val(CompactString::from(result)))
 }
 
 // ── json module (basic) ──
@@ -90,6 +189,17 @@ fn make_match_object(m: regex::Match, text: &str, re_obj: &regex::Regex) -> PyOb
         }
     }
     let groups_tuple = PyObject::tuple(groups);
+    // Build name→index mapping for named capture groups
+    let mut groupindex_map = IndexMap::new();
+    for (i, name_opt) in re_obj.capture_names().enumerate() {
+        if let Some(name) = name_opt {
+            groupindex_map.insert(
+                HashableKey::Str(CompactString::from(name)),
+                PyObject::int(i as i64),
+            );
+        }
+    }
+    let groupindex = PyObject::dict(groupindex_map);
     // Build the match object with pre-bound data attributes
     let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("_match"), PyObject::str_val(CompactString::from(full_match)));
@@ -97,8 +207,10 @@ fn make_match_object(m: regex::Match, text: &str, re_obj: &regex::Regex) -> PyOb
     attrs.insert(CompactString::from("_end"), PyObject::int(end));
     attrs.insert(CompactString::from("_text"), PyObject::str_val(CompactString::from(text.to_string())));
     attrs.insert(CompactString::from("_groups"), groups_tuple);
+    attrs.insert(CompactString::from("_groupindex"), groupindex);
     attrs.insert(CompactString::from("group"), PyObject::native_function("Match.group", match_group));
     attrs.insert(CompactString::from("groups"), PyObject::native_function("Match.groups", match_groups));
+    attrs.insert(CompactString::from("groupdict"), PyObject::native_function("Match.groupdict", match_groupdict));
     attrs.insert(CompactString::from("start"), PyObject::native_function("Match.start", match_start));
     attrs.insert(CompactString::from("end"), PyObject::native_function("Match.end", match_end));
     attrs.insert(CompactString::from("span"), PyObject::native_function("Match.span", match_span));
@@ -110,21 +222,76 @@ fn make_match_object(m: regex::Match, text: &str, re_obj: &regex::Regex) -> PyOb
 fn match_group(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("group() needs self")); }
     let self_obj = &args[0];
-    let group_num = if args.len() > 1 { args[1].to_int().unwrap_or(0) } else { 0 };
-    if group_num == 0 {
+    if args.len() <= 1 {
+        // group() with no args returns full match
         if let Some(m) = self_obj.get_attr("_match") {
             return Ok(m);
         }
     }
-    if let Some(groups) = self_obj.get_attr("_groups") {
-        if let PyObjectPayload::Tuple(items) = &groups.payload {
-            let idx = (group_num - 1) as usize;
-            if idx < items.len() {
-                return Ok(items[idx].clone());
+    if args.len() > 1 {
+        // Check if arg is a string (named group)
+        if let PyObjectPayload::Str(name) = &args[1].payload {
+            if let Some(groupindex) = self_obj.get_attr("_groupindex") {
+                if let PyObjectPayload::Dict(d) = &groupindex.payload {
+                    let key = HashableKey::Str(name.clone());
+                    if let Some(idx_obj) = d.read().get(&key).cloned() {
+                        let idx = idx_obj.to_int().unwrap_or(0);
+                        if idx == 0 {
+                            if let Some(m) = self_obj.get_attr("_match") {
+                                return Ok(m);
+                            }
+                        }
+                        if let Some(groups) = self_obj.get_attr("_groups") {
+                            if let PyObjectPayload::Tuple(items) = &groups.payload {
+                                let i = (idx - 1) as usize;
+                                if i < items.len() {
+                                    return Ok(items[i].clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Err(PyException::index_error(format!("no such group: '{}'", name)));
+        }
+        // Numeric group
+        let group_num = args[1].to_int().unwrap_or(0);
+        if group_num == 0 {
+            if let Some(m) = self_obj.get_attr("_match") {
+                return Ok(m);
+            }
+        }
+        if let Some(groups) = self_obj.get_attr("_groups") {
+            if let PyObjectPayload::Tuple(items) = &groups.payload {
+                let idx = (group_num - 1) as usize;
+                if idx < items.len() {
+                    return Ok(items[idx].clone());
+                }
             }
         }
     }
     Err(PyException::index_error("no such group"))
+}
+
+fn match_groupdict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("groupdict() needs self")); }
+    let self_obj = &args[0];
+    let mut result = IndexMap::new();
+    if let Some(groupindex) = self_obj.get_attr("_groupindex") {
+        if let PyObjectPayload::Dict(d) = &groupindex.payload {
+            if let Some(groups) = self_obj.get_attr("_groups") {
+                if let PyObjectPayload::Tuple(items) = &groups.payload {
+                    for (key, idx_obj) in d.read().iter() {
+                        let idx = idx_obj.to_int().unwrap_or(0);
+                        let i = (idx - 1) as usize;
+                        let val = if i < items.len() { items[i].clone() } else { PyObject::none() };
+                        result.insert(key.clone(), val);
+                    }
+                }
+            }
+        }
+    }
+    Ok(PyObject::dict(result))
 }
 
 fn match_groups(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -368,6 +535,27 @@ fn re_escape(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 
+fn extract_textwrap_width(args: &[PyObjectRef], default: usize) -> usize {
+    // Check positional arg first
+    if args.len() >= 2 {
+        if let Ok(v) = args[1].to_int() {
+            return v as usize;
+        }
+    }
+    // Check trailing kwargs dict for "width"
+    for arg in args.iter().rev() {
+        if let PyObjectPayload::Dict(d) = &arg.payload {
+            if let Some(v) = d.read().get(&HashableKey::Str(CompactString::from("width"))) {
+                if let Ok(w) = v.to_int() {
+                    return w as usize;
+                }
+            }
+            break;
+        }
+    }
+    default
+}
+
 pub fn create_textwrap_module() -> PyObjectRef {
     make_module("textwrap", vec![
         ("dedent", make_builtin(|args| {
@@ -406,7 +594,7 @@ pub fn create_textwrap_module() -> PyObjectRef {
         ("wrap", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("wrap requires 1 argument")); }
             let text = args[0].py_to_string();
-            let width = if args.len() >= 2 { args[1].to_int().unwrap_or(70) as usize } else { 70 };
+            let width = extract_textwrap_width(args, 70);
             let words: Vec<&str> = text.split_whitespace().collect();
             let mut lines = Vec::new();
             let mut current = String::new();
@@ -429,7 +617,7 @@ pub fn create_textwrap_module() -> PyObjectRef {
         ("fill", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("fill requires 1 argument")); }
             let text = args[0].py_to_string();
-            let width = if args.len() >= 2 { args[1].to_int().unwrap_or(70) as usize } else { 70 };
+            let width = extract_textwrap_width(args, 70);
             let words: Vec<&str> = text.split_whitespace().collect();
             let mut lines = Vec::new();
             let mut current = String::new();
@@ -450,7 +638,7 @@ pub fn create_textwrap_module() -> PyObjectRef {
         ("shorten", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("shorten requires text and width")); }
             let text = args[0].py_to_string();
-            let width = if args.len() >= 2 { args[1].to_int().unwrap_or(70) as usize } else { 70 };
+            let width = extract_textwrap_width(args, 70);
             let placeholder = if args.len() >= 3 { args[2].py_to_string().to_string() } else { "...".to_string() };
             let words: Vec<&str> = text.split_whitespace().collect();
             let joined = words.join(" ");
