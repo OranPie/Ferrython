@@ -161,6 +161,65 @@ fn convert_python_regex(pattern: &str) -> String {
     result
 }
 
+/// Convert Python replacement string syntax to Rust regex syntax.
+/// Python uses `\1`, `\2`, `\g<name>`, `\g<1>` for backreferences.
+/// Rust regex uses `$1`, `$2`, `$name`, `${1}`.
+fn python_repl_to_rust(repl: &str) -> String {
+    let mut result = String::with_capacity(repl.len());
+    let bytes = repl.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            if next.is_ascii_digit() {
+                // \1, \2, ... → $1, $2, ...
+                result.push('$');
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    result.push(bytes[i] as char);
+                    i += 1;
+                }
+            } else if next == b'g' && i + 2 < bytes.len() && bytes[i + 2] == b'<' {
+                // \g<name> or \g<1> → $name or ${1}
+                i += 3; // skip \g<
+                let start = i;
+                while i < bytes.len() && bytes[i] != b'>' {
+                    i += 1;
+                }
+                let group = &repl[start..i];
+                if i < bytes.len() { i += 1; } // skip >
+                if group.bytes().all(|b| b.is_ascii_digit()) {
+                    result.push_str(&format!("${{{}}}", group));
+                } else {
+                    result.push_str(&format!("${{{}}}", group));
+                }
+            } else if next == b'\\' {
+                result.push('\\');
+                i += 2;
+            } else if next == b'n' {
+                result.push('\n');
+                i += 2;
+            } else if next == b't' {
+                result.push('\t');
+                i += 2;
+            } else {
+                // Pass other escapes through
+                result.push(bytes[i] as char);
+                result.push(bytes[i + 1] as char);
+                i += 2;
+            }
+        } else if bytes[i] == b'$' {
+            // Escape literal $ to avoid Rust regex interpreting it
+            result.push_str("$$");
+            i += 1;
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    result
+}
+
 fn build_regex(pattern: &str, flags: i64) -> Result<regex::Regex, PyException> {
     let mut pat = convert_python_regex(pattern);
     // Apply flags as inline flags
@@ -439,10 +498,11 @@ fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     }
     let re = build_regex(&pattern, flags)?;
+    let rust_repl = python_repl_to_rust(&repl);
     let result = if count == 0 {
-        re.replace_all(&text, repl.as_str()).to_string()
+        re.replace_all(&text, rust_repl.as_str()).to_string()
     } else {
-        re.replacen(&text, count, repl.as_str()).to_string()
+        re.replacen(&text, count, rust_repl.as_str()).to_string()
     };
     Ok(PyObject::str_val(CompactString::from(result)))
 }
@@ -454,8 +514,9 @@ fn re_subn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let text = args[2].py_to_string();
     let flags = if args.len() > 3 { args[3].to_int().unwrap_or(0) } else { 0 };
     let re = build_regex(&pattern, flags)?;
+    let rust_repl = python_repl_to_rust(&repl);
     let count = re.find_iter(&text).count();
-    let result = re.replace_all(&text, repl.as_str()).to_string();
+    let result = re.replace_all(&text, rust_repl.as_str()).to_string();
     Ok(PyObject::tuple(vec![
         PyObject::str_val(CompactString::from(result)),
         PyObject::int(count as i64),
