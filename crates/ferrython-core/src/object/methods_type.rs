@@ -213,6 +213,11 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 if *kind == crate::error::ExceptionKind::KeyError && args.len() == 1 {
                     return args[0].repr();
                 }
+                // CPython: str(e) with multiple args returns repr of the args tuple
+                if args.len() > 1 {
+                    let items: Vec<String> = args.iter().map(|a| a.repr()).collect();
+                    return format!("({})", items.join(", "));
+                }
                 if message.is_empty() {
                     String::new()
                 } else {
