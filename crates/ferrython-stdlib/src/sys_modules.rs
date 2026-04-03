@@ -1,11 +1,19 @@
 //! System, OS, and platform stdlib modules
 
 use compact_str::CompactString;
+use std::sync::atomic::{AtomicI64, Ordering};
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args,
 };
+
+static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(1000);
+
+/// Get the current recursion limit (for VM stack depth checking).
+pub fn get_recursion_limit() -> i64 {
+    RECURSION_LIMIT.load(Ordering::Relaxed)
+}
 
 pub fn create_sys_module() -> PyObjectRef {
     make_module("sys", vec![
@@ -116,10 +124,15 @@ pub fn create_sys_module() -> PyObjectRef {
 }
 
 fn sys_getrecursionlimit(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    Ok(PyObject::int(1000))
+    Ok(PyObject::int(RECURSION_LIMIT.load(Ordering::Relaxed)))
 }
 fn sys_setrecursionlimit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("sys.setrecursionlimit", args, 1)?;
+    let limit = args[0].as_int().ok_or_else(|| PyException::type_error("an integer is required"))?;
+    if limit <= 0 {
+        return Err(PyException::value_error("recursion limit must be positive"));
+    }
+    RECURSION_LIMIT.store(limit, Ordering::Relaxed);
     Ok(PyObject::none())
 }
 fn sys_exit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -288,7 +301,7 @@ pub fn create_os_module() -> PyObjectRef {
         )),
         ("cpu_count", make_builtin(os_cpu_count)),
         ("getpid", make_builtin(os_getpid)),
-        ("fspath", make_builtin(os_fspath)),
+        ("fspath", PyObject::native_function("os.fspath", os_fspath)),
     ])
 }
 

@@ -975,7 +975,7 @@ pub(super) fn builtin_vars(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(PyObject::dict_from_pairs(pairs))
         }
         PyObjectPayload::Module(md) => {
-            let pairs: Vec<(PyObjectRef, PyObjectRef)> = md.attrs.iter()
+            let pairs: Vec<(PyObjectRef, PyObjectRef)> = md.attrs.read().iter()
                 .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
                 .collect();
             Ok(PyObject::dict_from_pairs(pairs))

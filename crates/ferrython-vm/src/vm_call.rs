@@ -1288,6 +1288,16 @@ impl VirtualMachine {
                             return Ok(PyObject::bool_val(self.vm_is_truthy(&args[0])?));
                         }
                     }
+                    "dir" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__dir__") {
+                                    let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] };
+                                    return self.call_object(method, ca);
+                                }
+                            }
+                        }
+                    }
                     "super" => {
                         return self.make_super(&args);
                     }
@@ -1726,6 +1736,32 @@ impl VirtualMachine {
                 }
                 if name.as_str() == "itertools.accumulate" && args.len() >= 2 {
                     return self.vm_itertools_accumulate(&args);
+                }
+                // math.trunc / math.floor / math.ceil — dispatch to __trunc__ / __floor__ / __ceil__
+                if args.len() == 1 {
+                    if let PyObjectPayload::Instance(_) = &args[0].payload {
+                        let dunder = match name.as_str() {
+                            "math.trunc" => Some("__trunc__"),
+                            "math.floor" => Some("__floor__"),
+                            "math.ceil" => Some("__ceil__"),
+                            _ => None,
+                        };
+                        if let Some(dunder_name) = dunder {
+                            if let Some(method) = args[0].get_attr(dunder_name) {
+                                let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] };
+                                return self.call_object(method, ca);
+                            }
+                        }
+                    }
+                }
+                // os.fspath — dispatch to __fspath__
+                if name.as_str() == "os.fspath" && args.len() == 1 {
+                    if let PyObjectPayload::Instance(_) = &args[0].payload {
+                        if let Some(method) = args[0].get_attr("__fspath__") {
+                            let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] };
+                            return self.call_object(method, ca);
+                        }
+                    }
                 }
                 func(&args)
             }

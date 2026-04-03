@@ -408,7 +408,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 None
             }
-            PyObjectPayload::Module(m) => m.attrs.get(name).cloned(),
+            PyObjectPayload::Module(m) => m.attrs.read().get(name).cloned(),
             PyObjectPayload::Slice { start, stop, step } => {
                 match name {
                     "start" => Some(start.clone().unwrap_or_else(PyObject::none)),

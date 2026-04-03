@@ -482,6 +482,9 @@ impl VirtualMachine {
                     PyObjectPayload::Class(cd) => {
                         cd.namespace.write().insert(name, value);
                     }
+                    PyObjectPayload::Module(md) => {
+                        md.attrs.write().insert(name, value);
+                    }
                     PyObjectPayload::Function(f) => {
                         f.attrs.write().insert(name, value);
                     }
@@ -1994,18 +1997,8 @@ impl VirtualMachine {
                     // Attach submodule to parent (e.g., os.path on os)
                     if let Some(ref p) = parent {
                         if let PyObjectPayload::Module(ref mod_data) = &p.payload {
-                            if mod_data.attrs.get(*part).is_none() {
-                                let mut new_attrs = mod_data.attrs.clone();
-                                new_attrs.insert(CompactString::from(*part), module.clone());
-                                let updated = PyObject::module_with_attrs(mod_data.name.clone(), new_attrs);
-                                // Update cached module
-                                let parent_name = if i == 1 {
-                                    parts[0].to_string()
-                                } else {
-                                    parts[..i].join(".")
-                                };
-                                self.modules.insert(CompactString::from(parent_name.as_str()), updated.clone());
-                                if i == 1 { top_level = Some(updated); }
+                            if mod_data.attrs.read().get(*part).is_none() {
+                                mod_data.attrs.write().insert(CompactString::from(*part), module.clone());
                             }
                         }
                     }
@@ -2039,11 +2032,12 @@ impl VirtualMachine {
                 let frame = self.vm_frame();
                 let module = frame.pop();
                 if let PyObjectPayload::Module(mod_data) = &module.payload {
-                    let all_names: Option<Vec<String>> = mod_data.attrs.get("__all__").and_then(|v| {
-                        v.to_list().ok().map(|items| items.iter().map(|x| x.py_to_string()).collect())
+                    let attrs = mod_data.attrs.read();
+                    let all_names: Option<Vec<String>> = attrs.get("__all__").and_then(|v| {
+                        v.to_list().ok().map(|items| items.iter().map(|x: &PyObjectRef| x.py_to_string()).collect::<Vec<String>>())
                     });
                     let mut globals = frame.globals.write();
-                    for (k, v) in &mod_data.attrs {
+                    for (k, v) in attrs.iter() {
                         if k.starts_with('_') && all_names.is_none() { continue; }
                         if let Some(ref names) = all_names {
                             if !names.contains(&k.to_string()) { continue; }

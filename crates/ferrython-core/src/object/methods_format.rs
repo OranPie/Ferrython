@@ -240,7 +240,7 @@ pub(super) fn py_dir(obj: &PyObjectRef) -> Vec<CompactString> {
                 names.sort(); names.dedup(); names
             }
             PyObjectPayload::Class(cd) => { let mut n: Vec<_> = cd.namespace.read().keys().cloned().collect(); n.sort(); n }
-            PyObjectPayload::Module(m) => { let mut n: Vec<_> = m.attrs.keys().cloned().collect(); n.sort(); n }
+            PyObjectPayload::Module(m) => { let mut n: Vec<_> = m.attrs.read().keys().cloned().collect(); n.sort(); n }
             PyObjectPayload::List(_) => {
                 vec!["__class__", "append", "clear", "copy", "count", "extend",
                      "index", "insert", "pop", "remove", "reverse", "sort"]

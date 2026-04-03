@@ -193,10 +193,10 @@ impl PyObject {
         None
     }
     pub fn module(name: CompactString) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: IndexMap::new() }))
+        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(IndexMap::new())) }))
     }
     pub fn module_with_attrs(name: CompactString, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs }))
+        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(attrs)) }))
     }
     pub fn native_function(name: &str, func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::NativeFunction { name: CompactString::from(name), func })

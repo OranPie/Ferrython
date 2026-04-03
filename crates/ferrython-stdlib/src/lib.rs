@@ -14,6 +14,8 @@ mod misc_modules;
 
 use ferrython_core::object::PyObjectRef;
 
+pub use sys_modules::get_recursion_limit;
+
 /// Look up a built-in stdlib module by name.
 /// Returns `Some(module)` if found, `None` otherwise.
 pub fn load_module(name: &str) -> Option<PyObjectRef> {

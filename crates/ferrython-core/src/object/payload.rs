@@ -179,7 +179,7 @@ pub struct InstanceData {
 #[derive(Debug, Clone)]
 pub struct ModuleData {
     pub name: CompactString,
-    pub attrs: IndexMap<CompactString, PyObjectRef>,
+    pub attrs: Arc<parking_lot::RwLock<IndexMap<CompactString, PyObjectRef>>>,
 }
 
 #[derive(Debug, Clone)]
