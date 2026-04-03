@@ -160,8 +160,8 @@ works correctly with `list()`, `for` loops, etc.
 
 | Dunder | Dispatch via | CPython | Ferrython | Error |
 |--------|-------------|---------|-----------|-------|
-| `__bytes__` | `bytes(obj)` | ✅ | ❌ | `TypeError: cannot convert to bytes` |
-| `__round__` | `round(obj, n)` | ✅ | ❌ | `TypeError: type doesn't define __round__` |
+| `__bytes__` | `bytes(obj)` | ✅ | ✅ | Fixed — dispatches to `__bytes__` dunder |
+| `__round__` | `round(obj, n)` | ✅ | ✅ | Fixed — dispatches to `__round__` dunder |
 | `__trunc__` | `math.trunc(obj)` | ✅ | ❌ | `TypeError: float() argument must be... 'N'` |
 | `__floor__` | `math.floor(obj)` | ✅ | ❌ | `TypeError: float() argument must be... 'N'` |
 | `__ceil__` | `math.ceil(obj)` | ✅ | ❌ | `TypeError: float() argument must be... 'N'` |
@@ -191,7 +191,7 @@ os.fspath(my_path_obj)  # AttributeError: 'module' object has no attribute 'fspa
 
 `os.fspath()` is not implemented. The `__fspath__` protocol is therefore non-functional.
 
-### 4.10 `operator.length_hint()` — Not Implemented ❌
+### 4.10 `operator.length_hint()` — Implemented ✅
 
 ```python
 import operator
@@ -303,8 +303,8 @@ every cycle. Cycle detection only covers `Instance` objects, not bare `Dict`/`Li
 | `dir(user_obj)` | ❌ | Ignores `__dir__`; returns internal attrs |
 | `format(obj, spec)` | ✅ works | — |
 | `round(n)` | ✅ for floats | — |
-| `round(custom_obj, n)` | ❌ | `TypeError: type doesn't define __round__` |
-| `bytes(obj)` | ❌ | `TypeError: cannot convert to bytes` |
+| `round(custom_obj, n)` | ✅ | Fixed — dispatches to `__round__` dunder |
+| `bytes(obj)` | ✅ | Fixed — dispatches to `__bytes__` dunder |
 | `memoryview(b)` | ❌ | `NameError: name 'memoryview' is not defined` |
 | `__import__(name)` | ❌ | `NameError: name '__import__' is not defined` |
 | `breakpoint()` | ✅ [FIXED] | Prints warning message |
