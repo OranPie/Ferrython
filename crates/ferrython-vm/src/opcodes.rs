@@ -1176,6 +1176,39 @@ impl VirtualMachine {
                     }
                 }
             }
+            // IntEnum vs plain int/float comparison
+            {
+                let (enum_val, other) = if let PyObjectPayload::Instance(inst) = &a.payload {
+                    (inst.attrs.read().get("value").cloned(), Some(&b))
+                } else if let PyObjectPayload::Instance(inst) = &b.payload {
+                    (inst.attrs.read().get("value").cloned(), Some(&a))
+                } else {
+                    (None, None)
+                };
+                if let (Some(ev), Some(ov)) = (enum_val, other) {
+                    if matches!(ev.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_))
+                        && matches!(ov.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_))
+                    {
+                        let (left, right) = if matches!(&a.payload, PyObjectPayload::Instance(_)) {
+                            (ev, ov.clone())
+                        } else {
+                            (ov.clone(), ev)
+                        };
+                        let cmp_op = match op {
+                            0 => CompareOp::Lt,
+                            1 => CompareOp::Le,
+                            2 => CompareOp::Eq,
+                            3 => CompareOp::Ne,
+                            4 => CompareOp::Gt,
+                            5 => CompareOp::Ge,
+                            _ => unreachable!()
+                        };
+                        let result = left.compare(&right, cmp_op)?;
+                        self.vm_push(result);
+                        return Ok(None);
+                    }
+                }
+            }
         }
         // 'in' / 'not in' with __contains__
         if instr.arg == 6 || instr.arg == 7 {

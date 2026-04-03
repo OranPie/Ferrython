@@ -90,7 +90,7 @@ p = pathlib.Path("/tmp/test.txt")
 test("pathlib name", p.name == "test.txt")
 test("pathlib stem", p.stem == "test")
 test("pathlib suffix", p.suffix == ".txt")
-test("pathlib parent", p.parent == "/tmp")
+test("pathlib parent", str(p.parent) == "/tmp")
 
 # ── tempfile ──
 import tempfile

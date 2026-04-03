@@ -260,6 +260,16 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                 if let Some(typing_repr) = inst.attrs.read().get("__typing_repr__").cloned() {
                     return typing_repr.py_to_string();
                 }
+                // Enum member repr: <ClassName.NAME: value>
+                if inst.attrs.read().contains_key("_name_") && inst.attrs.read().contains_key("_value_") {
+                    let attrs = inst.attrs.read();
+                    let name = attrs.get("_name_").unwrap().py_to_string();
+                    let value = attrs.get("_value_").unwrap().repr();
+                    let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                        cd.name.to_string()
+                    } else { "Enum".to_string() };
+                    return format!("<{}.{}: {}>", class_name, name, value);
+                }
                 // Check for __repr__ first
                 if let Some(_) = obj.get_attr("__repr__") {
                     // Can't call from here (no VM), but py_to_string should handle
