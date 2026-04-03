@@ -475,7 +475,8 @@ impl VirtualMachine {
             gen.frame = None;
             // The return value from the generator function is carried in StopIteration
             let return_val = result.ok();
-            let mut exc = PyException::new(ExceptionKind::StopIteration, "");
+            let msg = return_val.as_ref().map(|v| v.py_to_string()).unwrap_or_default();
+            let mut exc = PyException::new(ExceptionKind::StopIteration, msg);
             // Store return value in a special field for yield-from to capture
             exc.value = return_val;
             Err(exc)

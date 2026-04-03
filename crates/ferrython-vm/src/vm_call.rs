@@ -919,7 +919,17 @@ impl VirtualMachine {
                         if args.is_empty() {
                             return Err(PyException::type_error("next() requires at least 1 argument"));
                         }
-                        // Use vm_iter_next which handles generators, instances, and lazy iterators
+                        // For generators, resume directly so StopIteration return value propagates
+                        if let PyObjectPayload::Generator(gen_arc) = &args[0].payload {
+                            match self.resume_generator(gen_arc, PyObject::none()) {
+                                Ok(value) => return Ok(value),
+                                Err(e) if e.kind == ExceptionKind::StopIteration && args.len() > 1 => {
+                                    return Ok(args[1].clone());
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        // Use vm_iter_next which handles instances and lazy iterators
                         match self.vm_iter_next(&args[0]) {
                             Ok(Some(value)) => return Ok(value),
                             Ok(None) => {

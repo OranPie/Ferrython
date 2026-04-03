@@ -413,6 +413,23 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             Ok(PyObject::dict(result_map))
                         }))
                     }
+                    "fromhex" if n.as_str() == "bytes" => {
+                        Some(PyObject::native_function("bytes.fromhex", |args| {
+                            if args.is_empty() { return Err(PyException::type_error("fromhex() requires a string")); }
+                            let s = args[0].py_to_string();
+                            let clean: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+                            if clean.len() % 2 != 0 {
+                                return Err(PyException::value_error("non-hexadecimal number found in fromhex() arg"));
+                            }
+                            let mut bytes = Vec::with_capacity(clean.len() / 2);
+                            for i in (0..clean.len()).step_by(2) {
+                                let byte = u8::from_str_radix(&clean[i..i+2], 16)
+                                    .map_err(|_| PyException::value_error("non-hexadecimal number found in fromhex() arg"))?;
+                                bytes.push(byte);
+                            }
+                            Ok(PyObject::bytes(bytes))
+                        }))
+                    }
                     // object.__setattr__(instance, name, value) — bypass custom __setattr__
                     "__setattr__" if n.as_str() == "object" => {
                         Some(PyObject::native_function("object.__setattr__", |args| {
