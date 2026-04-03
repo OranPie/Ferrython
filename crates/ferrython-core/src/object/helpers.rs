@@ -136,11 +136,52 @@ fn range_len(start: i64, stop: i64, step: i64) -> i64 {
 }
 
 pub(super) fn float_to_str(f: f64) -> String {
-    if f == f64::INFINITY { "inf".into() }
-    else if f == f64::NEG_INFINITY { "-inf".into() }
-    else if f.is_nan() { "nan".into() }
-    else {
+    if f == f64::INFINITY { return "inf".into(); }
+    if f == f64::NEG_INFINITY { return "-inf".into(); }
+    if f.is_nan() { return "nan".into(); }
+    if f == 0.0 {
+        return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
+    }
+    
+    let abs_f = f.abs();
+    // CPython uses scientific notation for |f| >= 1e16 or |f| < 1e-4
+    if abs_f >= 1e16 || abs_f < 1e-4 {
+        // Format as shortest scientific notation
+        let s = format!("{:e}", f);
+        // Python uses e+XX format (pad exponent to 2 digits minimum)
+        // Rust gives e.g. "1e20", Python wants "1e+20"
+        let s = if let Some(pos) = s.find('e') {
+            let (mantissa, exp_part) = s.split_at(pos);
+            let exp_str = &exp_part[1..]; // skip 'e'
+            let exp: i32 = exp_str.parse().unwrap_or(0);
+            if exp >= 0 {
+                format!("{}e+{:02}", mantissa, exp)
+            } else {
+                format!("{}e-{:02}", mantissa, exp.abs())
+            }
+        } else {
+            s
+        };
+        // Clean up trailing zeros in mantissa: 1.00000000000000000e+20 -> 1e+20
+        if let Some(dot_pos) = s.find('.') {
+            if let Some(e_pos) = s.find('e') {
+                let frac = &s[dot_pos+1..e_pos];
+                let trimmed = frac.trim_end_matches('0');
+                if trimmed.is_empty() {
+                    format!("{}{}", &s[..dot_pos], &s[e_pos..])
+                } else {
+                    format!("{}.{}{}", &s[..dot_pos], trimmed, &s[e_pos..])
+                }
+            } else {
+                s
+            }
+        } else {
+            s
+        }
+    } else {
+        // Use Rust's Debug which preserves precision
         let s = format!("{}", f);
+        // Ensure it has a decimal point
         if s.contains('.') || s.contains('e') { s } else { format!("{}.0", s) }
     }
 }
