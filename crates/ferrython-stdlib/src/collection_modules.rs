@@ -4,11 +4,12 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    IteratorData,
+    IteratorData, InstanceData, CompareOp,
     make_module, make_builtin,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use parking_lot::RwLock;
 use std::sync::{Arc, Mutex};
 
 pub fn create_collections_module() -> PyObjectRef {
@@ -19,6 +20,7 @@ pub fn create_collections_module() -> PyObjectRef {
         ("namedtuple", make_builtin(collections_namedtuple)),
         ("deque", make_builtin(collections_deque)),
         ("most_common", make_builtin(collections_most_common)),
+        ("ChainMap", make_builtin(collections_chainmap)),
     ])
 }
 
@@ -240,6 +242,34 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(inst)
 }
 
+fn collections_chainmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // ChainMap(*maps) — group multiple dicts for first-found lookup
+    let maps: Vec<PyObjectRef> = args.to_vec();
+    let mut merged = IndexMap::new();
+    // Iterate in reverse: last map has lowest priority
+    for m in maps.iter().rev() {
+        if let PyObjectPayload::Dict(dict) = &m.payload {
+            let rd = dict.read();
+            for (k, v) in rd.iter() {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    // Store as a dict subclass with __chainmap__ marker and .maps attribute
+    let cls = PyObject::class(CompactString::from("ChainMap"), vec![], IndexMap::new());
+    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class: cls,
+        attrs: Arc::new(RwLock::new(IndexMap::new())),
+        dict_storage: Some(Arc::new(RwLock::new(merged))),
+    }));
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("__chainmap__"), PyObject::bool_val(true));
+        w.insert(CompactString::from("maps"), PyObject::list(maps));
+    }
+    Ok(inst)
+}
+
 
 pub fn create_functools_module() -> PyObjectRef {
     make_module("functools", vec![
@@ -306,12 +336,30 @@ pub fn create_functools_module() -> PyObjectRef {
                 fdel: None,
             }))
         })),
-        ("total_ordering", make_builtin(|args| {
-            // Stub — just return the class unchanged
-            if args.is_empty() { return Err(PyException::type_error("total_ordering requires 1 argument")); }
-            Ok(args[0].clone())
-        })),
+        ("total_ordering", make_builtin(functools_total_ordering)),
     ])
+}
+
+fn functools_total_ordering(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("total_ordering requires 1 argument")); }
+    let cls = &args[0];
+    if let PyObjectPayload::Class(cd) = &cls.payload {
+        let has = |name: &str| -> bool {
+            cd.namespace.read().contains_key(name)
+        };
+        // Determine the root method
+        let root = if has("__lt__") { "__lt__" }
+            else if has("__gt__") { "__gt__" }
+            else if has("__le__") { "__le__" }
+            else if has("__ge__") { "__ge__" }
+            else { return Ok(args[0].clone()); };
+
+        let mut ns = cd.namespace.write();
+        // Set marker for VM to derive missing comparisons
+        ns.insert(CompactString::from("__total_ordering_root__"),
+            PyObject::str_val(CompactString::from(root)));
+    }
+    Ok(args[0].clone())
 }
 
 fn functools_partial(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

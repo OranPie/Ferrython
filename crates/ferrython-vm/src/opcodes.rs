@@ -748,6 +748,12 @@ impl VirtualMachine {
                         self.vm_push(result);
                         return Ok(None);
                     }
+                    // Enum-style __getitem__: Color["RED"]
+                    if let Some(gi) = obj.get_attr("__getitem__") {
+                        let result = self.call_object(gi, vec![obj.clone(), key])?;
+                        self.vm_push(result);
+                        return Ok(None);
+                    }
                     // Generic fallback: Class[X] returns the class itself (PEP 585)
                     self.vm_push(obj.clone());
                     return Ok(None);
@@ -944,6 +950,84 @@ impl VirtualMachine {
 
 // ── Group 7: Comparison ──────────────────────────────────────────────
 impl VirtualMachine {
+    /// Derive a missing comparison from total_ordering root method
+    fn derive_total_ordering(
+        &mut self, a: &PyObjectRef, b: &PyObjectRef, dunder: &str, root: &str
+    ) -> Result<Option<PyObjectRef>, PyException> {
+        // Helper: call a's dunder method via the VM
+        let call_dunder = |vm: &mut Self, obj: &PyObjectRef, other: &PyObjectRef, method: &str|
+            -> Result<Option<bool>, PyException>
+        {
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let Some(m) = lookup_in_class_mro(&inst.class, method) {
+                    let bound = vm.bind_method(obj, m);
+                    let r = vm.call_object(bound, vec![other.clone()])?;
+                    if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
+                        return Ok(Some(r.is_truthy()));
+                    }
+                }
+            }
+            Ok(None)
+        };
+
+        // Don't derive if we have the exact root (that should have been found already)
+        if dunder == root { return Ok(None); }
+
+        match (root, dunder) {
+            ("__lt__", "__le__") => {
+                // a <= b  =  a < b or a == b
+                if let Some(lt) = call_dunder(self, a, b, "__lt__")? {
+                    if lt { return Ok(Some(PyObject::bool_val(true))); }
+                    if let Some(eq) = call_dunder(self, a, b, "__eq__")? {
+                        return Ok(Some(PyObject::bool_val(eq)));
+                    }
+                    return Ok(Some(PyObject::bool_val(false)));
+                }
+            }
+            ("__lt__", "__gt__") => {
+                // a > b  =  not (a < b) and not (a == b)
+                if let Some(lt) = call_dunder(self, a, b, "__lt__")? {
+                    if lt { return Ok(Some(PyObject::bool_val(false))); }
+                    if let Some(eq) = call_dunder(self, a, b, "__eq__")? {
+                        return Ok(Some(PyObject::bool_val(!eq)));
+                    }
+                    return Ok(Some(PyObject::bool_val(true)));
+                }
+            }
+            ("__lt__", "__ge__") => {
+                // a >= b  =  not (a < b)
+                if let Some(lt) = call_dunder(self, a, b, "__lt__")? {
+                    return Ok(Some(PyObject::bool_val(!lt)));
+                }
+            }
+            ("__gt__", "__ge__") => {
+                if let Some(gt) = call_dunder(self, a, b, "__gt__")? {
+                    if gt { return Ok(Some(PyObject::bool_val(true))); }
+                    if let Some(eq) = call_dunder(self, a, b, "__eq__")? {
+                        return Ok(Some(PyObject::bool_val(eq)));
+                    }
+                    return Ok(Some(PyObject::bool_val(false)));
+                }
+            }
+            ("__gt__", "__lt__") => {
+                if let Some(gt) = call_dunder(self, a, b, "__gt__")? {
+                    if gt { return Ok(Some(PyObject::bool_val(false))); }
+                    if let Some(eq) = call_dunder(self, a, b, "__eq__")? {
+                        return Ok(Some(PyObject::bool_val(!eq)));
+                    }
+                    return Ok(Some(PyObject::bool_val(true)));
+                }
+            }
+            ("__gt__", "__le__") => {
+                if let Some(gt) = call_dunder(self, a, b, "__gt__")? {
+                    return Ok(Some(PyObject::bool_val(!gt)));
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
     pub(crate) fn exec_compare_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         let (a, b) = self.vm_pop2();
         if let op @ 0..=5 = instr.arg {
@@ -963,6 +1047,14 @@ impl VirtualMachine {
                     let r = self.call_object(bound, vec![b.clone()])?;
                     if !matches!(&r.payload, PyObjectPayload::NotImplemented) {
                         self.vm_push(r);
+                        return Ok(None);
+                    }
+                }
+                // total_ordering fallback: derive missing comparisons from root
+                if let Some(root_marker) = lookup_in_class_mro(&inst.class, "__total_ordering_root__") {
+                    let root = root_marker.py_to_string();
+                    if let Some(result) = self.derive_total_ordering(&a, &b, dunder, &root)? {
+                        self.vm_push(result);
                         return Ok(None);
                     }
                 }

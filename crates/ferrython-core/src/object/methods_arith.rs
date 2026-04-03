@@ -80,6 +80,15 @@ pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 }
                 Ok(PyObject::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(result)))))
             }
+            // IntEnum: Instance + Instance → extract .value and add
+            (PyObjectPayload::Instance(a_inst), PyObjectPayload::Instance(b_inst)) => {
+                let a_val = a_inst.attrs.read().get("value").cloned();
+                let b_val = b_inst.attrs.read().get("value").cloned();
+                if let (Some(av), Some(bv)) = (a_val, b_val) {
+                    return av.add(&bv);
+                }
+                Err(PyException::type_error(format!("unsupported operand type(s) for +: '{}' and '{}'", a.type_name(), b.type_name())))
+            }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for +: '{}' and '{}'", a.type_name(), b.type_name()))),
         }
 }
