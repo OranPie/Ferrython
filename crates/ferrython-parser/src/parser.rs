@@ -2023,7 +2023,7 @@ impl Parser {
     }
 
     fn check_newline_or_eof(&self) -> bool {
-        matches!(self.peek().kind, TokenKind::Newline | TokenKind::Eof)
+        matches!(self.peek().kind, TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof)
     }
 
     fn expect(&mut self, kind: TokenKind) -> Result<&Token, ParseError> {
@@ -2063,7 +2063,7 @@ impl Parser {
     }
 
     fn skip_newlines(&mut self) {
-        while self.pos < self.tokens.len() && matches!(self.peek().kind, TokenKind::Newline) {
+        while self.pos < self.tokens.len() && matches!(self.peek().kind, TokenKind::Newline | TokenKind::Semicolon) {
             self.advance();
         }
     }
