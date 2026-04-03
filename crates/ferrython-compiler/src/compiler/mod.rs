@@ -325,6 +325,10 @@ impl Compiler {
 
         match module {
             Module::Module { body, .. } | Module::Interactive { body } => {
+                // Emit SetupAnnotations if the module has any annotation assignments
+                if Self::has_annotations(body) {
+                    self.emit_op(Opcode::SetupAnnotations);
+                }
                 self.compile_body(body)?;
             }
             Module::Expression { body } => {
@@ -344,6 +348,33 @@ impl Compiler {
         let mut code = unit.code;
         code.num_locals = code.varnames.len() as u32;
         Ok(code)
+    }
+
+    /// Check if a body contains any annotation assignments (recursively)
+    fn has_annotations(body: &[Statement]) -> bool {
+        for s in body {
+            match &s.node {
+                StatementKind::AnnAssign { .. } => return true,
+                StatementKind::If { body: if_body, orelse, .. } => {
+                    if Self::has_annotations(if_body) || Self::has_annotations(orelse) { return true; }
+                }
+                StatementKind::For { body: for_body, orelse, .. } |
+                StatementKind::While { body: for_body, orelse, .. } => {
+                    if Self::has_annotations(for_body) || Self::has_annotations(orelse) { return true; }
+                }
+                StatementKind::Try { body: try_body, handlers, orelse, finalbody, .. } => {
+                    if Self::has_annotations(try_body) || Self::has_annotations(orelse) || Self::has_annotations(finalbody) { return true; }
+                    for h in handlers {
+                        if Self::has_annotations(&h.body) { return true; }
+                    }
+                }
+                StatementKind::With { body: with_body, .. } => {
+                    if Self::has_annotations(with_body) { return true; }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
 }
