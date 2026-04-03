@@ -229,6 +229,27 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
             }
             Ok(PyObject::list(result))
         }
+        "move_to_end" => {
+            check_args_min("move_to_end", args, 1)?;
+            let key = args[0].to_hashable_key()?;
+            let last = if args.len() >= 2 { args[1].is_truthy() } else { true };
+            let mut w = map.write();
+            if let Some(val) = w.shift_remove(&key) {
+                if last {
+                    w.insert(key, val);
+                } else {
+                    let mut new_map = IndexMap::new();
+                    new_map.insert(key, val);
+                    for (k, v) in w.drain(..) {
+                        new_map.insert(k, v);
+                    }
+                    *w = new_map;
+                }
+                Ok(PyObject::none())
+            } else {
+                Err(PyException::key_error(args[0].repr()))
+            }
+        }
         _ => Err(PyException::attribute_error(format!(
             "'dict' object has no attribute '{}'", method
         ))),

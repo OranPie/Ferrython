@@ -82,7 +82,7 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
     // Dict subclass: expose dict methods bound to the instance
     if inst.dict_storage.is_some() {
         if matches!(name, "keys" | "values" | "items" | "get" | "pop" | "update"
-            | "setdefault" | "clear" | "copy" | "popitem" | "fromkeys")
+            | "setdefault" | "clear" | "copy" | "popitem" | "fromkeys" | "move_to_end")
         {
             return Some(make_bound(name));
         }
