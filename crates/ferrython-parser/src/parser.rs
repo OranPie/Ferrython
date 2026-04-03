@@ -1851,16 +1851,9 @@ impl Parser {
             }
             elts.push(self.parse_test_or_star()?);
         }
-        // Validate: at most one starred expression in an assignment target
-        let star_count = elts.iter().filter(|e| {
-            matches!(e.node, ExpressionKind::Starred { .. })
-        }).count();
-        if star_count > 1 {
-            return Err(ParseError::new(
-                ParseErrorKind::MultipleStarredInAssignment,
-                self.peek().span,
-            ));
-        }
+        // Note: multiple starred expressions are only invalid in assignment targets,
+        // NOT in expression context (PEP 448: [*a, *b] and (*a, *b) are valid).
+        // The compiler's compile_store_target handles assignment-target validation.
         Ok(Expression::new(
             ExpressionKind::Tuple {
                 elts,

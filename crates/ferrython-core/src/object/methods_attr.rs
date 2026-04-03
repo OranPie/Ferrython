@@ -552,24 +552,33 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "imag" => Some(PyObject::int(0)),
                 "denominator" => Some(PyObject::int(1)),
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("int"))),
-                _ => Some(Arc::new(PyObject {
+                "bit_length" | "bit_count" | "to_bytes" | "conjugate" | "__abs__" |
+                "__int__" | "__float__" | "__index__" | "__bool__" |
+                "__repr__" | "__str__" | "__hash__" | "__format__" |
+                "__ceil__" | "__floor__" | "__round__" | "__trunc__" => Some(Arc::new(PyObject {
                     payload: PyObjectPayload::BuiltinBoundMethod {
                         receiver: obj.clone(),
                         method_name: CompactString::from(name),
                     }
                 })),
+                _ => None,
             },
             // Float property-like attributes
             PyObjectPayload::Float(f) => match name {
                 "real" => Some(PyObject::float(*f)),
                 "imag" => Some(PyObject::float(0.0)),
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("float"))),
-                _ => Some(Arc::new(PyObject {
+                "is_integer" | "conjugate" | "hex" | "__abs__" |
+                "__int__" | "__float__" | "__bool__" |
+                "__repr__" | "__str__" | "__hash__" | "__format__" |
+                "__ceil__" | "__floor__" | "__round__" | "__trunc__" |
+                "as_integer_ratio" | "fromhex" => Some(Arc::new(PyObject {
                     payload: PyObjectPayload::BuiltinBoundMethod {
                         receiver: obj.clone(),
                         method_name: CompactString::from(name),
                     }
                 })),
+                _ => None,
             },
             // Bool property-like attributes (bool is subtype of int)
             PyObjectPayload::Bool(b) => match name {
@@ -577,12 +586,15 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "imag" => Some(PyObject::int(0)),
                 "denominator" => Some(PyObject::int(1)),
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("bool"))),
-                _ => Some(Arc::new(PyObject {
+                "bit_length" | "bit_count" | "to_bytes" | "conjugate" | "__abs__" |
+                "__int__" | "__float__" | "__index__" | "__bool__" |
+                "__repr__" | "__str__" | "__hash__" | "__format__" => Some(Arc::new(PyObject {
                     payload: PyObjectPayload::BuiltinBoundMethod {
                         receiver: obj.clone(),
                         method_name: CompactString::from(name),
                     }
                 })),
+                _ => None,
             },
             // Built-in type methods — return bound method names
             PyObjectPayload::Str(_) | PyObjectPayload::List(_) |
