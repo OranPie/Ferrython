@@ -251,9 +251,27 @@ pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }
         PyObjectPayload::Bool(b) => Ok(PyObject::int(if *b { 1 } else { 0 })),
-        _ => Err(PyException::type_error(format!(
-            "type '{}' doesn't define __round__ method", args[0].type_name()
-        ))),
+        _ => {
+            // Check for __round__ dunder method
+            if let Some(round_method) = args[0].get_attr("__round__") {
+                match &round_method.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => {
+                        let mut call_args = vec![args[0].clone()];
+                        if args.len() >= 2 { call_args.push(args[1].clone()); }
+                        return func(&call_args);
+                    }
+                    PyObjectPayload::NativeClosure { func, .. } => {
+                        let mut call_args = vec![args[0].clone()];
+                        if args.len() >= 2 { call_args.push(args[1].clone()); }
+                        return func(&call_args);
+                    }
+                    _ => {}
+                }
+            }
+            Err(PyException::type_error(format!(
+                "type '{}' doesn't define __round__ method", args[0].type_name()
+            )))
+        }
     }
 }
 
@@ -979,7 +997,17 @@ pub(super) fn builtin_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
             Ok(PyObject::bytes(result))
         }
-        _ => Err(PyException::type_error("cannot convert to bytes")),
+        _ => {
+            // Check for __bytes__ dunder method
+            if let Some(bytes_method) = args[0].get_attr("__bytes__") {
+                match &bytes_method.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => return func(&[args[0].clone()]),
+                    PyObjectPayload::NativeClosure { func, .. } => return func(&[args[0].clone()]),
+                    _ => {}
+                }
+            }
+            Err(PyException::type_error("cannot convert to bytes"))
+        }
     }
 }
 
@@ -1217,4 +1245,41 @@ pub(super) fn builtin_dict_fromkeys(args: &[PyObjectRef]) -> PyResult<PyObjectRe
         }
     }
     Ok(PyObject::dict(map))
+}
+
+pub(super) fn builtin_breakpoint(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    eprintln!("*** breakpoint() not supported in ferrython ***");
+    Ok(PyObject::none())
+}
+
+pub(super) fn builtin_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        println!("Help is not available in ferrython. Use Python's official documentation at https://docs.python.org/3/");
+    } else {
+        println!("Help on {}: Help is not available in ferrython.", args[0].type_name());
+    }
+    Ok(PyObject::none())
+}
+
+#[allow(non_snake_case)]
+pub(super) fn builtin___import__(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("__import__() requires at least 1 argument"));
+    }
+    Err(PyException::import_error(format!(
+        "__import__('{}') not supported as a direct function call; use the import statement instead",
+        args[0].py_to_string()
+    )))
+}
+
+pub(super) fn builtin_memoryview(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("memoryview", args, 1)?;
+    match &args[0].payload {
+        PyObjectPayload::Bytes(b) => Ok(PyObject::bytes(b.clone())),
+        PyObjectPayload::ByteArray(b) => Ok(PyObject::bytes(b.clone())),
+        _ => Err(PyException::type_error(format!(
+            "memoryview: a bytes-like object is required, not '{}'",
+            args[0].type_name()
+        ))),
+    }
 }

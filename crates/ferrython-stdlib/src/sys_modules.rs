@@ -3,7 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectRef,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args,
 };
 
@@ -95,6 +95,19 @@ pub fn create_sys_module() -> PyObjectRef {
         ("dont_write_bytecode", PyObject::bool_val(true)),
         ("meta_path", PyObject::list(vec![])),
         ("path_hooks", PyObject::list(vec![])),
+        ("exc_info", make_builtin(|_| {
+            Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none(), PyObject::none()]))
+        })),
+        ("_getframe", make_builtin(|_| {
+            // Return a minimal frame-like object with common attributes
+            let mut attrs = indexmap::IndexMap::new();
+            attrs.insert(CompactString::from("f_locals"), PyObject::dict_from_pairs(vec![]));
+            attrs.insert(CompactString::from("f_globals"), PyObject::dict_from_pairs(vec![]));
+            attrs.insert(CompactString::from("f_lineno"), PyObject::int(0));
+            attrs.insert(CompactString::from("f_code"), PyObject::none());
+            attrs.insert(CompactString::from("f_back"), PyObject::none());
+            Ok(PyObject::module_with_attrs(CompactString::from("frame"), attrs))
+        })),
     ])
 }
 
@@ -271,6 +284,7 @@ pub fn create_os_module() -> PyObjectRef {
         )),
         ("cpu_count", make_builtin(os_cpu_count)),
         ("getpid", make_builtin(os_getpid)),
+        ("fspath", make_builtin(os_fspath)),
     ])
 }
 
@@ -333,6 +347,30 @@ fn os_cpu_count(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn os_getpid(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::int(std::process::id() as i64))
+}
+
+fn os_fspath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.fspath", args, 1)?;
+    match &args[0].payload {
+        PyObjectPayload::Str(_) => Ok(args[0].clone()),
+        PyObjectPayload::Bytes(_) => Ok(args[0].clone()),
+        _ => {
+            // Check for __fspath__ method
+            if let Some(method) = args[0].get_attr("__fspath__") {
+                match &method.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => func(&[args[0].clone()]),
+                    PyObjectPayload::NativeClosure { func, .. } => func(&[args[0].clone()]),
+                    _ => Err(PyException::type_error(format!(
+                        "expected str, bytes or os.PathLike object, not '{}'", args[0].type_name()
+                    ))),
+                }
+            } else {
+                Err(PyException::type_error(format!(
+                    "expected str, bytes or os.PathLike object, not '{}'", args[0].type_name()
+                )))
+            }
+        }
+    }
 }
 
 fn num_cpus() -> usize {

@@ -2132,13 +2132,38 @@ impl VirtualMachine {
                         let exc = frame.pop();
                         let mut py_exc = raise_exc(&exc);
                         // `raise X from None` suppresses the cause
-                        if !matches!(cause.payload, PyObjectPayload::None) {
+                        if matches!(cause.payload, PyObjectPayload::None) {
+                            // raise X from None: suppress context display
+                            if let Some(ref original) = py_exc.original {
+                                if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
+                                    let mut w = attrs.write();
+                                    w.insert(CompactString::from("__cause__"), PyObject::none());
+                                    w.insert(CompactString::from("__suppress_context__"), PyObject::bool_val(true));
+                                }
+                            }
+                        } else {
                             let cause_exc = raise_exc(&cause);
+                            // Store __cause__ on the exception instance's attrs
+                            if let Some(ref original) = py_exc.original {
+                                if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
+                                    let mut w = attrs.write();
+                                    w.insert(CompactString::from("__cause__"), cause.clone());
+                                    w.insert(CompactString::from("__suppress_context__"), PyObject::bool_val(true));
+                                }
+                            }
                             py_exc.cause = Some(Box::new(cause_exc));
                         }
                         // Implicit chaining: set __context__ to active exception
                         if let Some(active) = &self.active_exception {
                             py_exc.context = Some(Box::new(active.clone()));
+                            if let Some(ref original) = py_exc.original {
+                                if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
+                                    // Store __context__ as the active exception's original object
+                                    if let Some(ref ctx_orig) = active.original {
+                                        attrs.write().insert(CompactString::from("__context__"), ctx_orig.clone());
+                                    }
+                                }
+                            }
                         }
                         return Err(py_exc);
                     }

@@ -1301,12 +1301,40 @@ impl VirtualMachine {
                                 let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
                                 match compiler.compile_module(&module) {
                                     Ok(code) => {
-                                        let globals = self.call_stack.last().unwrap().globals.clone();
-                                        self.execute_with_globals(code, globals.clone())?;
-                                        // Retrieve the result from globals
-                                        let result = globals.read().get("__eval_result__").cloned()
-                                            .unwrap_or_else(PyObject::none);
-                                        return Ok(result);
+                                        // Use provided globals dict, or fall back to current frame's globals
+                                        if args.len() >= 2 {
+                                            if let PyObjectPayload::Dict(ref map) = args[1].payload {
+                                                let mut new_globals = IndexMap::new();
+                                                let m = map.read();
+                                                for (k, v) in m.iter() {
+                                                    let key_str = match k {
+                                                        HashableKey::Str(s) => s.clone(),
+                                                        _ => CompactString::from(format!("{:?}", k)),
+                                                    };
+                                                    new_globals.insert(key_str, v.clone());
+                                                }
+                                                drop(m);
+                                                let shared = Arc::new(RwLock::new(new_globals));
+                                                self.execute_with_globals(code, shared.clone())?;
+                                                let result = shared.read().get("__eval_result__").cloned()
+                                                    .unwrap_or_else(PyObject::none);
+                                                // Write back any new globals to the dict
+                                                let results = shared.read();
+                                                let mut m = map.write();
+                                                for (k, v) in results.iter() {
+                                                    m.insert(HashableKey::Str(k.clone()), v.clone());
+                                                }
+                                                return Ok(result);
+                                            } else {
+                                                return Err(PyException::type_error("eval() globals must be a dict"));
+                                            }
+                                        } else {
+                                            let globals = self.call_stack.last().unwrap().globals.clone();
+                                            self.execute_with_globals(code, globals.clone())?;
+                                            let result = globals.read().get("__eval_result__").cloned()
+                                                .unwrap_or_else(PyObject::none);
+                                            return Ok(result);
+                                        }
                                     }
                                     Err(_) => return Err(PyException::syntax_error("eval: compilation failed")),
                                 }
@@ -1335,6 +1363,35 @@ impl VirtualMachine {
                             }
                             Err(e) => return Err(PyException::syntax_error(format!("compile: {}", e))),
                         }
+                    }
+                    "__import__" => {
+                        if args.is_empty() {
+                            return Err(PyException::type_error("__import__() requires at least 1 argument"));
+                        }
+                        let name = args[0].py_to_string();
+                        let filename = self.call_stack.last()
+                            .map(|f| f.code.filename.clone())
+                            .unwrap_or_default();
+                        // Check cached modules first
+                        if let Some(cached) = self.modules.get(name.as_str()) {
+                            return Ok(cached.clone());
+                        }
+                        // Resolve and execute the module
+                        let resolved = ferrython_import::resolve_module(&name, &filename)?;
+                        let module = match resolved {
+                            ferrython_import::ResolvedModule::Builtin(m) => m,
+                            ferrython_import::ResolvedModule::Source { code, name: mod_name } => {
+                                let mod_globals = Arc::new(RwLock::new(IndexMap::new()));
+                                let frame = crate::frame::Frame::new(code, mod_globals.clone(), self.builtins.clone());
+                                self.call_stack.push(frame);
+                                let _ = self.run_frame();
+                                self.call_stack.pop();
+                                let attrs = mod_globals.read().clone();
+                                PyObject::module_with_attrs(mod_name, attrs)
+                            }
+                        };
+                        self.modules.insert(CompactString::from(name.as_str()), module.clone());
+                        return Ok(module);
                     }
                     "globals" => {
                         let frame = self.call_stack.last().unwrap();

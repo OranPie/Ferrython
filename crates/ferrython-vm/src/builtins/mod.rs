@@ -36,7 +36,7 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         "all", "any", "iter", "next", "hasattr", "getattr", "setattr",
         "delattr", "dir", "vars", "globals", "locals", "format",
         "ascii", "exec", "eval", "compile", "help", "breakpoint",
-        "open",
+        "open", "__import__",
     ];
     for name in func_names {
         m.insert(
@@ -50,7 +50,7 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         "list", "tuple", "dict", "set", "frozenset", "range",
         "bytes", "bytearray", "complex", "slice",
         "super", "classmethod", "staticmethod", "property",
-        "map", "filter",
+        "map", "filter", "memoryview",
     ];
     for name in type_names {
         m.insert(
@@ -176,6 +176,10 @@ pub fn get_builtin_fn(name: &str) -> Option<BuiltinFn> {
         "bytes" => Some(builtin_bytes),
         "bytearray" => Some(builtin_bytearray),
         "complex" => Some(builtin_complex),
+        "breakpoint" => Some(builtin_breakpoint),
+        "help" => Some(builtin_help),
+        "memoryview" => Some(builtin_memoryview),
+        "__import__" => Some(builtin___import__),
         _ => None,
     }
 }

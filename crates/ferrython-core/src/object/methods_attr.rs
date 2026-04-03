@@ -595,6 +595,18 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             Some(PyObject::none())
                         }
                     }
+                    "__cause__" => {
+                        attrs.read().get("__cause__").cloned().or_else(|| Some(PyObject::none()))
+                    }
+                    "__context__" => {
+                        attrs.read().get("__context__").cloned().or_else(|| Some(PyObject::none()))
+                    }
+                    "__suppress_context__" => {
+                        attrs.read().get("__suppress_context__").cloned().or_else(|| Some(PyObject::bool_val(false)))
+                    }
+                    "__traceback__" => {
+                        attrs.read().get("__traceback__").cloned().or_else(|| Some(PyObject::none()))
+                    }
                     _ => {
                         // Check user-set attrs (e.g., __cause__)
                         attrs.read().get(name).cloned()

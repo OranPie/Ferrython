@@ -1002,6 +1002,41 @@ pub fn create_operator_module() -> PyObjectRef {
                 }
             }))
         })),
+        ("length_hint", make_builtin(|args| {
+            check_args_min("length_hint", args, 1)?;
+            let default = if args.len() > 1 { args[1].to_int().unwrap_or(0) } else { 0 };
+            // Try __length_hint__ first
+            if let Some(method) = args[0].get_attr("__length_hint__") {
+                match &method.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => {
+                        if let Ok(result) = func(&[args[0].clone()]) {
+                            if let Ok(n) = result.to_int() {
+                                return Ok(PyObject::int(n));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Try __len__
+            if let Some(method) = args[0].get_attr("__len__") {
+                match &method.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => {
+                        if let Ok(result) = func(&[args[0].clone()]) {
+                            if let Ok(n) = result.to_int() {
+                                return Ok(PyObject::int(n));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Try len() directly
+            match args[0].py_len() {
+                Ok(n) => Ok(PyObject::int(n as i64)),
+                Err(_) => Ok(PyObject::int(default)),
+            }
+        })),
     ])
 }
 
