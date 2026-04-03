@@ -1355,7 +1355,7 @@ impl Parser {
     fn at_expression_start(&self) -> bool {
         matches!(self.peek().kind,
             TokenKind::Name(_) | TokenKind::Int(_) | TokenKind::Float(_) |
-            TokenKind::String(_) | TokenKind::Bytes(_) |
+            TokenKind::String(_) | TokenKind::Bytes(_) | TokenKind::FString(_) |
             TokenKind::True | TokenKind::False | TokenKind::None |
             TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace |
             TokenKind::Minus | TokenKind::Plus | TokenKind::Tilde | TokenKind::Not |
