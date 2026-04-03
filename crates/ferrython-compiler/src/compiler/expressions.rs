@@ -971,11 +971,13 @@ impl Compiler {
             Operator::Mult => a.checked_mul(b)?,
             Operator::FloorDiv => {
                 if b == 0 { return None; }
-                Some(a.div_euclid(b))
+                let (q, r) = (a / b, a % b);
+                if (r != 0) && ((r ^ b) < 0) { Some(q - 1) } else { Some(q) }
             }?,
             Operator::Mod => {
                 if b == 0 { return None; }
-                Some(a.rem_euclid(b))
+                let r = a % b;
+                if (r != 0) && ((r ^ b) < 0) { Some(r + b) } else { Some(r) }
             }?,
             Operator::Pow => {
                 if b < 0 { return None; } // negative power → float

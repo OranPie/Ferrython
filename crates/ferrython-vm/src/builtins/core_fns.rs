@@ -480,19 +480,22 @@ pub(super) fn builtin_chr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_hex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hex", args, 1)?;
     let n = args[0].as_int().ok_or_else(|| PyException::type_error("hex() expects int"))?;
-    Ok(PyObject::str_val(CompactString::from(format!("0x{:x}", n))))
+    let s = if n < 0 { format!("-0x{:x}", -n) } else { format!("0x{:x}", n) };
+    Ok(PyObject::str_val(CompactString::from(s)))
 }
 
 pub(super) fn builtin_oct(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("oct", args, 1)?;
     let n = args[0].as_int().ok_or_else(|| PyException::type_error("oct() expects int"))?;
-    Ok(PyObject::str_val(CompactString::from(format!("0o{:o}", n))))
+    let s = if n < 0 { format!("-0o{:o}", -n) } else { format!("0o{:o}", n) };
+    Ok(PyObject::str_val(CompactString::from(s)))
 }
 
 pub(super) fn builtin_bin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("bin", args, 1)?;
     let n = args[0].as_int().ok_or_else(|| PyException::type_error("bin() expects int"))?;
-    Ok(PyObject::str_val(CompactString::from(format!("0b{:b}", n))))
+    let s = if n < 0 { format!("-0b{:b}", -n) } else { format!("0b{:b}", n) };
+    Ok(PyObject::str_val(CompactString::from(s)))
 }
 
 pub(super) fn builtin_sorted(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
