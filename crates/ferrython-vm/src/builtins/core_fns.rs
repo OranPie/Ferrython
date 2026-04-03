@@ -99,8 +99,26 @@ pub(super) fn builtin_bool(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // type.__new__(mcs, name, bases, dict) — called from metaclass __new__
     if args.len() == 4 {
-        // First arg is the metaclass (mcs), skip it; use name, bases, dict
-        return builtin_type_create(&args[1], &args[2], &args[3]);
+        // First arg is the metaclass (mcs), use it; pass name, bases, dict
+        let mcs = &args[0];
+        let cls = builtin_type_create(&args[1], &args[2], &args[3])?;
+        // Inject metaclass reference if mcs is a user-defined metaclass (not plain 'type')
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            if cd.metaclass.is_none() {
+                let is_plain_type = matches!(&mcs.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "type");
+                if !is_plain_type {
+                    // Re-create with metaclass set
+                    return Ok(PyObject::wrap(PyObjectPayload::Class(ferrython_core::object::ClassData {
+                        name: cd.name.clone(),
+                        bases: cd.bases.clone(),
+                        namespace: cd.namespace.clone(),
+                        mro: cd.mro.clone(),
+                        metaclass: Some(mcs.clone()),
+                    })));
+                }
+            }
+        }
+        return Ok(cls);
     }
     if args.len() == 3 {
         // type(name, bases, dict) → dynamic class creation

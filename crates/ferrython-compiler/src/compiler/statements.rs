@@ -1034,6 +1034,17 @@ impl Compiler {
             }
             ExpressionKind::Tuple { elts, .. } | ExpressionKind::List { elts, .. } => {
                 // Check for starred element
+                let star_count = elts.iter().filter(|e| {
+                    matches!(e.node, ExpressionKind::Starred { .. })
+                }).count();
+
+                if star_count > 1 {
+                    return Err(CompileError::syntax(
+                        "multiple starred expressions in assignment",
+                        target.location,
+                    ));
+                }
+
                 let star_idx = elts.iter().position(|e| {
                     matches!(e.node, ExpressionKind::Starred { .. })
                 });

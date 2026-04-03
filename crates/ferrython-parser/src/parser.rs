@@ -1393,6 +1393,7 @@ impl Parser {
                 // Extract expression text between { and }
                 i += 1; // skip {
                 let mut depth = 1;
+                let mut paren_depth = 0; // track () [] to avoid treating : inside them as format spec
                 let mut expr_text = String::new();
                 let mut conversion: Option<char> = None;
                 let mut format_spec = String::new();
@@ -1404,7 +1405,15 @@ impl Parser {
                         depth -= 1;
                         if depth == 0 { i += 1; break; }
                     }
-                    if c == '!' && depth == 1 && !in_format_spec {
+                    // Track parens/brackets within expression
+                    if !in_format_spec {
+                        match c {
+                            '(' | '[' => paren_depth += 1,
+                            ')' | ']' => paren_depth -= 1,
+                            _ => {}
+                        }
+                    }
+                    if c == '!' && depth == 1 && paren_depth == 0 && !in_format_spec {
                         // Check for conversion: !s, !r, !a
                         if i + 1 < chars.len() && (chars[i+1] == 's' || chars[i+1] == 'r' || chars[i+1] == 'a') {
                             if i + 2 < chars.len() && (chars[i+2] == '}' || chars[i+2] == ':') {
@@ -1414,7 +1423,9 @@ impl Parser {
                             }
                         }
                     }
-                    if c == ':' && depth == 1 && !in_format_spec {
+                    if c == ':' && depth == 1 && paren_depth == 0 && !in_format_spec {
+                        // Only treat as format spec when not inside parens/brackets
+                        // This allows lambda colons and walrus := to pass through
                         in_format_spec = true;
                         i += 1;
                         continue;

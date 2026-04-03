@@ -289,7 +289,23 @@ impl VirtualMachine {
                     PyObjectPayload::BoundMethod { method, .. } => method.clone(),
                     _ => new_method,
                 };
-                self.call_object(new_fn, vec![meta.clone(), name_obj.clone(), bases_tuple.clone(), ns_dict.clone()])?
+                let result = self.call_object(new_fn, vec![meta.clone(), name_obj.clone(), bases_tuple.clone(), ns_dict.clone()])?;
+                // Ensure metaclass is set on the class returned by __new__
+                if let PyObjectPayload::Class(cd) = &result.payload {
+                    if cd.metaclass.is_none() {
+                        PyObject::wrap(PyObjectPayload::Class(ClassData {
+                            name: cd.name.clone(),
+                            bases: cd.bases.clone(),
+                            namespace: cd.namespace.clone(),
+                            mro: cd.mro.clone(),
+                            metaclass: Some(meta.clone()),
+                        }))
+                    } else {
+                        result
+                    }
+                } else {
+                    result
+                }
             } else {
                 // No __new__ — create class directly (like type.__new__)
                 PyObject::wrap(PyObjectPayload::Class(ClassData {

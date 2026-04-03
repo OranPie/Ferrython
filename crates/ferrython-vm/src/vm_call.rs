@@ -167,9 +167,17 @@ impl VirtualMachine {
         }
 
         // Place keyword args at their correct parameter positions
+        let posonlyarg_count = code.posonlyarg_count as usize;
         let mut extra_kwargs: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
         for (name, val) in &kwargs {
             if let Some(idx) = code.varnames.iter().position(|v| v.as_str() == name.as_str()) {
+                // Reject positional-only parameters passed as keyword arguments
+                if idx < posonlyarg_count {
+                    return Err(PyException::type_error(format!(
+                        "{}() got some positional-only arguments passed as keyword arguments: '{}'",
+                        code.name, name
+                    )));
+                }
                 // Accept both positional params (< nparams) and kwonly params
                 let is_positional = idx < nparams;
                 let is_kwonly = idx >= kwonly_start && idx < kwonly_start + nkwonly;
@@ -1145,6 +1153,20 @@ impl VirtualMachine {
                                 match self.vm_iter_next(&iter_obj)? {
                                     Some(item) => if !item.is_truthy() { return Ok(PyObject::bool_val(false)); },
                                     None => return Ok(PyObject::bool_val(true)),
+                                }
+                            }
+                        }
+                    }
+                    "isinstance" => {
+                        if args.len() == 2 {
+                            let cls = &args[1];
+                            // Check for metaclass __instancecheck__ on user-defined classes
+                            if let PyObjectPayload::Class(cd) = &cls.payload {
+                                if let Some(ref metaclass) = cd.metaclass {
+                                    if let Some(ic) = metaclass.get_attr("__instancecheck__") {
+                                        let result = self.call_object(ic, vec![cls.clone(), args[0].clone()])?;
+                                        return Ok(PyObject::bool_val(result.is_truthy()));
+                                    }
                                 }
                             }
                         }

@@ -34,9 +34,9 @@ This breaks:
 |--------------------------|---------|-----------|-------|
 | Lambda: `f"{(lambda a: a)(4)}"` | ✅ | ❌ | SyntaxError (wrong line reported) |
 | Walrus: `f"{(n:=5)}"` | ✅ | ❌ | SyntaxError (wrong line reported) |
-| Dict subscript: `f"{d['k']}"` with outer `"` | ✅ | ❌ | SyntaxError |
-| Nested f-string: `f"hello {f'dear {x}'}"` | ✅ | ❌ | NameError (`f` treated as identifier) |
-| Conditional, same-quote: `f"{"y" if c else "n"}"` | ✅ | ❌ | NameError (inner `"` closes string) |
+| Dict subscript: `f"{d['k']}"` with outer `"` | ✅ | ✅ [FIXED] | — |
+| Nested f-string: `f"hello {f'dear {x}'}"` | ✅ | ✅ [FIXED] | — |
+| Conditional, same-quote: `f"{"y" if c else "n"}"` | ✅ | ✅ [FIXED] | — |
 | Conditional, mixed-quote: `f"{'y' if c else 'n'}"` | ✅ | ✅ | — |
 | Alignment format spec: `f"{s:>10}"` | ✅ | ✅ | — |
 | Basic variable: `f"{x}"`, `f"{x+1}"` | ✅ | ✅ | — |
@@ -84,8 +84,8 @@ A previous analysis stated `\N{NAME}` produced U+FFFD. **Empirically verified to
 |-----|--------|
 | PEP 484 `# type: int` comments | ❌ ignored (all `type_comment` fields `None`) |
 | PEP 263 `# -*- coding: ... -*-` | ❌ not implemented; UTF-8 assumed |
-| Non-ASCII in bytes literals | ❌ rejected outright instead of allowing escapes |
-| Lambda positional-only params (`/`) | ❌ no `/` case in `parse_lambda_params()` |
+| Non-ASCII in bytes literals | ✅ [FIXED] escape sequences like `\xe0` work |
+| Lambda positional-only params (`/`) | ✅ [FIXED] `/` syntax accepted in lambda params |
 | Multiple starred targets `a, *b, *c = ...` | ❌ accepted silently (should be SyntaxError) |
 
 ---
@@ -111,7 +111,7 @@ A previous analysis stated `\N{NAME}` produced U+FFFD. **Empirically verified to
 | Dead code elimination after `return`/`raise` | ❌ not implemented |
 | `__class__` cell for zero-arg `super()` | ✅ **works** `[CORRECTED]` — empirically confirmed |
 | Exception table (CPython 3.11+ style) | ❌ uses `SETUP_EXCEPT`/`SETUP_FINALLY` jump opcodes |
-| Exception variable cleanup at end of `except` block | ❌ no cleanup bytecode emitted |
+| Exception variable cleanup at end of `except` block | ✅ [FIXED] cleanup works correctly |
 
 ---
 
@@ -305,7 +305,7 @@ every cycle. Cycle detection only covers `Instance` objects, not bare `Dict`/`Li
 | `round(n)` | ✅ for floats | — |
 | `round(custom_obj, n)` | ✅ | Fixed — dispatches to `__round__` dunder |
 | `bytes(obj)` | ✅ | Fixed — dispatches to `__bytes__` dunder |
-| `memoryview(b)` | ❌ | `NameError: name 'memoryview' is not defined` |
+| `memoryview(b)` | ✅ [FIXED] | Returns bytes-like wrapper |
 | `__import__(name)` | ✅ | Works — returns module object |
 | `breakpoint()` | ✅ [FIXED] | Prints warning message |
 | `help()` | ✅ [FIXED] | Basic help stub | |

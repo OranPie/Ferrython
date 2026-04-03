@@ -607,7 +607,26 @@ impl Analyzer {
 
             ExpressionKind::NamedExpr { target, value } => {
                 self.analyze_expression(value);
-                self.analyze_target(target);
+                // PEP 572: In comprehensions, walrus target leaks to enclosing scope
+                if self.current_scope().scope_type == ScopeType::Comprehension {
+                    if let ExpressionKind::Name { id, .. } = &target.node {
+                        // Mark target as Free in comprehension (will use STORE_DEREF)
+                        self.current_scope().add_symbol(id, SymbolScope::Free);
+                        // Mark as assigned in the enclosing non-comprehension scope
+                        // (resolve_bottom_up will promote it to Cell)
+                        let len = self.scope_stack.len();
+                        for i in (0..len - 1).rev() {
+                            if self.scope_stack[i].scope_type != ScopeType::Comprehension {
+                                self.scope_stack[i].mark_assigned(id);
+                                break;
+                            }
+                            // Intermediate comprehension scopes also need Free
+                            self.scope_stack[i].add_symbol(id, SymbolScope::Free);
+                        }
+                    }
+                } else {
+                    self.analyze_target(target);
+                }
             }
 
             ExpressionKind::BinOp { left, right, .. } => {
