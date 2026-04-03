@@ -396,7 +396,9 @@ impl VirtualMachine {
                         | IteratorData::Zip { .. }
                         | IteratorData::Map { .. }
                         | IteratorData::Filter { .. }
-                        | IteratorData::Sentinel { .. })
+                        | IteratorData::Sentinel { .. }
+                        | IteratorData::TakeWhile { .. }
+                        | IteratorData::DropWhile { .. })
                 };
                 if is_lazy {
                     let mut items = Vec::new();
@@ -514,7 +516,9 @@ impl VirtualMachine {
                         | IteratorData::Zip { .. }
                         | IteratorData::Map { .. }
                         | IteratorData::Filter { .. }
-                        | IteratorData::Sentinel { .. } => {
+                        | IteratorData::Sentinel { .. }
+                        | IteratorData::TakeWhile { .. }
+                        | IteratorData::DropWhile { .. } => {
                             drop(data);
                             return self.advance_lazy_iterator(iter_obj);
                         }
@@ -606,6 +610,58 @@ impl VirtualMachine {
                     Ok(None)
                 } else {
                     Ok(Some(val))
+                }
+            }
+            IteratorData::TakeWhile { func, source, done } => {
+                if *done { drop(data); return Ok(None); }
+                let f = func.clone();
+                let src = source.clone();
+                drop(data);
+                match self.vm_iter_next(&src)? {
+                    Some(val) => {
+                        let test = self.call_object(f, vec![val.clone()])?;
+                        if self.vm_is_truthy(&test)? {
+                            Ok(Some(val))
+                        } else {
+                            // Mark done
+                            if let PyObjectPayload::Iterator(arc) = &iter_obj.payload {
+                                if let IteratorData::TakeWhile { done, .. } = &mut *arc.lock().unwrap() {
+                                    *done = true;
+                                }
+                            }
+                            Ok(None)
+                        }
+                    }
+                    None => Ok(None),
+                }
+            }
+            IteratorData::DropWhile { func, source, dropping } => {
+                let f = func.clone();
+                let src = source.clone();
+                let is_dropping = *dropping;
+                drop(data);
+                if is_dropping {
+                    loop {
+                        match self.vm_iter_next(&src)? {
+                            Some(val) => {
+                                let test = self.call_object(f.clone(), vec![val.clone()])?;
+                                if !self.vm_is_truthy(&test)? {
+                                    // Stop dropping, mark state
+                                    if let PyObjectPayload::Iterator(arc) = &iter_obj.payload {
+                                        if let IteratorData::DropWhile { dropping, .. } = &mut *arc.lock().unwrap() {
+                                            *dropping = false;
+                                        }
+                                    }
+                                    return Ok(Some(val));
+                                }
+                                // Keep dropping
+                            }
+                            None => return Ok(None),
+                        }
+                    }
+                } else {
+                    // Not dropping anymore, just yield
+                    self.vm_iter_next(&src)
                 }
             }
             _ => {

@@ -389,7 +389,7 @@ pub fn create_itertools_module() -> PyObjectRef {
         ("takewhile", make_builtin(itertools_takewhile)),
         ("combinations", make_builtin(itertools_combinations)),
         ("permutations", make_builtin(itertools_permutations)),
-        ("groupby", make_builtin(itertools_groupby)),
+        ("groupby", PyObject::native_function("itertools.groupby", itertools_groupby)),
         ("filterfalse", make_builtin(itertools_filterfalse)),
         ("compress", make_builtin(itertools_compress)),
         ("tee", make_builtin(itertools_tee)),
@@ -562,14 +562,20 @@ fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn itertools_dropwhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("dropwhile requires predicate and iterable")); }
-    let items = args[1].to_list()?;
-    Ok(PyObject::list(items))
+    let func = args[0].clone();
+    let source = args[1].get_iter()?;
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(
+        Arc::new(std::sync::Mutex::new(IteratorData::DropWhile { func, source, dropping: true }))
+    )))
 }
 
 fn itertools_takewhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("takewhile requires predicate and iterable")); }
-    let items = args[1].to_list()?;
-    Ok(PyObject::list(items))
+    let func = args[0].clone();
+    let source = args[1].get_iter()?;
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(
+        Arc::new(std::sync::Mutex::new(IteratorData::TakeWhile { func, source, done: false }))
+    )))
 }
 
 fn itertools_combinations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

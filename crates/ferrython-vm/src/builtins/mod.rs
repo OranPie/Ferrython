@@ -232,7 +232,9 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 | IteratorData::Zip { .. }
                 | IteratorData::Map { .. }
                 | IteratorData::Filter { .. }
-                | IteratorData::Sentinel { .. } => {
+                | IteratorData::Sentinel { .. }
+                | IteratorData::TakeWhile { .. }
+                | IteratorData::DropWhile { .. } => {
                     Err(PyException::type_error("lazy iterator requires VM-level iteration"))
                 }
             }

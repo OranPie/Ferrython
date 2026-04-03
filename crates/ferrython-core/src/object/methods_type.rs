@@ -273,7 +273,9 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                     | IteratorData::Zip { .. }
                     | IteratorData::Map { .. }
                     | IteratorData::Filter { .. }
-                    | IteratorData::Sentinel { .. } => {
+                    | IteratorData::Sentinel { .. }
+                    | IteratorData::TakeWhile { .. }
+                    | IteratorData::DropWhile { .. } => {
                         Err(PyException::type_error("lazy iterator requires VM to collect"))
                     }
                 }

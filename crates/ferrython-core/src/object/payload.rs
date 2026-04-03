@@ -193,5 +193,7 @@ pub enum IteratorData {
     Map { func: PyObjectRef, source: PyObjectRef },
     Filter { func: PyObjectRef, source: PyObjectRef },
     Sentinel { callable: PyObjectRef, sentinel: PyObjectRef },
+    TakeWhile { func: PyObjectRef, source: PyObjectRef, done: bool },
+    DropWhile { func: PyObjectRef, source: PyObjectRef, dropping: bool },
 }
 

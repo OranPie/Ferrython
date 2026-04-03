@@ -770,6 +770,22 @@ impl VirtualMachine {
                                 func: pf, args: pa, kwargs,
                             }));
                         }
+                        // re.sub / re.subn with callable replacement
+                        if (name.as_str() == "re.sub" || name.as_str() == "re.subn") && pos_args.len() >= 3 {
+                            let repl = &pos_args[1];
+                            let is_callable = matches!(&repl.payload,
+                                PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
+                                | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. }
+                                | PyObjectPayload::Partial { .. });
+                            if is_callable {
+                                return self.re_sub_with_callable(&pos_args, name.as_str() == "re.subn");
+                            }
+                        }
+                        // itertools.groupby with key function
+                        if name.as_str() == "itertools.groupby" {
+                            let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
+                            return self.vm_itertools_groupby(&pos_args, key_fn);
+                        }
                         // type.__call__(cls, *args, **kwargs) — standard class instantiation
                         if name.as_str() == "__type_call__" {
                             if pos_args.is_empty() {
@@ -829,6 +845,7 @@ impl VirtualMachine {
             }
         }
     }
+
     pub(crate) fn call_object(
         &mut self,
         func: PyObjectRef,
@@ -1466,6 +1483,27 @@ impl VirtualMachine {
                     let rest = args[1..].to_vec();
                     return self.instantiate_class(&cls, rest, vec![]);
                 }
+                // re.sub / re.subn with callable replacement
+                if (name.as_str() == "re.sub" || name.as_str() == "re.subn") && args.len() >= 3 {
+                    let repl = &args[1];
+                    let is_callable = matches!(&repl.payload,
+                        PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
+                        | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. }
+                        | PyObjectPayload::Partial { .. });
+                    if is_callable {
+                        return self.re_sub_with_callable(&args, name.as_str() == "re.subn");
+                    }
+                }
+                if name.as_str() == "itertools.groupby" {
+                    let key_fn = args.last().and_then(|last| {
+                        if let PyObjectPayload::Dict(map) = &last.payload {
+                            let map = map.read();
+                            map.get(&HashableKey::Str(CompactString::from("key"))).cloned()
+                        } else { None }
+                    });
+                    let pos_args: Vec<_> = if key_fn.is_some() { args[..args.len()-1].to_vec() } else { args.clone() };
+                    return self.vm_itertools_groupby(&pos_args, key_fn);
+                }
                 func(&args)
             }
             PyObjectPayload::NativeClosure { func, .. } => {
@@ -1516,5 +1554,107 @@ impl VirtualMachine {
                 "'{}' object is not callable", func.type_name()
             ))),
         }
+    }
+
+    /// Handle re.sub/re.subn when the replacement is a callable
+    fn re_sub_with_callable(&mut self, args: &[PyObjectRef], return_count: bool) -> PyResult<PyObjectRef> {
+        let pattern = args[0].py_to_string();
+        let repl_fn = args[1].clone();
+        let text = args[2].py_to_string();
+        let flags = if args.len() > 4 { args[4].to_int().unwrap_or(0) } else { 0 };
+
+        // Build regex (simplified version of text_modules::build_regex)
+        let mut re_pattern = pattern.clone();
+        // Convert Python named groups (?P<name>...) to Rust (?P<name>...)
+        re_pattern = re_pattern.replace("(?P<", "(?P<");
+        let re = if flags & 2 != 0 { // IGNORECASE
+            regex::RegexBuilder::new(&re_pattern).case_insensitive(true).build()
+        } else {
+            regex::Regex::new(&re_pattern)
+        }.map_err(|e| PyException::runtime_error(format!("regex error: {}", e)))?;
+
+        let mut result = String::new();
+        let mut last_end = 0;
+        let mut count = 0;
+        for m in re.find_iter(&text) {
+            result.push_str(&text[last_end..m.start()]);
+
+            // Create a simple match object with group(0) = matched text
+            let match_text = m.as_str().to_string();
+            let mut match_attrs = IndexMap::new();
+            match_attrs.insert(CompactString::from("_match_str"), PyObject::str_val(CompactString::from(match_text.clone())));
+            match_attrs.insert(CompactString::from("group"), PyObject::native_closure("group", {
+                let mt = match_text.clone();
+                move |args| {
+                    let idx = if args.is_empty() { 0 } else { args[0].to_int().unwrap_or(0) };
+                    if idx == 0 {
+                        Ok(PyObject::str_val(CompactString::from(mt.clone())))
+                    } else {
+                        Ok(PyObject::none())
+                    }
+                }
+            }));
+            match_attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
+            let match_obj = PyObject::module_with_attrs(CompactString::from("_match"), match_attrs);
+
+            let replacement = self.call_object(repl_fn.clone(), vec![match_obj])?;
+            result.push_str(&replacement.py_to_string());
+
+            last_end = m.end();
+            count += 1;
+        }
+        result.push_str(&text[last_end..]);
+
+        if return_count {
+            Ok(PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from(result)),
+                PyObject::int(count),
+            ]))
+        } else {
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+    }
+
+    /// Handle itertools.groupby with optional key function
+    fn vm_itertools_groupby(&mut self, args: &[PyObjectRef], key_fn: Option<PyObjectRef>) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Err(PyException::type_error("groupby requires iterable"));
+        }
+        let items = args[0].to_list()?;
+        if items.is_empty() {
+            return Ok(PyObject::list(vec![]));
+        }
+
+        let mut result = Vec::new();
+        let first_key = if let Some(ref kf) = key_fn {
+            self.call_object(kf.clone(), vec![items[0].clone()])?
+        } else {
+            items[0].clone()
+        };
+        let mut current_key = first_key;
+        let mut current_group = vec![items[0].clone()];
+
+        for item in &items[1..] {
+            let k = if let Some(ref kf) = key_fn {
+                self.call_object(kf.clone(), vec![item.clone()])?
+            } else {
+                item.clone()
+            };
+            if k.py_to_string() == current_key.py_to_string() {
+                current_group.push(item.clone());
+            } else {
+                result.push(PyObject::tuple(vec![
+                    current_key,
+                    PyObject::list(current_group),
+                ]));
+                current_key = k;
+                current_group = vec![item.clone()];
+            }
+        }
+        result.push(PyObject::tuple(vec![
+            current_key,
+            PyObject::list(current_group),
+        ]));
+        Ok(PyObject::list(result))
     }
 }

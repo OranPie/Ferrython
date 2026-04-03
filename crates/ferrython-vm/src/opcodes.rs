@@ -1211,7 +1211,9 @@ impl VirtualMachine {
                         matches!(&*data, IteratorData::Enumerate { .. }
                             | IteratorData::Zip { .. }
                             | IteratorData::Map { .. }
-                            | IteratorData::Filter { .. })
+                            | IteratorData::Filter { .. }
+                            | IteratorData::TakeWhile { .. }
+                            | IteratorData::DropWhile { .. })
                     };
                     if needs_vm {
                         match self.advance_lazy_iterator(&iter) {
