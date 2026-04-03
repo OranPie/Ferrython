@@ -549,8 +549,12 @@ impl VirtualMachine {
                                 for i in 1..indices.len() {
                                     let mut j = i;
                                     while j > 0 {
-                                        let is_less = self.vm_lt(&decorated[indices[j]].0, &decorated[indices[j - 1]].0)?;
-                                        if is_less {
+                                        let should_swap = if reverse {
+                                            self.vm_lt(&decorated[indices[j - 1]].0, &decorated[indices[j]].0)?
+                                        } else {
+                                            self.vm_lt(&decorated[indices[j]].0, &decorated[indices[j - 1]].0)?
+                                        };
+                                        if should_swap {
                                             indices.swap(j, j - 1);
                                             j -= 1;
                                         } else { break; }
@@ -559,8 +563,8 @@ impl VirtualMachine {
                                 items_vec = indices.into_iter().map(|i| decorated[i].1.clone()).collect();
                             } else {
                                 self.vm_sort(&mut items_vec)?;
+                                if reverse { items_vec.reverse(); }
                             }
-                            if reverse { items_vec.reverse(); }
                             *items_arc.write() = items_vec;
                             return Ok(PyObject::none());
                         }
@@ -673,12 +677,17 @@ impl VirtualMachine {
                                     // Sort keys using VM-level comparison
                                     let keys: Vec<PyObjectRef> = decorated.iter().map(|(k, _)| k.clone()).collect();
                                     let mut indices: Vec<usize> = (0..decorated.len()).collect();
-                                    // Insertion sort on indices by key
+                                    // Insertion sort on indices by key (stable)
                                     for i in 1..indices.len() {
                                         let mut j = i;
                                         while j > 0 {
-                                            let is_less = self.vm_lt(&keys[indices[j]], &keys[indices[j - 1]])?;
-                                            if is_less {
+                                            let should_swap = if reverse {
+                                                // Descending: swap if current > previous
+                                                self.vm_lt(&keys[indices[j - 1]], &keys[indices[j]])?
+                                            } else {
+                                                self.vm_lt(&keys[indices[j]], &keys[indices[j - 1]])?
+                                            };
+                                            if should_swap {
                                                 indices.swap(j, j - 1);
                                                 j -= 1;
                                             } else {
@@ -689,9 +698,9 @@ impl VirtualMachine {
                                     items_vec = indices.into_iter().map(|i| decorated[i].1.clone()).collect();
                                 } else {
                                     self.vm_sort(&mut items_vec)?;
-                                }
-                                if reverse {
-                                    items_vec.reverse();
+                                    if reverse {
+                                        items_vec.reverse();
+                                    }
                                 }
                                 return Ok(PyObject::list(items_vec));
                             }
