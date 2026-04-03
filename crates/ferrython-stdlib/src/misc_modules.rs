@@ -306,10 +306,41 @@ pub fn create_contextlib_module() -> PyObjectRef {
         attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
             "suppress.__exit__", |args: &[PyObjectRef]| {
                 // args: self, exc_type, exc_val, exc_tb
-                // If exc_type is one of the suppressed exceptions, return True
                 if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
-                    // We have an exception — suppress it
-                    return Ok(PyObject::bool_val(true));
+                    let exc_type = &args[1];
+                    let exc_name = exc_type.py_to_string();
+                    // Check if exc_type matches any of the suppressed exceptions
+                    if let Some(suppressed) = args[0].get_attr("__suppress_exceptions__") {
+                        if let Ok(exc_list) = suppressed.to_list() {
+                            for allowed in &exc_list {
+                                let allowed_name = allowed.py_to_string();
+                                // Direct match or hierarchy check (Exception catches all std exceptions)
+                                if exc_name == allowed_name {
+                                    return Ok(PyObject::bool_val(true));
+                                }
+                                // Check if allowed is a parent exception type
+                                if allowed_name.contains("Exception") && !exc_name.contains("BaseException") {
+                                    return Ok(PyObject::bool_val(true));
+                                }
+                                if allowed_name.contains("BaseException") {
+                                    return Ok(PyObject::bool_val(true));
+                                }
+                                // Common hierarchies
+                                let is_subclass = match allowed_name.as_str() {
+                                    s if s.contains("ValueError") => exc_name.contains("ValueError"),
+                                    s if s.contains("TypeError") => exc_name.contains("TypeError"),
+                                    s if s.contains("KeyError") => exc_name.contains("KeyError"),
+                                    s if s.contains("IndexError") => exc_name.contains("IndexError"),
+                                    s if s.contains("LookupError") => exc_name.contains("KeyError") || exc_name.contains("IndexError"),
+                                    s if s.contains("ArithmeticError") => exc_name.contains("ZeroDivisionError") || exc_name.contains("OverflowError"),
+                                    _ => false,
+                                };
+                                if is_subclass {
+                                    return Ok(PyObject::bool_val(true));
+                                }
+                            }
+                        }
+                    }
                 }
                 Ok(PyObject::bool_val(false))
             }
