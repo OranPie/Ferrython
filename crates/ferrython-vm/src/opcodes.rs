@@ -2120,7 +2120,12 @@ impl VirtualMachine {
                     }
                     1 => {
                         let exc = frame.pop();
-                        return Err(raise_exc(&exc));
+                        let mut py_exc = raise_exc(&exc);
+                        // Implicit chaining: set __context__ to active exception
+                        if let Some(active) = &self.active_exception {
+                            py_exc.context = Some(Box::new(active.clone()));
+                        }
+                        return Err(py_exc);
                     }
                     2 => {
                         let cause = frame.pop();
@@ -2130,6 +2135,10 @@ impl VirtualMachine {
                         if !matches!(cause.payload, PyObjectPayload::None) {
                             let cause_exc = raise_exc(&cause);
                             py_exc.cause = Some(Box::new(cause_exc));
+                        }
+                        // Implicit chaining: set __context__ to active exception
+                        if let Some(active) = &self.active_exception {
+                            py_exc.context = Some(Box::new(active.clone()));
                         }
                         return Err(py_exc);
                     }
@@ -2315,7 +2324,14 @@ impl VirtualMachine {
                             value.repr()
                         }
                     }
-                    3 => value.py_to_string(),
+                    3 => {
+                        // !a conversion — ascii repr (same as repr for ASCII strings)
+                        if matches!(&value.payload, PyObjectPayload::Instance(_)) {
+                            self.vm_repr(&value)?
+                        } else {
+                            value.repr()
+                        }
+                    }
                     _ => {
                         if !fmt_spec.is_empty() {
                             if matches!(&value.payload, PyObjectPayload::Instance(_)) {

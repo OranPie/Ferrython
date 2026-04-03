@@ -108,6 +108,17 @@ impl VirtualMachine {
                         } else {
                             Self::store_exc_attr(&exc_value, "__cause__", PyObject::none());
                         }
+                        // Attach __context__ from implicit exception chaining
+                        if let Some(ctx) = &exc.context {
+                            let ctx_obj = if let Some(corig) = &ctx.original {
+                                corig.clone()
+                            } else {
+                                PyObject::exception_instance(ctx.kind.clone(), ctx.message.clone())
+                            };
+                            Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
+                        } else {
+                            Self::store_exc_attr(&exc_value, "__context__", PyObject::none());
+                        }
                         // Store __traceback__ on the exception value
                         let tb_obj = Self::build_traceback_object(&exc.traceback);
                         Self::store_exc_attr(&exc_value, "__traceback__", tb_obj.clone());

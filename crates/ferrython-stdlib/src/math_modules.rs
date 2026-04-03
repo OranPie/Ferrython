@@ -115,7 +115,11 @@ fn math_log10(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn math_exp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.exp", args, 1)?;
-    Ok(PyObject::float(args[0].to_float()?.exp()))
+    let result = args[0].to_float()?.exp();
+    if result.is_infinite() {
+        return Err(PyException::overflow_error("math range error"));
+    }
+    Ok(PyObject::float(result))
 }
 fn math_sin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.sin", args, 1)?;

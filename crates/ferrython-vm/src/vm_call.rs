@@ -209,7 +209,7 @@ impl VirtualMachine {
             }
         }
 
-        // Pack extra positional args into *args tuple
+        // Pack extra positional args into *args tuple, or raise TypeError
         if has_varargs {
             let extra: Vec<PyObjectRef> = if pos_args.len() > nparams {
                 pos_args[nparams..].to_vec()
@@ -217,6 +217,13 @@ impl VirtualMachine {
                 Vec::new()
             };
             frame.set_local(varargs_slot, PyObject::tuple(extra));
+        } else if pos_args.len() > nparams {
+            let fname = code.name.as_str();
+            return Err(PyException::type_error(format!(
+                "{}() takes {} positional argument{} but {} {} given",
+                fname, nparams, if nparams == 1 { "" } else { "s" },
+                pos_args.len(), if pos_args.len() == 1 { "was" } else { "were" }
+            )));
         }
 
         // Pack **kwargs into a dict
