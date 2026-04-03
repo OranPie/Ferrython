@@ -2194,6 +2194,7 @@ impl VirtualMachine {
             Opcode::WithCleanupStart => {
                 let tos = self.vm_frame().peek().clone();
                 if matches!(tos.payload, PyObjectPayload::None) {
+                    // Normal exit (no exception)
                     self.vm_pop(); // pop None
                     let exit_fn = self.vm_pop();
                     if let PyObjectPayload::Generator(gen_arc) = &exit_fn.payload {
@@ -2213,7 +2214,9 @@ impl VirtualMachine {
                         f.push(PyObject::none());
                         f.push(result);
                     }
-                } else if matches!(tos.payload, PyObjectPayload::ExceptionType(_)) {
+                } else if matches!(tos.payload, PyObjectPayload::ExceptionType(_))
+                       || matches!(tos.payload, PyObjectPayload::Class(_)) {
+                    // Exception exit: stack has [exit_fn, tb, value, type]
                     let exc_type = self.vm_pop();
                     let exc_val = if !self.vm_frame().stack.is_empty() { self.vm_pop() } else { PyObject::none() };
                     let exc_tb = if !self.vm_frame().stack.is_empty() { self.vm_pop() } else { PyObject::none() };
@@ -2225,13 +2228,19 @@ impl VirtualMachine {
                             Err(e) => return Err(e),
                         }
                         let f = self.vm_frame();
+                        // Preserve exception info for EndFinally re-raise
+                        f.push(exc_tb);
+                        f.push(exc_val);
                         f.push(exc_type.clone());
                         f.push(PyObject::none());
                     } else {
                         let result = self.call_object(exit_fn, vec![
-                            exc_type.clone(), exc_val, exc_tb
+                            exc_type.clone(), exc_val.clone(), exc_tb.clone()
                         ])?;
                         let f = self.vm_frame();
+                        // Preserve exception info for EndFinally re-raise
+                        f.push(exc_tb);
+                        f.push(exc_val);
                         f.push(exc_type);
                         f.push(result);
                     }
@@ -2262,8 +2271,15 @@ impl VirtualMachine {
                 let exit_result = frame.pop();
                 let exc_or_none = frame.pop();
                 if !matches!(exc_or_none.payload, PyObjectPayload::None) && exit_result.is_truthy() {
+                    // Exception was suppressed: clean up exception info (value, tb)
+                    frame.pop(); // value
+                    frame.pop(); // tb
                     frame.push(PyObject::none());
+                } else if !matches!(exc_or_none.payload, PyObjectPayload::None) {
+                    // Exception NOT suppressed: push type back, leave (tb, value) for EndFinally
+                    frame.push(exc_or_none);
                 } else {
+                    // No exception
                     frame.push(exc_or_none);
                 }
             }
