@@ -105,7 +105,7 @@ A previous analysis stated `\N{NAME}` produced U+FFFD. **Empirically verified to
 | Gap | Status |
 |-----|--------|
 | `SETUP_ASYNC_WITH` opcode | ❌ missing — async context managers cannot compile |
-| Opcode number collision (`JumpIfTrueOrPop` and `SetupFinally` both = 122) | ❌ undefined behaviour |
+| Opcode number collision (`JumpIfTrueOrPop` and `SetupFinally` both = 122) | ✅ verified: no collision (112 vs 122) |
 | Constant folding (`1+2` → `LOAD_CONST 3`) | ❌ not implemented |
 | Peephole optimisation (jump folding, dead stores) | ❌ not implemented |
 | Dead code elimination after `return`/`raise` | ❌ not implemented |
@@ -232,7 +232,7 @@ Remaining slot gaps:
 | `__init_subclass__` | ✅ |
 | `__class_getitem__` | ✅ `[CORRECTED]` |
 | MRO diamond inheritance | ✅ `[CORRECTED]` |
-| `__prepare__` | ❌ class namespace is always a plain dict |
+| `__prepare__` | ✅ implemented in `build_class_kw` with metaclass support |
 | `__instancecheck__` / `__subclasscheck__` | ❌ |
 | Metaclass conflict resolution | ❌ |
 
@@ -282,7 +282,7 @@ every cycle. Cycle detection only covers `Instance` objects, not bare `Dict`/`Li
 | Feature | Status |
 |---------|--------|
 | Module caching, dotted imports, relative imports | ✅ |
-| `__import__` builtin | ❌ `NameError: name '__import__' is not defined` |
+| `__import__` builtin | ✅ works — `__import__('os')` returns module |
 | `sys.meta_path`, `sys.path_hooks` | ❌ not implemented |
 | `importlib` module | ❌ `ImportError: No module named 'importlib'` |
 | `__loader__`, `__spec__` on modules | ❌ never set |
@@ -306,7 +306,7 @@ every cycle. Cycle detection only covers `Instance` objects, not bare `Dict`/`Li
 | `round(custom_obj, n)` | ✅ | Fixed — dispatches to `__round__` dunder |
 | `bytes(obj)` | ✅ | Fixed — dispatches to `__bytes__` dunder |
 | `memoryview(b)` | ❌ | `NameError: name 'memoryview' is not defined` |
-| `__import__(name)` | ❌ | `NameError: name '__import__' is not defined` |
+| `__import__(name)` | ✅ | Works — returns module object |
 | `breakpoint()` | ✅ [FIXED] | Prints warning message |
 | `help()` | ✅ [FIXED] | Basic help stub | |
 | `super()` (no args) | ✅ works `[CORRECTED]` | — |

@@ -48,7 +48,7 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
     let type_names = [
         "str", "int", "float", "bool", "type", "object",
         "list", "tuple", "dict", "set", "frozenset", "range",
-        "bytes", "bytearray", "complex", "slice",
+        "bytes", "bytearray", "complex", "slice", "memoryview",
         "super", "classmethod", "staticmethod", "property",
         "map", "filter", "memoryview",
     ];
@@ -175,6 +175,7 @@ pub fn get_builtin_fn(name: &str) -> Option<BuiltinFn> {
         "slice" => Some(builtin_slice),
         "bytes" => Some(builtin_bytes),
         "bytearray" => Some(builtin_bytearray),
+        "memoryview" => Some(builtin_memoryview),
         "complex" => Some(builtin_complex),
         "breakpoint" => Some(builtin_breakpoint),
         "help" => Some(builtin_help),
