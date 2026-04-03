@@ -6,7 +6,7 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, CompareOp, InstanceData,
     make_module, make_builtin, check_args, check_args_min,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -1576,4 +1576,177 @@ pub fn create_gc_module() -> PyObjectRef {
     ])
 }
 
+// ── types module ──
 
+pub fn create_types_module() -> PyObjectRef {
+    make_module("types", vec![
+        ("NoneType", PyObject::builtin_type(CompactString::from("NoneType"))),
+        ("FunctionType", PyObject::builtin_type(CompactString::from("function"))),
+        ("LambdaType", PyObject::builtin_type(CompactString::from("function"))),
+        ("BuiltinFunctionType", PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
+        ("BuiltinMethodType", PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
+        ("MethodType", PyObject::builtin_type(CompactString::from("method"))),
+        ("ModuleType", PyObject::builtin_type(CompactString::from("module"))),
+        ("GeneratorType", PyObject::builtin_type(CompactString::from("generator"))),
+        ("CodeType", PyObject::builtin_type(CompactString::from("code"))),
+        ("FrameType", PyObject::builtin_type(CompactString::from("frame"))),
+        ("TracebackType", PyObject::builtin_type(CompactString::from("traceback"))),
+        ("CoroutineType", PyObject::builtin_type(CompactString::from("coroutine"))),
+        ("AsyncGeneratorType", PyObject::builtin_type(CompactString::from("async_generator"))),
+        ("MappingProxyType", PyObject::builtin_type(CompactString::from("mappingproxy"))),
+        ("SimpleNamespace", make_builtin(|args| {
+            let cls = PyObject::class(CompactString::from("SimpleNamespace"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let Some(last) = args.last() {
+                if let PyObjectPayload::Dict(kw) = &last.payload {
+                    if let PyObjectPayload::Instance(ref d) = inst.payload {
+                        let mut attrs = d.attrs.write();
+                        for (k, v) in kw.read().iter() {
+                            if let HashableKey::Str(s) = k {
+                                attrs.insert(s.clone(), v.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(inst)
+        })),
+        ("new_class", make_builtin(|args| {
+            check_args_min("new_class", args, 1)?;
+            let name = args[0].py_to_string();
+            let bases = if args.len() > 1 { args[1].to_list().unwrap_or_default() } else { vec![] };
+            Ok(PyObject::class(CompactString::from(&name), bases, IndexMap::new()))
+        })),
+        ("prepare_class", make_builtin(|_| {
+            Ok(PyObject::tuple(vec![PyObject::none(), PyObject::dict(IndexMap::new()), PyObject::dict(IndexMap::new())]))
+        })),
+        ("DynamicClassAttribute", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            Ok(args[0].clone())
+        })),
+        ("coroutine", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            Ok(args[0].clone())
+        })),
+    ])
+}
+
+// ── collections.abc module ──
+
+pub fn create_collections_abc_module() -> PyObjectRef {
+    let make_abc = |name: &str| -> PyObjectRef {
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("__abstractmethods__"), PyObject::set(IndexMap::new()));
+        PyObject::class(CompactString::from(name), vec![], ns)
+    };
+    make_module("collections.abc", vec![
+        ("Hashable", make_abc("Hashable")),
+        ("Iterable", make_abc("Iterable")),
+        ("Iterator", make_abc("Iterator")),
+        ("Reversible", make_abc("Reversible")),
+        ("Generator", make_abc("Generator")),
+        ("Sized", make_abc("Sized")),
+        ("Container", make_abc("Container")),
+        ("Callable", make_abc("Callable")),
+        ("Collection", make_abc("Collection")),
+        ("Sequence", make_abc("Sequence")),
+        ("MutableSequence", make_abc("MutableSequence")),
+        ("ByteString", make_abc("ByteString")),
+        ("Set", make_abc("Set")),
+        ("MutableSet", make_abc("MutableSet")),
+        ("Mapping", make_abc("Mapping")),
+        ("MutableMapping", make_abc("MutableMapping")),
+        ("MappingView", make_abc("MappingView")),
+        ("KeysView", make_abc("KeysView")),
+        ("ItemsView", make_abc("ItemsView")),
+        ("ValuesView", make_abc("ValuesView")),
+        ("Awaitable", make_abc("Awaitable")),
+        ("Coroutine", make_abc("Coroutine")),
+        ("AsyncIterable", make_abc("AsyncIterable")),
+        ("AsyncIterator", make_abc("AsyncIterator")),
+        ("AsyncGenerator", make_abc("AsyncGenerator")),
+    ])
+}
+
+// ── errno module ──
+
+pub fn create_errno_module() -> PyObjectRef {
+    make_module("errno", vec![
+        ("EPERM", PyObject::int(1)),
+        ("ENOENT", PyObject::int(2)),
+        ("ESRCH", PyObject::int(3)),
+        ("EINTR", PyObject::int(4)),
+        ("EIO", PyObject::int(5)),
+        ("ENXIO", PyObject::int(6)),
+        ("E2BIG", PyObject::int(7)),
+        ("ENOEXEC", PyObject::int(8)),
+        ("EBADF", PyObject::int(9)),
+        ("ECHILD", PyObject::int(10)),
+        ("EAGAIN", PyObject::int(11)),
+        ("ENOMEM", PyObject::int(12)),
+        ("EACCES", PyObject::int(13)),
+        ("EFAULT", PyObject::int(14)),
+        ("EBUSY", PyObject::int(16)),
+        ("EEXIST", PyObject::int(17)),
+        ("EXDEV", PyObject::int(18)),
+        ("ENODEV", PyObject::int(19)),
+        ("ENOTDIR", PyObject::int(20)),
+        ("EISDIR", PyObject::int(21)),
+        ("EINVAL", PyObject::int(22)),
+        ("ENFILE", PyObject::int(23)),
+        ("EMFILE", PyObject::int(24)),
+        ("ENOTTY", PyObject::int(25)),
+        ("EFBIG", PyObject::int(27)),
+        ("ENOSPC", PyObject::int(28)),
+        ("ESPIPE", PyObject::int(29)),
+        ("EROFS", PyObject::int(30)),
+        ("EMLINK", PyObject::int(31)),
+        ("EPIPE", PyObject::int(32)),
+        ("EDOM", PyObject::int(33)),
+        ("ERANGE", PyObject::int(34)),
+        ("EDEADLK", PyObject::int(35)),
+        ("ENAMETOOLONG", PyObject::int(36)),
+        ("ENOLCK", PyObject::int(37)),
+        ("ENOSYS", PyObject::int(38)),
+        ("ENOTEMPTY", PyObject::int(39)),
+        ("ECONNREFUSED", PyObject::int(111)),
+        ("ETIMEDOUT", PyObject::int(110)),
+        ("errorcode", make_builtin(|_| {
+            let mut map = IndexMap::new();
+            let codes: Vec<(i64, &str)> = vec![
+                (1, "EPERM"), (2, "ENOENT"), (13, "EACCES"), (17, "EEXIST"),
+                (22, "EINVAL"), (32, "EPIPE"), (110, "ETIMEDOUT"), (111, "ECONNREFUSED"),
+            ];
+            for (num, name) in codes {
+                map.insert(HashableKey::Int(PyInt::Small(num)), PyObject::str_val(CompactString::from(name)));
+            }
+            Ok(PyObject::dict(map))
+        })),
+    ])
+}
+
+// ── _thread module ──
+
+pub fn create_thread_module() -> PyObjectRef {
+    make_module("_thread", vec![
+        ("allocate_lock", make_builtin(|_| {
+            let cls = PyObject::class(CompactString::from("lock"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("_locked"), PyObject::bool_val(false));
+                w.insert(CompactString::from("acquire"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+                w.insert(CompactString::from("release"), make_builtin(|_| Ok(PyObject::none())));
+                w.insert(CompactString::from("locked"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+                w.insert(CompactString::from("__enter__"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+                w.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::none())));
+            }
+            Ok(inst)
+        })),
+        ("LockType", PyObject::class(CompactString::from("lock"), vec![], IndexMap::new())),
+        ("start_new_thread", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("get_ident", make_builtin(|_| Ok(PyObject::int(1)))),
+        ("stack_size", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("TIMEOUT_MAX", PyObject::float(f64::MAX)),
+    ])
+}

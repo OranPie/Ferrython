@@ -77,6 +77,10 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "argparse" => Some(misc_modules::create_argparse_module()),
         "weakref" => Some(misc_modules::create_weakref_module()),
         "gc" => Some(misc_modules::create_gc_module()),
+        "types" => Some(misc_modules::create_types_module()),
+        "collections.abc" => Some(misc_modules::create_collections_abc_module()),
+        "errno" => Some(misc_modules::create_errno_module()),
+        "_thread" => Some(misc_modules::create_thread_module()),
         _ => None,
     }
 }

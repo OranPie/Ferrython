@@ -267,8 +267,65 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             Ok(PyObject::str_val(CompactString::from(result)))
         }
         "encode" => {
-            // Simple UTF-8 encoding
-            Ok(PyObject::bytes(s.as_bytes().to_vec()))
+            let encoding = if !args.is_empty() {
+                args[0].py_to_string().to_lowercase()
+            } else {
+                "utf-8".to_string()
+            };
+            let errors = if args.len() > 1 {
+                args[1].py_to_string()
+            } else {
+                "strict".to_string()
+            };
+            match encoding.as_str() {
+                "utf-8" | "utf8" => {
+                    Ok(PyObject::bytes(s.as_bytes().to_vec()))
+                }
+                "ascii" => {
+                    let mut result = Vec::new();
+                    for ch in s.chars() {
+                        if ch.is_ascii() {
+                            result.push(ch as u8);
+                        } else {
+                            match errors.as_str() {
+                                "ignore" => {}
+                                "replace" => result.push(b'?'),
+                                "xmlcharrefreplace" => {
+                                    result.extend_from_slice(format!("&#{};", ch as u32).as_bytes());
+                                }
+                                _ => {
+                                    return Err(PyException::value_error(format!(
+                                        "'ascii' codec can't encode character '\\u{:04x}' in position", ch as u32
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    Ok(PyObject::bytes(result))
+                }
+                "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
+                    let mut result = Vec::new();
+                    for ch in s.chars() {
+                        if (ch as u32) <= 0xFF {
+                            result.push(ch as u8);
+                        } else {
+                            match errors.as_str() {
+                                "ignore" => {}
+                                "replace" => result.push(b'?'),
+                                _ => {
+                                    return Err(PyException::value_error(format!(
+                                        "'latin-1' codec can't encode character '\\u{:04x}'", ch as u32
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    Ok(PyObject::bytes(result))
+                }
+                _ => {
+                    Err(PyException::value_error(format!("unknown encoding: {}", encoding)))
+                }
+            }
         }
         "partition" => {
             check_args_min("partition", args, 1)?;

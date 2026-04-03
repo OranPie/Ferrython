@@ -133,11 +133,42 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
         }
         "update" => {
             check_args_min("update", args, 1)?;
-            if let PyObjectPayload::Dict(other) = &args[0].payload {
-                let other_items = other.read().clone();
-                let mut w = map.write();
-                for (k, v) in other_items {
-                    w.insert(k, v);
+            match &args[0].payload {
+                PyObjectPayload::Dict(other) => {
+                    let other_items = other.read().clone();
+                    let mut w = map.write();
+                    for (k, v) in other_items {
+                        w.insert(k, v);
+                    }
+                }
+                PyObjectPayload::List(items) => {
+                    let items = items.read().clone();
+                    let mut w = map.write();
+                    for item in &items {
+                        match &item.payload {
+                            PyObjectPayload::Tuple(pair) if pair.len() == 2 => {
+                                let key = pair[0].to_hashable_key()?;
+                                w.insert(key, pair[1].clone());
+                            }
+                            PyObjectPayload::List(pair_items) => {
+                                let pair = pair_items.read();
+                                if pair.len() == 2 {
+                                    let key = pair[0].to_hashable_key()?;
+                                    w.insert(key, pair[1].clone());
+                                } else {
+                                    return Err(PyException::value_error(
+                                        format!("dictionary update sequence element has length {}; 2 is required", pair.len())
+                                    ));
+                                }
+                            }
+                            _ => {
+                                return Err(PyException::type_error("cannot convert dictionary update sequence element to a sequence"));
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Silently ignore non-dict, non-list (like None)
                 }
             }
             Ok(PyObject::none())

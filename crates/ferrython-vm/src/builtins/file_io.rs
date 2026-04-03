@@ -37,6 +37,13 @@ pub(super) fn builtin_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     all_attrs.insert(CompactString::from("close"), PyObject::native_function("close", file_close));
     all_attrs.insert(CompactString::from("__enter__"), PyObject::native_function("__enter__", file_enter));
     all_attrs.insert(CompactString::from("__exit__"), PyObject::native_function("__exit__", file_exit));
+    all_attrs.insert(CompactString::from("seek"), PyObject::native_function("seek", file_seek));
+    all_attrs.insert(CompactString::from("tell"), PyObject::native_function("tell", file_tell));
+    all_attrs.insert(CompactString::from("flush"), PyObject::native_function("flush", file_flush));
+    all_attrs.insert(CompactString::from("truncate"), PyObject::native_function("truncate", file_truncate));
+    all_attrs.insert(CompactString::from("readable"), PyObject::native_function("readable", file_readable));
+    all_attrs.insert(CompactString::from("writable"), PyObject::native_function("writable", file_writable));
+    all_attrs.insert(CompactString::from("seekable"), PyObject::native_function("seekable", file_seekable));
     all_attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
     
     Ok(PyObject::module_with_attrs(CompactString::from("_file"), all_attrs))
@@ -197,4 +204,75 @@ pub(super) fn file_exit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // __exit__(self, exc_type, exc_val, exc_tb) — close file, return False
     file_close(args)?;
     Ok(PyObject::bool_val(false))
+}
+
+pub(super) fn file_seek(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("seek() missing required argument: 'offset'"));
+    }
+    let state = get_file_state(args)?;
+    let mut s = state.write();
+    if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
+    let offset = args[1].to_int()?;
+    let whence = if args.len() > 2 { args[2].to_int()? } else { 0 };
+    let new_pos = match whence {
+        0 => offset.max(0) as usize,  // SEEK_SET
+        1 => (s.position as i64 + offset).max(0) as usize,  // SEEK_CUR
+        2 => (s.content.len() as i64 + offset).max(0) as usize,  // SEEK_END
+        _ => return Err(PyException::value_error("invalid whence value")),
+    };
+    s.position = new_pos.min(s.content.len());
+    Ok(PyObject::int(s.position as i64))
+}
+
+pub(super) fn file_tell(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let state = get_file_state(args)?;
+    let s = state.read();
+    if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
+    Ok(PyObject::int(s.position as i64))
+}
+
+pub(super) fn file_flush(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let state = get_file_state(args)?;
+    let mut s = state.write();
+    if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
+    if !s.write_buf.is_empty() {
+        if s.mode.contains('a') {
+            let mut content = std::fs::read_to_string(&s.path).unwrap_or_default();
+            content.push_str(&s.write_buf);
+            std::fs::write(&s.path, &content)
+                .map_err(|e| PyException::os_error(format!("{}", e)))?;
+        } else {
+            std::fs::write(&s.path, &s.write_buf)
+                .map_err(|e| PyException::os_error(format!("{}", e)))?;
+        }
+        s.write_buf.clear();
+    }
+    Ok(PyObject::none())
+}
+
+pub(super) fn file_truncate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let state = get_file_state(args)?;
+    let mut s = state.write();
+    if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
+    let size = if args.len() > 1 { args[1].to_int()? as usize } else { s.position };
+    s.content.truncate(size);
+    if s.position > size { s.position = size; }
+    Ok(PyObject::int(size as i64))
+}
+
+pub(super) fn file_readable(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let state = get_file_state(args)?;
+    let s = state.read();
+    Ok(PyObject::bool_val(s.mode.contains('r') || s.mode.contains('+')))
+}
+
+pub(super) fn file_writable(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let state = get_file_state(args)?;
+    let s = state.read();
+    Ok(PyObject::bool_val(s.mode.contains('w') || s.mode.contains('a') || s.mode.contains('+')))
+}
+
+pub(super) fn file_seekable(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::bool_val(true))
 }
