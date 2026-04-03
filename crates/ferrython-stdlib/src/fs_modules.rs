@@ -51,9 +51,14 @@ fn pathlib_path(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     ns.insert(CompactString::from("suffixes"), PyObject::list(
         suffixes_vec.iter().map(|s| PyObject::str_val(CompactString::from(s.as_str()))).collect()
     ));
-    ns.insert(CompactString::from("parent"), PyObject::str_val(CompactString::from(
-        path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
-    )));
+    let parent_str = path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    // Create parent as a Path object (avoid infinite recursion for root)
+    if parent_str.is_empty() || parent_str == path_str {
+        ns.insert(CompactString::from("parent"), PyObject::str_val(CompactString::from(&parent_str)));
+    } else {
+        let parent_path = pathlib_path(&[PyObject::str_val(CompactString::from(&parent_str))])?;
+        ns.insert(CompactString::from("parent"), parent_path);
+    }
     // parts — tuple of path components
     let parts: Vec<PyObjectRef> = path.components()
         .map(|c| PyObject::str_val(CompactString::from(c.as_os_str().to_string_lossy().to_string())))
