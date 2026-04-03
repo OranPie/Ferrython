@@ -359,7 +359,7 @@ These modules are completely unimplemented:
 
 | Module | What Works | Status |
 |--------|-----------|--------|
-| `decimal` | `Decimal(str)` constructor | Arithmetic gives floating-point result: `Decimal("1.1") + Decimal("2.2")` → `3.3000000000000003` instead of `3.3` |
+| `decimal` | `Decimal(str)` constructor, arithmetic | ✅ `[CORRECTED]` `Decimal("1.1") + Decimal("2.2")` → `Decimal('3.3')` (exact) |
 | `numbers` | Module imports; ABC classes present | ✅ [FIXED] `isinstance(42, numbers.Integral)` works correctly |
 | `enum.IntEnum` | Declaration, member access, equality, arithmetic | ✅ [FIXED] `isinstance(Dir.N, int)` works; `Dir.N + 1` arithmetic works via `with_enum_fallback!` macro |
 | `weakref` | Module imports | ✅ [FIXED] `weakref.ref(obj)` works correctly; `r()` returns referent |
@@ -372,9 +372,9 @@ These modules are completely unimplemented:
 | `datetime` | `datetime.now()`, `.year/.month/.day`, `strftime()` | ✅ `date + timedelta` works; `datetime.strptime()` not implemented |
 | `contextlib.ExitStack` | ✅ Basic usage works | `stack.enter_context(cm)` needs testing |
 | `typing` | Type aliases, annotations | ✅ [FIXED] `get_type_hints(f)` reads `__annotations__` from function/class |
-| `numbers` (via `platform`) | `platform.system()` works | `platform.python_version()` unknown |
-| `bisect` | Module imports; functions present | Not fully verified |
-| `heapq` | Module imports; functions present | Not fully verified |
+| `numbers` (via `platform`) | `platform.system()` works | ✅ `platform.python_version()` → `3.8.0` |
+| `bisect` | `bisect_left`, `bisect_right`, `insort` | ✅ Fully working |
+| `heapq` | `heappush`, `heappop`, `heapify` | ✅ Fully working |
 
 ### 6.3 Present and Working ✅ `[CORRECTED from prior analysis]`
 
