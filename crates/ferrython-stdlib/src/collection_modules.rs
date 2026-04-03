@@ -262,13 +262,32 @@ pub fn create_functools_module() -> PyObjectRef {
                 }
             }
         })),
-        ("wraps", make_builtin(|args| {
-            // Simple pass-through decorator — return identity
+        ("wraps", PyObject::native_function("functools.wraps", |args| {
+            // wraps(wrapped) returns a decorator that copies __name__, __doc__, etc.
             if args.is_empty() { return Ok(PyObject::none()); }
-            Ok(make_builtin(|args| {
-                if args.is_empty() { return Ok(PyObject::none()); }
-                Ok(args[0].clone())
-            }))
+            // The wrapped function is args[0]; we return a decorator
+            // that will receive the wrapper and copy attrs from wrapped → wrapper
+            let wrapped = args[0].clone();
+            let decorator = PyObject::native_closure("functools.wraps.decorator", move |wrapper_args| {
+                if wrapper_args.is_empty() { return Ok(PyObject::none()); }
+                let wrapper = &wrapper_args[0];
+                // Copy __name__ from wrapped to wrapper
+                if let Some(name) = wrapped.get_attr("__name__") {
+                    if let PyObjectPayload::Instance(ref d) = wrapper.payload {
+                        d.attrs.write().insert(CompactString::from("__name__"), name);
+                    } else if let PyObjectPayload::Function(ref fd) = wrapper.payload {
+                        fd.attrs.write().insert(CompactString::from("__name__"), wrapped.get_attr("__name__").unwrap_or_else(|| PyObject::str_val(CompactString::from(""))));
+                    }
+                }
+                // Store __wrapped__ reference
+                if let PyObjectPayload::Instance(ref d) = wrapper.payload {
+                    d.attrs.write().insert(CompactString::from("__wrapped__"), wrapped.clone());
+                } else if let PyObjectPayload::Function(ref fd) = wrapper.payload {
+                    fd.attrs.write().insert(CompactString::from("__wrapped__"), wrapped.clone());
+                }
+                Ok(wrapper.clone())
+            });
+            Ok(decorator)
         })),
         ("cached_property", make_builtin(|args| {
             // Stub — just wrap the function in a property-like

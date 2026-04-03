@@ -419,6 +419,16 @@ impl VirtualMachine {
                     Ok(items)
                 }
             }
+            PyObjectPayload::Class(_) => {
+                // Class with __iter__ (e.g. Enum): call __iter__(cls)
+                if let Some(iter_method) = obj.get_attr("__iter__") {
+                    let result = self.call_object(iter_method, vec![obj.clone()])?;
+                    return self.collect_iterable(&result);
+                }
+                Err(PyException::type_error(format!(
+                    "'type' object is not iterable"
+                )))
+            }
             _ => obj.to_list(),
         }
     }
