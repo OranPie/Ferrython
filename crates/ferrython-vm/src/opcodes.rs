@@ -850,6 +850,24 @@ impl VirtualMachine {
                         let hk = self.vm_to_hashable_key(&key)?;
                         map.write().insert(hk, value);
                     }
+                    PyObjectPayload::ByteArray(ref bytes) => {
+                        let idx = key.to_int()?;
+                        let byte_val = value.to_int()? as u8;
+                        // ByteArray is immutable-shared via Arc, so we need unsafe or a wrapper.
+                        // Actually, ByteArray uses Vec<u8> directly in the payload.
+                        // We need a mutable reference. Since PyObjectPayload::ByteArray wraps Vec<u8>,
+                        // we can't mutate through Arc. Let's handle this via a workaround.
+                        let len = bytes.len() as i64;
+                        let actual = if idx < 0 { len + idx } else { idx };
+                        if actual < 0 || actual >= len {
+                            return Err(PyException::index_error("bytearray index out of range"));
+                        }
+                        // Use unsafe to mutate the inner bytes through the Arc
+                        unsafe {
+                            let ptr = bytes.as_ptr() as *mut u8;
+                            *ptr.add(actual as usize) = byte_val;
+                        }
+                    }
                     PyObjectPayload::InstanceDict(attrs) => {
                         let key_str = CompactString::from(key.py_to_string());
                         attrs.write().insert(key_str, value);
