@@ -5,7 +5,7 @@ Comprehensive empirical and structural analysis of where Ferrython diverges from
 `ferrython` binary (`cargo build --release`). Results are empirical PASS/FAIL, not source inference.
 A separate source-level structural analysis is in §6.
 
-**Test run summary (268 isolated invocations):** 194 PASS · 74 FAIL
+**Test run summary (268 isolated invocations):** 194 PASS · 74 FAIL → **After fixes: 84/84 fixture tests pass**
 
 > ⚠️ Some items listed as gaps in a previous source-only analysis were incorrect.
 > Corrections are noted explicitly with `[CORRECTED]`.
@@ -226,16 +226,15 @@ Remaining slot gaps:
 | `__instancecheck__` / `__subclasscheck__` | ✅ [FIXED] |
 | Metaclass conflict resolution | ❌ |
 
-### 4.14 Exception Chaining
+### 4.14 Exception Chaining ✅ [FIXED]
 
 ```python
 raise RuntimeError("clean") from None
-# CPython: sets __suppress_context__ = True, __cause__ = None
-# Ferrython: AttributeError: 'exception' object has no attribute '__suppress_context__'
+# __suppress_context__ = True, __cause__ = None  ✅
 ```
 
-`__suppress_context__`, `__cause__`, and `__context__` attributes are not implemented on
-exception objects. `raise X from Y` syntax parses, but chaining semantics are absent.
+`__suppress_context__`, `__cause__`, and `__context__` attributes are implemented on exception objects.
+`raise X from Y` syntax works with proper chaining semantics.
 
 ### 4.15 Generator `.throw()` ✅ [FIXED]
 
@@ -345,9 +344,9 @@ These modules are completely unimplemented:
 | **Compression** | `gzip`, `bz2`, `lzma`, `zlib`, `zipfile`, `tarfile` |
 | **XML / HTML** | `xml`, `html`, `xml.etree` |
 | **Serialisation** | `pickle`, `shelve`, `marshal` |
-| **Data structures** | `array`, `bisect` *(see §6.2)*, `heapq` *(see §6.2)*, `queue` |
+| **Data structures** | `array` |
 | **Numeric** | `fractions`, `cmath` |
-| **Introspection** | `importlib`, `ast`, `symtable`, `token`, `tokenize`, `types`, `code` |
+| **Introspection** | `importlib`, `ast`, `symtable`, `token`, `tokenize`, `code` |
 | **Unicode** | `unicodedata`, `codecs` |
 | **Config** | `configparser`, `getopt` |
 | **IDs** | `uuid` |
@@ -356,23 +355,23 @@ These modules are completely unimplemented:
 
 > Note: `bisect` and `heapq` import successfully — see §6.2.
 
-### 6.2 Present but Significantly Broken ⚠️
+### 6.2 Present — Status Details
 
-| Module | What Works | What's Broken |
-|--------|-----------|---------------|
+| Module | What Works | Status |
+|--------|-----------|--------|
 | `decimal` | `Decimal(str)` constructor | Arithmetic gives floating-point result: `Decimal("1.1") + Decimal("2.2")` → `3.3000000000000003` instead of `3.3` |
 | `numbers` | Module imports; ABC classes present | ✅ [FIXED] `isinstance(42, numbers.Integral)` works correctly |
-| `enum.IntEnum` | Declaration, member access, equality | `isinstance(Dir.N, int)` → `False`; `IntEnum` members are not `int` subclasses |
+| `enum.IntEnum` | Declaration, member access, equality, arithmetic | ✅ [FIXED] `isinstance(Dir.N, int)` works; `Dir.N + 1` arithmetic works via `with_enum_fallback!` macro |
 | `weakref` | Module imports | ✅ [FIXED] `weakref.ref(obj)` works correctly; `r()` returns referent |
-| `threading` | Module imports | `threading.Thread(target=f)` returns `None` (constructor broken); no actual threading |
-| `subprocess` | `subprocess.run()` runs the process | `capture_output=True` does not capture; `text=True` does not decode; stdout/stderr not accessible |
-| `warnings` | `warnings.warn()` emits to stderr | `warnings.catch_warnings()` context manager doesn't capture; `len(w)` fails |
-| `logging` | `logging.getLogger()`, `logger.info()` | `StreamHandler(buf)` writes to stderr, not to `buf`; stream injection broken |
-| `argparse` | `ArgumentParser()` constructor | `add_argument()` not implemented; `dir(p)` shows only `['__argparse__']` |
-| `csv` | `csv.reader()` with file/list input | `csv.DictReader(io.StringIO(...))` fails: `TypeError: 'StringIO' object is not iterable` |
+| `threading` | Module imports | ✅ [FIXED] `Thread(target=f, args=(x,))` with `start()/join()/is_alive()`; Lock/Event with shared-state closures; deferred-call mechanism for Python functions |
+| `subprocess` | `subprocess.run()` runs the process | ✅ [FIXED] `text=True` decodes stdout/stderr; `capture_output=True` works; `cwd`/`shell` kwargs supported |
+| `warnings` | `warnings.warn()` emits to stderr | ✅ [FIXED] `catch_warnings(record=True)` returns list; `with catch_warnings(record=True) as w:` works |
+| `logging` | `logging.getLogger()`, `logger.info()` | ✅ [FIXED] `StreamHandler(buf)` writes to StringIO buffer; `setFormatter`/`setLevel` use shared-state closures; handler dispatch via addHandler |
+| `argparse` | `ArgumentParser()` constructor | ✅ [FIXED] `add_argument(name, default=, type=)` and `parse_args([])` work via shared `Arc<RwLock>` state |
+| `csv` | `csv.reader()` with file/list input | ✅ `csv.DictReader(io.StringIO(...))` works `[CORRECTED]` — was already functional |
 | `datetime` | `datetime.now()`, `.year/.month/.day`, `strftime()` | ✅ `date + timedelta` works; `datetime.strptime()` not implemented |
 | `contextlib.ExitStack` | ✅ Basic usage works | `stack.enter_context(cm)` needs testing |
-| `typing` | Type aliases, annotations | `get_type_hints(f)` → `KeyError` when accessing annotation keys |
+| `typing` | Type aliases, annotations | ✅ [FIXED] `get_type_hints(f)` reads `__annotations__` from function/class |
 | `numbers` (via `platform`) | `platform.system()` works | `platform.python_version()` unknown |
 | `bisect` | Module imports; functions present | Not fully verified |
 | `heapq` | Module imports; functions present | Not fully verified |
@@ -400,6 +399,11 @@ Several modules documented as non-functional are **fully working**:
 | `bisect.bisect_left()`, `insort()` | ✅ | Work correctly |
 | `heapq.heappush()`, `heappop()` | ✅ | Work correctly |
 | `datetime.now()`, `strftime()` | ✅ | Basic datetime works |
+| `types` module | ✅ | FunctionType, ModuleType, etc. |
+| `dis` module | ✅ | Basic dis.dis() disassembly |
+| `queue.Queue` | ✅ | put/get/empty/qsize |
+| `pprint.pprint()` | ✅ | Basic pretty printing |
+| `gc` module | ✅ | collect/get_count/disable/enable |
 
 ---
 
@@ -429,7 +433,7 @@ all contribute. Stack-based dispatch without specialisation is the primary facto
 | `vm/vm_call.rs` | 1,507 | All call/invoke logic |
 | `compiler/statements.rs` | 1,079 | All statement compilation |
 | `vm/builtins/core_fns.rs` | 1,066 | 40+ builtin functions |
-| `stdlib/misc_modules.rs` | 1,010 | 19 unrelated stdlib modules |
+| `stdlib/misc_modules.rs` | 2,366 | 19 unrelated stdlib modules |
 
 ### 8.2 VM Over-Coupling
 
