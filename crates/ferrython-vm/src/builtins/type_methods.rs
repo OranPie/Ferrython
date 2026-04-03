@@ -197,7 +197,18 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
             Ok(PyObject::none())
         }
         "popitem" => {
-            match map.write().pop() {
+            let last = if !args.is_empty() {
+                args[0].is_truthy()
+            } else {
+                true
+            };
+            let mut w = map.write();
+            let entry = if last {
+                w.pop()
+            } else {
+                w.shift_remove_index(0).map(|(k, v)| (k, v))
+            };
+            match entry {
                 Some((k, v)) => Ok(PyObject::tuple(vec![k.to_object(), v])),
                 None => Err(PyException::key_error("popitem(): dictionary is empty")),
             }
