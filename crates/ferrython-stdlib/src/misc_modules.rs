@@ -38,29 +38,38 @@ pub fn create_typing_module() -> PyObjectRef {
         IndexMap::new(),
     );
 
+    // Helper to create typing generic alias classes
+    // These support subscript notation: List[int] → _GenericAlias("List", (int,))
+    let make_typing_alias = |display_name: &str| -> PyObjectRef {
+        let name = CompactString::from(display_name);
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("__typing_name__"), PyObject::str_val(name));
+        PyObject::class(CompactString::from(display_name), vec![], ns)
+    };
+
     let mut attrs: Vec<(&str, PyObjectRef)> = vec![
         ("Any", PyObject::builtin_type(CompactString::from("Any"))),
-        ("Union", PyObject::builtin_type(CompactString::from("Union"))),
-        ("Optional", PyObject::builtin_type(CompactString::from("Optional"))),
-        ("List", PyObject::builtin_type(CompactString::from("list"))),
-        ("Dict", PyObject::builtin_type(CompactString::from("dict"))),
-        ("Set", PyObject::builtin_type(CompactString::from("set"))),
-        ("Tuple", PyObject::builtin_type(CompactString::from("tuple"))),
-        ("FrozenSet", PyObject::builtin_type(CompactString::from("frozenset"))),
-        ("Type", PyObject::builtin_type(CompactString::from("type"))),
-        ("Callable", PyObject::builtin_type(CompactString::from("Callable"))),
-        ("Iterator", PyObject::builtin_type(CompactString::from("Iterator"))),
-        ("Generator", PyObject::builtin_type(CompactString::from("Generator"))),
-        ("Sequence", PyObject::builtin_type(CompactString::from("Sequence"))),
-        ("Mapping", PyObject::builtin_type(CompactString::from("Mapping"))),
-        ("MutableMapping", PyObject::builtin_type(CompactString::from("MutableMapping"))),
-        ("Iterable", PyObject::builtin_type(CompactString::from("Iterable"))),
+        ("Union", make_typing_alias("Union")),
+        ("Optional", make_typing_alias("Optional")),
+        ("List", make_typing_alias("List")),
+        ("Dict", make_typing_alias("Dict")),
+        ("Set", make_typing_alias("Set")),
+        ("Tuple", make_typing_alias("Tuple")),
+        ("FrozenSet", make_typing_alias("FrozenSet")),
+        ("Type", make_typing_alias("Type")),
+        ("Callable", make_typing_alias("Callable")),
+        ("Iterator", make_typing_alias("Iterator")),
+        ("Generator", make_typing_alias("Generator")),
+        ("Sequence", make_typing_alias("Sequence")),
+        ("Mapping", make_typing_alias("Mapping")),
+        ("MutableMapping", make_typing_alias("MutableMapping")),
+        ("Iterable", make_typing_alias("Iterable")),
         ("TypeVar", typevar_fn),
         ("Generic", generic_class),
         ("Protocol", protocol_class),
-        ("ClassVar", PyObject::builtin_type(CompactString::from("ClassVar"))),
-        ("Final", PyObject::builtin_type(CompactString::from("Final"))),
-        ("Literal", PyObject::builtin_type(CompactString::from("Literal"))),
+        ("ClassVar", make_typing_alias("ClassVar")),
+        ("Final", make_typing_alias("Final")),
+        ("Literal", make_typing_alias("Literal")),
         ("NamedTuple", PyObject::builtin_type(CompactString::from("NamedTuple"))),
         ("get_type_hints", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
         ("cast", make_builtin(|args: &[PyObjectRef]| {

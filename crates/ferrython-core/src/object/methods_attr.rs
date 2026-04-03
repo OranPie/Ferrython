@@ -591,7 +591,18 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         else { Some(PyObject::tuple(f.defaults.clone())) }
                     }
                     "__module__" => Some(PyObject::str_val(CompactString::from("__main__"))),
-                    "__doc__" => Some(PyObject::none()),
+                    "__doc__" => {
+                        // Check attrs first (set by functools.wraps etc.)
+                        if let Some(doc) = f.attrs.read().get("__doc__").cloned() {
+                            return Some(doc);
+                        }
+                        // Extract docstring from first constant if it's a string
+                        if let Some(ferrython_bytecode::ConstantValue::Str(s)) = f.code.constants.first() {
+                            Some(PyObject::str_val(s.clone()))
+                        } else {
+                            Some(PyObject::none())
+                        }
+                    }
                     "__dict__" => Some(PyObject::wrap(PyObjectPayload::InstanceDict(f.attrs.clone()))),
                     "__annotations__" => {
                         let mut map = IndexMap::new();

@@ -303,20 +303,25 @@ pub fn create_functools_module() -> PyObjectRef {
         ("wraps", PyObject::native_function("functools.wraps", |args| {
             // wraps(wrapped) returns a decorator that copies __name__, __doc__, etc.
             if args.is_empty() { return Ok(PyObject::none()); }
-            // The wrapped function is args[0]; we return a decorator
-            // that will receive the wrapper and copy attrs from wrapped → wrapper
             let wrapped = args[0].clone();
             let decorator = PyObject::native_closure("functools.wraps.decorator", move |wrapper_args| {
                 if wrapper_args.is_empty() { return Ok(PyObject::none()); }
                 let wrapper = &wrapper_args[0];
-                // Copy __name__ from wrapped to wrapper
-                if let Some(name) = wrapped.get_attr("__name__") {
-                    if let PyObjectPayload::Instance(ref d) = wrapper.payload {
-                        d.attrs.write().insert(CompactString::from("__name__"), name);
-                    } else if let PyObjectPayload::Function(ref fd) = wrapper.payload {
-                        fd.attrs.write().insert(CompactString::from("__name__"), wrapped.get_attr("__name__").unwrap_or_else(|| PyObject::str_val(CompactString::from(""))));
+                // Copy __name__, __doc__, __wrapped__ from wrapped to wrapper
+                let copy_attr = |attr_name: &str| {
+                    if let Some(val) = wrapped.get_attr(attr_name) {
+                        if let PyObjectPayload::Instance(ref d) = wrapper.payload {
+                            d.attrs.write().insert(CompactString::from(attr_name), val);
+                        } else if let PyObjectPayload::Function(ref fd) = wrapper.payload {
+                            fd.attrs.write().insert(CompactString::from(attr_name), val);
+                        }
                     }
-                }
+                };
+                copy_attr("__name__");
+                copy_attr("__doc__");
+                copy_attr("__module__");
+                copy_attr("__qualname__");
+                copy_attr("__dict__");
                 // Store __wrapped__ reference
                 if let PyObjectPayload::Instance(ref d) = wrapper.payload {
                     d.attrs.write().insert(CompactString::from("__wrapped__"), wrapped.clone());

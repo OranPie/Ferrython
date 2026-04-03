@@ -416,8 +416,28 @@ fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pattern = args[0].py_to_string();
     let repl = args[1].py_to_string();
     let text = args[2].py_to_string();
-    let count = if args.len() > 3 { args[3].to_int().unwrap_or(0) as usize } else { 0 };
-    let flags = if args.len() > 4 { args[4].to_int().unwrap_or(0) } else { 0 };
+    // count and flags can be positional or in trailing kwargs dict
+    let mut count = if args.len() > 3 && !matches!(&args[3].payload, PyObjectPayload::Dict(_)) {
+        args[3].to_int().unwrap_or(0) as usize
+    } else { 0 };
+    let mut flags = if args.len() > 4 && !matches!(&args[4].payload, PyObjectPayload::Dict(_)) {
+        args[4].to_int().unwrap_or(0)
+    } else { 0 };
+    // Check for trailing kwargs dict
+    if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(map) = &last.payload {
+            let map_r = map.read();
+            for (k, v) in map_r.iter() {
+                if let HashableKey::Str(s) = k {
+                    match s.as_str() {
+                        "count" => count = v.to_int().unwrap_or(0) as usize,
+                        "flags" => flags = v.to_int().unwrap_or(0),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
     let re = build_regex(&pattern, flags)?;
     let result = if count == 0 {
         re.replace_all(&text, repl.as_str()).to_string()

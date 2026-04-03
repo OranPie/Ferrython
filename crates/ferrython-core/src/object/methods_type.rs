@@ -138,6 +138,10 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 // Known instance types with custom __str__
                 {
                     let attrs = inst.attrs.read();
+                    // typing _GenericAlias → return typing repr
+                    if let Some(typing_repr) = attrs.get("__typing_repr__") {
+                        return typing_repr.py_to_string();
+                    }
                     // pathlib.Path → return _path string
                     if attrs.contains_key("__pathlib_path__") {
                         return attrs.get("_path").map(|v| v.py_to_string()).unwrap_or_default();
@@ -246,6 +250,10 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                         .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr()))
                         .collect();
                     return format!("{{{}}}", items.join(", "));
+                }
+                // typing _GenericAlias repr
+                if let Some(typing_repr) = inst.attrs.read().get("__typing_repr__").cloned() {
+                    return typing_repr.py_to_string();
                 }
                 // Check for __repr__ first
                 if let Some(_) = obj.get_attr("__repr__") {

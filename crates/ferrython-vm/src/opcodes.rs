@@ -754,6 +754,23 @@ impl VirtualMachine {
                         self.vm_push(result);
                         return Ok(None);
                     }
+                    // typing generic alias: List[int] → _GenericAlias with str
+                    if let Some(typing_name) = obj.get_attr("__typing_name__") {
+                        let name = typing_name.py_to_string();
+                        let params = match &key.payload {
+                            PyObjectPayload::Tuple(items) => {
+                                items.iter().map(|i| i.type_name().to_string()).collect::<Vec<_>>().join(", ")
+                            }
+                            _ => key.type_name().to_string(),
+                        };
+                        let repr = format!("{}[{}]", name, params);
+                        let alias_cls = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
+                        let mut attrs = IndexMap::new();
+                        attrs.insert(CompactString::from("__typing_repr__"), PyObject::str_val(CompactString::from(&repr)));
+                        attrs.insert(CompactString::from("__str__"), PyObject::str_val(CompactString::from(&repr)));
+                        self.vm_push(PyObject::instance_with_attrs(alias_cls, attrs));
+                        return Ok(None);
+                    }
                     // Generic fallback: Class[X] returns the class itself (PEP 585)
                     self.vm_push(obj.clone());
                     return Ok(None);
@@ -1118,6 +1135,44 @@ impl VirtualMachine {
                                 return Ok(None);
                             }
                         }
+                    }
+                }
+            }
+            // namedtuple equality: compare underlying _tuple
+            if op == 2 || op == 3 {
+                if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
+                    if inst_a.class.get_attr("__namedtuple__").is_some() && inst_b.class.get_attr("__namedtuple__").is_some() {
+                        let ta = inst_a.attrs.read().get("_tuple").cloned();
+                        let tb = inst_b.attrs.read().get("_tuple").cloned();
+                        if let (Some(tup_a), Some(tup_b)) = (ta, tb) {
+                            let result = tup_a.compare(&tup_b, CompareOp::Eq)?;
+                            let val = if op == 2 { result.is_truthy() } else { !result.is_truthy() };
+                            self.vm_push(PyObject::bool_val(val));
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+            // IntEnum/enum value-based comparison fallback
+            if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
+                let va = inst_a.attrs.read().get("value").cloned();
+                let vb = inst_b.attrs.read().get("value").cloned();
+                if let (Some(av), Some(bv)) = (va, vb) {
+                    if matches!(av.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_))
+                        && matches!(bv.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_))
+                    {
+                        let cmp_op = match op {
+                            0 => CompareOp::Lt,
+                            1 => CompareOp::Le,
+                            2 => CompareOp::Eq,
+                            3 => CompareOp::Ne,
+                            4 => CompareOp::Gt,
+                            5 => CompareOp::Ge,
+                            _ => unreachable!()
+                        };
+                        let result = av.compare(&bv, cmp_op)?;
+                        self.vm_push(result);
+                        return Ok(None);
                     }
                 }
             }
