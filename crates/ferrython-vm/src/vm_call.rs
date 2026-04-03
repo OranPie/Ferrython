@@ -633,6 +633,18 @@ impl VirtualMachine {
                         }
                     }
                 }
+                // Generic BuiltinBoundMethod kwargs: pass as trailing dict
+                if let PyObjectPayload::BuiltinBoundMethod { .. } = &func.payload {
+                    if !kwargs.is_empty() {
+                        let mut all_args = pos_args;
+                        let mut kw_map = IndexMap::new();
+                        for (k, v) in kwargs {
+                            kw_map.insert(HashableKey::Str(k), v);
+                        }
+                        all_args.push(PyObject::dict(kw_map));
+                        return self.call_object(func, all_args);
+                    }
+                }
                 // Fall back to call_object for builtins etc
                 // Handle builtins with keyword args
                 let builtin_name = match &func.payload {
