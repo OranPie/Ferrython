@@ -24,6 +24,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "numbers" => Some(math_modules::create_numbers_module()),
         "decimal" => Some(math_modules::create_decimal_module()),
         "random" => Some(math_modules::create_random_module()),
+        "heapq" => Some(math_modules::create_heapq_module()),
+        "bisect" => Some(math_modules::create_bisect_module()),
         // System & OS
         "sys" => Some(sys_modules::create_sys_module()),
         "os" => Some(sys_modules::create_os_module()),
@@ -39,6 +41,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "collections" => Some(collection_modules::create_collections_module()),
         "functools" => Some(collection_modules::create_functools_module()),
         "itertools" => Some(collection_modules::create_itertools_module()),
+        "queue" => Some(collection_modules::create_queue_module()),
         // Serialization
         "json" => Some(serial_modules::create_json_module()),
         "csv" => Some(serial_modules::create_csv_module()),

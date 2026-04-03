@@ -686,4 +686,27 @@ fn create_cached_function(func: PyObjectRef) -> PyObjectRef {
     PyObject::instance_with_attrs(cache_class, attrs)
 }
 
+// ── queue module ──
 
+pub fn create_queue_module() -> PyObjectRef {
+    make_module("queue", vec![
+        ("Queue", PyObject::native_function("Queue", |args| create_queue_instance("Queue", args))),
+        ("LifoQueue", PyObject::native_function("LifoQueue", |args| create_queue_instance("LifoQueue", args))),
+        ("PriorityQueue", PyObject::native_function("PriorityQueue", |args| create_queue_instance("PriorityQueue", args))),
+        ("Empty", PyObject::class(CompactString::from("Empty"), vec![], IndexMap::new())),
+        ("Full", PyObject::class(CompactString::from("Full"), vec![], IndexMap::new())),
+    ])
+}
+
+fn create_queue_instance(kind: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let maxsize = if !args.is_empty() { args[0].to_int().unwrap_or(0) } else { 0 };
+    let class = PyObject::class(CompactString::from(kind), vec![], IndexMap::new());
+    let inst = PyObject::instance(class);
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("__queue__"), PyObject::str_val(CompactString::from(kind)));
+        w.insert(CompactString::from("_items"), PyObject::list(vec![]));
+        w.insert(CompactString::from("maxsize"), PyObject::int(maxsize));
+    }
+    Ok(inst)
+}

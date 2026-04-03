@@ -3,8 +3,8 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectRef,
-    make_module, make_builtin, check_args,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, CompareOp,
+    make_module, make_builtin, check_args, check_args_min,
 };
 use indexmap::IndexMap;
 
@@ -265,12 +265,67 @@ pub fn create_statistics_module() -> PyObjectRef {
 
 
 pub fn create_numbers_module() -> PyObjectRef {
+    // Number — base class with __number__ marker
+    let mut number_ns = IndexMap::new();
+    number_ns.insert(CompactString::from("__number__"), PyObject::bool_val(true));
+    let number_class = PyObject::class(
+        CompactString::from("Number"),
+        vec![],
+        number_ns,
+    );
+
+    // Complex — subclass of Number with __complex__ marker
+    let mut complex_ns = IndexMap::new();
+    complex_ns.insert(CompactString::from("__complex__"), PyObject::bool_val(true));
+    complex_ns.insert(CompactString::from("__number__"), PyObject::bool_val(true));
+    let complex_class = PyObject::class(
+        CompactString::from("Complex"),
+        vec![number_class.clone()],
+        complex_ns,
+    );
+
+    // Real — subclass of Complex with __real__ marker
+    let mut real_ns = IndexMap::new();
+    real_ns.insert(CompactString::from("__real__"), PyObject::bool_val(true));
+    real_ns.insert(CompactString::from("__complex__"), PyObject::bool_val(true));
+    real_ns.insert(CompactString::from("__number__"), PyObject::bool_val(true));
+    let real_class = PyObject::class(
+        CompactString::from("Real"),
+        vec![complex_class.clone()],
+        real_ns,
+    );
+
+    // Rational — subclass of Real with __rational__ marker
+    let mut rational_ns = IndexMap::new();
+    rational_ns.insert(CompactString::from("__rational__"), PyObject::bool_val(true));
+    rational_ns.insert(CompactString::from("__real__"), PyObject::bool_val(true));
+    rational_ns.insert(CompactString::from("__complex__"), PyObject::bool_val(true));
+    rational_ns.insert(CompactString::from("__number__"), PyObject::bool_val(true));
+    let rational_class = PyObject::class(
+        CompactString::from("Rational"),
+        vec![real_class.clone()],
+        rational_ns,
+    );
+
+    // Integral — subclass of Rational with __integral__ marker
+    let mut integral_ns = IndexMap::new();
+    integral_ns.insert(CompactString::from("__integral__"), PyObject::bool_val(true));
+    integral_ns.insert(CompactString::from("__rational__"), PyObject::bool_val(true));
+    integral_ns.insert(CompactString::from("__real__"), PyObject::bool_val(true));
+    integral_ns.insert(CompactString::from("__complex__"), PyObject::bool_val(true));
+    integral_ns.insert(CompactString::from("__number__"), PyObject::bool_val(true));
+    let integral_class = PyObject::class(
+        CompactString::from("Integral"),
+        vec![rational_class.clone()],
+        integral_ns,
+    );
+
     make_module("numbers", vec![
-        ("Number", PyObject::none()),
-        ("Complex", PyObject::none()),
-        ("Real", PyObject::none()),
-        ("Rational", PyObject::none()),
-        ("Integral", PyObject::none()),
+        ("Number", number_class),
+        ("Complex", complex_class),
+        ("Real", real_class),
+        ("Rational", rational_class),
+        ("Integral", integral_class),
     ])
 }
 
@@ -387,4 +442,252 @@ fn random_randrange(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 // ── Stub modules ──
 
+// ── heapq module ──
 
+pub fn create_heapq_module() -> PyObjectRef {
+    make_module("heapq", vec![
+        ("heappush", make_builtin(heapq_push)),
+        ("heappop", make_builtin(heapq_pop)),
+        ("heapify", make_builtin(heapq_heapify)),
+        ("heappushpop", make_builtin(heapq_pushpop)),
+        ("heapreplace", make_builtin(heapq_replace)),
+        ("nlargest", make_builtin(heapq_nlargest)),
+        ("nsmallest", make_builtin(heapq_nsmallest)),
+        ("merge", make_builtin(heapq_merge)),
+    ])
+}
+
+fn heap_cmp_lt(a: &PyObjectRef, b: &PyObjectRef) -> bool {
+    a.compare(b, CompareOp::Lt).map(|v| v.is_truthy()).unwrap_or(false)
+}
+
+fn heap_sift_up(items: &mut Vec<PyObjectRef>, mut pos: usize) {
+    while pos > 0 {
+        let parent = (pos - 1) / 2;
+        if heap_cmp_lt(&items[pos], &items[parent]) {
+            items.swap(pos, parent);
+            pos = parent;
+        } else {
+            break;
+        }
+    }
+}
+
+fn heap_sift_down(items: &mut Vec<PyObjectRef>, mut pos: usize, end: usize) {
+    loop {
+        let mut child = 2 * pos + 1;
+        if child >= end { break; }
+        let right = child + 1;
+        if right < end && heap_cmp_lt(&items[right], &items[child]) {
+            child = right;
+        }
+        if heap_cmp_lt(&items[child], &items[pos]) {
+            items.swap(pos, child);
+            pos = child;
+        } else {
+            break;
+        }
+    }
+}
+
+fn heapq_push(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("heappush", args, 2)?;
+    let list_obj = &args[0];
+    if let PyObjectPayload::List(lock) = &list_obj.payload {
+        let mut items = lock.write();
+        items.push(args[1].clone());
+        let pos = items.len() - 1;
+        heap_sift_up(&mut items, pos);
+        Ok(PyObject::none())
+    } else {
+        Err(PyException::type_error("heappush: first arg must be a list"))
+    }
+}
+
+fn heapq_pop(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("heappop", args, 1)?;
+    if let PyObjectPayload::List(lock) = &args[0].payload {
+        let mut items = lock.write();
+        if items.is_empty() { return Err(PyException::index_error("index out of range")); }
+        let len = items.len();
+        if len == 1 { return Ok(items.pop().unwrap()); }
+        items.swap(0, len - 1);
+        let result = items.pop().unwrap();
+        let n = items.len();
+        heap_sift_down(&mut items, 0, n);
+        Ok(result)
+    } else {
+        Err(PyException::type_error("heappop: arg must be a list"))
+    }
+}
+
+fn heapq_heapify(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("heapify", args, 1)?;
+    if let PyObjectPayload::List(lock) = &args[0].payload {
+        let mut items = lock.write();
+        let n = items.len();
+        for i in (0..n / 2).rev() {
+            heap_sift_down(&mut items, i, n);
+        }
+        Ok(PyObject::none())
+    } else {
+        Err(PyException::type_error("heapify: arg must be a list"))
+    }
+}
+
+fn heapq_pushpop(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("heappushpop", args, 2)?;
+    if let PyObjectPayload::List(lock) = &args[0].payload {
+        let mut items = lock.write();
+        if items.is_empty() || heap_cmp_lt(&args[1], &items[0]) {
+            return Ok(args[1].clone());
+        }
+        let result = std::mem::replace(&mut items[0], args[1].clone());
+        let n = items.len();
+        heap_sift_down(&mut items, 0, n);
+        Ok(result)
+    } else {
+        Err(PyException::type_error("heappushpop: first arg must be a list"))
+    }
+}
+
+fn heapq_replace(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("heapreplace", args, 2)?;
+    if let PyObjectPayload::List(lock) = &args[0].payload {
+        let mut items = lock.write();
+        if items.is_empty() { return Err(PyException::index_error("index out of range")); }
+        let result = std::mem::replace(&mut items[0], args[1].clone());
+        let n = items.len();
+        heap_sift_down(&mut items, 0, n);
+        Ok(result)
+    } else {
+        Err(PyException::type_error("heapreplace: first arg must be a list"))
+    }
+}
+
+fn heapq_nlargest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("nlargest", args, 2)?;
+    let n = args[0].to_int()? as usize;
+    let items = args[1].to_list()?;
+    let mut sorted = items.clone();
+    sorted.sort_by(|a, b| {
+        if heap_cmp_lt(b, a) { std::cmp::Ordering::Less }
+        else if heap_cmp_lt(a, b) { std::cmp::Ordering::Greater }
+        else { std::cmp::Ordering::Equal }
+    });
+    sorted.truncate(n);
+    Ok(PyObject::list(sorted))
+}
+
+fn heapq_nsmallest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("nsmallest", args, 2)?;
+    let n = args[0].to_int()? as usize;
+    let items = args[1].to_list()?;
+    let mut sorted = items.clone();
+    sorted.sort_by(|a, b| {
+        if heap_cmp_lt(a, b) { std::cmp::Ordering::Less }
+        else if heap_cmp_lt(b, a) { std::cmp::Ordering::Greater }
+        else { std::cmp::Ordering::Equal }
+    });
+    sorted.truncate(n);
+    Ok(PyObject::list(sorted))
+}
+
+fn heapq_merge(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Simplified: concatenate all iterables and sort
+    let mut all = Vec::new();
+    for arg in args {
+        all.extend(arg.to_list()?);
+    }
+    all.sort_by(|a, b| {
+        if heap_cmp_lt(a, b) { std::cmp::Ordering::Less }
+        else if heap_cmp_lt(b, a) { std::cmp::Ordering::Greater }
+        else { std::cmp::Ordering::Equal }
+    });
+    Ok(PyObject::list(all))
+}
+
+// ── bisect module ──
+
+pub fn create_bisect_module() -> PyObjectRef {
+    make_module("bisect", vec![
+        ("bisect_left", make_builtin(bisect_left)),
+        ("bisect_right", make_builtin(bisect_right)),
+        ("bisect", make_builtin(bisect_right)), // bisect is alias for bisect_right
+        ("insort_left", make_builtin(insort_left)),
+        ("insort_right", make_builtin(insort_right)),
+        ("insort", make_builtin(insort_right)), // insort is alias for insort_right
+    ])
+}
+
+fn bisect_left_idx(items: &[PyObjectRef], x: &PyObjectRef, lo: usize, hi: usize) -> usize {
+    let mut lo = lo;
+    let mut hi = hi;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if heap_cmp_lt(&items[mid], x) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+fn bisect_right_idx(items: &[PyObjectRef], x: &PyObjectRef, lo: usize, hi: usize) -> usize {
+    let mut lo = lo;
+    let mut hi = hi;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if heap_cmp_lt(x, &items[mid]) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    lo
+}
+
+fn bisect_left(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("bisect_left", args, 2)?;
+    let items = args[0].to_list()?;
+    let lo = if args.len() > 2 { args[2].to_int()? as usize } else { 0 };
+    let hi = if args.len() > 3 { args[3].to_int()? as usize } else { items.len() };
+    Ok(PyObject::int(bisect_left_idx(&items, &args[1], lo, hi) as i64))
+}
+
+fn bisect_right(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("bisect_right", args, 2)?;
+    let items = args[0].to_list()?;
+    let lo = if args.len() > 2 { args[2].to_int()? as usize } else { 0 };
+    let hi = if args.len() > 3 { args[3].to_int()? as usize } else { items.len() };
+    Ok(PyObject::int(bisect_right_idx(&items, &args[1], lo, hi) as i64))
+}
+
+fn insort_left(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("insort_left", args, 2)?;
+    if let PyObjectPayload::List(lock) = &args[0].payload {
+        let mut items = lock.write();
+        let lo = if args.len() > 2 { args[2].to_int()? as usize } else { 0 };
+        let hi = if args.len() > 3 { args[3].to_int()? as usize } else { items.len() };
+        let idx = bisect_left_idx(&items, &args[1], lo, hi);
+        items.insert(idx, args[1].clone());
+        Ok(PyObject::none())
+    } else {
+        Err(PyException::type_error("insort_left: first arg must be a list"))
+    }
+}
+
+fn insort_right(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("insort_right", args, 2)?;
+    if let PyObjectPayload::List(lock) = &args[0].payload {
+        let mut items = lock.write();
+        let lo = if args.len() > 2 { args[2].to_int()? as usize } else { 0 };
+        let hi = if args.len() > 3 { args[3].to_int()? as usize } else { items.len() };
+        let idx = bisect_right_idx(&items, &args[1], lo, hi);
+        items.insert(idx, args[1].clone());
+        Ok(PyObject::none())
+    } else {
+        Err(PyException::type_error("insort_right: first arg must be a list"))
+    }
+}

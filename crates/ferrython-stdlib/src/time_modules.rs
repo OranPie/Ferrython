@@ -6,6 +6,7 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
     make_module, make_builtin, check_args,
 };
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -234,6 +235,7 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
+        w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
         w.insert(CompactString::from("year"), PyObject::int(year));
         w.insert(CompactString::from("month"), PyObject::int(month));
         w.insert(CompactString::from("day"), PyObject::int(day));
@@ -267,10 +269,38 @@ fn datetime_time_obj(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn datetime_timedelta(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let days = if !args.is_empty() { args[0].to_int()? } else { 0 };
-    let seconds = if args.len() > 1 { args[1].to_int()? } else { 0 };
-    let microseconds = if args.len() > 2 { args[2].to_int()? } else { 0 };
-    let total_seconds = days * 86400 + seconds;
+    // timedelta(days=0, seconds=0, microseconds=0, milliseconds=0, minutes=0, hours=0, weeks=0)
+    let mut days = 0i64;
+    let mut seconds = 0i64;
+    let mut microseconds = 0i64;
+    if !args.is_empty() { days = args[0].to_int().unwrap_or(0); }
+    if args.len() > 1 { seconds = args[1].to_int().unwrap_or(0); }
+    if args.len() > 2 { microseconds = args[2].to_int().unwrap_or(0); }
+    // Check for kwargs dict as last arg
+    if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(kw) = &last.payload {
+            let r = kw.read();
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("days"))) { days = v.as_int().unwrap_or(0); }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("seconds"))) { seconds = v.as_int().unwrap_or(0); }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("microseconds"))) { microseconds = v.as_int().unwrap_or(0); }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("milliseconds"))) { microseconds += v.as_int().unwrap_or(0) * 1000; }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("minutes"))) { seconds += v.as_int().unwrap_or(0) * 60; }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("hours"))) { seconds += v.as_int().unwrap_or(0) * 3600; }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("weeks"))) { days += v.as_int().unwrap_or(0) * 7; }
+        }
+    }
+    // Normalize: carry microseconds → seconds → days
+    seconds += microseconds / 1_000_000;
+    microseconds %= 1_000_000;
+    if microseconds < 0 { microseconds += 1_000_000; seconds -= 1; }
+    days += seconds / 86400;
+    seconds %= 86400;
+    if seconds < 0 { seconds += 86400; days -= 1; }
+    let total_secs = days as f64 * 86400.0 + seconds as f64 + microseconds as f64 / 1_000_000.0;
+    make_timedelta(days, seconds, microseconds, total_secs)
+}
+
+fn make_timedelta(days: i64, seconds: i64, microseconds: i64, total_secs: f64) -> PyResult<PyObjectRef> {
     let class = PyObject::class(CompactString::from("timedelta"), vec![], IndexMap::new());
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
@@ -279,10 +309,12 @@ fn datetime_timedelta(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
+        w.insert(CompactString::from("__timedelta__"), PyObject::bool_val(true));
         w.insert(CompactString::from("days"), PyObject::int(days));
         w.insert(CompactString::from("seconds"), PyObject::int(seconds));
         w.insert(CompactString::from("microseconds"), PyObject::int(microseconds));
-        w.insert(CompactString::from("total_seconds"), PyObject::float(total_seconds as f64 + microseconds as f64 / 1_000_000.0));
+        w.insert(CompactString::from("total_seconds"), PyObject::float(total_secs));
+        w.insert(CompactString::from("_total_us"), PyObject::int(days * 86_400_000_000 + seconds * 1_000_000 + microseconds));
     }
     Ok(inst)
 }

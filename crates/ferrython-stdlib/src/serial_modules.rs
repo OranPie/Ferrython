@@ -276,9 +276,9 @@ fn parse_json_object(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
 pub fn create_csv_module() -> PyObjectRef {
     make_module("csv", vec![
         ("reader", make_builtin(csv_reader)),
-        ("writer", make_builtin(|_| Ok(PyObject::none()))),
-        ("DictReader", make_builtin(|_| Ok(PyObject::none()))),
-        ("DictWriter", make_builtin(|_| Ok(PyObject::none()))),
+        ("writer", make_builtin(csv_writer)),
+        ("DictReader", make_builtin(csv_dict_reader)),
+        ("DictWriter", make_builtin(csv_dict_writer)),
         ("QUOTE_ALL", PyObject::int(1)),
         ("QUOTE_MINIMAL", PyObject::int(0)),
         ("QUOTE_NONNUMERIC", PyObject::int(2)),
@@ -286,29 +286,120 @@ pub fn create_csv_module() -> PyObjectRef {
     ])
 }
 
+fn csv_parse_line(s: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    current.push('"');
+                    chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                current.push(ch);
+            }
+        } else if ch == '"' {
+            in_quotes = true;
+        } else if ch == ',' {
+            fields.push(current.clone());
+            current.clear();
+        } else {
+            current.push(ch);
+        }
+    }
+    fields.push(current);
+    fields
+}
+
 fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("csv.reader requires an iterable"));
     }
-    // Convert iterable of strings into list of lists
     let lines = args[0].to_list()?;
     let mut rows = Vec::new();
     for line in &lines {
         let s = line.py_to_string();
-        let fields: Vec<PyObjectRef> = s.split(',')
-            .map(|f| {
-                let f = f.trim();
-                let f = if f.starts_with('"') && f.ends_with('"') {
-                    &f[1..f.len()-1]
-                } else {
-                    f
-                };
-                PyObject::str_val(CompactString::from(f))
-            })
+        if s.trim().is_empty() { continue; }
+        let fields: Vec<PyObjectRef> = csv_parse_line(&s)
+            .into_iter()
+            .map(|f| PyObject::str_val(CompactString::from(f.trim())))
             .collect();
         rows.push(PyObject::list(fields));
     }
     Ok(PyObject::list(rows))
+}
+
+fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("csv.writer requires a file object"));
+    }
+    let cls = PyObject::class(CompactString::from("csv_writer"), vec![], indexmap::IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("__csv_writer__"), PyObject::bool_val(true));
+        attrs.insert(CompactString::from("_fileobj"), args[0].clone());
+        attrs.insert(CompactString::from("_rows"), PyObject::list(vec![]));
+    }
+    Ok(inst)
+}
+
+fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("csv.DictReader requires an iterable"));
+    }
+    let lines = args[0].to_list()?;
+    if lines.is_empty() {
+        return Ok(PyObject::list(vec![]));
+    }
+    // Optional fieldnames as second arg
+    let fieldnames: Vec<String> = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
+        args[1].to_list()?.iter().map(|f| f.py_to_string()).collect()
+    } else {
+        // First row is header
+        csv_parse_line(&lines[0].py_to_string()).into_iter().map(|f| f.trim().to_string()).collect()
+    };
+    let data_start = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { 1 };
+    let mut rows = Vec::new();
+    for line in &lines[data_start..] {
+        let s = line.py_to_string();
+        if s.trim().is_empty() { continue; }
+        let values = csv_parse_line(&s);
+        let mut map = indexmap::IndexMap::new();
+        for (i, name) in fieldnames.iter().enumerate() {
+            let val = values.get(i).map(|v| v.trim().to_string()).unwrap_or_default();
+            map.insert(
+                HashableKey::Str(CompactString::from(name.as_str())),
+                PyObject::str_val(CompactString::from(&val)),
+            );
+        }
+        rows.push(PyObject::dict(map));
+    }
+    Ok(PyObject::list(rows))
+}
+
+fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("csv.DictWriter requires fileobj and fieldnames"));
+    }
+    let fieldnames = args[1].to_list()?.iter().map(|f| f.py_to_string()).collect::<Vec<_>>();
+    let cls = PyObject::class(CompactString::from("csv_DictWriter"), vec![], indexmap::IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("__csv_dictwriter__"), PyObject::bool_val(true));
+        attrs.insert(CompactString::from("_fileobj"), args[0].clone());
+        attrs.insert(CompactString::from("fieldnames"), PyObject::list(
+            fieldnames.iter().map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect()
+        ));
+        attrs.insert(CompactString::from("_rows"), PyObject::list(vec![]));
+    }
+    Ok(inst)
 }
 
 // ── shutil module (basic) ──

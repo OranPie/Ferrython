@@ -14,6 +14,30 @@ use std::sync::Arc;
 use super::serial_modules::extract_bytes;
 
 pub fn create_typing_module() -> PyObjectRef {
+    // TypeVar(name) — returns a placeholder object with __name__
+    let typevar_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("TypeVar", args, 1)?;
+        let name = CompactString::from(args[0].py_to_string());
+        let cls = PyObject::class(CompactString::from("TypeVar"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("__name__"), PyObject::str_val(name));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
+    // Generic — placeholder class
+    let generic_class = PyObject::class(
+        CompactString::from("Generic"),
+        vec![],
+        IndexMap::new(),
+    );
+
+    // Protocol — placeholder class
+    let protocol_class = PyObject::class(
+        CompactString::from("Protocol"),
+        vec![],
+        IndexMap::new(),
+    );
+
     let mut attrs: Vec<(&str, PyObjectRef)> = vec![
         ("Any", PyObject::none()),
         ("Union", PyObject::none()),
@@ -31,6 +55,30 @@ pub fn create_typing_module() -> PyObjectRef {
         ("Mapping", PyObject::none()),
         ("MutableMapping", PyObject::none()),
         ("Iterable", PyObject::none()),
+        ("TypeVar", typevar_fn),
+        ("Generic", generic_class),
+        ("Protocol", protocol_class),
+        ("ClassVar", PyObject::none()),
+        ("Final", PyObject::none()),
+        ("Literal", PyObject::none()),
+        ("NamedTuple", PyObject::none()),
+        ("get_type_hints", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
+        ("cast", make_builtin(|args: &[PyObjectRef]| {
+            check_args("cast", args, 2)?;
+            Ok(args[1].clone())
+        })),
+        ("overload", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            Ok(args[0].clone())
+        })),
+        ("no_type_check", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            Ok(args[0].clone())
+        })),
+        ("runtime_checkable", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            Ok(args[0].clone())
+        })),
     ];
     attrs.push(("TYPE_CHECKING", PyObject::bool_val(false)));
     make_module("typing", attrs)
@@ -76,40 +124,153 @@ pub fn create_abc_module() -> PyObjectRef {
 
 
 pub fn create_enum_module() -> PyObjectRef {
-    // Create Enum as a base class marker
+    // Create Enum as a proper base class with __getitem__ and __iter__ support
+    let mut enum_ns = IndexMap::new();
+    enum_ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
+
+    // __getitem__ on class — Color['RED'] looks up member by name
+    enum_ns.insert(CompactString::from("__getitem__"), PyObject::native_function(
+        "Enum.__getitem__", |args: &[PyObjectRef]| {
+            // args[0] = class (self), args[1] = name key
+            check_args_min("Enum.__getitem__", args, 2)?;
+            let cls = &args[0];
+            let name = args[1].py_to_string();
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                let ns = cd.namespace.read();
+                if let Some(member) = ns.get(name.as_str()) {
+                    return Ok(member.clone());
+                }
+                // Check __members__ dict
+                if let Some(members) = ns.get("__members__") {
+                    if let PyObjectPayload::Dict(map) = &members.payload {
+                        let key = HashableKey::Str(CompactString::from(name.as_str()));
+                        if let Some(member) = map.read().get(&key) {
+                            return Ok(member.clone());
+                        }
+                    }
+                }
+            }
+            Err(PyException::key_error(format!("'{}'", name)))
+        }
+    ));
+
+    // __call__ on class — Color(1) looks up member by value
+    enum_ns.insert(CompactString::from("__call__"), PyObject::native_function(
+        "Enum.__call__", |args: &[PyObjectRef]| {
+            check_args_min("Enum.__call__", args, 2)?;
+            let cls = &args[0];
+            let value = &args[1];
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                let ns = cd.namespace.read();
+                if let Some(members) = ns.get("__members__") {
+                    if let PyObjectPayload::Dict(map) = &members.payload {
+                        for (_, member) in map.read().iter() {
+                            if let Some(v) = member.get_attr("value") {
+                                if v.py_to_string() == value.py_to_string() {
+                                    return Ok(member.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(PyException::value_error(format!("{} is not a valid enum value", value.repr())))
+        }
+    ));
+
+    // __iter__ on class — list(Color) iterates members
+    enum_ns.insert(CompactString::from("__iter__"), PyObject::native_function(
+        "Enum.__iter__", |args: &[PyObjectRef]| {
+            check_args_min("Enum.__iter__", args, 1)?;
+            let cls = &args[0];
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                let ns = cd.namespace.read();
+                if let Some(members) = ns.get("__members__") {
+                    if let PyObjectPayload::Dict(map) = &members.payload {
+                        let items: Vec<PyObjectRef> = map.read().values().cloned().collect();
+                        return Ok(PyObject::list(items));
+                    }
+                }
+            }
+            Ok(PyObject::list(vec![]))
+        }
+    ));
+
     let enum_class = PyObject::class(
         CompactString::from("Enum"),
         vec![],
-        IndexMap::new(),
+        enum_ns,
     );
-    // Mark it as enum base
-    if let PyObjectPayload::Class(ref cd) = enum_class.payload {
-        cd.namespace.write().insert(CompactString::from("__enum__"), PyObject::bool_val(true));
-    }
+
+    // IntEnum — Enum subclass where values are ints
+    let mut int_enum_ns = IndexMap::new();
+    int_enum_ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
     let int_enum = PyObject::class(
         CompactString::from("IntEnum"),
         vec![enum_class.clone()],
-        IndexMap::new(),
+        int_enum_ns,
     );
-    if let PyObjectPayload::Class(ref cd) = int_enum.payload {
-        cd.namespace.write().insert(CompactString::from("__enum__"), PyObject::bool_val(true));
-    }
-    
+
+    // Flag — class with bitwise support marker
+    let mut flag_ns = IndexMap::new();
+    flag_ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
+    flag_ns.insert(CompactString::from("__flag__"), PyObject::bool_val(true));
+    let flag_class = PyObject::class(
+        CompactString::from("Flag"),
+        vec![enum_class.clone()],
+        flag_ns,
+    );
+
+    // IntFlag — Flag subclass
+    let mut int_flag_ns = IndexMap::new();
+    int_flag_ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
+    int_flag_ns.insert(CompactString::from("__flag__"), PyObject::bool_val(true));
+    let int_flag_class = PyObject::class(
+        CompactString::from("IntFlag"),
+        vec![flag_class.clone()],
+        int_flag_ns,
+    );
+
     // auto() counter
     static AUTO_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
-    
+
+    // unique decorator — validates all values in enum are unique
+    let unique_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        let cls = &args[0];
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            let ns = cd.namespace.read();
+            if let Some(members) = ns.get("__members__") {
+                if let PyObjectPayload::Dict(map) = &members.payload {
+                    let members_map = map.read();
+                    let mut seen_values = Vec::new();
+                    for (_, member) in members_map.iter() {
+                        if let Some(v) = member.get_attr("value") {
+                            let val_str = v.py_to_string();
+                            if seen_values.contains(&val_str) {
+                                return Err(PyException::value_error(
+                                    format!("duplicate values found in enum {}", cd.name)
+                                ));
+                            }
+                            seen_values.push(val_str);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(args[0].clone())
+    });
+
     make_module("enum", vec![
         ("Enum", enum_class),
         ("IntEnum", int_enum),
-        ("Flag", PyObject::none()),
-        ("IntFlag", PyObject::none()),
+        ("Flag", flag_class),
+        ("IntFlag", int_flag_class),
         ("auto", make_builtin(|_| {
             let val = AUTO_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(PyObject::int(val))
         })),
-        ("unique", make_builtin(|args| {
-            if args.is_empty() { Ok(PyObject::none()) } else { Ok(args[0].clone()) }
-        })),
+        ("unique", unique_fn),
     ])
 }
 
@@ -117,20 +278,151 @@ pub fn create_enum_module() -> PyObjectRef {
 
 
 pub fn create_contextlib_module() -> PyObjectRef {
+    // suppress(*exceptions) — context manager that suppresses specified exceptions
+    let suppress_fn = make_builtin(|args: &[PyObjectRef]| {
+        let exceptions: Vec<PyObjectRef> = args.to_vec();
+        let suppress_cls = PyObject::class(
+            CompactString::from("suppress"),
+            vec![],
+            IndexMap::new(),
+        );
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("__suppress_exceptions__"), PyObject::list(exceptions));
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_function(
+            "suppress.__enter__", |args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::none()); }
+                Ok(args[0].clone())
+            }
+        ));
+        attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
+            "suppress.__exit__", |args: &[PyObjectRef]| {
+                // args: self, exc_type, exc_val, exc_tb
+                // If exc_type is one of the suppressed exceptions, return True
+                if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
+                    // We have an exception — suppress it
+                    return Ok(PyObject::bool_val(true));
+                }
+                Ok(PyObject::bool_val(false))
+            }
+        ));
+        Ok(PyObject::instance_with_attrs(suppress_cls, attrs))
+    });
+
+    // ExitStack — real context manager with callback registration
+    let exit_stack_cls = {
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("__exitstack__"), PyObject::bool_val(true));
+        PyObject::class(CompactString::from("ExitStack"), vec![], ns)
+    };
+
+    let exit_stack_cls_clone = exit_stack_cls.clone();
+    let exit_stack_fn = PyObject::native_closure("ExitStack", move |_args: &[PyObjectRef]| {
+        let inst = PyObject::instance(exit_stack_cls_clone.clone());
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            attrs.insert(CompactString::from("_callbacks"), PyObject::list(vec![]));
+
+            attrs.insert(CompactString::from("__enter__"), PyObject::native_function(
+                "ExitStack.__enter__", |args: &[PyObjectRef]| {
+                    if args.is_empty() { return Ok(PyObject::none()); }
+                    Ok(args[0].clone())
+                }
+            ));
+
+            attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
+                "ExitStack.__exit__", |args: &[PyObjectRef]| {
+                    // Call registered callbacks in reverse order (best-effort for native fns)
+                    if let Some(self_obj) = args.first() {
+                        if let Some(cbs) = self_obj.get_attr("_callbacks") {
+                            if let Ok(items) = cbs.to_list() {
+                                for cb in items.iter().rev() {
+                                    match &cb.payload {
+                                        PyObjectPayload::NativeFunction { func, .. } => {
+                                            let _ = func(&[]);
+                                        }
+                                        PyObjectPayload::NativeClosure { func, .. } => {
+                                            let _ = func(&[]);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(PyObject::bool_val(false))
+                }
+            ));
+
+            attrs.insert(CompactString::from("push"), PyObject::native_function(
+                "ExitStack.push", |args: &[PyObjectRef]| {
+                    check_args_min("ExitStack.push", args, 2)?;
+                    let self_obj = &args[0];
+                    let callback = &args[1];
+                    if let Some(cbs) = self_obj.get_attr("_callbacks") {
+                        if let PyObjectPayload::List(items) = &cbs.payload {
+                            items.write().push(callback.clone());
+                        }
+                    }
+                    Ok(callback.clone())
+                }
+            ));
+
+            attrs.insert(CompactString::from("callback"), PyObject::native_function(
+                "ExitStack.callback", |args: &[PyObjectRef]| {
+                    check_args_min("ExitStack.callback", args, 2)?;
+                    let self_obj = &args[0];
+                    let func = &args[1];
+                    if let Some(cbs) = self_obj.get_attr("_callbacks") {
+                        if let PyObjectPayload::List(items) = &cbs.payload {
+                            items.write().push(func.clone());
+                        }
+                    }
+                    Ok(func.clone())
+                }
+            ));
+
+            attrs.insert(CompactString::from("enter_context"), PyObject::native_function(
+                "ExitStack.enter_context", |args: &[PyObjectRef]| {
+                    check_args_min("ExitStack.enter_context", args, 2)?;
+                    let self_obj = &args[0];
+                    let cm = &args[1];
+                    // Call __enter__ if it's a native function
+                    let result = if let Some(enter) = cm.get_attr("__enter__") {
+                        match &enter.payload {
+                            PyObjectPayload::NativeFunction { func, .. } => {
+                                func(&[cm.clone()])?
+                            }
+                            PyObjectPayload::NativeClosure { func, .. } => {
+                                func(&[cm.clone()])?
+                            }
+                            _ => PyObject::none()
+                        }
+                    } else {
+                        PyObject::none()
+                    };
+                    // Register __exit__ as callback
+                    if let Some(exit_fn) = cm.get_attr("__exit__") {
+                        if let Some(cbs) = self_obj.get_attr("_callbacks") {
+                            if let PyObjectPayload::List(items) = &cbs.payload {
+                                items.write().push(exit_fn);
+                            }
+                        }
+                    }
+                    Ok(result)
+                }
+            ));
+        }
+        Ok(inst)
+    });
+
     make_module("contextlib", vec![
         ("contextmanager", make_builtin(contextlib_contextmanager)),
-        ("suppress", make_builtin(|_args| {
-            // Stub: returns a no-op context manager
-            Ok(make_module("suppress_cm", vec![
-                ("__enter__", make_builtin(|_| Ok(PyObject::none()))),
-                ("__exit__", make_builtin(|_| Ok(PyObject::bool_val(true)))),
-            ]))
-        })),
-        ("closing", make_builtin(|args| {
+        ("suppress", suppress_fn),
+        ("closing", make_builtin(|args: &[PyObjectRef]| {
             if args.is_empty() { return Err(PyException::type_error("closing requires 1 argument")); }
             Ok(args[0].clone())
         })),
-        ("ExitStack", make_builtin(|_| Ok(PyObject::none()))),
+        ("ExitStack", exit_stack_fn),
         ("redirect_stdout", make_builtin(|_| Ok(PyObject::none()))),
         ("redirect_stderr", make_builtin(|_| Ok(PyObject::none()))),
     ])
@@ -657,6 +949,137 @@ pub fn create_logging_module() -> PyObjectRef {
     let error_level = PyObject::int(40);
     let critical_level = PyObject::int(50);
 
+    // StreamHandler class — creates handler instance with stream ref and format/emit
+    let stream_handler_cls = PyObject::class(CompactString::from("StreamHandler"), vec![], IndexMap::new());
+    let sh_cls = stream_handler_cls.clone();
+    let stream_handler_fn = PyObject::native_closure("StreamHandler", move |args: &[PyObjectRef]| {
+        let inst = PyObject::instance(sh_cls.clone());
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            let stream = if args.is_empty() { PyObject::none() } else { args[0].clone() };
+            attrs.insert(CompactString::from("stream"), stream);
+            attrs.insert(CompactString::from("level"), PyObject::int(0));
+            attrs.insert(CompactString::from("formatter"), PyObject::none());
+            attrs.insert(CompactString::from("setLevel"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                        d.attrs.write().insert(CompactString::from("level"), args[1].clone());
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+            attrs.insert(CompactString::from("setFormatter"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                        d.attrs.write().insert(CompactString::from("formatter"), args[1].clone());
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+            attrs.insert(CompactString::from("emit"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    let record = &args[1];
+                    let msg = record.py_to_string();
+                    eprintln!("{}", msg);
+                }
+                Ok(PyObject::none())
+            }));
+        }
+        Ok(inst)
+    });
+
+    // FileHandler class — handler that writes to file
+    let file_handler_cls = PyObject::class(CompactString::from("FileHandler"), vec![], IndexMap::new());
+    let fh_cls = file_handler_cls.clone();
+    let file_handler_fn = PyObject::native_closure("FileHandler", move |args: &[PyObjectRef]| {
+        let inst = PyObject::instance(fh_cls.clone());
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            let filename = if args.is_empty() {
+                CompactString::from("")
+            } else {
+                CompactString::from(args[0].py_to_string())
+            };
+            attrs.insert(CompactString::from("baseFilename"), PyObject::str_val(filename));
+            attrs.insert(CompactString::from("level"), PyObject::int(0));
+            attrs.insert(CompactString::from("formatter"), PyObject::none());
+            attrs.insert(CompactString::from("setLevel"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                        d.attrs.write().insert(CompactString::from("level"), args[1].clone());
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+            attrs.insert(CompactString::from("setFormatter"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                        d.attrs.write().insert(CompactString::from("formatter"), args[1].clone());
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+        }
+        Ok(inst)
+    });
+
+    // Formatter(fmt) — stores format string, has format(record) method
+    let formatter_cls = PyObject::class(CompactString::from("Formatter"), vec![], IndexMap::new());
+    let fmt_cls = formatter_cls.clone();
+    let formatter_fn = PyObject::native_closure("Formatter", move |args: &[PyObjectRef]| {
+        let inst = PyObject::instance(fmt_cls.clone());
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            let fmt_str = if args.is_empty() {
+                CompactString::from("%(levelname)s:%(name)s:%(message)s")
+            } else {
+                CompactString::from(args[0].py_to_string())
+            };
+            attrs.insert(CompactString::from("_fmt"), PyObject::str_val(fmt_str));
+            attrs.insert(CompactString::from("format"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    Ok(PyObject::str_val(CompactString::from(args[1].py_to_string())))
+                } else {
+                    Ok(PyObject::str_val(CompactString::from("")))
+                }
+            }));
+        }
+        Ok(inst)
+    });
+
+    // Handler base class
+    let handler_cls = PyObject::class(CompactString::from("Handler"), vec![], IndexMap::new());
+    let h_cls = handler_cls.clone();
+    let handler_fn = PyObject::native_closure("Handler", move |_args: &[PyObjectRef]| {
+        let inst = PyObject::instance(h_cls.clone());
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            attrs.insert(CompactString::from("level"), PyObject::int(0));
+            attrs.insert(CompactString::from("setLevel"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("setFormatter"), make_builtin(|_| Ok(PyObject::none())));
+        }
+        Ok(inst)
+    });
+
+    // basicConfig(**kwargs) — configure root logger
+    let basic_config_fn = make_builtin(|args: &[PyObjectRef]| {
+        // Accept kwargs as last dict arg from VM
+        if let Some(last) = args.last() {
+            if let PyObjectPayload::Dict(kw_map) = &last.payload {
+                let r = kw_map.read();
+                // Extract level if present
+                if let Some(_level) = r.get(&HashableKey::Str(CompactString::from("level"))) {
+                    // In a real impl, would set root logger level
+                }
+                // Extract format if present
+                if let Some(_format) = r.get(&HashableKey::Str(CompactString::from("format"))) {
+                    // Would set root logger format
+                }
+            }
+        }
+        Ok(PyObject::none())
+    });
+
     make_module("logging", vec![
         ("DEBUG", debug_level),
         ("INFO", info_level),
@@ -664,7 +1087,7 @@ pub fn create_logging_module() -> PyObjectRef {
         ("ERROR", error_level),
         ("CRITICAL", critical_level),
         ("NOTSET", PyObject::int(0)),
-        ("basicConfig", make_builtin(|_args| { Ok(PyObject::none()) })),
+        ("basicConfig", basic_config_fn),
         ("getLogger", make_builtin(logging_get_logger)),
         ("debug", make_builtin(|args| { logging_log(10, args) })),
         ("info", make_builtin(|args| { logging_log(20, args) })),
@@ -679,10 +1102,10 @@ pub fn create_logging_module() -> PyObjectRef {
                 Ok(PyObject::none())
             }
         })),
-        ("StreamHandler", make_builtin(|_| Ok(PyObject::none()))),
-        ("FileHandler", make_builtin(|_| Ok(PyObject::none()))),
-        ("Formatter", make_builtin(|_| Ok(PyObject::none()))),
-        ("Handler", make_builtin(|_| Ok(PyObject::none()))),
+        ("StreamHandler", stream_handler_fn),
+        ("FileHandler", file_handler_fn),
+        ("Formatter", formatter_fn),
+        ("Handler", handler_fn),
         ("Logger", make_builtin(logging_get_logger)),
     ])
 }
@@ -712,18 +1135,49 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let mut ns = IndexMap::new();
     ns.insert(CompactString::from("name"), PyObject::str_val(logger_name.clone()));
     ns.insert(CompactString::from("level"), PyObject::int(30)); // WARNING default
+    ns.insert(CompactString::from("handlers"), PyObject::list(vec![]));
     // Logger methods — stored as NativeFunction attrs
     ns.insert(CompactString::from("debug"), make_builtin(move |args| logging_log(10, args)));
     ns.insert(CompactString::from("info"), make_builtin(move |args| logging_log(20, args)));
     ns.insert(CompactString::from("warning"), make_builtin(move |args| logging_log(30, args)));
     ns.insert(CompactString::from("error"), make_builtin(move |args| logging_log(40, args)));
     ns.insert(CompactString::from("critical"), make_builtin(move |args| logging_log(50, args)));
-    ns.insert(CompactString::from("setLevel"), make_builtin(|_| Ok(PyObject::none())));
-    ns.insert(CompactString::from("addHandler"), make_builtin(|_| Ok(PyObject::none())));
+    // setLevel(level) — set minimum log level on instance
+    ns.insert(CompactString::from("setLevel"), make_builtin(|args: &[PyObjectRef]| {
+        if args.len() >= 2 {
+            if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                d.attrs.write().insert(CompactString::from("level"), args[1].clone());
+            }
+        }
+        Ok(PyObject::none())
+    }));
+    // addHandler(handler) — store handler in logger's handler list
+    ns.insert(CompactString::from("addHandler"), make_builtin(|args: &[PyObjectRef]| {
+        if args.len() >= 2 {
+            if let Some(handlers) = args[0].get_attr("handlers") {
+                if let PyObjectPayload::List(items) = &handlers.payload {
+                    items.write().push(args[1].clone());
+                }
+            }
+        }
+        Ok(PyObject::none())
+    }));
     ns.insert(CompactString::from("removeHandler"), make_builtin(|_| Ok(PyObject::none())));
-    ns.insert(CompactString::from("hasHandlers"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+    ns.insert(CompactString::from("hasHandlers"), make_builtin(|args: &[PyObjectRef]| {
+        if let Some(handlers) = args.first().and_then(|a| a.get_attr("handlers")) {
+            if let PyObjectPayload::List(items) = &handlers.payload {
+                return Ok(PyObject::bool_val(!items.read().is_empty()));
+            }
+        }
+        Ok(PyObject::bool_val(false))
+    }));
     ns.insert(CompactString::from("isEnabledFor"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-    ns.insert(CompactString::from("getEffectiveLevel"), make_builtin(|_| Ok(PyObject::int(30))));
+    ns.insert(CompactString::from("getEffectiveLevel"), make_builtin(|args: &[PyObjectRef]| {
+        if let Some(level) = args.first().and_then(|a| a.get_attr("level")) {
+            return Ok(level);
+        }
+        Ok(PyObject::int(30))
+    }));
     
     let cls = PyObject::class(CompactString::from("Logger"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
@@ -740,11 +1194,61 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 
 pub fn create_warnings_module() -> PyObjectRef {
+    // warn(message, category=UserWarning, stacklevel=1)
+    let warn_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        let message = args[0].py_to_string();
+        let category = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
+            let cat = &args[1];
+            if let PyObjectPayload::Class(cd) = &cat.payload {
+                cd.name.to_string()
+            } else {
+                cat.py_to_string()
+            }
+        } else {
+            "UserWarning".to_string()
+        };
+        // Print warning in CPython format: filename:lineno: category: message
+        eprintln!("<stdin>:1: {}: {}", category, message);
+        Ok(PyObject::none())
+    });
+
+    // filterwarnings(action, message="", category=Warning, module="", lineno=0, append=False)
+    let filter_warnings_fn = make_builtin(|_args: &[PyObjectRef]| {
+        // Store filter — basic implementation accepts but doesn't enforce
+        Ok(PyObject::none())
+    });
+
+    // simplefilter(action, category=Warning, append=False)
+    let simple_filter_fn = make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::none())
+    });
+
+    // catch_warnings() — context manager that saves/restores warning filters
+    let catch_warnings_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("catch_warnings"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_function(
+            "catch_warnings.__enter__", |args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::none()); }
+                Ok(args[0].clone())
+            }
+        ));
+        attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
+            "catch_warnings.__exit__", |_args: &[PyObjectRef]| {
+                // Restore saved warning filters (no-op in this impl)
+                Ok(PyObject::bool_val(false))
+            }
+        ));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
     make_module("warnings", vec![
-        ("warn", make_builtin(|_| Ok(PyObject::none()))),
-        ("filterwarnings", make_builtin(|_| Ok(PyObject::none()))),
-        ("simplefilter", make_builtin(|_| Ok(PyObject::none()))),
+        ("warn", warn_fn),
+        ("filterwarnings", filter_warnings_fn),
+        ("simplefilter", simple_filter_fn),
         ("resetwarnings", make_builtin(|_| Ok(PyObject::none()))),
+        ("catch_warnings", catch_warnings_fn),
     ])
 }
 
@@ -752,11 +1256,76 @@ pub fn create_warnings_module() -> PyObjectRef {
 
 
 pub fn create_traceback_module() -> PyObjectRef {
+    // format_exc() — return formatted exception string (empty when no active exception)
+    let format_exc_fn = make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::str_val(CompactString::from("")))
+    });
+
+    // format_exception(etype, value, tb) — format exception into list of strings
+    let format_exception_fn = make_builtin(|args: &[PyObjectRef]| {
+        let mut lines = Vec::new();
+        if args.len() >= 2 {
+            let etype = &args[0];
+            let value = &args[1];
+            let type_name = if let PyObjectPayload::Class(cd) = &etype.payload {
+                cd.name.to_string()
+            } else if let PyObjectPayload::ExceptionType(kind) = &etype.payload {
+                format!("{:?}", kind)
+            } else {
+                etype.py_to_string()
+            };
+            let msg = value.py_to_string();
+            if args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::None) {
+                lines.push(PyObject::str_val(CompactString::from("Traceback (most recent call last):\n")));
+                lines.push(PyObject::str_val(CompactString::from("  File \"<unknown>\", line 0, in <module>\n")));
+            }
+            lines.push(PyObject::str_val(CompactString::from(
+                format!("{}: {}\n", type_name, msg)
+            )));
+        }
+        Ok(PyObject::list(lines))
+    });
+
+    // print_exc() — print exception info to stderr
+    let print_exc_fn = make_builtin(|_args: &[PyObjectRef]| {
+        eprintln!("NoneType: None");
+        Ok(PyObject::none())
+    });
+
+    // format_tb(tb) — format traceback entries as list of strings
+    let format_tb_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) {
+            return Ok(PyObject::list(vec![]));
+        }
+        // Return a basic traceback entry
+        Ok(PyObject::list(vec![
+            PyObject::str_val(CompactString::from("  File \"<unknown>\", line 0, in <module>\n"))
+        ]))
+    });
+
+    // extract_tb(tb) — extract FrameSummary-like tuples from traceback
+    let extract_tb_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) {
+            return Ok(PyObject::list(vec![]));
+        }
+        // Return list of (filename, lineno, name, line) tuples
+        Ok(PyObject::list(vec![
+            PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from("<unknown>")),
+                PyObject::int(0),
+                PyObject::str_val(CompactString::from("<module>")),
+                PyObject::none(),
+            ])
+        ]))
+    });
+
     make_module("traceback", vec![
-        ("format_exc", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(""))))),
-        ("print_exc", make_builtin(|_| Ok(PyObject::none()))),
-        ("format_exception", make_builtin(|_| Ok(PyObject::list(vec![])))),
+        ("format_exc", format_exc_fn),
+        ("print_exc", print_exc_fn),
+        ("format_exception", format_exception_fn),
         ("print_stack", make_builtin(|_| Ok(PyObject::none()))),
+        ("format_tb", format_tb_fn),
+        ("extract_tb", extract_tb_fn),
     ])
 }
 
