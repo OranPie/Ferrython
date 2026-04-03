@@ -23,17 +23,25 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             }
             _ => {}
         }
+        // NaN is never equal to anything, including itself
+        let has_nan = match (&a.payload, &b.payload) {
+            (PyObjectPayload::Float(f), _) if f.is_nan() => true,
+            (_, PyObjectPayload::Float(f)) if f.is_nan() => true,
+            _ => false,
+        };
         let ord = partial_cmp_objects(a, b);
         let result = match op {
-            // For Eq/Ne, if types don't define comparison (ord is None),
-            // fall back to identity comparison (like CPython's default __eq__)
-            CompareOp::Eq => match ord {
-                Some(o) => o == std::cmp::Ordering::Equal,
-                None => std::ptr::eq(a.as_ref(), b.as_ref()),
+            CompareOp::Eq => if has_nan { false } else {
+                match ord {
+                    Some(o) => o == std::cmp::Ordering::Equal,
+                    None => std::ptr::eq(a.as_ref(), b.as_ref()),
+                }
             },
-            CompareOp::Ne => match ord {
-                Some(o) => o != std::cmp::Ordering::Equal,
-                None => !std::ptr::eq(a.as_ref(), b.as_ref()),
+            CompareOp::Ne => if has_nan { true } else {
+                match ord {
+                    Some(o) => o != std::cmp::Ordering::Equal,
+                    None => !std::ptr::eq(a.as_ref(), b.as_ref()),
+                }
             },
             CompareOp::Lt => ord == Some(std::cmp::Ordering::Less),
             CompareOp::Le => matches!(ord, Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)),

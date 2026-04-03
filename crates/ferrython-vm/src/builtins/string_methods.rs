@@ -108,12 +108,18 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
         "find" => {
             check_args_min("find", args, 1)?;
             let sub = args[0].as_str().ok_or_else(|| PyException::type_error("find() argument must be str"))?;
-            Ok(PyObject::int(s.find(sub).map(|i| i as i64).unwrap_or(-1)))
+            let start = if args.len() >= 2 { args[1].as_int().unwrap_or(0).max(0) as usize } else { 0 };
+            let end = if args.len() >= 3 { args[2].as_int().unwrap_or(s.len() as i64).max(0) as usize } else { s.len() };
+            let search_area = &s[start.min(s.len())..end.min(s.len())];
+            Ok(PyObject::int(search_area.find(sub).map(|i| (i + start) as i64).unwrap_or(-1)))
         }
         "rfind" => {
             check_args_min("rfind", args, 1)?;
             let sub = args[0].as_str().ok_or_else(|| PyException::type_error("rfind() argument must be str"))?;
-            Ok(PyObject::int(s.rfind(sub).map(|i| i as i64).unwrap_or(-1)))
+            let start = if args.len() >= 2 { args[1].as_int().unwrap_or(0).max(0) as usize } else { 0 };
+            let end = if args.len() >= 3 { args[2].as_int().unwrap_or(s.len() as i64).max(0) as usize } else { s.len() };
+            let search_area = &s[start.min(s.len())..end.min(s.len())];
+            Ok(PyObject::int(search_area.rfind(sub).map(|i| (i + start) as i64).unwrap_or(-1)))
         }
         "index" => {
             check_args_min("index", args, 1)?;

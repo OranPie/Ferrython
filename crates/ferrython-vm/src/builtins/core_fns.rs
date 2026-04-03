@@ -226,10 +226,16 @@ pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         PyObjectPayload::Float(f) => {
             if let Some(n) = ndigits {
-                let factor = 10f64.powi(n as i32);
-                let scaled = f * factor;
-                let rounded = round_half_to_even(scaled);
-                Ok(PyObject::float(rounded / factor))
+                if n >= 0 {
+                    // Use string formatting to match CPython's rounding behavior
+                    let formatted = format!("{:.prec$}", f, prec = n as usize);
+                    let rounded: f64 = formatted.parse().unwrap_or(*f);
+                    Ok(PyObject::float(rounded))
+                } else {
+                    let factor = 10f64.powi((-n) as i32);
+                    let rounded = (f / factor).round() * factor;
+                    Ok(PyObject::float(rounded))
+                }
             } else {
                 Ok(PyObject::int(round_half_to_even(*f) as i64))
             }
@@ -245,11 +251,11 @@ pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// When the value is exactly halfway between two integers, round to the nearest even integer.
 fn round_half_to_even(x: f64) -> f64 {
     let rounded = x.round();
-    // Check if we're exactly at a .5 boundary
-    if (x - x.floor() - 0.5).abs() < 1e-9 {
+    // Check if we're exactly at a .5 boundary (use strict f64 comparison)
+    let frac = (x - x.floor()).abs();
+    if (frac - 0.5).abs() < f64::EPSILON * x.abs().max(1.0) {
         // Exactly halfway — round to even
         if rounded as i64 % 2 != 0 {
-            // rounded is odd, go the other way
             if x > 0.0 { rounded - 1.0 } else { rounded + 1.0 }
         } else {
             rounded
