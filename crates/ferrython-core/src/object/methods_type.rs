@@ -221,7 +221,17 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
 
 pub(super) fn py_repr(obj: &PyObjectRef) -> String {
         match &obj.payload {
-            PyObjectPayload::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
+            PyObjectPayload::Str(s) => {
+                let has_single = s.contains('\'');
+                let has_double = s.contains('"');
+                if has_single && !has_double {
+                    // Use double quotes when string contains ' but not "
+                    format!("\"{}\"", s.replace('\\', "\\\\"))
+                } else {
+                    // Default to single quotes, escaping any ' inside
+                    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+                }
+            }
             PyObjectPayload::ExceptionInstance { kind, message, .. } => {
                 if message.is_empty() {
                     format!("{}()", kind)

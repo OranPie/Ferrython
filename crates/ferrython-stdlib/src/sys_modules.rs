@@ -353,6 +353,10 @@ pub fn create_os_path_module() -> PyObjectRef {
         ("abspath", make_builtin(os_path_abspath)),
         ("splitext", make_builtin(os_path_splitext)),
         ("split", make_builtin(os_path_split)),
+        ("isabs", make_builtin(os_path_isabs)),
+        ("normpath", make_builtin(os_path_normpath)),
+        ("expanduser", make_builtin(os_path_expanduser)),
+        ("getsize", make_builtin(os_path_getsize)),
         ("sep", PyObject::str_val(CompactString::from(std::path::MAIN_SEPARATOR.to_string()))),
     ])
 }
@@ -423,6 +427,49 @@ fn os_path_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObject::str_val(CompactString::from(dir)),
         PyObject::str_val(CompactString::from(name)),
     ]))
+}
+fn os_path_isabs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.isabs", args, 1)?;
+    Ok(PyObject::bool_val(std::path::Path::new(&args[0].py_to_string()).is_absolute()))
+}
+fn os_path_normpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.normpath", args, 1)?;
+    let s = args[0].py_to_string();
+    // Basic normpath: collapse separators and resolve . / ..
+    let mut parts: Vec<&str> = Vec::new();
+    for part in s.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => { parts.pop(); }
+            other => parts.push(other),
+        }
+    }
+    let result = if s.starts_with('/') {
+        format!("/{}", parts.join("/"))
+    } else if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    };
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+fn os_path_expanduser(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.expanduser", args, 1)?;
+    let s = args[0].py_to_string();
+    if s.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            return Ok(PyObject::str_val(CompactString::from(format!("{}{}", home, &s[1..]))));
+        }
+    }
+    Ok(PyObject::str_val(CompactString::from(s)))
+}
+fn os_path_getsize(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.getsize", args, 1)?;
+    let s = args[0].py_to_string();
+    match std::fs::metadata(&s) {
+        Ok(m) => Ok(PyObject::int(m.len() as i64)),
+        Err(e) => Err(PyException::os_error(format!("No such file: '{}'", s))),
+    }
 }
 
 // ── string module ──
