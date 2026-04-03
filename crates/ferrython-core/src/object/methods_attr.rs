@@ -114,7 +114,7 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
     if inst.attrs.read().contains_key("__stringio__") {
         if matches!(name, "write" | "read" | "getvalue" | "seek" | "tell" | "close" | "closed"
             | "readline" | "readlines" | "writelines" | "truncate" | "readable" | "writable" | "seekable"
-            | "__iter__" | "__next__")
+            | "__iter__" | "__next__" | "__enter__" | "__exit__")
         {
             return Some(make_bound(name));
         }
