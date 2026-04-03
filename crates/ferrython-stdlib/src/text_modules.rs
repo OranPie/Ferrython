@@ -373,16 +373,21 @@ pub fn create_textwrap_module() -> PyObjectRef {
         ("dedent", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("dedent requires 1 argument")); }
             let text = args[0].py_to_string();
-            // Find minimum indentation of non-empty lines
             let mut min_indent = usize::MAX;
             for line in text.lines() {
                 if line.trim().is_empty() { continue; }
                 let indent = line.len() - line.trim_start().len();
                 if indent < min_indent { min_indent = indent; }
             }
-            if min_indent == usize::MAX { return Ok(args[0].clone()); }
+            if min_indent == usize::MAX || min_indent == 0 { return Ok(args[0].clone()); }
+            // Extract the actual whitespace prefix to match (spaces/tabs)
+            let prefix: &str = text.lines()
+                .find(|l| !l.trim().is_empty() && l.len() - l.trim_start().len() == min_indent)
+                .map(|l| &l[..min_indent])
+                .unwrap_or("");
             let result: Vec<&str> = text.lines().map(|line| {
                 if line.trim().is_empty() { line.trim() }
+                else if line.starts_with(prefix) { &line[min_indent..] }
                 else if line.len() >= min_indent { &line[min_indent..] }
                 else { line }
             }).collect();
@@ -441,6 +446,35 @@ pub fn create_textwrap_module() -> PyObjectRef {
             }
             if !current.is_empty() { lines.push(current); }
             Ok(PyObject::str_val(CompactString::from(lines.join("\n"))))
+        })),
+        ("shorten", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("shorten requires text and width")); }
+            let text = args[0].py_to_string();
+            let width = if args.len() >= 2 { args[1].to_int().unwrap_or(70) as usize } else { 70 };
+            let placeholder = if args.len() >= 3 { args[2].py_to_string().to_string() } else { "...".to_string() };
+            let words: Vec<&str> = text.split_whitespace().collect();
+            let joined = words.join(" ");
+            if joined.len() <= width {
+                return Ok(PyObject::str_val(CompactString::from(joined)));
+            }
+            if width < placeholder.len() {
+                return Ok(PyObject::str_val(CompactString::from(placeholder)));
+            }
+            let target = width - placeholder.len();
+            let mut result = String::new();
+            for word in &words {
+                if result.is_empty() {
+                    if word.len() > target { break; }
+                    result = word.to_string();
+                } else if result.len() + 1 + word.len() <= target {
+                    result.push(' ');
+                    result.push_str(word);
+                } else {
+                    break;
+                }
+            }
+            result.push_str(&placeholder);
+            Ok(PyObject::str_val(CompactString::from(result)))
         })),
     ])
 }

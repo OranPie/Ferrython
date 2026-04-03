@@ -418,11 +418,110 @@ pub fn create_base64_module() -> PyObjectRef {
         ("b16decode", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("b16decode requires data")); }
             let s = args[0].py_to_string();
-            let bytes: Vec<u8> = (0..s.len())
+            let upper = s.to_uppercase();
+            let bytes: Vec<u8> = (0..upper.len())
                 .step_by(2)
-                .filter_map(|i| u8::from_str_radix(&s[i..i+2], 16).ok())
+                .filter_map(|i| {
+                    if i + 2 <= upper.len() {
+                        u8::from_str_radix(&upper[i..i+2], 16).ok()
+                    } else {
+                        None
+                    }
+                })
                 .collect();
             Ok(PyObject::bytes(bytes))
+        })),
+        ("b32encode", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("b32encode requires data")); }
+            let data = extract_bytes(&args[0])?;
+            const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+            let mut result = Vec::new();
+            let chunks = data.chunks(5);
+            for chunk in chunks {
+                let mut buf = [0u8; 5];
+                buf[..chunk.len()].copy_from_slice(chunk);
+                let b = buf;
+                // 5 bytes = 40 bits -> 8 base32 chars
+                let indices = [
+                    (b[0] >> 3) & 0x1F,
+                    ((b[0] & 0x07) << 2) | ((b[1] >> 6) & 0x03),
+                    (b[1] >> 1) & 0x1F,
+                    ((b[1] & 0x01) << 4) | ((b[2] >> 4) & 0x0F),
+                    ((b[2] & 0x0F) << 1) | ((b[3] >> 7) & 0x01),
+                    (b[3] >> 2) & 0x1F,
+                    ((b[3] & 0x03) << 3) | ((b[4] >> 5) & 0x07),
+                    b[4] & 0x1F,
+                ];
+                let num_chars = match chunk.len() {
+                    1 => 2, 2 => 4, 3 => 5, 4 => 7, 5 => 8, _ => 0,
+                };
+                let padding = 8 - num_chars;
+                for i in 0..num_chars {
+                    result.push(ALPHABET[indices[i] as usize]);
+                }
+                for _ in 0..padding {
+                    result.push(b'=');
+                }
+            }
+            Ok(PyObject::bytes(result))
+        })),
+        ("b32decode", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("b32decode requires data")); }
+            let input_bytes = extract_bytes(&args[0])?;
+            let input: Vec<u8> = input_bytes.iter().copied()
+                .filter(|&b| b != b'\n' && b != b'\r')
+                .collect();
+            fn decode_b32(c: u8) -> u8 {
+                match c {
+                    b'A'..=b'Z' => c - b'A',
+                    b'a'..=b'z' => c - b'a',
+                    b'2'..=b'7' => c - b'2' + 26,
+                    _ => 0,
+                }
+            }
+            let mut result = Vec::new();
+            for chunk in input.chunks(8) {
+                let pad_count = chunk.iter().filter(|&&b| b == b'=').count();
+                let mut vals = [0u8; 8];
+                for (i, &b) in chunk.iter().enumerate() {
+                    vals[i] = decode_b32(b);
+                }
+                let n = ((vals[0] as u64) << 35) | ((vals[1] as u64) << 30)
+                    | ((vals[2] as u64) << 25) | ((vals[3] as u64) << 20)
+                    | ((vals[4] as u64) << 15) | ((vals[5] as u64) << 10)
+                    | ((vals[6] as u64) << 5) | (vals[7] as u64);
+                let out_bytes = match pad_count {
+                    6 => 1, 4 => 2, 3 => 3, 1 => 4, 0 => 5, _ => 0,
+                };
+                if out_bytes >= 1 { result.push((n >> 32) as u8); }
+                if out_bytes >= 2 { result.push((n >> 24) as u8); }
+                if out_bytes >= 3 { result.push((n >> 16) as u8); }
+                if out_bytes >= 4 { result.push((n >> 8) as u8); }
+                if out_bytes >= 5 { result.push(n as u8); }
+            }
+            Ok(PyObject::bytes(result))
+        })),
+        ("urlsafe_b64encode", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("urlsafe_b64encode requires data")); }
+            let encoded = base64_encode(args)?;
+            let bytes = extract_bytes(&encoded)?;
+            let safe: Vec<u8> = bytes.iter().map(|&b| match b {
+                b'+' => b'-',
+                b'/' => b'_',
+                _ => b,
+            }).collect();
+            Ok(PyObject::bytes(safe))
+        })),
+        ("urlsafe_b64decode", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("urlsafe_b64decode requires data")); }
+            let input_bytes = extract_bytes(&args[0])?;
+            let standard: Vec<u8> = input_bytes.iter().map(|&b| match b {
+                b'-' => b'+',
+                b'_' => b'/',
+                _ => b,
+            }).collect();
+            let standard_obj = PyObject::bytes(standard);
+            base64_decode(&[standard_obj])
         })),
         ("encodebytes", make_builtin(base64_encode)),
         ("decodebytes", make_builtin(base64_decode)),
