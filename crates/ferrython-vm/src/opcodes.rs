@@ -21,6 +21,19 @@ use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
+/// Unwrap IntEnum/IntFlag members to their `_value_` for arithmetic operations.
+fn unwrap_int_enum(obj: &PyObjectRef) -> PyObjectRef {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if let Some(value) = inst.attrs.read().get("_value_") {
+            // Check if this is an enum member (has _value_ and _name_)
+            if inst.attrs.read().contains_key("_name_") {
+                return value.clone();
+            }
+        }
+    }
+    obj.clone()
+}
+
 /// Helpers: stack access without holding a long-lived frame borrow.
 impl VirtualMachine {
     #[inline]
@@ -691,74 +704,91 @@ impl VirtualMachine {
 
     pub(crate) fn exec_binary_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         let (a, b) = self.vm_pop2();
+        // For IntEnum/IntFlag members, if the primitive op fails, retry with _value_
+        macro_rules! with_enum_fallback {
+            ($a:expr, $b:expr, $op:ident) => {
+                match $a.$op(&$b) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let ua = unwrap_int_enum(&$a);
+                        let ub = unwrap_int_enum(&$b);
+                        if !Arc::ptr_eq(&ua, &$a) || !Arc::ptr_eq(&ub, &$b) {
+                            ua.$op(&ub)?
+                        } else {
+                            return Err($a.$op(&$b).unwrap_err());
+                        }
+                    }
+                }
+            };
+        }
         let result = match instr.op {
             Opcode::BinaryAdd => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__add__", Some("__radd__"))? { r }
-                else { a.add(&b)? }
+                else { with_enum_fallback!(a, b, add) }
             }
             Opcode::InplaceAdd => {
                 if let Some(r) = self.try_inplace_dunder(&a, &b, "__iadd__", "__add__")? { r }
-                else { a.add(&b)? }
+                else { with_enum_fallback!(a, b, add) }
             }
             Opcode::BinarySubtract => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__sub__", Some("__rsub__"))? { r }
-                else { a.sub(&b)? }
+                else { with_enum_fallback!(a, b, sub) }
             }
             Opcode::InplaceSubtract => {
                 if let Some(r) = self.try_inplace_dunder(&a, &b, "__isub__", "__sub__")? { r }
-                else { a.sub(&b)? }
+                else { with_enum_fallback!(a, b, sub) }
             }
             Opcode::BinaryMultiply => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__mul__", Some("__rmul__"))? { r }
-                else { a.mul(&b)? }
+                else { with_enum_fallback!(a, b, mul) }
             }
             Opcode::InplaceMultiply => {
                 if let Some(r) = self.try_inplace_dunder(&a, &b, "__imul__", "__mul__")? { r }
-                else { a.mul(&b)? }
+                else { with_enum_fallback!(a, b, mul) }
             }
             Opcode::BinaryTrueDivide => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__truediv__", Some("__rtruediv__"))? { r }
-                else { a.true_div(&b)? }
+                else { with_enum_fallback!(a, b, true_div) }
             }
             Opcode::InplaceTrueDivide => {
                 if let Some(r) = self.try_inplace_dunder(&a, &b, "__itruediv__", "__truediv__")? { r }
-                else { a.true_div(&b)? }
+                else { with_enum_fallback!(a, b, true_div) }
             }
             Opcode::BinaryFloorDivide => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__floordiv__", Some("__rfloordiv__"))? { r }
-                else { a.floor_div(&b)? }
+                else { with_enum_fallback!(a, b, floor_div) }
             }
             Opcode::InplaceFloorDivide => {
                 if let Some(r) = self.try_inplace_dunder(&a, &b, "__ifloordiv__", "__floordiv__")? { r }
-                else { a.floor_div(&b)? }
+                else { with_enum_fallback!(a, b, floor_div) }
             }
             Opcode::BinaryModulo | Opcode::InplaceModulo => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__mod__", Some("__rmod__"))? { r }
-                else { a.modulo(&b)? }
+                else { with_enum_fallback!(a, b, modulo) }
             }
             Opcode::BinaryPower | Opcode::InplacePower => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__pow__", Some("__rpow__"))? { r }
-                else { a.power(&b)? }
+                else { with_enum_fallback!(a, b, power) }
             }
             Opcode::BinaryLshift | Opcode::InplaceLshift => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__lshift__", Some("__rlshift__"))? { r }
-                else { a.lshift(&b)? }
+                else { with_enum_fallback!(a, b, lshift) }
             }
             Opcode::BinaryRshift | Opcode::InplaceRshift => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__rshift__", Some("__rrshift__"))? { r }
-                else { a.rshift(&b)? }
+                else { with_enum_fallback!(a, b, rshift) }
             }
             Opcode::BinaryAnd | Opcode::InplaceAnd => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__and__", Some("__rand__"))? { r }
-                else { a.bit_and(&b)? }
+                else { with_enum_fallback!(a, b, bit_and) }
             }
             Opcode::BinaryOr | Opcode::InplaceOr => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__or__", Some("__ror__"))? { r }
-                else { a.bit_or(&b)? }
+                else { with_enum_fallback!(a, b, bit_or) }
             }
             Opcode::BinaryXor | Opcode::InplaceXor => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__xor__", Some("__rxor__"))? { r }
-                else { a.bit_xor(&b)? }
+                else { with_enum_fallback!(a, b, bit_xor) }
             }
             Opcode::BinaryMatrixMultiply | Opcode::InplaceMatrixMultiply => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__matmul__", Some("__rmatmul__"))? { r }
@@ -774,6 +804,7 @@ impl VirtualMachine {
         self.vm_push(result);
         Ok(None)
     }
+
 }
 
 // ── Group 6: Subscript operations ────────────────────────────────────
