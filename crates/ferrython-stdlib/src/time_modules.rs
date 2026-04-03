@@ -137,16 +137,68 @@ fn time_localtime(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 
 pub fn create_datetime_module() -> PyObjectRef {
-    let datetime_cls = make_module("datetime", vec![
-        ("now", make_builtin(datetime_now)),
-        ("today", make_builtin(datetime_now)),
-        ("utcnow", make_builtin(datetime_now)),
-        ("fromisoformat", make_builtin(datetime_fromisoformat)),
-    ]);
-    let date_cls = make_module("date", vec![
-        ("today", make_builtin(date_today)),
-        ("fromisoformat", make_builtin(datetime_fromisoformat)),
-    ]);
+    // Build datetime class with constructor and class methods
+    let mut dt_ns = IndexMap::new();
+    dt_ns.insert(CompactString::from("now"), make_builtin(datetime_now));
+    dt_ns.insert(CompactString::from("today"), make_builtin(datetime_now));
+    dt_ns.insert(CompactString::from("utcnow"), make_builtin(datetime_now));
+    dt_ns.insert(CompactString::from("fromisoformat"), make_builtin(datetime_fromisoformat));
+    let datetime_cls = PyObject::class(CompactString::from("datetime"), vec![], dt_ns);
+    // Store __init__ for constructor dispatch
+    if let PyObjectPayload::Class(ref cd) = datetime_cls.payload {
+        cd.namespace.write().insert(
+            CompactString::from("__init__"),
+            make_builtin(|args| {
+                // datetime(year, month, day, hour=0, minute=0, second=0, microsecond=0)
+                if args.len() < 4 { return Err(PyException::type_error("datetime() requires at least year, month, day")); }
+                let year = args[1].to_int()?;
+                let month = args[2].to_int()?;
+                let day = args[3].to_int()?;
+                let hour = if args.len() > 4 { args[4].to_int()? } else { 0 };
+                let minute = if args.len() > 5 { args[5].to_int()? } else { 0 };
+                let second = if args.len() > 6 { args[6].to_int()? } else { 0 };
+                let microsecond = if args.len() > 7 { args[7].to_int()? } else { 0 };
+                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    let mut w = inst.attrs.write();
+                    w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+                    w.insert(CompactString::from("year"), PyObject::int(year));
+                    w.insert(CompactString::from("month"), PyObject::int(month));
+                    w.insert(CompactString::from("day"), PyObject::int(day));
+                    w.insert(CompactString::from("hour"), PyObject::int(hour));
+                    w.insert(CompactString::from("minute"), PyObject::int(minute));
+                    w.insert(CompactString::from("second"), PyObject::int(second));
+                    w.insert(CompactString::from("microsecond"), PyObject::int(microsecond));
+                }
+                Ok(PyObject::none())
+            }),
+        );
+    }
+
+    // Build date class with constructor and class methods
+    let mut date_ns = IndexMap::new();
+    date_ns.insert(CompactString::from("today"), make_builtin(date_today));
+    date_ns.insert(CompactString::from("fromisoformat"), make_builtin(datetime_fromisoformat));
+    let date_cls = PyObject::class(CompactString::from("date"), vec![], date_ns);
+    if let PyObjectPayload::Class(ref cd) = date_cls.payload {
+        cd.namespace.write().insert(
+            CompactString::from("__init__"),
+            make_builtin(|args| {
+                // date(year, month, day)
+                if args.len() < 4 { return Err(PyException::type_error("date() requires year, month, day")); }
+                let year = args[1].to_int()?;
+                let month = args[2].to_int()?;
+                let day = args[3].to_int()?;
+                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    let mut w = inst.attrs.write();
+                    w.insert(CompactString::from("year"), PyObject::int(year));
+                    w.insert(CompactString::from("month"), PyObject::int(month));
+                    w.insert(CompactString::from("day"), PyObject::int(day));
+                }
+                Ok(PyObject::none())
+            }),
+        );
+    }
+
     make_module("datetime", vec![
         ("datetime", datetime_cls),
         ("date", date_cls),
