@@ -724,20 +724,14 @@ impl VirtualMachine {
                                         let k = self.call_object(key.clone(), vec![item.clone()])?;
                                         decorated.push((k, item.clone()));
                                     }
-                                    // Sort keys using VM-level comparison
+                                    // Sort ascending by key, then reverse if needed (matches CPython)
                                     let keys: Vec<PyObjectRef> = decorated.iter().map(|(k, _)| k.clone()).collect();
                                     let mut indices: Vec<usize> = (0..decorated.len()).collect();
-                                    // Insertion sort on indices by key (stable)
+                                    // Insertion sort on indices by key (stable, ascending)
                                     for i in 1..indices.len() {
                                         let mut j = i;
                                         while j > 0 {
-                                            let should_swap = if reverse {
-                                                // Descending: swap if current > previous
-                                                self.vm_lt(&keys[indices[j - 1]], &keys[indices[j]])?
-                                            } else {
-                                                self.vm_lt(&keys[indices[j]], &keys[indices[j - 1]])?
-                                            };
-                                            if should_swap {
+                                            if self.vm_lt(&keys[indices[j]], &keys[indices[j - 1]])? {
                                                 indices.swap(j, j - 1);
                                                 j -= 1;
                                             } else {
@@ -746,6 +740,9 @@ impl VirtualMachine {
                                         }
                                     }
                                     items_vec = indices.into_iter().map(|i| decorated[i].1.clone()).collect();
+                                    if reverse {
+                                        items_vec.reverse();
+                                    }
                                 } else {
                                     self.vm_sort(&mut items_vec)?;
                                     if reverse {
@@ -1758,9 +1755,22 @@ impl VirtualMachine {
                             let cache_key = HashableKey::Str(CompactString::from(&key_str));
                             // Check cache
                             if let Some(cached) = cache_map.read().get(&cache_key) {
+                                // Cache hit: increment _hits counter
+                                if let PyObjectPayload::Instance(ref d) = func.payload {
+                                    let mut w = d.attrs.write();
+                                    let hits = w.get(&CompactString::from("_hits"))
+                                        .and_then(|v| v.as_int()).unwrap_or(0);
+                                    w.insert(CompactString::from("_hits"), PyObject::int(hits + 1));
+                                }
                                 return Ok(cached.clone());
                             }
-                            // Cache miss: call the wrapped function
+                            // Cache miss: call the wrapped function, increment _misses
+                            if let PyObjectPayload::Instance(ref d) = func.payload {
+                                let mut w = d.attrs.write();
+                                let misses = w.get(&CompactString::from("_misses"))
+                                    .and_then(|v| v.as_int()).unwrap_or(0);
+                                w.insert(CompactString::from("_misses"), PyObject::int(misses + 1));
+                            }
                             let result = self.call_object(wrapped, args)?;
                             cache_map.write().insert(cache_key, result.clone());
                             return Ok(result);

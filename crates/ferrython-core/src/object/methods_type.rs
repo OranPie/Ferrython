@@ -245,14 +245,31 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
 pub(super) fn py_repr(obj: &PyObjectRef) -> String {
         match &obj.payload {
             PyObjectPayload::Str(s) => {
-                let has_single = s.contains('\'');
-                let has_double = s.contains('"');
+                // Escape special characters first
+                let mut escaped = String::with_capacity(s.len() + 4);
+                for c in s.chars() {
+                    match c {
+                        '\\' => escaped.push_str("\\\\"),
+                        '\n' => escaped.push_str("\\n"),
+                        '\t' => escaped.push_str("\\t"),
+                        '\r' => escaped.push_str("\\r"),
+                        '\x07' => escaped.push_str("\\a"),
+                        '\x08' => escaped.push_str("\\b"),
+                        '\x0C' => escaped.push_str("\\f"),
+                        '\x0B' => escaped.push_str("\\v"),
+                        '\0' => escaped.push_str("\\x00"),
+                        _ if c.is_control() => escaped.push_str(&format!("\\x{:02x}", c as u32)),
+                        _ => escaped.push(c),
+                    }
+                }
+                let has_single = escaped.contains('\'');
+                let has_double = escaped.contains('"');
                 if has_single && !has_double {
-                    // Use double quotes when string contains ' but not "
-                    format!("\"{}\"", s.replace('\\', "\\\\"))
+                    format!("\"{}\"", escaped)
                 } else {
-                    // Default to single quotes, escaping any ' inside
-                    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+                    // Escape single quotes in the escaped string
+                    let escaped = escaped.replace('\'', "\\'");
+                    format!("'{}'", escaped)
                 }
             }
             PyObjectPayload::ExceptionInstance { kind, message, .. } => {

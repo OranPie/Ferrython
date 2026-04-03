@@ -31,7 +31,11 @@ pub fn create_sys_module() -> PyObjectRef {
             path_items.push(PyObject::str_val(CompactString::from(".")));
             PyObject::list(path_items)
         }),
-        ("modules", PyObject::dict_from_pairs(vec![])),
+        ("modules", PyObject::dict_from_pairs(vec![
+            (PyObject::str_val(CompactString::from("sys")), PyObject::str_val(CompactString::from("<module 'sys' (built-in)>"))),
+            (PyObject::str_val(CompactString::from("os")), PyObject::str_val(CompactString::from("<module 'os' (built-in)>"))),
+            (PyObject::str_val(CompactString::from("builtins")), PyObject::str_val(CompactString::from("<module 'builtins' (built-in)>"))),
+        ])),
         ("maxsize", PyObject::int(i64::MAX)),
         ("maxunicode", PyObject::int(0x10FFFF)),
         ("byteorder", PyObject::str_val(CompactString::from(if cfg!(target_endian = "little") { "little" } else { "big" }))),
@@ -425,8 +429,15 @@ fn os_path_isdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn os_path_basename(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.basename", args, 1)?;
     let s = args[0].py_to_string();
-    let p = std::path::Path::new(&s);
-    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    // Python: basename("/a/b/") → "", basename("/a/b") → "b"
+    if s.ends_with('/') && s.len() > 1 {
+        return Ok(PyObject::str_val(CompactString::from("")));
+    }
+    let name = if let Some(pos) = s.rfind('/') {
+        &s[pos + 1..]
+    } else {
+        &s
+    };
     Ok(PyObject::str_val(CompactString::from(name)))
 }
 fn os_path_dirname(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -461,13 +472,27 @@ fn os_path_splitext(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn os_path_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.split", args, 1)?;
     let s = args[0].py_to_string();
-    let p = std::path::Path::new(&s);
-    let dir = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
-    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    Ok(PyObject::tuple(vec![
-        PyObject::str_val(CompactString::from(dir)),
-        PyObject::str_val(CompactString::from(name)),
-    ]))
+    // Python's os.path.split: trailing slash → (path, "")
+    if s.ends_with('/') && s.len() > 1 {
+        let trimmed = s.trim_end_matches('/');
+        return Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from(trimmed)),
+            PyObject::str_val(CompactString::from("")),
+        ]));
+    }
+    if let Some(pos) = s.rfind('/') {
+        let head = if pos == 0 { "/" } else { &s[..pos] };
+        let tail = &s[pos + 1..];
+        Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from(head)),
+            PyObject::str_val(CompactString::from(tail)),
+        ]))
+    } else {
+        Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("")),
+            PyObject::str_val(CompactString::from(s)),
+        ]))
+    }
 }
 fn os_path_isabs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.isabs", args, 1)?;

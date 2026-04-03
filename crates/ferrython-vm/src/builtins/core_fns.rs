@@ -417,11 +417,24 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             }
             false
         }
+        // NativeFunction/NativeClosure used as constructor (e.g., ChainMap, OrderedDict):
+        // Check if the instance's class name matches
+        PyObjectPayload::NativeFunction { name: func_name, .. } |
+        PyObjectPayload::NativeClosure { name: func_name, .. } => {
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    let cls_name = cd.name.as_str();
+                    if !func_name.is_empty() && cls_name == func_name.as_str() {
+                        return true;
+                    }
+                    return class_is_subclass_of(&inst.class, func_name.as_str());
+                }
+            }
+            false
+        }
         _ => false,
     }
 }
-
-/// Check if a class (or any of its bases) has the given name.
 pub(crate) fn class_is_subclass_of(cls: &PyObjectRef, target_name: &str) -> bool {
     match &cls.payload {
         PyObjectPayload::Class(cd) => {
@@ -872,14 +885,15 @@ pub(super) fn builtin_format(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_ascii(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("ascii", args, 1)?;
-    let s = args[0].py_to_string();
-    let escaped: String = s.chars().map(|c| {
+    let repr = args[0].repr();
+    // ascii() takes repr() and escapes non-ASCII characters
+    let escaped: String = repr.chars().map(|c| {
         if c.is_ascii() { c.to_string() }
         else if (c as u32) <= 0xff { format!("\\x{:02x}", c as u32) }
         else if (c as u32) <= 0xffff { format!("\\u{:04x}", c as u32) }
         else { format!("\\U{:08x}", c as u32) }
     }).collect();
-    Ok(PyObject::str_val(CompactString::from(format!("'{}'", escaped))))
+    Ok(PyObject::str_val(CompactString::from(escaped)))
 }
 
 pub(super) fn builtin_property(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

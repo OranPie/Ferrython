@@ -124,8 +124,8 @@ check("str_list_uses_repr", repr([g]), "[Greeter('World')]")
 
 # ── type() for various types ──
 check("type_bytes", str(type(b"hi")), "<class 'bytes'>")
-# Note: range() returns iterator internally, not a range type
-check("type_range", str(type(range(5))), "<class 'iterator'>")
+# range() returns a range type
+check("type_range", str(type(range(5))), "<class 'range'>")
 
 # ── int/str/float/bool as BuiltinType still work as constructors ──
 check("int_constructor", int("42"), 42)

@@ -322,6 +322,11 @@ impl VirtualMachine {
                 }
             }
             // __init_subclass__ handling
+            // Collect non-metaclass kwargs to forward to __init_subclass__
+            let init_sub_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs.iter()
+                .filter(|(k, _)| k.as_str() != "metaclass")
+                .cloned()
+                .collect();
             if let PyObjectPayload::Class(cd) = &cls.payload {
                 for base in &cd.bases {
                     if let Some(init_sub) = base.get_attr("__init_subclass__") {
@@ -340,7 +345,11 @@ impl VirtualMachine {
                                 }
                             })
                         };
-                        self.call_object(bound, vec![])?;
+                        if init_sub_kwargs.is_empty() {
+                            self.call_object(bound, vec![])?;
+                        } else {
+                            self.call_object_kw(bound, vec![], init_sub_kwargs.clone())?;
+                        }
                     }
                 }
             }
@@ -357,6 +366,11 @@ impl VirtualMachine {
                 namespace: Arc::new(RwLock::new(namespace)), mro, metaclass: None,
             }));
             // __init_subclass__: bind to new subclass (cls), not parent
+            // Forward non-metaclass kwargs to __init_subclass__
+            let init_sub_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs.iter()
+                .filter(|(k, _)| k.as_str() != "metaclass")
+                .cloned()
+                .collect();
             for base in &bases {
                 if let Some(init_sub) = base.get_attr("__init_subclass__") {
                     let bound = if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
@@ -374,7 +388,11 @@ impl VirtualMachine {
                             }
                         })
                     };
-                    self.call_object(bound, vec![])?;
+                    if init_sub_kwargs.is_empty() {
+                        self.call_object(bound, vec![])?;
+                    } else {
+                        self.call_object_kw(bound, vec![], init_sub_kwargs.clone())?;
+                    }
                 }
             }
             // Populate __class__ cell (PEP 3135)

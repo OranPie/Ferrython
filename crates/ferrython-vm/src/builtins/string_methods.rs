@@ -499,15 +499,37 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                         } else {
                             (field_part, None)
                         };
-                        // Resolve the value
+                        // Resolve the value (supports {idx}, {name}, {idx.attr}, {idx[key]})
                         let value = if field_name.is_empty() {
                             let v = args.get(auto_idx).cloned();
                             auto_idx += 1;
                             v
-                        } else if let Ok(idx) = field_name.parse::<usize>() {
-                            args.get(idx).cloned()
                         } else {
-                            None
+                            // Split on '.' for attribute access: "0.val" → base="0", attrs=["val"]
+                            let parts: Vec<&str> = field_name.splitn(2, '.').collect();
+                            let base_name = parts[0];
+                            let mut val = if let Ok(idx) = base_name.parse::<usize>() {
+                                args.get(idx).cloned()
+                            } else {
+                                None
+                            };
+                            // Resolve attribute chain if present
+                            if parts.len() > 1 {
+                                if let Some(ref base_val) = val {
+                                    let attr_chain = parts[1];
+                                    let mut current = base_val.clone();
+                                    for attr in attr_chain.split('.') {
+                                        if let Some(v) = current.get_attr(attr) {
+                                            current = v;
+                                        } else {
+                                            current = PyObject::str_val(CompactString::from(""));
+                                            break;
+                                        }
+                                    }
+                                    val = Some(current);
+                                }
+                            }
+                            val
                         };
                         if let Some(val) = value {
                             if let Some(conv) = conversion {

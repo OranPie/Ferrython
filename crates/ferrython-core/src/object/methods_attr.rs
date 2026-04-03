@@ -394,6 +394,18 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }
                     }
                 }
+                // Fallback: synthesize object-level attributes for user classes
+                if name == "__new__" {
+                    return Some(PyObject::native_function("__new__", |args| {
+                        if args.is_empty() { return Err(PyException::type_error("__new__ requires cls")); }
+                        Ok(PyObject::instance(args[0].clone()))
+                    }));
+                }
+                if name == "__init_subclass__" {
+                    return Some(PyObject::native_function("__init_subclass__", |_args| {
+                        Ok(PyObject::none())
+                    }));
+                }
                 None
             }
             PyObjectPayload::Module(m) => m.attrs.get(name).cloned(),

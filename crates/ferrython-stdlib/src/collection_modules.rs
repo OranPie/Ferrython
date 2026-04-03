@@ -20,7 +20,7 @@ pub fn create_collections_module() -> PyObjectRef {
         ("namedtuple", make_builtin(collections_namedtuple)),
         ("deque", make_builtin(collections_deque)),
         ("most_common", make_builtin(collections_most_common)),
-        ("ChainMap", make_builtin(collections_chainmap)),
+        ("ChainMap", PyObject::native_function("ChainMap", collections_chainmap)),
     ])
 }
 
@@ -283,17 +283,12 @@ fn collections_chainmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 collections_chainmap(&new_maps)
             }
         ));
-        // parents — lazy property that creates ChainMap of all maps except first
-        let parent_maps = maps.clone();
-        w.insert(CompactString::from("parents"), PyObject::native_closure(
-            "ChainMap.parents", move |_args| {
-                if parent_maps.len() > 1 {
-                    collections_chainmap(&parent_maps[1..])
-                } else {
-                    collections_chainmap(&[])
-                }
-            }
-        ));
+        // parents — eagerly create ChainMap of all maps except first
+        // Only compute if we have maps, to avoid infinite recursion
+        if maps.len() > 1 {
+            let parents_val = collections_chainmap(&maps[1..])?;
+            w.insert(CompactString::from("parents"), parents_val);
+        }
     }
     Ok(inst)
 }
@@ -916,28 +911,50 @@ fn create_cached_function(func: PyObjectRef) -> PyObjectRef {
         IndexMap::new(),
     );
     let cache_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
-    let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("__wrapped__"), func);
-    attrs.insert(CompactString::from("_cache"), PyObject::dict(cache_dict));
-    attrs.insert(CompactString::from("_hits"), PyObject::int(0));
-    attrs.insert(CompactString::from("_misses"), PyObject::int(0));
-    attrs.insert(CompactString::from("cache_info"), PyObject::native_function("cache_info", |_args| {
-        // Returns a simple object with hits, misses, maxsize, currsize
+    let attrs_map: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+    let attrs_arc = Arc::new(parking_lot::RwLock::new(attrs_map));
+
+    // Build cache_info closure that reads _hits/_misses from attrs
+    let info_attrs = attrs_arc.clone();
+    let cache_info_fn = PyObject::native_closure("cache_info", move |_args| {
+        let r = info_attrs.read();
+        let hits = r.get(&CompactString::from("_hits")).and_then(|v| v.as_int()).unwrap_or(0);
+        let misses = r.get(&CompactString::from("_misses")).and_then(|v| v.as_int()).unwrap_or(0);
+        let currsize = if let Some(cache) = r.get(&CompactString::from("_cache")) {
+            if let PyObjectPayload::Dict(d) = &cache.payload { d.read().len() as i64 } else { 0 }
+        } else { 0 };
         let info_class = PyObject::class(CompactString::from("CacheInfo"), vec![], IndexMap::new());
         let info = PyObject::instance(info_class);
         if let PyObjectPayload::Instance(ref d) = info.payload {
             let mut w = d.attrs.write();
-            w.insert(CompactString::from("hits"), PyObject::int(0));
-            w.insert(CompactString::from("misses"), PyObject::int(0));
+            w.insert(CompactString::from("hits"), PyObject::int(hits));
+            w.insert(CompactString::from("misses"), PyObject::int(misses));
             w.insert(CompactString::from("maxsize"), PyObject::int(128));
-            w.insert(CompactString::from("currsize"), PyObject::int(0));
+            w.insert(CompactString::from("currsize"), PyObject::int(currsize));
         }
         Ok(info)
-    }));
-    attrs.insert(CompactString::from("cache_clear"), PyObject::native_function("cache_clear", |_args| {
-        Ok(PyObject::none())
-    }));
-    PyObject::instance_with_attrs(cache_class, attrs)
+    });
+
+    {
+        let mut w = attrs_arc.write();
+        w.insert(CompactString::from("__wrapped__"), func);
+        w.insert(CompactString::from("_cache"), PyObject::dict(cache_dict));
+        w.insert(CompactString::from("_hits"), PyObject::int(0));
+        w.insert(CompactString::from("_misses"), PyObject::int(0));
+        w.insert(CompactString::from("cache_info"), cache_info_fn);
+        w.insert(CompactString::from("cache_clear"), PyObject::native_function("cache_clear", |_args| {
+            Ok(PyObject::none())
+        }));
+    }
+
+    // Build the Instance manually with the shared attrs Arc
+    Arc::new(PyObject {
+        payload: PyObjectPayload::Instance(InstanceData {
+            class: cache_class,
+            attrs: attrs_arc,
+            dict_storage: None,
+        }),
+    })
 }
 
 // ── queue module ──
