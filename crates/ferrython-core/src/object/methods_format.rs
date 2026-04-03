@@ -49,7 +49,7 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
                 if inner_spec.is_empty() {
                     return Ok(n.to_string());
                 }
-                return Ok(apply_string_format_spec(&n.to_string(), inner_spec));
+                return Ok(apply_numeric_sign(&n.to_string(), inner_spec));
             }
             'f' | 'F' => {
                 let f = obj.to_float()?;
@@ -161,8 +161,13 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
                 return Ok(apply_string_format_spec(&s, inner_spec));
             }
             _ => {
-                // No type char — treat entire spec as alignment spec
+                // No type char — handle numeric sign, then alignment
+                let is_numeric = obj.as_int().is_some() || obj.to_float().is_ok();
                 let s = obj.py_to_string();
+                if is_numeric {
+                    let formatted = apply_numeric_sign(&s, spec);
+                    return Ok(formatted);
+                }
                 return Ok(apply_string_format_spec(&s, spec));
             }
         }

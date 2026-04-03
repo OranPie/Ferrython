@@ -279,6 +279,84 @@ pub(super) fn add_thousands_separator(s: &str, sep: char) -> String {
     format!("{}{}{}", sign, grouped, frac_part)
 }
 
+/// Apply sign and alignment to a numeric string. Handles +, -, space signs and width/fill.
+pub fn apply_numeric_sign(value_str: &str, spec: &str) -> String {
+    if spec.is_empty() { return value_str.to_string(); }
+    let chars: Vec<char> = spec.chars().collect();
+    let mut i = 0;
+    let mut fill = ' ';
+    let mut align = None;
+    let mut sign = '-'; // default: only show negative
+
+    // Check for fill+align
+    if chars.len() >= 2 && "<>^=".contains(chars[1]) {
+        fill = chars[0];
+        align = Some(chars[1]);
+        i = 2;
+    } else if !chars.is_empty() && "<>^=".contains(chars[0]) {
+        align = Some(chars[0]);
+        i = 1;
+    }
+    // Check for sign
+    if i < chars.len() && "+-  ".contains(chars[i]) {
+        sign = chars[i];
+        i += 1;
+    }
+    // Check for # (alt form)
+    if i < chars.len() && chars[i] == '#' {
+        i += 1;
+    }
+    // Check for 0 fill (zero padding)
+    if i < chars.len() && chars[i] == '0' && align.is_none() {
+        fill = '0';
+        align = Some('=');
+        i += 1;
+    }
+    // Parse width
+    let width_str: String = chars[i..].iter().take_while(|c| c.is_ascii_digit()).collect();
+    i += width_str.len();
+    let width: usize = width_str.parse().unwrap_or(0);
+
+    // Parse .precision
+    if i < chars.len() && chars[i] == '.' {
+        i += 1;
+        // skip precision digits
+        while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
+    }
+
+    // Apply sign to the numeric value
+    let is_negative = value_str.starts_with('-');
+    let digits = if is_negative { &value_str[1..] } else { value_str };
+    let sign_str = if is_negative {
+        "-"
+    } else {
+        match sign {
+            '+' => "+",
+            ' ' => " ",
+            _ => "",
+        }
+    };
+
+    let full = format!("{}{}", sign_str, digits);
+    if width == 0 || full.len() >= width {
+        return full;
+    }
+
+    let pad_len = width - full.len();
+    let actual_align = align.unwrap_or('>');
+    match actual_align {
+        '<' => format!("{}{}", full, std::iter::repeat(fill).take(pad_len).collect::<String>()),
+        '>' => format!("{}{}", std::iter::repeat(fill).take(pad_len).collect::<String>(), full),
+        '=' => format!("{}{}{}", sign_str, std::iter::repeat(fill).take(pad_len).collect::<String>(), digits),
+        '^' => {
+            let left = pad_len / 2;
+            let right = pad_len - left;
+            format!("{}{}{}", std::iter::repeat(fill).take(left).collect::<String>(), full, std::iter::repeat(fill).take(right).collect::<String>())
+        }
+        _ => full,
+    }
+}
+
 pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
     if spec.is_empty() { return s.to_string(); }
     let chars: Vec<char> = spec.chars().collect();

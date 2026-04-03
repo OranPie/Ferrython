@@ -1531,6 +1531,9 @@ impl VirtualMachine {
                 if name.as_str() == "itertools.starmap" && args.len() >= 2 {
                     return self.vm_itertools_starmap(&args);
                 }
+                if name.as_str() == "itertools.accumulate" && args.len() >= 2 {
+                    return self.vm_itertools_accumulate(&args);
+                }
                 func(&args)
             }
             PyObjectPayload::NativeClosure { func, .. } => {
@@ -1714,6 +1717,29 @@ impl VirtualMachine {
             let call_args = item.to_list().unwrap_or_else(|_| vec![item.clone()]);
             let r = self.call_object(func.clone(), call_args)?;
             result.push(r);
+        }
+        Ok(PyObject::list(result))
+    }
+
+    /// Handle itertools.accumulate(iterable, func) with VM dispatch
+    fn vm_itertools_accumulate(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let items = args[0].to_list()?;
+        if items.is_empty() { return Ok(PyObject::list(vec![])); }
+        let func = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None | PyObjectPayload::Dict(_)) {
+            Some(args[1].clone())
+        } else {
+            None
+        };
+        let mut result = Vec::new();
+        let mut acc = items[0].clone();
+        result.push(acc.clone());
+        for item in &items[1..] {
+            acc = if let Some(ref f) = func {
+                self.call_object(f.clone(), vec![acc, item.clone()])?
+            } else {
+                acc.add(item)?
+            };
+            result.push(acc.clone());
         }
         Ok(PyObject::list(result))
     }
