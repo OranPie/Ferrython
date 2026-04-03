@@ -103,7 +103,14 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 else { format!("({}+{}j)", real, imag) }
             }
             PyObjectPayload::Str(s) => s.to_string(),
-            PyObjectPayload::Bytes(b) => format!("b{:?}", String::from_utf8_lossy(b)),
+            PyObjectPayload::Bytes(b) => {
+                let s = String::from_utf8_lossy(b);
+                if s.contains('\'') && !s.contains('"') {
+                    format!("b\"{}\"", s)
+                } else {
+                    format!("b'{}'", s.replace('\'', "\\'"))
+                }
+            }
             PyObjectPayload::List(items) => format_collection("[", "]", &items.read()),
             PyObjectPayload::Tuple(items) => {
                 if items.len() == 1 { format!("({},)", items[0].repr()) }
