@@ -410,8 +410,12 @@ pub(super) fn py_power(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => {
                 if let Some(exp) = b.to_i64() {
-                    if exp >= 0 && exp <= 63 { return Ok(PyInt::pow_op(a, exp as u32).to_object()); }
+                    if exp >= 0 {
+                        let e = exp as u32;
+                        return Ok(PyInt::pow_op(a, e).to_object());
+                    }
                 }
+                // Negative exponent → float result
                 Ok(PyObject::float(a.to_f64().powf(b.to_f64())))
             }
             (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => Ok(PyObject::float(a.powf(*b))),
