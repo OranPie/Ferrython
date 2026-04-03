@@ -1617,8 +1617,19 @@ impl VirtualMachine {
                 let stack_pos = frame.stack.len() - idx;
                 let list_obj = frame.stack[stack_pos].clone();
                 if let PyObjectPayload::List(items) = &list_obj.payload {
-                    let new_items = iterable.to_list()?;
-                    items.write().extend(new_items);
+                    if let PyObjectPayload::Generator(gen_arc) = &iterable.payload {
+                        // Consume generator by driving it through the VM
+                        loop {
+                            match self.resume_generator(gen_arc, PyObject::none()) {
+                                Ok(val) => items.write().push(val),
+                                Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    } else {
+                        let new_items = iterable.to_list()?;
+                        items.write().extend(new_items);
+                    }
                 }
             }
             Opcode::SetUpdate => {
@@ -2045,6 +2056,25 @@ impl VirtualMachine {
                                 };
                                 return Err(PyException::new(kind, msg));
                             }
+                            PyObjectPayload::Class(_) => {
+                                // User-defined exception class on stack — re-raise
+                                let cls = frame.pop();
+                                let kind = Self::find_exception_kind(&cls);
+                                let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
+                                if !frame.stack.is_empty() { frame.pop(); }
+                                let msg = match &value.payload {
+                                    PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
+                                    PyObjectPayload::Instance(_) => {
+                                        if let Some(args) = value.get_attr("args") {
+                                            args.py_to_string()
+                                        } else {
+                                            value.py_to_string()
+                                        }
+                                    }
+                                    _ => value.py_to_string(),
+                                };
+                                return Err(PyException::with_original(kind, msg, value));
+                            }
                             PyObjectPayload::None => { frame.pop(); }
                             _ => {}
                         }
@@ -2096,8 +2126,11 @@ impl VirtualMachine {
                         let cause = frame.pop();
                         let exc = frame.pop();
                         let mut py_exc = raise_exc(&exc);
-                        let cause_exc = raise_exc(&cause);
-                        py_exc.cause = Some(Box::new(cause_exc));
+                        // `raise X from None` suppresses the cause
+                        if !matches!(cause.payload, PyObjectPayload::None) {
+                            let cause_exc = raise_exc(&cause);
+                            py_exc.cause = Some(Box::new(cause_exc));
+                        }
                         return Err(py_exc);
                     }
                     _ => return Err(PyException::runtime_error("bad RAISE_VARARGS arg")),

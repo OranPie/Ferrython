@@ -50,12 +50,22 @@ pub(super) fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &st
         "index" => {
             check_args_min("index", args, 1)?;
             let target = &args[0];
-            for (i, x) in items.read().iter().enumerate() {
-                if x.py_to_string() == target.py_to_string() {
+            let items_r = items.read();
+            let len = items_r.len();
+            let start = if args.len() > 1 {
+                let s = args[1].to_int().unwrap_or(0);
+                if s < 0 { (len as i64 + s).max(0) as usize } else { s as usize }
+            } else { 0 };
+            let stop = if args.len() > 2 {
+                let s = args[2].to_int().unwrap_or(len as i64);
+                if s < 0 { (len as i64 + s).max(0) as usize } else { (s as usize).min(len) }
+            } else { len };
+            for i in start..stop {
+                if items_r[i].py_to_string() == target.py_to_string() {
                     return Ok(PyObject::int(i as i64));
                 }
             }
-            Err(PyException::value_error("x not in list"))
+            Err(PyException::value_error(format!("{} is not in list", target.py_to_string())))
         }
         "append" => {
             check_args_min("append", args, 1)?;

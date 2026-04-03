@@ -105,6 +105,8 @@ impl VirtualMachine {
                                 PyObject::exception_instance(cause.kind.clone(), cause.message.clone())
                             };
                             Self::store_exc_attr(&exc_value, "__cause__", cause_obj);
+                        } else {
+                            Self::store_exc_attr(&exc_value, "__cause__", PyObject::none());
                         }
                         // Store __traceback__ on the exception value
                         let tb_obj = Self::build_traceback_object(&exc.traceback);

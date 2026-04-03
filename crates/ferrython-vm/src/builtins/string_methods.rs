@@ -368,7 +368,16 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             }
         }
         "casefold" => {
-            Ok(PyObject::str_val(CompactString::from(s.to_lowercase())))
+            // casefold: aggressive lowercase for caseless matching
+            // Rust's to_lowercase handles most Unicode, but ß → ss needs explicit handling
+            let folded: String = s.chars().flat_map(|c| {
+                if c == '\u{00DF}' { // ß
+                    vec!['s', 's']
+                } else {
+                    c.to_lowercase().collect::<Vec<_>>()
+                }
+            }).collect();
+            Ok(PyObject::str_val(CompactString::from(folded)))
         }
         "removeprefix" => {
             check_args_min("removeprefix", args, 1)?;

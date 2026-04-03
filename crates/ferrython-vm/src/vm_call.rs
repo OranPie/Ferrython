@@ -49,7 +49,25 @@ impl VirtualMachine {
             }
         }
 
-        // Pack extra positional args into *args tuple
+        // Check for missing required positional args
+        if args.len() < nparams {
+            let ndefaults = defaults.len();
+            let required = nparams - ndefaults;
+            if args.len() < required {
+                let missing = required - args.len();
+                let fname = code.name.as_str();
+                let missing_names: Vec<&str> = (args.len()..required)
+                    .filter_map(|i| code.varnames.get(i).map(|s| s.as_str()))
+                    .collect();
+                return Err(PyException::type_error(format!(
+                    "{}() missing {} required positional argument{}: {}",
+                    fname, missing, if missing == 1 { "" } else { "s" },
+                    missing_names.iter().map(|n| format!("'{}'", n)).collect::<Vec<_>>().join(", ")
+                )));
+            }
+        }
+
+        // Pack extra positional args into *args tuple, or raise TypeError
         if has_varargs {
             let extra: Vec<PyObjectRef> = if args.len() > nparams {
                 args[nparams..].to_vec()
@@ -57,6 +75,13 @@ impl VirtualMachine {
                 Vec::new()
             };
             frame.set_local(nparams, PyObject::tuple(extra));
+        } else if args.len() > nparams {
+            let fname = code.name.as_str();
+            return Err(PyException::type_error(format!(
+                "{}() takes {} positional argument{} but {} {} given",
+                fname, nparams, if nparams == 1 { "" } else { "s" },
+                args.len(), if args.len() == 1 { "was" } else { "were" }
+            )));
         }
 
         // Fill in kw_defaults for keyword-only args
@@ -1496,6 +1521,22 @@ impl VirtualMachine {
                         let instance = args[0].clone();
                         let rest_args = if args.len() > 1 { args[1..].to_vec() } else { vec![] };
                         return builtins::call_method(&instance, method_name.as_str(), &rest_args);
+                    }
+                }
+                // list.extend with generator/lazy iterator needs VM-level collection
+                if method_name.as_str() == "extend" && !args.is_empty() {
+                    if matches!(receiver.payload, PyObjectPayload::List(_)) {
+                        if matches!(args[0].payload, PyObjectPayload::Generator(_)) ||
+                           (matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
+                               let data = d.lock().unwrap();
+                               matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
+                                   | IteratorData::Map { .. } | IteratorData::Filter { .. }
+                                   | IteratorData::Sentinel { .. })
+                           }))
+                        {
+                            let items = self.collect_iterable(&args[0])?;
+                            return builtins::call_method(receiver, "extend", &[PyObject::list(items)]);
+                        }
                     }
                 }
                 builtins::call_method(receiver, method_name.as_str(), &args)
