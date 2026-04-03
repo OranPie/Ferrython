@@ -269,7 +269,7 @@ impl HashableKey {
         use crate::object::PyObjectPayload;
         match &obj.payload {
             PyObjectPayload::None => Ok(HashableKey::None),
-            PyObjectPayload::Bool(b) => Ok(HashableKey::Bool(*b)),
+            PyObjectPayload::Bool(b) => Ok(HashableKey::Int(PyInt::Small(*b as i64))),
             PyObjectPayload::Int(n) => Ok(HashableKey::Int(n.clone())),
             PyObjectPayload::Float(f) => Ok(HashableKey::Float(OrderedFloat(*f))),
             PyObjectPayload::Str(s) => Ok(HashableKey::Str(s.clone())),

@@ -53,10 +53,20 @@ pub(super) fn builtin_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // int(string, base)
         let s = args[0].as_str().ok_or_else(||
             PyException::type_error("int() can't convert non-string with explicit base"))?;
-        let base = args[1].to_int()? as u32;
+        let mut base = args[1].to_int()? as u32;
         let s = s.trim();
-        // Strip base prefix if present
-        let s = if base == 16 && (s.starts_with("0x") || s.starts_with("0X")) {
+        // Handle base 0: auto-detect from prefix
+        let s = if base == 0 {
+            if s.starts_with("0x") || s.starts_with("0X") {
+                base = 16; &s[2..]
+            } else if s.starts_with("0o") || s.starts_with("0O") {
+                base = 8; &s[2..]
+            } else if s.starts_with("0b") || s.starts_with("0B") {
+                base = 2; &s[2..]
+            } else {
+                base = 10; s
+            }
+        } else if base == 16 && (s.starts_with("0x") || s.starts_with("0X")) {
             &s[2..]
         } else if base == 8 && (s.starts_with("0o") || s.starts_with("0O")) {
             &s[2..]
