@@ -318,10 +318,10 @@ impl VirtualMachine {
                         } else if has_descriptor_get(&v) {
                             // Custom descriptor protocol: call __get__(self, instance, owner)
                             let get_method = v.get_attr("__get__").unwrap();
-                            let owner = if let PyObjectPayload::Instance(inst) = &obj.payload {
-                                inst.class.clone()
-                            } else {
-                                PyObject::none()
+                            let (instance_arg, owner_arg) = match &obj.payload {
+                                PyObjectPayload::Instance(inst) => (obj.clone(), inst.class.clone()),
+                                PyObjectPayload::Class(_) => (PyObject::none(), obj.clone()),
+                                _ => (obj.clone(), PyObject::none()),
                             };
                             let get_method_bound = if matches!(&get_method.payload, PyObjectPayload::BoundMethod { .. }) {
                                 get_method
@@ -333,7 +333,7 @@ impl VirtualMachine {
                                     }
                                 })
                             };
-                            let result = self.call_object(get_method_bound, vec![obj, owner])?;
+                            let result = self.call_object(get_method_bound, vec![instance_arg, owner_arg])?;
                             self.vm_push(result);
                         } else if matches!(&obj.payload, PyObjectPayload::Module(_))
                             && matches!(&v.payload, PyObjectPayload::NativeFunction { .. })
@@ -431,12 +431,41 @@ impl VirtualMachine {
                 }
                 match &obj.payload {
                     PyObjectPayload::Instance(inst) => {
-                        // Check __slots__ restriction (only if it's an actual list/tuple, not a BuiltinBoundMethod)
-                        if let Some(slots) = lookup_in_class_mro(&inst.class, "__slots__") {
-                            if matches!(&slots.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
-                                let allowed = slots.to_list().unwrap_or_default();
-                                let allowed_names: Vec<String> = allowed.iter()
-                                    .map(|s| s.py_to_string()).collect();
+                        // Check __slots__ restriction — accumulate from entire MRO
+                        let has_slots = {
+                            let mut all_slots: Vec<String> = Vec::new();
+                            let mut found_any = false;
+                            // Collect __slots__ from the class and all bases in MRO
+                            let classes_to_check: Vec<PyObjectRef> = {
+                                let mut v = vec![inst.class.clone()];
+                                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                                    v.extend(cd.mro.clone());
+                                    v.extend(cd.bases.clone());
+                                }
+                                v
+                            };
+                            for cls in &classes_to_check {
+                                if let PyObjectPayload::Class(cd) = &cls.payload {
+                                    if let Some(slots) = cd.namespace.read().get("__slots__").cloned() {
+                                        if matches!(&slots.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
+                                            found_any = true;
+                                            if let Ok(items) = slots.to_list() {
+                                                for item in &items {
+                                                    let s = item.py_to_string();
+                                                    if !all_slots.contains(&s) {
+                                                        all_slots.push(s);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if found_any { Some(all_slots) } else { None }
+                        };
+                        if let Some(allowed_names) = has_slots {
+                            // If __dict__ is in slots, allow any attribute
+                            if !allowed_names.iter().any(|s| s == "__dict__") {
                                 if !allowed_names.iter().any(|s| s == name.as_str()) {
                                     return Err(PyException::attribute_error(format!(
                                         "'{}' object has no attribute '{}'",
@@ -469,7 +498,7 @@ impl VirtualMachine {
                 let obj = frame.pop();
                 match &obj.payload {
                     PyObjectPayload::Instance(inst) => {
-                        // Check for property descriptor with fdel first
+                        // Check for descriptor with __delete__ or property fdel first
                         if let Some(class_attr) = lookup_in_class_mro(&inst.class, name.as_str()) {
                             if let PyObjectPayload::Property { fdel, .. } = &class_attr.payload {
                                 if let Some(fdel_fn) = fdel {
@@ -483,6 +512,26 @@ impl VirtualMachine {
                                 } else {
                                     return Err(PyException::attribute_error(format!(
                                         "can't delete attribute '{}'", name)));
+                                }
+                            } else if is_data_descriptor(&class_attr) {
+                                // Data descriptor with __delete__
+                                if let Some(del_method) = class_attr.get_attr("__delete__") {
+                                    let del_bound = if matches!(&del_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                                        del_method
+                                    } else {
+                                        Arc::new(PyObject {
+                                            payload: PyObjectPayload::BoundMethod {
+                                                receiver: class_attr.clone(),
+                                                method: del_method,
+                                            }
+                                        })
+                                    };
+                                    self.call_object(del_bound, vec![obj.clone()])?;
+                                } else {
+                                    if inst.attrs.write().swap_remove(name.as_str()).is_none() {
+                                        return Err(PyException::attribute_error(format!(
+                                            "'{}' object has no attribute '{}'", obj.type_name(), name)));
+                                    }
                                 }
                             } else if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
                                 if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
@@ -2247,17 +2296,35 @@ impl VirtualMachine {
                     let exc_tb = if !self.vm_frame().stack.is_empty() { self.vm_pop() } else { PyObject::none() };
                     let exit_fn = self.vm_pop();
                     if let PyObjectPayload::Generator(gen_arc) = &exit_fn.payload {
-                        match self.resume_generator(gen_arc, PyObject::none()) {
-                            Ok(_) => {}
-                            Err(e) if e.kind == ExceptionKind::StopIteration => {}
-                            Err(e) => return Err(e),
+                        // Throw exception into generator so its except clauses can catch it
+                        let exc_kind = match &exc_type.payload {
+                            PyObjectPayload::ExceptionType(k) => k.clone(),
+                            PyObjectPayload::Class(_) => Self::find_exception_kind(&exc_type),
+                            _ => ExceptionKind::RuntimeError,
+                        };
+                        let exc_msg = match &exc_val.payload {
+                            PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
+                            _ => exc_val.py_to_string(),
+                        };
+                        let gen_arc_clone = gen_arc.clone();
+                        match self.gen_throw(&gen_arc_clone, exc_kind, exc_msg) {
+                            Ok(_) | Err(PyException { kind: ExceptionKind::StopIteration, .. }) => {
+                                // Generator handled exception (suppressed)
+                                let f = self.vm_frame();
+                                f.push(PyObject::none());
+                                f.push(PyObject::none());
+                                f.push(PyObject::none());
+                                f.push(PyObject::bool_val(true));
+                            }
+                            Err(_e) => {
+                                // Generator re-raised or raised a different exception
+                                let f = self.vm_frame();
+                                f.push(exc_tb);
+                                f.push(exc_val);
+                                f.push(exc_type.clone());
+                                f.push(PyObject::none());
+                            }
                         }
-                        let f = self.vm_frame();
-                        // Preserve exception info for EndFinally re-raise
-                        f.push(exc_tb);
-                        f.push(exc_val);
-                        f.push(exc_type.clone());
-                        f.push(PyObject::none());
                     } else {
                         let result = self.call_object(exit_fn, vec![
                             exc_type.clone(), exc_val.clone(), exc_tb.clone()

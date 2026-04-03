@@ -3,10 +3,11 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
     make_module, make_builtin, check_args,
 };
 use ferrython_core::types::HashableKey;
+use std::sync::{Arc, Mutex};
 
 pub fn create_json_module() -> PyObjectRef {
     make_module("json", vec![
@@ -386,9 +387,21 @@ fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("csv.DictReader requires an iterable"));
     }
-    let lines = args[0].to_list()?;
+    let lines = if let PyObjectPayload::Instance(inst) = &args[0].payload {
+        let attrs = inst.attrs.read();
+        if attrs.contains_key("__stringio__") {
+            let buf = attrs.get("_buffer").map(|b| b.py_to_string()).unwrap_or_default();
+            drop(attrs);
+            buf.lines().filter(|l| !l.is_empty()).map(|l| PyObject::str_val(CompactString::from(l))).collect()
+        } else {
+            drop(attrs);
+            args[0].to_list()?
+        }
+    } else {
+        args[0].to_list()?
+    };
     if lines.is_empty() {
-        return Ok(PyObject::list(vec![]));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: vec![], index: 0 })))));
     }
     // Optional fieldnames as second arg
     let fieldnames: Vec<String> = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
@@ -413,7 +426,7 @@ fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         rows.push(PyObject::dict(map));
     }
-    Ok(PyObject::list(rows))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: rows, index: 0 })))))
 }
 
 fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

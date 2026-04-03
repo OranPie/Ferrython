@@ -1030,11 +1030,29 @@ fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Bytes(b) => b.clone(),
         _ => return Err(PyException::type_error("expected bytes")),
     };
-    let byteorder = if args.len() >= 2 {
-        args[1].py_to_string()
-    } else {
-        "big".to_string()
-    };
+    // Extract byteorder and signed from positional or kwargs dict
+    let mut byteorder = "big".to_string();
+    let mut signed = false;
+    // Check if last arg is a kwargs dict
+    if let Some(last) = args.last() {
+        if args.len() >= 2 {
+            if let PyObjectPayload::Dict(map) = &last.payload {
+                let map_r = map.read();
+                if let Some(bo) = map_r.get(&HashableKey::Str(CompactString::from("byteorder"))) {
+                    byteorder = bo.py_to_string();
+                }
+                if let Some(s) = map_r.get(&HashableKey::Str(CompactString::from("signed"))) {
+                    signed = s.is_truthy();
+                }
+            } else {
+                byteorder = args[1].py_to_string();
+            }
+        }
+    }
+    // Also check positional arg 2 for signed (if not from kwargs)
+    if args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::Dict(_)) {
+        signed = args[2].is_truthy();
+    }
     let mut result: i64 = 0;
     match byteorder.as_str() {
         "big" => {
@@ -1048,6 +1066,13 @@ fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }
         _ => return Err(PyException::value_error("byteorder must be 'big' or 'little'")),
+    }
+    if signed {
+        let bits = bytes.len() * 8;
+        let sign_bit = 1i64 << (bits - 1);
+        if result & sign_bit != 0 {
+            result -= 1i64 << bits;
+        }
     }
     Ok(PyObject::int(result))
 }

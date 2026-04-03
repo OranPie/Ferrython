@@ -364,6 +364,21 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             if type_name.as_str() == "int" && obj_type == "bool" {
                 return true;
             }
+            // IntEnum members are also int instances
+            if type_name.as_str() == "int" {
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                        let ns = cd.namespace.read();
+                        if ns.contains_key("__int_enum__") || ns.contains_key("_value_") {
+                            for base in &cd.bases {
+                                if class_is_subclass_of(base, "IntEnum") || class_is_subclass_of(base, "int") {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // collections.abc structural checks (duck typing)
             if check_abc_structural(obj, type_name.as_str()) {
                 return true;
@@ -487,6 +502,15 @@ fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
         "Container" => {
             matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range")
                 || obj.get_attr("__contains__").is_some()
+        }
+        "Number" | "Complex" => {
+            matches!(obj.type_name(), "int" | "float" | "complex" | "bool")
+        }
+        "Real" => {
+            matches!(obj.type_name(), "int" | "float" | "bool")
+        }
+        "Rational" | "Integral" => {
+            matches!(obj.type_name(), "int" | "bool")
         }
         _ => false,
     }

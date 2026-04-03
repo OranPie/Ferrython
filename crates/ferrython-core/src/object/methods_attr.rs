@@ -1,6 +1,6 @@
 //! Attribute lookup methods and descriptor protocol helpers.
 
-use crate::error::PyException;
+use crate::error::{PyException, ExceptionKind};
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
@@ -214,6 +214,39 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     return Some(inst.class.clone());
                 }
                 if name == "__dict__" {
+                    // If __slots__ is defined without __dict__ in it, raise AttributeError
+                    let has_slots_no_dict = {
+                        let mut found_slots = false;
+                        let mut dict_in_slots = false;
+                        let classes: Vec<PyObjectRef> = {
+                            let mut v = vec![inst.class.clone()];
+                            if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                                v.extend(cd.mro.clone());
+                                v.extend(cd.bases.clone());
+                            }
+                            v
+                        };
+                        for cls in &classes {
+                            if let PyObjectPayload::Class(cd) = &cls.payload {
+                                if let Some(slots) = cd.namespace.read().get("__slots__").cloned() {
+                                    if matches!(&slots.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
+                                        found_slots = true;
+                                        if let Ok(items) = slots.to_list() {
+                                            for item in &items {
+                                                if item.py_to_string() == "__dict__" {
+                                                    dict_in_slots = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        found_slots && !dict_in_slots
+                    };
+                    if has_slots_no_dict {
+                        return None; // Will trigger AttributeError
+                    }
                     return Some(PyObject::wrap(PyObjectPayload::InstanceDict(inst.attrs.clone())));
                 }
                 // Dict subclass: intercept dict method lookups before MRO returns BuiltinType methods
@@ -329,7 +362,28 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                 }
                 for base in &cd.bases {
-                    if let Some(v) = base.get_attr(name) { return Some(v); }
+                    if let Some(v) = base.get_attr(name) {
+                        // Rebind classmethods to the current class (Sub), not the base (Base)
+                        if let PyObjectPayload::BoundMethod { method, receiver } = &v.payload {
+                            if matches!(&receiver.payload, PyObjectPayload::Class(_)) {
+                                // Check if original in base namespace was a ClassMethod
+                                let is_cm = if let PyObjectPayload::Class(bcd) = &base.payload {
+                                    bcd.namespace.read().get(name)
+                                        .map(|v| matches!(&v.payload, PyObjectPayload::ClassMethod(_)))
+                                        .unwrap_or(false)
+                                } else { false };
+                                if is_cm {
+                                    return Some(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: obj.clone(),
+                                            method: method.clone(),
+                                        }
+                                    }));
+                                }
+                            }
+                        }
+                        return Some(v);
+                    }
                 }
                 // If class has a metaclass, look in metaclass namespace too
                 // (e.g., cls._instances where _instances is a metaclass class attribute)
@@ -585,6 +639,21 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }
                     }
                     "__class__" => Some(PyObject::exception_type(kind.clone())),
+                    "code" if *kind == ExceptionKind::SystemExit => {
+                        // SystemExit.code: first arg or message
+                        if !args.is_empty() {
+                            Some(args[0].clone())
+                        } else if !message.is_empty() {
+                            // Try to parse as int, otherwise return as string
+                            if let Ok(n) = message.parse::<i64>() {
+                                Some(PyObject::int(n))
+                            } else {
+                                Some(PyObject::str_val(message.clone()))
+                            }
+                        } else {
+                            Some(PyObject::none())
+                        }
+                    }
                     "value" => {
                         // StopIteration.value — check attrs first, then args[0], then None
                         if let Some(v) = attrs.read().get("value").cloned() {

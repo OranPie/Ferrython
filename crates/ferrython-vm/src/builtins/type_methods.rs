@@ -695,15 +695,40 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
                 return Err(PyException::type_error("to_bytes() requires at least 1 argument"));
             }
             let length = args[0].to_int()? as usize;
-            let byteorder = if args.len() >= 2 {
-                args[1].py_to_string()
+            // Extract byteorder and signed from positional or kwargs dict
+            let mut byteorder = "big".to_string();
+            let mut signed = false;
+            let mut kwarg_start = 1;
+            // Check if last arg is a kwargs dict
+            if let Some(last) = args.last() {
+                if let PyObjectPayload::Dict(map) = &last.payload {
+                    let map_r = map.read();
+                    if let Some(bo) = map_r.get(&HashableKey::Str(CompactString::from("byteorder"))) {
+                        byteorder = bo.py_to_string();
+                    }
+                    if let Some(s) = map_r.get(&HashableKey::Str(CompactString::from("signed"))) {
+                        signed = s.is_truthy();
+                    }
+                    kwarg_start = args.len(); // skip kwargs dict for positional scan
+                }
+            }
+            if kwarg_start > 1 && args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::Dict(_)) {
+                byteorder = args[1].py_to_string();
+            }
+            if kwarg_start > 2 && args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::Dict(_)) {
+                signed = args[2].is_truthy();
+            }
+            let val_to_encode: u64 = if signed && n < 0 {
+                // Two's complement for negative numbers
+                let bits = length * 8;
+                ((1i128 << bits) + n as i128) as u64
             } else {
-                "big".to_string()
+                n.unsigned_abs()
             };
             let bytes: Vec<u8> = match byteorder.as_str() {
                 "big" => {
                     let mut result = vec![0u8; length];
-                    let mut val = n.unsigned_abs();
+                    let mut val = val_to_encode;
                     for i in (0..length).rev() {
                         result[i] = (val & 0xff) as u8;
                         val >>= 8;
@@ -712,7 +737,7 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
                 }
                 "little" => {
                     let mut result = vec![0u8; length];
-                    let mut val = n.unsigned_abs();
+                    let mut val = val_to_encode;
                     for byte in result.iter_mut().take(length) {
                         *byte = (val & 0xff) as u8;
                         val >>= 8;

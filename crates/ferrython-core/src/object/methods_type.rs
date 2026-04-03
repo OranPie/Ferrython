@@ -182,6 +182,10 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                             format!("{}:{:02}:{:02}", h, m, s)
                         };
                     }
+                    // Decimal → return _value string
+                    if attrs.contains_key("__decimal__") {
+                        return attrs.get("_value").map(|v| v.py_to_string()).unwrap_or_else(|| "0".to_string());
+                    }
                 }
                 // Check for __str__ method first
                 if let Some(str_fn) = obj.get_attr("__str__") {
@@ -269,6 +273,11 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                 // typing _GenericAlias repr
                 if let Some(typing_repr) = inst.attrs.read().get("__typing_repr__").cloned() {
                     return typing_repr.py_to_string();
+                }
+                // Decimal repr
+                if inst.attrs.read().contains_key("__decimal__") {
+                    let v = inst.attrs.read().get("_value").map(|v| v.py_to_string()).unwrap_or_else(|| "0".to_string());
+                    return format!("Decimal('{}')", v);
                 }
                 // Enum member repr: <ClassName.NAME: value>
                 if inst.attrs.read().contains_key("_name_") && inst.attrs.read().contains_key("_value_") {

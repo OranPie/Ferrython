@@ -448,7 +448,25 @@ impl VirtualMachine {
                 if kwargs.is_empty() {
                     self.call_object(init_fn, init_args)?;
                 } else {
-                    self.call_object_kw(init_fn, init_args, kwargs)?;
+                    self.call_object_kw(init_fn, init_args, kwargs.clone())?;
+                }
+            }
+            // Dict subclass: populate dict_storage from pos_args/kwargs
+            if let PyObjectPayload::Instance(inst) = &instance.payload {
+                if let Some(ref ds) = inst.dict_storage {
+                    let mut storage = ds.write();
+                    // If first positional arg is a dict, copy its entries
+                    if !pos_args.is_empty() {
+                        if let PyObjectPayload::Dict(src) = &pos_args[0].payload {
+                            for (k, v) in src.read().iter() {
+                                storage.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                    // Populate kwargs into dict_storage
+                    for (k, v) in &kwargs {
+                        storage.insert(HashableKey::Str(k.clone()), v.clone());
+                    }
                 }
             }
         }
@@ -1114,14 +1132,24 @@ impl VirtualMachine {
                     }
                     "any" => {
                         if !args.is_empty() {
-                            let items = self.collect_iterable(&args[0])?;
-                            return builtins::dispatch("any", &[PyObject::list(items)]);
+                            let iter_obj = builtins::get_iter_from_obj_pub(&args[0])?;
+                            loop {
+                                match self.vm_iter_next(&iter_obj)? {
+                                    Some(item) => if item.is_truthy() { return Ok(PyObject::bool_val(true)); },
+                                    None => return Ok(PyObject::bool_val(false)),
+                                }
+                            }
                         }
                     }
                     "all" => {
                         if !args.is_empty() {
-                            let items = self.collect_iterable(&args[0])?;
-                            return builtins::dispatch("all", &[PyObject::list(items)]);
+                            let iter_obj = builtins::get_iter_from_obj_pub(&args[0])?;
+                            loop {
+                                match self.vm_iter_next(&iter_obj)? {
+                                    Some(item) => if !item.is_truthy() { return Ok(PyObject::bool_val(false)); },
+                                    None => return Ok(PyObject::bool_val(true)),
+                                }
+                            }
                         }
                     }
                     "min" => {
@@ -1180,7 +1208,7 @@ impl VirtualMachine {
                                     return Ok(PyObject::int(ds.read().len() as i64));
                                 }
                                 if let Some(method) = args[0].get_attr("__len__") {
-                                    return self.call_object(method, vec![]);
+                                    let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] }; return self.call_object(method, ca);
                                 }
                             }
                         }
@@ -1189,8 +1217,10 @@ impl VirtualMachine {
                         if args.len() == 1 {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
                                 if let Some(method) = args[0].get_attr("__abs__") {
-                                    return self.call_object(method, vec![]);
+                                    let call_args = if matches!(&method.payload, PyObjectPayload::BoundMethod { .. }) { vec![] } else { vec![args[0].clone()] };
+                                    return self.call_object(method, call_args);
                                 }
+
                             }
                         }
                     }
@@ -1198,7 +1228,7 @@ impl VirtualMachine {
                         if args.len() == 1 {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
                                 if let Some(method) = args[0].get_attr("__hash__") {
-                                    return self.call_object(method, vec![]);
+                                    let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] }; return self.call_object(method, ca);
                                 }
                             }
                         }
@@ -1212,7 +1242,7 @@ impl VirtualMachine {
                                     } else {
                                         PyObject::str_val(CompactString::from(""))
                                     };
-                                    return self.call_object(method, vec![spec]);
+                                    let mut ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] }; ca.push(spec); return self.call_object(method, ca);
                                 }
                             }
                             // Fall through to native format
@@ -1222,7 +1252,7 @@ impl VirtualMachine {
                         if args.len() == 1 {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
                                 if let Some(method) = args[0].get_attr("__int__") {
-                                    return self.call_object(method, vec![]);
+                                    let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] }; return self.call_object(method, ca);
                                 }
                             }
                         }
@@ -1231,7 +1261,27 @@ impl VirtualMachine {
                         if args.len() == 1 {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
                                 if let Some(method) = args[0].get_attr("__float__") {
-                                    return self.call_object(method, vec![]);
+                                    let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] }; return self.call_object(method, ca);
+                                }
+                            }
+                        }
+                    }
+                    "round" => {
+                        if !args.is_empty() {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__round__") {
+                                    let mut ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] };
+                                    if args.len() >= 2 { ca.push(args[1].clone()); }
+                                    return self.call_object(method, ca);
+                                }
+                            }
+                        }
+                    }
+                    "bytes" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = args[0].get_attr("__bytes__") {
+                                    let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] }; return self.call_object(method, ca);
                                 }
                             }
                         }
@@ -1593,7 +1643,13 @@ impl VirtualMachine {
                     }
                 }
                 // Unbound method call: str.upper("hello") → call_method("hello", "upper", [])
-                if let PyObjectPayload::BuiltinType(_) = &receiver.payload {
+                if let PyObjectPayload::BuiltinType(tn) = &receiver.payload {
+                    // Class methods (e.g., int.from_bytes, dict.fromkeys)
+                    if let Some(class_method) = builtins::resolve_type_class_method(tn, method_name) {
+                        if let PyObjectPayload::NativeFunction { func, .. } = &class_method.payload {
+                            return func(&args);
+                        }
+                    }
                     if !args.is_empty() {
                         let instance = args[0].clone();
                         let rest_args = if args.len() > 1 { args[1..].to_vec() } else { vec![] };

@@ -360,6 +360,9 @@ fn os_fspath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 match &method.payload {
                     PyObjectPayload::NativeFunction { func, .. } => func(&[args[0].clone()]),
                     PyObjectPayload::NativeClosure { func, .. } => func(&[args[0].clone()]),
+                    PyObjectPayload::Function(_) => {
+                        Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
+                    }
                     _ => Err(PyException::type_error(format!(
                         "expected str, bytes or os.PathLike object, not '{}'", args[0].type_name()
                     ))),

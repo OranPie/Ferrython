@@ -214,9 +214,10 @@ pub fn create_enum_module() -> PyObjectRef {
     // IntEnum — Enum subclass where values are ints
     let mut int_enum_ns = IndexMap::new();
     int_enum_ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
+    int_enum_ns.insert(CompactString::from("__int_enum__"), PyObject::bool_val(true));
     let int_enum = PyObject::class(
         CompactString::from("IntEnum"),
-        vec![enum_class.clone()],
+        vec![enum_class.clone(), PyObject::builtin_type(CompactString::from("int"))],
         int_enum_ns,
     );
 
@@ -226,7 +227,7 @@ pub fn create_enum_module() -> PyObjectRef {
     flag_ns.insert(CompactString::from("__flag__"), PyObject::bool_val(true));
     let flag_class = PyObject::class(
         CompactString::from("Flag"),
-        vec![enum_class.clone()],
+        vec![enum_class.clone(), PyObject::builtin_type(CompactString::from("int"))],
         flag_ns,
     );
 
@@ -1716,7 +1717,19 @@ pub fn create_weakref_module() -> PyObjectRef {
     make_module("weakref", vec![
         ("ref", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("ref requires 1 argument")); }
-            Ok(args[0].clone())
+            let referent = args[0].clone();
+            let mut cls_ns = IndexMap::new();
+            let ref2 = referent.clone();
+            cls_ns.insert(CompactString::from("__call__"), PyObject::native_closure("weakref.__call__", move |_a| Ok(ref2.clone())));
+            let cls = PyObject::class(CompactString::from("weakref"), vec![], cls_ns);
+            let mut inst_attrs = IndexMap::new();
+            if let PyObjectPayload::Instance(inst) = &referent.payload {
+                let r = inst.attrs.read();
+                for (k, v) in r.iter() {
+                    inst_attrs.insert(k.clone(), v.clone());
+                }
+            }
+            Ok(PyObject::instance_with_attrs(cls, inst_attrs))
         })),
         ("proxy", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("proxy requires 1 argument")); }

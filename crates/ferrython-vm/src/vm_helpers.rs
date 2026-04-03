@@ -82,6 +82,12 @@ impl VirtualMachine {
                     }
                 }
                 // Fall back to vm_repr (handles namedtuple, dataclass, etc.)
+                // Decimal instances: str() returns the value
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if inst.attrs.read().contains_key("__decimal__") {
+                        return Ok(inst.attrs.read().get("_value").map(|v| v.py_to_string()).unwrap_or_else(|| "0".to_string()));
+                    }
+                }
                 self.vm_repr(obj)
             }
             // For containers, str() is same as repr() (elements use repr)

@@ -178,6 +178,8 @@ pub fn create_datetime_module() -> PyObjectRef {
     let mut date_ns = IndexMap::new();
     date_ns.insert(CompactString::from("today"), make_builtin(date_today));
     date_ns.insert(CompactString::from("fromisoformat"), make_builtin(datetime_fromisoformat));
+    date_ns.insert(CompactString::from("__add__"), make_builtin(date_add));
+    date_ns.insert(CompactString::from("__sub__"), make_builtin(date_sub));
     let date_cls = PyObject::class(CompactString::from("date"), vec![], date_ns);
     if let PyObjectPayload::Class(ref cd) = date_cls.payload {
         cd.namespace.write().insert(
@@ -230,22 +232,29 @@ fn date_today(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let days = now.as_secs() / 86400;
     let (year, month, day) = days_to_ymd(days as i64 + 719468);
-    let class = PyObject::class(CompactString::from("date"), vec![], IndexMap::new());
-    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
-        class,
-        attrs: Arc::new(RwLock::new(IndexMap::new())),
-        dict_storage: None,
-    }));
-    if let PyObjectPayload::Instance(ref d) = inst.payload {
-        let mut w = d.attrs.write();
-        w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
-        w.insert(CompactString::from("__date_only__"), PyObject::bool_val(true));
-        w.insert(CompactString::from("year"), PyObject::int(year));
-        w.insert(CompactString::from("month"), PyObject::int(month));
-        w.insert(CompactString::from("day"), PyObject::int(day));
-    }
-    Ok(inst)
+    Ok(make_date_instance(year, month, day))
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 fn datetime_fromisoformat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("fromisoformat", args, 1)?;
@@ -355,9 +364,87 @@ fn datetime_timedelta(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let total_secs = days as f64 * 86400.0 + seconds as f64 + microseconds as f64 / 1_000_000.0;
     make_timedelta(days, seconds, microseconds, total_secs)
 }
+fn ymd_to_ordinal(y: i64, m: i64, d: i64) -> i64 {
+    // Convert Y-M-D to a day ordinal (proleptic Gregorian)
+    let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
+    365 * y + y / 4 - y / 100 + y / 400 + (m * 153 + 2) / 5 + d - 1
+}
 
-fn make_timedelta(days: i64, seconds: i64, microseconds: i64, total_secs: f64) -> PyResult<PyObjectRef> {
-    let class = PyObject::class(CompactString::from("timedelta"), vec![], IndexMap::new());
+fn ordinal_to_ymd(ord: i64) -> (i64, i64, i64) {
+    let y0 = (10000 * ord + 14780) / 3652425;
+    let mut doy = ord - (365 * y0 + y0 / 4 - y0 / 100 + y0 / 400);
+    let y0 = if doy < 0 { let y1 = y0 - 1; doy = ord - (365 * y1 + y1 / 4 - y1 / 100 + y1 / 400); y1 } else { y0 };
+    let mi = (100 * doy + 52) / 3060;
+    let month = if mi < 10 { mi + 3 } else { mi - 9 };
+    let year = y0 + if month <= 2 { 1 } else { 0 };
+    let day = doy - (mi * 306 + 5) / 10 + 1;
+    (year, month, day)
+}
+
+fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
+    let mut date_cls_ns = IndexMap::new();
+    date_cls_ns.insert(CompactString::from("__add__"), make_builtin(date_add));
+    date_cls_ns.insert(CompactString::from("__sub__"), make_builtin(date_sub));
+    let class = PyObject::class(CompactString::from("date"), vec![], date_cls_ns);
+    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class,
+        attrs: Arc::new(RwLock::new(IndexMap::new())),
+        dict_storage: None,
+    }));
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+        w.insert(CompactString::from("__date_only__"), PyObject::bool_val(true));
+        w.insert(CompactString::from("year"), PyObject::int(year));
+        w.insert(CompactString::from("month"), PyObject::int(month));
+        w.insert(CompactString::from("day"), PyObject::int(day));
+    }
+    inst
+}
+
+fn date_add(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("date.__add__ requires 2 args")); }
+    let date_obj = &args[0];
+    let td_obj = &args[1];
+    let year = date_obj.get_attr("year").and_then(|v| v.as_int()).unwrap_or(1970);
+    let month = date_obj.get_attr("month").and_then(|v| v.as_int()).unwrap_or(1);
+    let day = date_obj.get_attr("day").and_then(|v| v.as_int()).unwrap_or(1);
+    let td_days = td_obj.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0);
+    let ord = ymd_to_ordinal(year, month, day) + td_days;
+    let (ny, nm, nd) = ordinal_to_ymd(ord);
+    Ok(make_date_instance(ny, nm, nd))
+}
+
+fn date_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("date.__sub__ requires 2 args")); }
+    let date_obj = &args[0];
+    let other = &args[1];
+    let year = date_obj.get_attr("year").and_then(|v| v.as_int()).unwrap_or(1970);
+    let month = date_obj.get_attr("month").and_then(|v| v.as_int()).unwrap_or(1);
+    let day = date_obj.get_attr("day").and_then(|v| v.as_int()).unwrap_or(1);
+    if other.get_attr("__timedelta__").is_some() {
+        let td_days = other.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0);
+        let ord = ymd_to_ordinal(year, month, day) - td_days;
+        let (ny, nm, nd) = ordinal_to_ymd(ord);
+        Ok(make_date_instance(ny, nm, nd))
+    } else if other.get_attr("__date_only__").is_some() {
+        let y2 = other.get_attr("year").and_then(|v| v.as_int()).unwrap_or(1970);
+        let m2 = other.get_attr("month").and_then(|v| v.as_int()).unwrap_or(1);
+        let d2 = other.get_attr("day").and_then(|v| v.as_int()).unwrap_or(1);
+        let diff = ymd_to_ordinal(year, month, day) - ymd_to_ordinal(y2, m2, d2);
+        make_timedelta_with_ops(diff, 0, 0, diff as f64 * 86400.0)
+    } else {
+        Err(PyException::type_error("unsupported operand type(s) for -"))
+    }
+}
+
+
+fn make_timedelta_with_ops(days: i64, seconds: i64, microseconds: i64, total_secs: f64) -> PyResult<PyObjectRef> {
+    let mut td_ns = IndexMap::new();
+    td_ns.insert(CompactString::from("__add__"), make_builtin(timedelta_add));
+    td_ns.insert(CompactString::from("__sub__"), make_builtin(timedelta_sub));
+    td_ns.insert(CompactString::from("__radd__"), make_builtin(timedelta_add));
+    let class = PyObject::class(CompactString::from("timedelta"), vec![], td_ns);
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
@@ -374,6 +461,65 @@ fn make_timedelta(days: i64, seconds: i64, microseconds: i64, total_secs: f64) -
     }
     Ok(inst)
 }
+
+fn make_timedelta(days: i64, seconds: i64, microseconds: i64, total_secs: f64) -> PyResult<PyObjectRef> {
+    make_timedelta_with_ops(days, seconds, microseconds, total_secs)
+}
+
+fn timedelta_add(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("timedelta.__add__ requires 2 args")); }
+    let a = &args[0];
+    let b = &args[1];
+    if b.get_attr("__date_only__").is_some() {
+        return date_add(&[b.clone(), a.clone()]);
+    }
+    let a_days = a.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0);
+    let a_secs = a.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let a_us = a.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let b_days = b.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0);
+    let b_secs = b.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let b_us = b.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let days = a_days + b_days;
+    let secs = a_secs + b_secs;
+    let us = a_us + b_us;
+    let total = days as f64 * 86400.0 + secs as f64 + us as f64 / 1_000_000.0;
+    make_timedelta_with_ops(days, secs, us, total)
+}
+
+fn timedelta_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("timedelta.__sub__ requires 2 args")); }
+    let a = &args[0];
+    let b = &args[1];
+    let a_days = a.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0);
+    let a_secs = a.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let a_us = a.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let b_days = b.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0);
+    let b_secs = b.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let b_us = b.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let days = a_days - b_days;
+    let secs = a_secs - b_secs;
+    let us = a_us - b_us;
+    let total = days as f64 * 86400.0 + secs as f64 + us as f64 / 1_000_000.0;
+    make_timedelta_with_ops(days, secs, us, total)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ── weakref module ──
 

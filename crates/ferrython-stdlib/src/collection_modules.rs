@@ -566,9 +566,6 @@ fn itertools_islice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn itertools_zip_longest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 {
-        return Err(PyException::type_error("zip_longest requires at least 2 arguments"));
-    }
     // Check for trailing kwargs dict (from kw dispatch)
     let mut fillvalue = PyObject::none();
     let iter_args = if let Some(last) = args.last() {

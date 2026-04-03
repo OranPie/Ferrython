@@ -628,13 +628,244 @@ pub fn create_numbers_module() -> PyObjectRef {
 
 
 pub fn create_decimal_module() -> PyObjectRef {
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use ferrython_core::object::InstanceData;
+
+    fn make_decimal(s: &str) -> PyObjectRef {
+        let mut dec_ns = IndexMap::new();
+        dec_ns.insert(CompactString::from("__add__"), make_builtin(decimal_add));
+        dec_ns.insert(CompactString::from("__radd__"), make_builtin(decimal_add));
+        dec_ns.insert(CompactString::from("__sub__"), make_builtin(decimal_sub));
+        dec_ns.insert(CompactString::from("__mul__"), make_builtin(decimal_mul));
+        dec_ns.insert(CompactString::from("__truediv__"), make_builtin(decimal_div));
+        // __repr__ and __str__ handled by py_to_string via __decimal__ marker
+        dec_ns.insert(CompactString::from("__eq__"), make_builtin(decimal_eq));
+        dec_ns.insert(CompactString::from("__lt__"), make_builtin(decimal_lt));
+        dec_ns.insert(CompactString::from("__float__"), make_builtin(decimal_float));
+        dec_ns.insert(CompactString::from("__int__"), make_builtin(decimal_int));
+        dec_ns.insert(CompactString::from("__neg__"), make_builtin(decimal_neg));
+        dec_ns.insert(CompactString::from("__abs__"), make_builtin(decimal_abs));
+        let class = PyObject::class(CompactString::from("Decimal"), vec![], dec_ns);
+        let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+            class,
+            attrs: Arc::new(RwLock::new(IndexMap::new())),
+            dict_storage: None,
+        }));
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("__decimal__"), PyObject::bool_val(true));
+            w.insert(CompactString::from("_value"), PyObject::str_val(CompactString::from(s)));
+        }
+        inst
+    }
+
+    fn get_decimal_str(obj: &PyObjectRef) -> Option<String> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            let attrs = inst.attrs.read();
+            if let Some(v) = attrs.get("_value") {
+                return v.as_str().map(|s| s.to_string());
+            }
+        }
+        if let PyObjectPayload::Int(n) = &obj.payload {
+            return Some(format!("{}", n.to_i64().unwrap_or(0)));
+        }
+        if let PyObjectPayload::Float(f) = &obj.payload {
+            return Some(format!("{}", f));
+        }
+        None
+    }
+
+    fn decimal_parse(s: &str) -> (bool, i128, u32) {
+        let s = s.trim();
+        let (neg, s) = if s.starts_with('-') { (true, &s[1..]) } else if s.starts_with('+') { (false, &s[1..]) } else { (false, s) };
+        if let Some(dot_pos) = s.find('.') {
+            let int_part = &s[..dot_pos];
+            let frac_part = &s[dot_pos + 1..];
+            let scale = frac_part.len() as u32;
+            let digits_str = format!("{}{}", int_part, frac_part);
+            let digits: i128 = digits_str.parse().unwrap_or(0);
+            (neg, digits, scale)
+        } else {
+            let digits: i128 = s.parse().unwrap_or(0);
+            (neg, digits, 0)
+        }
+    }
+
+    fn decimal_format(neg: bool, digits: i128, scale: u32) -> String {
+        if scale == 0 {
+            if neg && digits != 0 { format!("-{}", digits) } else { format!("{}", digits) }
+        } else {
+            let s = format!("{:0>width$}", digits, width = scale as usize + 1);
+            let (int_part, frac_part) = s.split_at(s.len() - scale as usize);
+            let frac_trimmed = frac_part.trim_end_matches('0');
+            if frac_trimmed.is_empty() {
+                if neg && digits != 0 { format!("-{}", int_part) } else { int_part.to_string() }
+            } else {
+                if neg && digits != 0 { format!("-{}.{}", int_part, frac_trimmed) } else { format!("{}.{}", int_part, frac_trimmed) }
+            }
+        }
+    }
+
+    fn align_scales(a: (bool, i128, u32), b: (bool, i128, u32)) -> ((bool, i128, u32), (bool, i128, u32)) {
+        let max_scale = a.2.max(b.2);
+        let a_digits = a.1 * 10i128.pow(max_scale - a.2);
+        let b_digits = b.1 * 10i128.pow(max_scale - b.2);
+        ((a.0, a_digits, max_scale), (b.0, b_digits, max_scale))
+    }
+
+    fn decimal_add(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("Decimal.__add__ requires 2 args")); }
+        let a_str = get_decimal_str(&args[0]).ok_or_else(|| PyException::type_error("not a Decimal"))?;
+        let b_str = get_decimal_str(&args[1]).ok_or_else(|| PyException::type_error("not a Decimal"))?;
+        let a = decimal_parse(&a_str);
+        let b = decimal_parse(&b_str);
+        let (a, b) = align_scales(a, b);
+        let a_val = if a.0 { -(a.1) } else { a.1 };
+        let b_val = if b.0 { -(b.1) } else { b.1 };
+        let result = a_val + b_val;
+        let neg = result < 0;
+        let digits = result.unsigned_abs();
+        Ok(make_decimal(&decimal_format(neg, digits as i128, a.2)))
+    }
+
+    fn decimal_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("Decimal.__sub__ requires 2 args")); }
+        let a_str = get_decimal_str(&args[0]).ok_or_else(|| PyException::type_error("not a Decimal"))?;
+        let b_str = get_decimal_str(&args[1]).ok_or_else(|| PyException::type_error("not a Decimal"))?;
+        let a = decimal_parse(&a_str);
+        let b = decimal_parse(&b_str);
+        let (a, b) = align_scales(a, b);
+        let a_val = if a.0 { -(a.1) } else { a.1 };
+        let b_val = if b.0 { -(b.1) } else { b.1 };
+        let result = a_val - b_val;
+        let neg = result < 0;
+        let digits = result.unsigned_abs();
+        Ok(make_decimal(&decimal_format(neg, digits as i128, a.2)))
+    }
+
+    fn decimal_mul(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("Decimal.__mul__ requires 2 args")); }
+        let a_str = get_decimal_str(&args[0]).ok_or_else(|| PyException::type_error("not a Decimal"))?;
+        let b_str = get_decimal_str(&args[1]).ok_or_else(|| PyException::type_error("not a Decimal"))?;
+        let a = decimal_parse(&a_str);
+        let b = decimal_parse(&b_str);
+        let neg = a.0 != b.0;
+        let digits = a.1 * b.1;
+        let scale = a.2 + b.2;
+        Ok(make_decimal(&decimal_format(neg, digits, scale)))
+    }
+
+    fn decimal_div(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("Decimal.__truediv__ requires 2 args")); }
+        let a_str = get_decimal_str(&args[0]).ok_or_else(|| PyException::type_error("not a Decimal"))?;
+        let b_str = get_decimal_str(&args[1]).ok_or_else(|| PyException::type_error("not a Decimal"))?;
+        let a = decimal_parse(&a_str);
+        let b = decimal_parse(&b_str);
+        if b.1 == 0 { return Err(PyException::zero_division_error("decimal division by zero")); }
+        let neg = a.0 != b.0;
+        let precision = 28u32;
+        let a_scaled = a.1 * 10i128.pow(precision);
+        let result = a_scaled / b.1;
+        let total_scale = a.2 + precision - b.2;
+        Ok(make_decimal(&decimal_format(neg, result, total_scale)))
+    }
+
+    fn decimal_repr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("Decimal('0')"))); }
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        Ok(PyObject::str_val(CompactString::from(format!("Decimal('{}')", s))))
+    }
+
+    fn decimal_str(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("0"))); }
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        Ok(PyObject::str_val(CompactString::from(s)))
+    }
+
+    fn decimal_eq(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a = get_decimal_str(&args[0]);
+        let b = get_decimal_str(&args[1]);
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                let ap = decimal_parse(&a);
+                let bp = decimal_parse(&b);
+                let (ap, bp) = align_scales(ap, bp);
+                let a_val = if ap.0 { -(ap.1) } else { ap.1 };
+                let b_val = if bp.0 { -(bp.1) } else { bp.1 };
+                Ok(PyObject::bool_val(a_val == b_val))
+            }
+            _ => Ok(PyObject::bool_val(false)),
+        }
+    }
+
+    fn decimal_lt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a = get_decimal_str(&args[0]);
+        let b = get_decimal_str(&args[1]);
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                let ap = decimal_parse(&a);
+                let bp = decimal_parse(&b);
+                let (ap, bp) = align_scales(ap, bp);
+                let a_val = if ap.0 { -(ap.1) } else { ap.1 };
+                let b_val = if bp.0 { -(bp.1) } else { bp.1 };
+                Ok(PyObject::bool_val(a_val < b_val))
+            }
+            _ => Ok(PyObject::bool_val(false)),
+        }
+    }
+
+    fn decimal_float(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let f: f64 = s.parse().unwrap_or(0.0);
+        Ok(PyObject::float(f))
+    }
+
+    fn decimal_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let (neg, digits, scale) = decimal_parse(&s);
+        let int_val = digits / 10i128.pow(scale);
+        Ok(PyObject::int(if neg { -(int_val as i64) } else { int_val as i64 }))
+    }
+
+    fn decimal_neg(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let (neg, digits, scale) = decimal_parse(&s);
+        Ok(make_decimal(&decimal_format(!neg, digits, scale)))
+    }
+
+    fn decimal_abs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let (_, digits, scale) = decimal_parse(&s);
+        Ok(make_decimal(&decimal_format(false, digits, scale)))
+    }
+
     make_module("decimal", vec![
         ("Decimal", make_builtin(|args| {
-            if args.is_empty() { return Ok(PyObject::float(0.0)); }
+            if args.is_empty() { return Ok(make_decimal("0")); }
             let s = args[0].py_to_string();
-            match s.parse::<f64>() {
-                Ok(f) => Ok(PyObject::float(f)),
-                Err(_) => Err(PyException::value_error(format!("Invalid literal for Decimal: '{}'", s))),
+            let trimmed = s.trim();
+            if trimmed.is_empty() { return Ok(make_decimal("0")); }
+            match &args[0].payload {
+                PyObjectPayload::Int(n) => return Ok(make_decimal(&format!("{}", n.to_i64().unwrap_or(0)))),
+                PyObjectPayload::Float(f) => return Ok(make_decimal(&format!("{}", f))),
+                _ => {}
+            }
+            let check = trimmed.trim_start_matches('+').trim_start_matches('-');
+            let parts: Vec<&str> = check.splitn(2, '.').collect();
+            let valid = parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                || check == "Infinity" || check == "NaN";
+            if valid {
+                Ok(make_decimal(trimmed))
+            } else if check.contains('E') || check.contains('e') {
+                match trimmed.parse::<f64>() {
+                    Ok(f) => Ok(make_decimal(&format!("{}", f))),
+                    Err(_) => Err(PyException::value_error(format!("Invalid literal for Decimal: '{}'", s))),
+                }
+            } else {
+                Err(PyException::value_error(format!("Invalid literal for Decimal: '{}'", s)))
             }
         })),
         ("ROUND_HALF_UP", PyObject::str_val(CompactString::from("ROUND_HALF_UP"))),
@@ -644,6 +875,7 @@ pub fn create_decimal_module() -> PyObjectRef {
         ("getcontext", make_builtin(|_| Ok(PyObject::none()))),
     ])
 }
+
 
 // ── statistics module ──
 
