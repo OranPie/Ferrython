@@ -1171,6 +1171,19 @@ impl VirtualMachine {
                             }
                         }
                     }
+                    "issubclass" => {
+                        if args.len() == 2 {
+                            let sup = &args[1];
+                            if let PyObjectPayload::Class(cd) = &sup.payload {
+                                if let Some(ref metaclass) = cd.metaclass {
+                                    if let Some(sc) = metaclass.get_attr("__subclasscheck__") {
+                                        let result = self.call_object(sc, vec![sup.clone(), args[0].clone()])?;
+                                        return Ok(PyObject::bool_val(result.is_truthy()));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     "min" => {
                         if args.len() == 1 {
                             let items = self.collect_iterable(&args[0])?;

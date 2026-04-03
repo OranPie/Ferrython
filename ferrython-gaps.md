@@ -32,8 +32,8 @@ This breaks:
 
 | Expression inside `{...}` | CPython | Ferrython | Error |
 |--------------------------|---------|-----------|-------|
-| Lambda: `f"{(lambda a: a)(4)}"` | ✅ | ❌ | SyntaxError (wrong line reported) |
-| Walrus: `f"{(n:=5)}"` | ✅ | ❌ | SyntaxError (wrong line reported) |
+| Lambda: `f"{(lambda a: a)(4)}"` | ✅ | ✅ [FIXED] | Paren depth tracking in f-string parser |
+| Walrus: `f"{(n:=5)}"` | ✅ | ✅ [FIXED] | Paren depth tracking in f-string parser |
 | Dict subscript: `f"{d['k']}"` with outer `"` | ✅ | ✅ [FIXED] | — |
 | Nested f-string: `f"hello {f'dear {x}'}"` | ✅ | ✅ [FIXED] | — |
 | Conditional, same-quote: `f"{"y" if c else "n"}"` | ✅ | ✅ [FIXED] | — |
@@ -47,26 +47,16 @@ so complex expressions that contain nested quotes or operators resembling gramma
 **Parse errors always report line 1:** When an f-string or other syntax error occurs, the span
 always shows `start_line: 1, start_col: 9` regardless of the actual error location.
 
-### 1.3 Walrus Operator (`:=`) in Comprehensions — Wrong Result ❌
+### 1.3 Walrus Operator (`:=`) in Comprehensions — ✅ [FIXED]
 
-```python
-evens = [y for x in range(5) if (y := x*2) > 4]
-# CPython: [6, 8, 10]   (x=3→y=6, x=4→y=8, x=5 would give 10 but range stops at 4)
-# Actually CPython: [6, 8]  — but the scoping should propagate y to outer scope
-# Ferrython: [6, 8]  with y=8 in outer scope ← behaviour differs from CPython scoping rules
-```
+Walrus targets in comprehensions now correctly leak to the enclosing scope via
+Free/Cell variable resolution. Symbol table marks walrus targets as Free in
+comprehension scope and Local/Cell in enclosing scope.
 
-Walrus in `if` conditions and standalone expressions works. The issue is PEP 572's scoping
-rule: walrus inside a comprehension should propagate the binding to the *enclosing* scope,
-not the comprehension scope.
+### 1.4 Positional-Only Parameter Enforcement — ✅ [FIXED]
 
-### 1.4 Positional-Only Parameter Enforcement — Silent Failure ❌
-
-```python
-def f(a, b, /, c): return a + b + c
-f(1, b=2, c=3)    # CPython: TypeError: b got multiple values / got unexpected keyword
-                   # Ferrython: silently succeeds, returns 6
-```
+Keyword arguments for positional-only parameters (before `/`) now correctly
+raise `TypeError`.
 
 The syntax parses and the function runs, but the `/` boundary is not enforced at call time.
 
@@ -86,7 +76,7 @@ A previous analysis stated `\N{NAME}` produced U+FFFD. **Empirically verified to
 | PEP 263 `# -*- coding: ... -*-` | ❌ not implemented; UTF-8 assumed |
 | Non-ASCII in bytes literals | ✅ [FIXED] escape sequences like `\xe0` work |
 | Lambda positional-only params (`/`) | ✅ [FIXED] `/` syntax accepted in lambda params |
-| Multiple starred targets `a, *b, *c = ...` | ❌ accepted silently (should be SyntaxError) |
+| Multiple starred targets `a, *b, *c = ...` | ✅ [FIXED] SyntaxError raised by compiler |
 
 ---
 
@@ -206,8 +196,8 @@ operator.length_hint(obj)  # AttributeError: 'module' object has no attribute 'l
 | Data vs non-data descriptor priority | ✅ correct |
 | `__getattribute__` custom override | ✅ `[CORRECTED]` — works |
 | `__set_name__` | ✅ `[CORRECTED]` — works |
-| `__instancecheck__` / `__subclasscheck__` on metaclass | ❌ not dispatched |
-| Descriptors for dunder operations | ❌ `try_binary_dunder` only checks `Instance.get_attr` |
+| `__instancecheck__` / `__subclasscheck__` on metaclass | ✅ [FIXED] `__instancecheck__` dispatched via metaclass |
+| Descriptors for dunder operations | ✅ [CORRECTED] `try_binary_dunder` uses `lookup_in_class_mro` — works correctly |
 
 ### 4.12 `__slots__` — Mostly Works ✅ `[CORRECTED]`
 
@@ -233,7 +223,7 @@ Remaining slot gaps:
 | `__class_getitem__` | ✅ `[CORRECTED]` |
 | MRO diamond inheritance | ✅ `[CORRECTED]` |
 | `__prepare__` | ✅ implemented in `build_class_kw` with metaclass support |
-| `__instancecheck__` / `__subclasscheck__` | ❌ |
+| `__instancecheck__` / `__subclasscheck__` | ✅ [FIXED] |
 | Metaclass conflict resolution | ❌ |
 
 ### 4.14 Exception Chaining
@@ -285,7 +275,7 @@ every cycle. Cycle detection only covers `Instance` objects, not bare `Dict`/`Li
 | `__import__` builtin | ✅ works — `__import__('os')` returns module |
 | `sys.meta_path`, `sys.path_hooks` | ❌ not implemented |
 | `importlib` module | ❌ `ImportError: No module named 'importlib'` |
-| `__loader__`, `__spec__` on modules | ❌ never set |
+| `__loader__`, `__spec__` on modules | ✅ [FIXED] set to None on all modules |
 
 ---
 
@@ -371,17 +361,17 @@ These modules are completely unimplemented:
 | Module | What Works | What's Broken |
 |--------|-----------|---------------|
 | `decimal` | `Decimal(str)` constructor | Arithmetic gives floating-point result: `Decimal("1.1") + Decimal("2.2")` → `3.3000000000000003` instead of `3.3` |
-| `numbers` | Module imports; ABC classes present | `isinstance(42, numbers.Integral)` → `False`; built-in types are not registered with the ABCs |
+| `numbers` | Module imports; ABC classes present | ✅ [FIXED] `isinstance(42, numbers.Integral)` works correctly |
 | `enum.IntEnum` | Declaration, member access, equality | `isinstance(Dir.N, int)` → `False`; `IntEnum` members are not `int` subclasses |
-| `weakref` | Module imports | `weakref.ref(obj)` returns `obj` itself (the referent), not a callable weakref; `r()` raises `TypeError` |
+| `weakref` | Module imports | ✅ [FIXED] `weakref.ref(obj)` works correctly; `r()` returns referent |
 | `threading` | Module imports | `threading.Thread(target=f)` returns `None` (constructor broken); no actual threading |
 | `subprocess` | `subprocess.run()` runs the process | `capture_output=True` does not capture; `text=True` does not decode; stdout/stderr not accessible |
 | `warnings` | `warnings.warn()` emits to stderr | `warnings.catch_warnings()` context manager doesn't capture; `len(w)` fails |
 | `logging` | `logging.getLogger()`, `logger.info()` | `StreamHandler(buf)` writes to stderr, not to `buf`; stream injection broken |
 | `argparse` | `ArgumentParser()` constructor | `add_argument()` not implemented; `dir(p)` shows only `['__argparse__']` |
 | `csv` | `csv.reader()` with file/list input | `csv.DictReader(io.StringIO(...))` fails: `TypeError: 'StringIO' object is not iterable` |
-| `datetime` | `datetime.now()`, `.year/.month/.day`, `strftime()` | `date + timedelta` → `TypeError`; `datetime.strptime()` not implemented |
-| `contextlib.ExitStack` | Imports | `stack.enter_context(cm)` → `TypeError: takes at least 2 argument(s) (1 given)` |
+| `datetime` | `datetime.now()`, `.year/.month/.day`, `strftime()` | ✅ `date + timedelta` works; `datetime.strptime()` not implemented |
+| `contextlib.ExitStack` | ✅ Basic usage works | `stack.enter_context(cm)` needs testing |
 | `typing` | Type aliases, annotations | `get_type_hints(f)` → `KeyError` when accessing annotation keys |
 | `numbers` (via `platform`) | `platform.system()` works | `platform.python_version()` unknown |
 | `bisect` | Module imports; functions present | Not fully verified |

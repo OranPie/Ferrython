@@ -193,9 +193,26 @@ impl PyObject {
         None
     }
     pub fn module(name: CompactString) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(IndexMap::new())) }))
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
+        attrs.insert(CompactString::from("__loader__"), PyObject::none());
+        attrs.insert(CompactString::from("__spec__"), PyObject::none());
+        attrs.insert(CompactString::from("__package__"), PyObject::none());
+        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(attrs)) }))
     }
-    pub fn module_with_attrs(name: CompactString, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
+    pub fn module_with_attrs(name: CompactString, mut attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
+        if !attrs.contains_key("__name__") {
+            attrs.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
+        }
+        if !attrs.contains_key("__loader__") {
+            attrs.insert(CompactString::from("__loader__"), PyObject::none());
+        }
+        if !attrs.contains_key("__spec__") {
+            attrs.insert(CompactString::from("__spec__"), PyObject::none());
+        }
+        if !attrs.contains_key("__package__") {
+            attrs.insert(CompactString::from("__package__"), PyObject::none());
+        }
         Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(attrs)) }))
     }
     pub fn native_function(name: &str, func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>) -> PyObjectRef {
