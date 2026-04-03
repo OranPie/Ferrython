@@ -1504,6 +1504,12 @@ impl VirtualMachine {
                     let pos_args: Vec<_> = if key_fn.is_some() { args[..args.len()-1].to_vec() } else { args.clone() };
                     return self.vm_itertools_groupby(&pos_args, key_fn);
                 }
+                if name.as_str() == "itertools.filterfalse" && args.len() >= 2 {
+                    return self.vm_itertools_filterfalse(&args);
+                }
+                if name.as_str() == "itertools.starmap" && args.len() >= 2 {
+                    return self.vm_itertools_starmap(&args);
+                }
                 func(&args)
             }
             PyObjectPayload::NativeClosure { func, .. } => {
@@ -1655,6 +1661,39 @@ impl VirtualMachine {
             current_key,
             PyObject::list(current_group),
         ]));
+        Ok(PyObject::list(result))
+    }
+
+    /// Handle itertools.filterfalse(predicate, iterable) with VM dispatch
+    fn vm_itertools_filterfalse(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let pred = args[0].clone();
+        let items = self.collect_iterable(&args[1])?;
+        let mut result = Vec::new();
+        let is_none = matches!(&pred.payload, PyObjectPayload::None);
+        for item in &items {
+            let val = if is_none {
+                item.is_truthy()
+            } else {
+                let r = self.call_object(pred.clone(), vec![item.clone()])?;
+                r.is_truthy()
+            };
+            if !val {
+                result.push(item.clone());
+            }
+        }
+        Ok(PyObject::list(result))
+    }
+
+    /// Handle itertools.starmap(func, iterable) with VM dispatch
+    fn vm_itertools_starmap(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let func = args[0].clone();
+        let items = self.collect_iterable(&args[1])?;
+        let mut result = Vec::new();
+        for item in &items {
+            let call_args = item.to_list().unwrap_or_else(|_| vec![item.clone()]);
+            let r = self.call_object(func.clone(), call_args)?;
+            result.push(r);
+        }
         Ok(PyObject::list(result))
     }
 }

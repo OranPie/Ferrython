@@ -533,7 +533,7 @@ fn call_deque_method(inst: &ferrython_core::object::InstanceData, method: &str, 
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let mut v = list.write();
-                for item in items.into_iter().rev() {
+                for item in items.into_iter() {
                     v.insert(0, item);
                 }
                 drop(v);
@@ -1536,6 +1536,7 @@ fn call_datetime_method(inst: &ferrython_core::object::InstanceData, method: &st
     let minute = attrs.get("minute").and_then(|v| v.as_int()).unwrap_or(0);
     let second = attrs.get("second").and_then(|v| v.as_int()).unwrap_or(0);
     let microsecond = attrs.get("microsecond").and_then(|v| v.as_int()).unwrap_or(0);
+    let date_only = attrs.contains_key("__date_only__");
     drop(attrs);
     match method {
         "strftime" => {
@@ -1629,8 +1630,13 @@ fn call_datetime_method(inst: &ferrython_core::object::InstanceData, method: &st
             ]))
         }
         "__str__" | "__repr__" => {
-            let s = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second);
-            Ok(PyObject::str_val(CompactString::from(&s)))
+            if date_only {
+                let s = format!("{:04}-{:02}-{:02}", year, month, day);
+                Ok(PyObject::str_val(CompactString::from(&s)))
+            } else {
+                let s = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second);
+                Ok(PyObject::str_val(CompactString::from(&s)))
+            }
         }
         _ => Err(PyException::attribute_error(format!("'datetime' object has no attribute '{}'", method))),
     }
@@ -1640,7 +1646,7 @@ fn call_timedelta_method(inst: &ferrython_core::object::InstanceData, method: &s
     let attrs = inst.attrs.read();
     match method {
         "total_seconds" => {
-            Ok(attrs.get("total_seconds").cloned().unwrap_or_else(|| PyObject::float(0.0)))
+            Ok(attrs.get("_total_seconds").cloned().unwrap_or_else(|| PyObject::float(0.0)))
         }
         "__str__" | "__repr__" => {
             let days = attrs.get("days").and_then(|v| v.as_int()).unwrap_or(0);

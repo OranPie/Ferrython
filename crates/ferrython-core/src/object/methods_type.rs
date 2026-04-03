@@ -135,6 +135,40 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 if let Some(ref ds) = inst.dict_storage {
                     return format_dict(&ds.read());
                 }
+                // Known instance types with custom __str__
+                {
+                    let attrs = inst.attrs.read();
+                    // pathlib.Path → return _path string
+                    if attrs.contains_key("__pathlib_path__") {
+                        return attrs.get("_path").map(|v| v.py_to_string()).unwrap_or_default();
+                    }
+                    // datetime/date → format date string
+                    if attrs.contains_key("__datetime__") {
+                        let year = attrs.get("year").and_then(|v| v.as_int()).unwrap_or(1970);
+                        let month = attrs.get("month").and_then(|v| v.as_int()).unwrap_or(1);
+                        let day = attrs.get("day").and_then(|v| v.as_int()).unwrap_or(1);
+                        if attrs.contains_key("__date_only__") {
+                            return format!("{:04}-{:02}-{:02}", year, month, day);
+                        }
+                        let hour = attrs.get("hour").and_then(|v| v.as_int()).unwrap_or(0);
+                        let minute = attrs.get("minute").and_then(|v| v.as_int()).unwrap_or(0);
+                        let second = attrs.get("second").and_then(|v| v.as_int()).unwrap_or(0);
+                        return format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second);
+                    }
+                    // timedelta
+                    if attrs.contains_key("__timedelta__") {
+                        let days = attrs.get("days").and_then(|v| v.as_int()).unwrap_or(0);
+                        let secs = attrs.get("seconds").and_then(|v| v.as_int()).unwrap_or(0);
+                        let h = secs / 3600;
+                        let m = (secs % 3600) / 60;
+                        let s = secs % 60;
+                        return if days != 0 {
+                            format!("{} day{}, {}:{:02}:{:02}", days, if days.abs() != 1 { "s" } else { "" }, h, m, s)
+                        } else {
+                            format!("{}:{:02}:{:02}", h, m, s)
+                        };
+                    }
+                }
                 // Check for __str__ method first
                 if let Some(str_fn) = obj.get_attr("__str__") {
                     if !matches!(&str_fn.payload, PyObjectPayload::BuiltinBoundMethod { .. }) {

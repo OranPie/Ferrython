@@ -336,7 +336,7 @@ fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__stringio__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_buffer"), PyObject::str_val(CompactString::from(&initial)));
-        attrs.insert(CompactString::from("_pos"), PyObject::int(initial.len() as i64));
+        attrs.insert(CompactString::from("_pos"), PyObject::int(0));
         attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
     }
     Ok(inst)
@@ -356,7 +356,7 @@ fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__bytesio__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_buffer"), PyObject::bytes(initial.clone()));
-        attrs.insert(CompactString::from("_pos"), PyObject::int(initial.len() as i64));
+        attrs.insert(CompactString::from("_pos"), PyObject::int(0));
         attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
     }
     Ok(inst)

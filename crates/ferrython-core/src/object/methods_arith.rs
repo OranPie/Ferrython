@@ -1,7 +1,7 @@
 //! Arithmetic operation methods.
 
 use crate::error::{PyException, PyResult};
-use crate::types::PyInt;
+use crate::types::{PyInt, HashableKey};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -51,6 +51,35 @@ pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             (PyObjectPayload::Bytes(a), PyObjectPayload::Bytes(b)) | (PyObjectPayload::ByteArray(a), PyObjectPayload::Bytes(b)) | (PyObjectPayload::Bytes(a), PyObjectPayload::ByteArray(b)) => {
                 let mut r = a.clone(); r.extend(b); Ok(PyObject::bytes(r))
             }
+            // Dict addition (Counter + Counter)
+            (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
+                let ra = a_map.read();
+                let rb = b_map.read();
+                let mut result = IndexMap::new();
+                // Copy non-marker keys from a
+                for (k, v) in ra.iter() {
+                    if let HashableKey::Str(s) = k {
+                        if s.starts_with("__") && s.ends_with("__") { continue; }
+                    }
+                    result.insert(k.clone(), v.clone());
+                }
+                // Merge non-marker keys from b
+                for (k, v) in rb.iter() {
+                    if let HashableKey::Str(s) = k {
+                        if s.starts_with("__") && s.ends_with("__") { continue; }
+                    }
+                    let existing = result.get(k).and_then(|e| e.as_int()).unwrap_or(0);
+                    let new_val = existing + v.as_int().unwrap_or(0);
+                    result.insert(k.clone(), PyObject::int(new_val));
+                }
+                // Preserve __counter__ marker if both inputs are counters
+                let a_is_counter = ra.contains_key(&HashableKey::Str(CompactString::from("__counter__")));
+                let b_is_counter = rb.contains_key(&HashableKey::Str(CompactString::from("__counter__")));
+                if a_is_counter && b_is_counter {
+                    result.insert(HashableKey::Str(CompactString::from("__counter__")), PyObject::bool_val(true));
+                }
+                Ok(PyObject::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(result)))))
+            }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for +: '{}' and '{}'", a.type_name(), b.type_name()))),
         }
 }
@@ -91,6 +120,43 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 let mut result = IndexMap::new();
                 for (k, v) in a.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            }
+            // Instance subtraction (date - date → timedelta)
+            (PyObjectPayload::Instance(a_inst), PyObjectPayload::Instance(b_inst)) => {
+                let a_attrs = a_inst.attrs.read();
+                let b_attrs = b_inst.attrs.read();
+                // date - date or datetime - datetime → timedelta
+                if (a_attrs.contains_key("year") && a_attrs.contains_key("month") && a_attrs.contains_key("day"))
+                    && (b_attrs.contains_key("year") && b_attrs.contains_key("month") && b_attrs.contains_key("day"))
+                {
+                    let a_y = a_attrs.get("year").and_then(|v| v.as_int()).unwrap_or(0);
+                    let a_m = a_attrs.get("month").and_then(|v| v.as_int()).unwrap_or(1);
+                    let a_d = a_attrs.get("day").and_then(|v| v.as_int()).unwrap_or(1);
+                    let b_y = b_attrs.get("year").and_then(|v| v.as_int()).unwrap_or(0);
+                    let b_m = b_attrs.get("month").and_then(|v| v.as_int()).unwrap_or(1);
+                    let b_d = b_attrs.get("day").and_then(|v| v.as_int()).unwrap_or(1);
+                    fn date_to_days(y: i64, m: i64, d: i64) -> i64 {
+                        let m = if m <= 2 { m + 9 } else { m - 3 };
+                        let y = if m >= 10 { y - 1 } else { y };
+                        365 * y + y / 4 - y / 100 + y / 400 + (m * 306 + 5) / 10 + d - 1
+                    }
+                    let diff_days = date_to_days(a_y, a_m, a_d) - date_to_days(b_y, b_m, b_d);
+                    // Return a timedelta instance
+                    let cls = PyObject::class(CompactString::from("timedelta"), vec![], IndexMap::new());
+                    let inst = PyObject::instance(cls);
+                    if let PyObjectPayload::Instance(ref d) = inst.payload {
+                        let mut w = d.attrs.write();
+                        w.insert(CompactString::from("__timedelta__"), PyObject::bool_val(true));
+                        w.insert(CompactString::from("days"), PyObject::int(diff_days));
+                        w.insert(CompactString::from("seconds"), PyObject::int(0));
+                        w.insert(CompactString::from("microseconds"), PyObject::int(0));
+                        w.insert(CompactString::from("total_seconds"), PyObject::float(diff_days as f64 * 86400.0));
+                        w.insert(CompactString::from("_total_us"), PyObject::int(diff_days * 86_400_000_000));
+                    }
+                    Ok(inst)
+                } else {
+                    Err(PyException::type_error(format!("unsupported operand type(s) for -: '{}' and '{}'", a.type_name(), b.type_name())))
+                }
             }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for -: '{}' and '{}'", a.type_name(), b.type_name()))),
         }
@@ -189,6 +255,47 @@ pub(super) fn py_true_div(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObject
                 return Ok(PyObject::complex((a * br) / denom, (-a * bi) / denom));
             }
             _ => {}
+        }
+        // Path / str → joined path (pathlib)
+        if let PyObjectPayload::Instance(inst) = &a.payload {
+            if inst.attrs.read().contains_key("__pathlib_path__") {
+                let base = inst.attrs.read().get("_path").map(|v| v.py_to_string()).unwrap_or_default();
+                let child = b.py_to_string();
+                let joined = std::path::Path::new(&base).join(&child);
+                let joined_str = joined.to_string_lossy().to_string();
+                // Return a new Path-like instance
+                let path = std::path::Path::new(&joined_str);
+                let cls = PyObject::class(CompactString::from("Path"), vec![], IndexMap::new());
+                let new_inst = PyObject::instance(cls);
+                if let PyObjectPayload::Instance(ref d) = new_inst.payload {
+                    let mut w = d.attrs.write();
+                    w.insert(CompactString::from("__pathlib_path__"), PyObject::bool_val(true));
+                    w.insert(CompactString::from("_path"), PyObject::str_val(CompactString::from(&joined_str)));
+                    w.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(
+                        path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+                    )));
+                    w.insert(CompactString::from("stem"), PyObject::str_val(CompactString::from(
+                        path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+                    )));
+                    w.insert(CompactString::from("suffix"), PyObject::str_val(CompactString::from(
+                        path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default()
+                    )));
+                    w.insert(CompactString::from("parent"), PyObject::str_val(CompactString::from(
+                        path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+                    )));
+                    let parts: Vec<PyObjectRef> = {
+                        let mut p = Vec::new();
+                        if joined_str.starts_with('/') { p.push(PyObject::str_val(CompactString::from("/"))); }
+                        for c in path.components() {
+                            let s = c.as_os_str().to_string_lossy().to_string();
+                            if s != "/" { p.push(PyObject::str_val(CompactString::from(&s))); }
+                        }
+                        p
+                    };
+                    w.insert(CompactString::from("parts"), PyObject::tuple(parts));
+                }
+                return Ok(new_inst);
+            }
         }
         let a = coerce_to_f64(a)?;
         let b = coerce_to_f64(b)?;

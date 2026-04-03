@@ -190,6 +190,8 @@ pub fn create_datetime_module() -> PyObjectRef {
                 let day = args[3].to_int()?;
                 if let PyObjectPayload::Instance(ref inst) = args[0].payload {
                     let mut w = inst.attrs.write();
+                    w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+                    w.insert(CompactString::from("__date_only__"), PyObject::bool_val(true));
                     w.insert(CompactString::from("year"), PyObject::int(year));
                     w.insert(CompactString::from("month"), PyObject::int(month));
                     w.insert(CompactString::from("day"), PyObject::int(day));
@@ -236,6 +238,8 @@ fn date_today(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
+        w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+        w.insert(CompactString::from("__date_only__"), PyObject::bool_val(true));
         w.insert(CompactString::from("year"), PyObject::int(year));
         w.insert(CompactString::from("month"), PyObject::int(month));
         w.insert(CompactString::from("day"), PyObject::int(day));
@@ -365,7 +369,7 @@ fn make_timedelta(days: i64, seconds: i64, microseconds: i64, total_secs: f64) -
         w.insert(CompactString::from("days"), PyObject::int(days));
         w.insert(CompactString::from("seconds"), PyObject::int(seconds));
         w.insert(CompactString::from("microseconds"), PyObject::int(microseconds));
-        w.insert(CompactString::from("total_seconds"), PyObject::float(total_secs));
+        w.insert(CompactString::from("_total_seconds"), PyObject::float(total_secs));
         w.insert(CompactString::from("_total_us"), PyObject::int(days * 86_400_000_000 + seconds * 1_000_000 + microseconds));
     }
     Ok(inst)

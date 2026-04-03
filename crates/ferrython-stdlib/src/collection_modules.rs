@@ -195,9 +195,17 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args[0].to_list()?
     };
-    // Optional maxlen as second argument
-    let maxlen = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
-        Some(args[1].to_int()? as usize)
+    // Extract maxlen from positional arg or trailing kwargs dict
+    let maxlen = if args.len() >= 2 {
+        if let PyObjectPayload::Dict(map) = &args[args.len() - 1].payload {
+            let map = map.read();
+            map.get(&HashableKey::Str(CompactString::from("maxlen")))
+                .and_then(|v| if matches!(&v.payload, PyObjectPayload::None) { None } else { Some(v.to_int().unwrap_or(0) as usize) })
+        } else if !matches!(&args[1].payload, PyObjectPayload::None) {
+            Some(args[1].to_int()? as usize)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -388,9 +396,10 @@ pub fn create_itertools_module() -> PyObjectRef {
         ("dropwhile", make_builtin(itertools_dropwhile)),
         ("takewhile", make_builtin(itertools_takewhile)),
         ("combinations", make_builtin(itertools_combinations)),
+        ("combinations_with_replacement", make_builtin(itertools_combinations_with_replacement)),
         ("permutations", make_builtin(itertools_permutations)),
         ("groupby", PyObject::native_function("itertools.groupby", itertools_groupby)),
-        ("filterfalse", make_builtin(itertools_filterfalse)),
+        ("filterfalse", PyObject::native_function("itertools.filterfalse", itertools_filterfalse)),
         ("compress", make_builtin(itertools_compress)),
         ("tee", make_builtin(itertools_tee)),
         ("starmap", PyObject::native_function("itertools.starmap", itertools_starmap)),
@@ -516,9 +525,30 @@ fn itertools_product(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             IteratorData::List { items: vec![PyObject::tuple(vec![])], index: 0 }
         )))));
     }
-    let lists: Vec<Vec<PyObjectRef>> = args.iter()
+    // Check for trailing kwargs dict with repeat=
+    let (pos_args, repeat) = if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(map) = &last.payload {
+            let map = map.read();
+            let r = map.get(&HashableKey::Str(CompactString::from("repeat")))
+                .and_then(|v| v.as_int().map(|n| n as usize))
+                .unwrap_or(1);
+            (&args[..args.len() - 1], r)
+        } else {
+            (args, 1)
+        }
+    } else {
+        (args, 1)
+    };
+    let mut lists: Vec<Vec<PyObjectRef>> = pos_args.iter()
         .map(|a| a.to_list())
         .collect::<Result<Vec<_>, _>>()?;
+    // Apply repeat: duplicate the iterables
+    if repeat > 1 {
+        let base = lists.clone();
+        for _ in 1..repeat {
+            lists.extend(base.clone());
+        }
+    }
     let mut result = vec![vec![]];
     for lst in &lists {
         let mut new_result = Vec::new();
@@ -543,17 +573,42 @@ fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("accumulate requires an iterable")); }
     let items = args[0].to_list()?;
     if items.is_empty() { return Ok(PyObject::list(vec![])); }
+    // Optional binary function as second arg
+    let func = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
+        Some(args[1].clone())
+    } else {
+        None
+    };
     let mut result = Vec::new();
     let mut acc = items[0].clone();
     result.push(acc.clone());
     for item in &items[1..] {
-        let a = acc.to_float().unwrap_or(acc.as_int().unwrap_or(0) as f64);
-        let b = item.to_float().unwrap_or(item.as_int().unwrap_or(0) as f64);
-        let sum = a + b;
-        acc = if acc.as_int().is_some() && item.as_int().is_some() {
-            PyObject::int(sum as i64)
+        acc = if let Some(ref f) = func {
+            // Try calling the function directly (works for NativeFunction/NativeClosure)
+            match &f.payload {
+                PyObjectPayload::NativeFunction { func: nf, .. } => nf(&[acc, item.clone()])?,
+                PyObjectPayload::NativeClosure { func: nf, .. } => nf(&[acc, item.clone()])?,
+                _ => {
+                    // Fallback to addition for Python functions (needs VM dispatch)
+                    let a = acc.to_float().unwrap_or(acc.as_int().unwrap_or(0) as f64);
+                    let b = item.to_float().unwrap_or(item.as_int().unwrap_or(0) as f64);
+                    let sum = a + b;
+                    if acc.as_int().is_some() && item.as_int().is_some() {
+                        PyObject::int(sum as i64)
+                    } else {
+                        PyObject::float(sum)
+                    }
+                }
+            }
         } else {
-            PyObject::float(sum)
+            let a = acc.to_float().unwrap_or(acc.as_int().unwrap_or(0) as f64);
+            let b = item.to_float().unwrap_or(item.as_int().unwrap_or(0) as f64);
+            let sum = a + b;
+            if acc.as_int().is_some() && item.as_int().is_some() {
+                PyObject::int(sum as i64)
+            } else {
+                PyObject::float(sum)
+            }
         };
         result.push(acc.clone());
     }
@@ -599,6 +654,34 @@ fn itertools_combinations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         indices[i] += 1;
         for j in (i + 1)..r {
             indices[j] = indices[j - 1] + 1;
+        }
+        result.push(PyObject::tuple(indices.iter().map(|&idx| items[idx].clone()).collect()));
+    }
+    Ok(PyObject::list(result))
+}
+
+fn itertools_combinations_with_replacement(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("combinations_with_replacement requires iterable and r")); }
+    let items = args[0].to_list()?;
+    let r = args[1].as_int().unwrap_or(2) as usize;
+    let n = items.len();
+    if n == 0 && r > 0 { return Ok(PyObject::list(vec![])); }
+    if r == 0 { return Ok(PyObject::list(vec![PyObject::tuple(vec![])])); }
+    let mut result = Vec::new();
+    let mut indices: Vec<usize> = vec![0; r];
+    result.push(PyObject::tuple(indices.iter().map(|&i| items[i].clone()).collect()));
+    loop {
+        let mut i_opt = None;
+        for i in (0..r).rev() {
+            if indices[i] != n - 1 {
+                i_opt = Some(i);
+                break;
+            }
+        }
+        let i = match i_opt { Some(i) => i, None => break };
+        let new_val = indices[i] + 1;
+        for j in i..r {
+            indices[j] = new_val;
         }
         result.push(PyObject::tuple(indices.iter().map(|&idx| items[idx].clone()).collect()));
     }

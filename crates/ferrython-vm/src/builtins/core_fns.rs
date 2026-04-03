@@ -577,6 +577,7 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Dict(m) => {
             let mut new_map = m.read().clone();
             new_map.swap_remove(&HashableKey::Str(CompactString::from("__defaultdict_factory__")));
+            new_map.swap_remove(&HashableKey::Str(CompactString::from("__counter__")));
             Ok(PyObject::dict(new_map))
         },
         // dict from iterable of (key, value) pairs
