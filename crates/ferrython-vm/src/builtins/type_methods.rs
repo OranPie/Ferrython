@@ -11,6 +11,33 @@ use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
+/// Extract a keyword argument from a trailing kwargs dict (if present).
+/// The generic BuiltinBoundMethod kwargs handler passes kwargs as a trailing Dict arg.
+fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
+    if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(map) = &last.payload {
+            let r = map.read();
+            return r.get(&HashableKey::Str(CompactString::from(name))).cloned();
+        }
+    }
+    None
+}
+
+/// Get positional args count, excluding trailing kwargs dict
+fn pos_arg_count(args: &[PyObjectRef]) -> usize {
+    if let Some(last) = args.last() {
+        if matches!(&last.payload, PyObjectPayload::Dict(_)) && args.len() > 0 {
+            // Check if this looks like a kwargs dict (has string keys)
+            // We need to distinguish real dict args from kwargs. Heuristic:
+            // if it's the last arg AND is a dict, could be kwargs. But for methods
+            // that take explicit dict args, this is ambiguous. Only use for methods
+            // that don't take dict positional args.
+            return args.len(); // Don't auto-strip; callers extract explicitly
+        }
+    }
+    args.len()
+}
+
 pub(super) fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::list(items.read().to_vec())),
@@ -197,7 +224,9 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
             Ok(PyObject::none())
         }
         "popitem" => {
-            let last = if !args.is_empty() {
+            let last = if let Some(v) = extract_kwarg(args, "last") {
+                v.is_truthy()
+            } else if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::Dict(_)) {
                 args[0].is_truthy()
             } else {
                 true
@@ -243,7 +272,13 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
         "move_to_end" => {
             check_args_min("move_to_end", args, 1)?;
             let key = args[0].to_hashable_key()?;
-            let last = if args.len() >= 2 { args[1].is_truthy() } else { true };
+            let last = if let Some(v) = extract_kwarg(args, "last") {
+                v.is_truthy()
+            } else if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::Dict(_)) {
+                args[1].is_truthy()
+            } else {
+                true
+            };
             let mut w = map.write();
             if let Some(val) = w.shift_remove(&key) {
                 if last {

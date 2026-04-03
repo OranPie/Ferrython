@@ -807,6 +807,28 @@ impl VirtualMachine {
                             let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
                             return self.vm_itertools_groupby(&pos_args, key_fn);
                         }
+                        // re.split with maxsplit kwarg
+                        if name.as_str() == "re.split" && !kwargs.is_empty() {
+                            let mut all = pos_args.clone();
+                            if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "maxsplit") {
+                                while all.len() < 3 { all.push(PyObject::int(0)); }
+                                all[2] = v.clone();
+                            }
+                            if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "flags") {
+                                while all.len() < 4 { all.push(PyObject::int(0)); }
+                                all[3] = v.clone();
+                            }
+                            return nf(&all);
+                        }
+                        // re.sub with count kwarg
+                        if name.as_str() == "re.sub" && !kwargs.is_empty() {
+                            let mut all = pos_args.clone();
+                            if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "count") {
+                                while all.len() < 4 { all.push(PyObject::int(0)); }
+                                all[3] = v.clone();
+                            }
+                            return nf(&all);
+                        }
                         // type.__call__(cls, *args, **kwargs) — standard class instantiation
                         if name.as_str() == "__type_call__" {
                             if pos_args.is_empty() {
