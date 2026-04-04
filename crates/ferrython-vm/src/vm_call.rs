@@ -988,14 +988,25 @@ impl VirtualMachine {
                         }
                         "dict" => {
                             let mut map = IndexMap::new();
-                            // dict(iterable, **kwargs) or dict(**kwargs)
+                            // dict(mapping_or_iterable, **kwargs) or dict(**kwargs)
                             if !pos_args.is_empty() {
-                                let items = self.collect_iterable(&pos_args[0])?;
-                                for item in &items {
-                                    let pair = item.to_list()?;
-                                    if pair.len() == 2 {
-                                        let hk = pair[0].to_hashable_key()?;
-                                        map.insert(hk, pair[1].clone());
+                                match &pos_args[0].payload {
+                                    PyObjectPayload::Dict(src) => {
+                                        // dict(dict_arg, **kwargs) — copy the mapping first
+                                        for (k, v) in src.read().iter() {
+                                            map.insert(k.clone(), v.clone());
+                                        }
+                                    }
+                                    _ => {
+                                        // dict(iterable_of_pairs, **kwargs)
+                                        let items = self.collect_iterable(&pos_args[0])?;
+                                        for item in &items {
+                                            let pair = item.to_list()?;
+                                            if pair.len() == 2 {
+                                                let hk = pair[0].to_hashable_key()?;
+                                                map.insert(hk, pair[1].clone());
+                                            }
+                                        }
                                     }
                                 }
                             }
