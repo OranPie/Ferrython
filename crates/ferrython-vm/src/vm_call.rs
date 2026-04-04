@@ -840,7 +840,7 @@ impl VirtualMachine {
                             let end = kwargs.iter().find(|(k, _)| k.as_str() == "end")
                                 .map(|(_, v)| v.py_to_string()).unwrap_or_else(|| "\n".to_string());
                             let file_obj = kwargs.iter().find(|(k, _)| k.as_str() == "file").map(|(_, v)| v.clone());
-                            let _flush = kwargs.iter().find(|(k, _)| k.as_str() == "flush")
+                            let flush = kwargs.iter().find(|(k, _)| k.as_str() == "flush")
                                 .map(|(_,v)| v.is_truthy()).unwrap_or(false);
                             let mut parts = Vec::new();
                             for a in &pos_args {
@@ -849,8 +849,17 @@ impl VirtualMachine {
                             let output = format!("{}{}", parts.join(&sep), end);
                             if let Some(f) = self.resolve_print_target(file_obj) {
                                 self.write_to_file_object(&f, &output)?;
+                                if flush {
+                                    if let Some(flush_fn) = f.get_attr("flush") {
+                                        let _ = self.call_object(flush_fn, vec![]);
+                                    }
+                                }
                             } else {
                                 print!("{}", output);
+                                if flush {
+                                    use std::io::Write;
+                                    let _ = std::io::stdout().flush();
+                                }
                             }
                             return Ok(PyObject::none());
                         }

@@ -910,12 +910,34 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             Some(PyObject::none())
                         } else {
                             let cells: Vec<PyObjectRef> = f.closure.iter().map(|cell| {
-                                cell.read().clone().unwrap_or_else(PyObject::none)
+                                PyObject::cell(cell.clone())
                             }).collect();
                             Some(PyObject::tuple(cells))
                         }
                     }
-                    "__code__" => Some(PyObject::none()),
+                    "__code__" => Some(PyObject::code((*f.code).clone())),
+                    "__kwdefaults__" => {
+                        if f.kw_defaults.is_empty() { Some(PyObject::none()) }
+                        else {
+                            let mut map = IndexMap::new();
+                            for (k, v) in &f.kw_defaults {
+                                if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
+                                    map.insert(hk, v.clone());
+                                }
+                            }
+                            Some(PyObject::dict(map))
+                        }
+                    }
+                    "__globals__" => {
+                        let g = f.globals.read();
+                        let mut map = IndexMap::new();
+                        for (k, v) in g.iter() {
+                            if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
+                                map.insert(hk, v.clone());
+                            }
+                        }
+                        Some(PyObject::dict(map))
+                    }
                     _ => None,
                 }
             }

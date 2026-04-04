@@ -959,22 +959,24 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
         }
         "join" => {
             if args.is_empty() { return Err(PyException::type_error("join requires an argument")); }
-            // TODO: would need VM-level collect_iterable; simple list case for now
-            if let PyObjectPayload::List(items) = &args[0].payload {
-                let items = items.read();
-                let mut result = Vec::new();
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 { result.extend_from_slice(b); }
-                    if let PyObjectPayload::Bytes(ib) | PyObjectPayload::ByteArray(ib) = &item.payload {
-                        result.extend_from_slice(ib);
-                    } else {
-                        return Err(PyException::type_error("sequence item: expected a bytes-like object"));
-                    }
+            // Extract items from list, tuple, or other sequence types
+            let items: Vec<PyObjectRef> = match &args[0].payload {
+                PyObjectPayload::List(items) => items.read().clone(),
+                PyObjectPayload::Tuple(items) => items.clone(),
+                PyObjectPayload::FrozenSet(items) => items.values().cloned().collect(),
+                PyObjectPayload::Set(items) => items.read().values().cloned().collect(),
+                _ => return Err(PyException::type_error("can only join an iterable")),
+            };
+            let mut result = Vec::new();
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 { result.extend_from_slice(b); }
+                match &item.payload {
+                    PyObjectPayload::Bytes(ib) => result.extend_from_slice(ib),
+                    PyObjectPayload::ByteArray(ib) => result.extend_from_slice(ib),
+                    _ => return Err(PyException::type_error("sequence item: expected a bytes-like object")),
                 }
-                Ok(PyObject::bytes(result))
-            } else {
-                Err(PyException::type_error("can only join an iterable"))
             }
+            Ok(PyObject::bytes(result))
         }
         "replace" => {
             if args.len() < 2 { return Err(PyException::type_error("replace requires 2 arguments")); }
