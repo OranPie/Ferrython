@@ -990,22 +990,33 @@ impl VirtualMachine {
                             let mut map = IndexMap::new();
                             // dict(mapping_or_iterable, **kwargs) or dict(**kwargs)
                             if !pos_args.is_empty() {
-                                match &pos_args[0].payload {
-                                    PyObjectPayload::Dict(src) => {
-                                        // dict(dict_arg, **kwargs) — copy the mapping first
-                                        for (k, v) in src.read().iter() {
-                                            map.insert(k.clone(), v.clone());
+                                let mut handled = false;
+                                // Check for Dict payload
+                                if let PyObjectPayload::Dict(src) = &pos_args[0].payload {
+                                    for (k, v) in src.read().iter() {
+                                        map.insert(k.clone(), v.clone());
+                                    }
+                                    handled = true;
+                                }
+                                // Check for Instance with dict_storage (e.g., defaultdict, OrderedDict)
+                                if !handled {
+                                    if let PyObjectPayload::Instance(inst) = &pos_args[0].payload {
+                                        if let Some(ref ds) = inst.dict_storage {
+                                            for (k, v) in ds.read().iter() {
+                                                map.insert(k.clone(), v.clone());
+                                            }
+                                            handled = true;
                                         }
                                     }
-                                    _ => {
-                                        // dict(iterable_of_pairs, **kwargs)
-                                        let items = self.collect_iterable(&pos_args[0])?;
-                                        for item in &items {
-                                            let pair = item.to_list()?;
-                                            if pair.len() == 2 {
-                                                let hk = pair[0].to_hashable_key()?;
-                                                map.insert(hk, pair[1].clone());
-                                            }
+                                }
+                                if !handled {
+                                    // dict(iterable_of_pairs, **kwargs)
+                                    let items = self.collect_iterable(&pos_args[0])?;
+                                    for item in &items {
+                                        let pair = item.to_list()?;
+                                        if pair.len() == 2 {
+                                            let hk = pair[0].to_hashable_key()?;
+                                            map.insert(hk, pair[1].clone());
                                         }
                                     }
                                 }
@@ -1336,10 +1347,21 @@ impl VirtualMachine {
                         if args.is_empty() {
                             return Ok(PyObject::dict(IndexMap::new()));
                         }
-                        // dict(iterable_of_pairs) or dict(mapping)
+                        // dict(mapping) — handle Dict payload
                         if let PyObjectPayload::Dict(_) = &args[0].payload {
                             return builtins::dispatch("dict", &args);
                         }
+                        // dict(instance_with_dict_storage) — e.g., defaultdict, OrderedDict
+                        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                            if let Some(ref ds) = inst.dict_storage {
+                                let mut map = IndexMap::new();
+                                for (k, v) in ds.read().iter() {
+                                    map.insert(k.clone(), v.clone());
+                                }
+                                return Ok(PyObject::dict(map));
+                            }
+                        }
+                        // dict(iterable_of_pairs)
                         let items = self.collect_iterable(&args[0])?;
                         return builtins::dispatch("dict", &[PyObject::list(items)]);
                     }

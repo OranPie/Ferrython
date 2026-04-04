@@ -511,11 +511,13 @@ pub(super) fn call_set_method(m: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>
         }
         "update" => {
             check_args_min("update", args, 1)?;
-            let items = args[0].to_list()?;
             let mut guard = m.write();
-            for item in items {
-                if let Ok(hk) = item.to_hashable_key() {
-                    guard.insert(hk, item);
+            for arg in args {
+                let items = arg.to_list()?;
+                for item in items {
+                    if let Ok(hk) = item.to_hashable_key() {
+                        guard.insert(hk, item);
+                    }
                 }
             }
             Ok(PyObject::none())

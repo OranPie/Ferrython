@@ -1386,6 +1386,28 @@ impl VirtualMachine {
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
+                // Fallback: iterate via __getitem__ with integer indices (CPython behavior)
+                if b.get_attr("__getitem__").is_some() {
+                    let mut found = false;
+                    let mut idx = 0i64;
+                    loop {
+                        let getitem = b.get_attr("__getitem__").unwrap();
+                        match self.call_object(getitem, vec![PyObject::int(idx)]) {
+                            Ok(item) => {
+                                if item.compare(&a, CompareOp::Eq)?.is_truthy() {
+                                    found = true;
+                                    break;
+                                }
+                                idx += 1;
+                            }
+                            Err(e) if e.kind == ferrython_core::error::ExceptionKind::IndexError => break,
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    let val = if instr.arg == 6 { found } else { !found };
+                    self.vm_push(PyObject::bool_val(val));
+                    return Ok(None);
+                }
             }
         }
         let result = match instr.arg {
