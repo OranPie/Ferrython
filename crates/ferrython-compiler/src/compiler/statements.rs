@@ -656,23 +656,44 @@ impl Compiler {
             let zero_idx = self.add_const(ConstantValue::Integer(0));
             self.emit_arg(Opcode::LoadConst, zero_idx);
 
-            // Push fromlist (None for regular import)
-            let none_idx = self.add_const(ConstantValue::None);
-            self.emit_arg(Opcode::LoadConst, none_idx);
+            if alias.asname.is_some() && alias.name.contains('.') {
+                // `import a.b.c as X` — ImportName with None fromlist returns
+                // top-level `a`, then walk IMPORT_FROM chain to reach `a.b.c`.
+                let parts: Vec<&str> = alias.name.split('.').collect();
+                let none_idx = self.add_const(ConstantValue::None);
+                self.emit_arg(Opcode::LoadConst, none_idx);
 
-            let name_idx = self.add_name(&alias.name);
-            self.emit_arg(Opcode::ImportName, name_idx);
+                let name_idx = self.add_name(&alias.name);
+                self.emit_arg(Opcode::ImportName, name_idx);
 
-            if let Some(ref asname) = alias.asname {
-                self.store_name(asname);
+                // Walk IMPORT_FROM for parts[1..] to reach the deepest submodule
+                // Stack after ImportName: [a]
+                // Each iteration: IMPORT_FROM x -> [parent, x], RotTwo -> [x, parent], PopTop -> [x]
+                for part in &parts[1..] {
+                    let from_idx = self.add_name(part);
+                    self.emit_arg(Opcode::ImportFrom, from_idx);
+                    self.emit_op(Opcode::RotTwo);
+                    self.emit_op(Opcode::PopTop);
+                }
+
+                self.store_name(alias.asname.as_ref().unwrap());
             } else {
-                // For `import a.b.c`, we need to store `a` (the top-level module)
-                let top = alias.name.split('.').next().unwrap_or(&alias.name);
-                if alias.name.contains('.') {
-                    // Import of dotted name: store the top-level module
-                    self.store_name(top);
+                // Regular import: `import a.b.c` stores `a`, `import foo` stores `foo`
+                let none_idx = self.add_const(ConstantValue::None);
+                self.emit_arg(Opcode::LoadConst, none_idx);
+
+                let name_idx = self.add_name(&alias.name);
+                self.emit_arg(Opcode::ImportName, name_idx);
+
+                if let Some(ref asname) = alias.asname {
+                    self.store_name(asname);
                 } else {
-                    self.store_name(&alias.name);
+                    let top = alias.name.split('.').next().unwrap_or(&alias.name);
+                    if alias.name.contains('.') {
+                        self.store_name(top);
+                    } else {
+                        self.store_name(&alias.name);
+                    }
                 }
             }
         }
