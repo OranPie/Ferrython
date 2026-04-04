@@ -157,6 +157,38 @@ pub fn create_shutil_module() -> PyObjectRef {
         ("get_terminal_size", make_builtin(|_| {
             Ok(PyObject::tuple(vec![PyObject::int(80), PyObject::int(24)]))
         })),
+        ("copytree", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("copytree requires src and dst")); }
+            let src = args[0].py_to_string();
+            let dst = args[1].py_to_string();
+            fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+                std::fs::create_dir_all(dst)?;
+                for entry in std::fs::read_dir(src)? {
+                    let entry = entry?;
+                    let ty = entry.file_type()?;
+                    let dest_path = dst.join(entry.file_name());
+                    if ty.is_dir() {
+                        copy_dir_recursive(&entry.path(), &dest_path)?;
+                    } else {
+                        std::fs::copy(entry.path(), &dest_path)?;
+                    }
+                }
+                Ok(())
+            }
+            copy_dir_recursive(std::path::Path::new(&src), std::path::Path::new(&dst))
+                .map_err(|e| PyException::runtime_error(format!("{}", e)))?;
+            Ok(PyObject::str_val(CompactString::from(dst)))
+        })),
+        ("copyfileobj", make_builtin(|_args| {
+            // Stub — real impl would need file object support
+            Ok(PyObject::none())
+        })),
+        ("ignore_patterns", make_builtin(|_args| {
+            // Returns a callable that returns a set of patterns to ignore
+            Ok(PyObject::native_function("_ignore", |_| {
+                Ok(PyObject::set(indexmap::IndexMap::new()))
+            }))
+        })),
     ])
 }
 

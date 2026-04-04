@@ -350,6 +350,18 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("dataclass requires 1 argument")); }
     let cls = &args[0];
     
+    // If called as @dataclass(eq=True, ...) the first arg is kwargs dict, not a class.
+    // In that case, return a decorator function that wraps the actual class.
+    if !matches!(&cls.payload, PyObjectPayload::Class(_)) {
+        // Called with keyword arguments — return a decorator
+        return Ok(make_builtin(dataclass_decorator));
+    }
+    
+    dataclass_apply(cls)
+}
+
+fn dataclass_apply(cls: &PyObjectRef) -> PyResult<PyObjectRef> {
+    
     // Get annotations to discover fields
     let mut field_names: Vec<CompactString> = Vec::new();
     let mut field_defaults: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
