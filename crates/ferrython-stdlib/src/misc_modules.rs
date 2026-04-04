@@ -280,9 +280,14 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         field_names.push(name.clone());
                         // Check for default value in class namespace
                         if let Some(default) = ns.get(name.as_str()) {
-                            // Check if it's a field() sentinel with factory
-                            if let Some(factory) = default.get_attr("__field_factory__") {
-                                field_defaults.insert(name.clone(), factory);
+                            // Check if it's a field() sentinel with factory (Module with __field_factory__ attr)
+                            if let PyObjectPayload::Module(md) = &default.payload {
+                                let mod_attrs = md.attrs.read();
+                                if let Some(factory) = mod_attrs.get("__field_factory__") {
+                                    field_defaults.insert(name.clone(), factory.clone());
+                                } else {
+                                    field_defaults.insert(name.clone(), default.clone());
+                                }
                             } else {
                                 field_defaults.insert(name.clone(), default.clone());
                             }

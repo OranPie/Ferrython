@@ -697,10 +697,10 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
                     kwarg_start = args.len(); // skip kwargs dict for positional scan
                 }
             }
-            if kwarg_start > 1 && args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::Dict(_)) {
+            if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::Dict(_)) {
                 byteorder = args[1].py_to_string();
             }
-            if kwarg_start > 2 && args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::Dict(_)) {
+            if args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::Dict(_)) {
                 signed = args[2].is_truthy();
             }
             let val_to_encode: u64 = if signed && n < 0 {
