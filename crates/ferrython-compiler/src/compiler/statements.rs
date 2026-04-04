@@ -99,9 +99,9 @@ impl Compiler {
                         location: stmt.location,
                     });
                 }
-                // For `for` loops, pop the iterator off the stack before jumping
+                // For `for` loops, pop the iterator and close generators
                 if self.current_unit().loop_stack.last().unwrap().is_for_loop {
-                    self.emit_op(Opcode::PopTop);
+                    self.emit_op(Opcode::EndForLoop);
                 }
                 let label = self.emit_jump(Opcode::JumpAbsolute);
                 self.current_unit_mut()

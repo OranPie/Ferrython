@@ -164,6 +164,9 @@ pub enum Opcode {
     // ── Custom: distinguish except from finally ──
     SetupExcept = 200,
     SetupAsyncWith = 201,
+    /// Pop iterator from stack and call close() if it's a generator.
+    /// Used by `break` in for-loops to ensure generator finally blocks run.
+    EndForLoop = 202,
 }
 
 impl Opcode {
@@ -255,6 +258,7 @@ impl Opcode {
             Self::ImportStar => -1,
             Self::SetupFinally | Self::SetupWith | Self::SetupExcept
             | Self::SetupAsyncWith => 0,
+            Self::EndForLoop => -1,
             Self::PopBlock | Self::PopExcept => 0,
             Self::EndFinally | Self::BeginFinally => 0,
             Self::RaiseVarargs => -(arg as i32),

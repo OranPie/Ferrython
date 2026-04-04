@@ -706,8 +706,14 @@ pub(super) fn format_set(open: &str, close: &str, map: &IndexMap<HashableKey, Py
 pub(super) fn format_dict(map: &IndexMap<HashableKey, PyObjectRef>) -> String {
     let inner: Vec<String> = map.iter()
         .filter(|(k, _)| {
-            // Hide internal defaultdict factory key
-            if let HashableKey::Str(s) = k { s.as_str() != "__defaultdict_factory__" && s.as_str() != "__counter__" } else { true }
+            // Hide internal defaultdict/counter marker keys
+            match k {
+                HashableKey::Str(s) => {
+                    let key = s.as_str();
+                    key != "__defaultdict_factory__" && key != "__counter__"
+                }
+                _ => true,
+            }
         })
         .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr())).collect();
     format!("{{{}}}", inner.join(", "))

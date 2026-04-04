@@ -87,6 +87,14 @@ fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if let Some(def) = r.get(&HashableKey::Str(CompactString::from("default"))) {
                 default_fn = Some(def.clone());
             }
+            // cls=CustomEncoder: extract its `default` method as the default_fn
+            if default_fn.is_none() {
+                if let Some(cls) = r.get(&HashableKey::Str(CompactString::from("cls"))) {
+                    if let Some(default_method) = cls.get_attr("default") {
+                        default_fn = Some(default_method);
+                    }
+                }
+            }
         } else {
             // Positional indent arg
             match &args[1].payload {
@@ -183,6 +191,12 @@ fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize, default: Op
             }).collect();
             Ok(format!("{{\n{}{}\n{}}}", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
         }
+        PyObjectPayload::Set(map) => {
+            let r = map.read();
+            let items: Vec<PyObjectRef> = r.keys().map(|k| k.to_object()).collect();
+            let list = PyObject::list(items);
+            py_to_json_pretty(&list, depth, indent, default)
+        }
         _ => json_serialize_fallback(obj, default, |o, d| py_to_json_pretty(o, depth, indent, d)),
     }
 }
@@ -232,6 +246,13 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
                 Ok(format!("{}{}{}", key_str, kv_sep, val_str))
             }).collect();
             Ok(format!("{{{}}}", parts?.join(item_sep)))
+        }
+        PyObjectPayload::Set(map) => {
+            // Sets serialize as JSON arrays (common pattern used by custom encoders)
+            let r = map.read();
+            let mut items: Vec<PyObjectRef> = r.keys().map(|k| k.to_object()).collect();
+            let list = PyObject::list(items);
+            py_to_json_sep(&list, item_sep, kv_sep, default)
         }
         _ => json_serialize_fallback(obj, default, |o, d| py_to_json_sep(o, item_sep, kv_sep, d)),
     }

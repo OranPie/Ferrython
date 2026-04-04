@@ -276,6 +276,7 @@ impl VirtualMachine {
             | Opcode::PopJumpIfFalse | Opcode::PopJumpIfTrue
             | Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop
             | Opcode::GetIter | Opcode::GetYieldFromIter | Opcode::ForIter
+            | Opcode::EndForLoop
                 => self.exec_jump_ops(instr),
 
             Opcode::BuildTuple | Opcode::BuildList | Opcode::BuildSet

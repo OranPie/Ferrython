@@ -141,6 +141,33 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 for (k, v) in a.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
             }
+            // Counter - Counter: subtract counts, keep positive
+            (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
+                let ra = a_map.read(); let rb = b_map.read();
+                let counter_key = HashableKey::Str(CompactString::from("__counter__"));
+                if ra.contains_key(&counter_key) && rb.contains_key(&counter_key) {
+                    let mut result = IndexMap::new();
+                    result.insert(HashableKey::Str(CompactString::from("__defaultdict_factory__")),
+                        PyObject::builtin_type(CompactString::from("int")));
+                    result.insert(counter_key, PyObject::bool_val(true));
+                    for (k, v) in ra.iter() {
+                        if let HashableKey::Str(s) = k {
+                            if s.starts_with("__") && s.ends_with("__") { continue; }
+                        }
+                        let a_count = v.as_int().unwrap_or(0);
+                        let b_count = rb.get(k).and_then(|v| v.as_int()).unwrap_or(0);
+                        let diff = a_count - b_count;
+                        if diff > 0 {
+                            result.insert(k.clone(), PyObject::int(diff));
+                        }
+                    }
+                    Ok(PyObject::dict(result))
+                } else {
+                    Err(PyException::type_error(format!(
+                        "unsupported operand type(s) for -: '{}' and '{}'", a.type_name(), b.type_name()
+                    )))
+                }
+            }
             // Instance subtraction (date - date → timedelta)
             (PyObjectPayload::Instance(a_inst), PyObjectPayload::Instance(b_inst)) => {
                 let a_attrs = a_inst.attrs.read();
@@ -482,6 +509,37 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                 for (k, v) in a.iter() { if b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
             }
+            // Counter & Counter: minimum of counts (intersection)
+            (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
+                let ra = a_map.read(); let rb = b_map.read();
+                let counter_key = HashableKey::Str(CompactString::from("__counter__"));
+                let a_counter = ra.contains_key(&counter_key);
+                let b_counter = rb.contains_key(&counter_key);
+                if a_counter && b_counter {
+                    let mut result = IndexMap::new();
+                    result.insert(HashableKey::Str(CompactString::from("__defaultdict_factory__")),
+                        PyObject::builtin_type(CompactString::from("int")));
+                    result.insert(counter_key, PyObject::bool_val(true));
+                    for (k, v) in ra.iter() {
+                        if let HashableKey::Str(s) = k {
+                            if s.starts_with("__") && s.ends_with("__") { continue; }
+                        }
+                        if let Some(bv) = rb.get(k) {
+                            let a_count = v.as_int().unwrap_or(0);
+                            let b_count = bv.as_int().unwrap_or(0);
+                            let min_count = a_count.min(b_count);
+                            if min_count > 0 {
+                                result.insert(k.clone(), PyObject::int(min_count));
+                            }
+                        }
+                    }
+                    Ok(PyObject::dict(result))
+                } else {
+                    Err(PyException::type_error(format!(
+                        "unsupported operand type(s) for &: '{}' and '{}'", a.type_name(), b.type_name()
+                    )))
+                }
+            }
             _ => int_bitop(a, b, "&", |a, b| a & b),
         }
 }
@@ -511,12 +569,45 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                 for (k, v) in b.iter() { result.insert(k.clone(), v.clone()); }
                 Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
             }
-            // PEP 584: dict | dict
-            (PyObjectPayload::Dict(a), PyObjectPayload::Dict(b)) => {
-                let ra = a.read(); let rb = b.read();
-                let mut result = ra.clone();
-                for (k, v) in rb.iter() { result.insert(k.clone(), v.clone()); }
-                Ok(PyObject::dict(result))
+            // PEP 584: dict | dict (also Counter | Counter with max semantics)
+            (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
+                let ra = a_map.read(); let rb = b_map.read();
+                let counter_key = HashableKey::Str(CompactString::from("__counter__"));
+                let a_counter = ra.contains_key(&counter_key);
+                let b_counter = rb.contains_key(&counter_key);
+                if a_counter && b_counter {
+                    // Counter | Counter: maximum of counts (union)
+                    let mut result = IndexMap::new();
+                    result.insert(HashableKey::Str(CompactString::from("__defaultdict_factory__")),
+                        PyObject::builtin_type(CompactString::from("int")));
+                    result.insert(counter_key, PyObject::bool_val(true));
+                    let mut all_keys = IndexMap::new();
+                    for (k, v) in ra.iter() {
+                        if let HashableKey::Str(s) = k {
+                            if s.starts_with("__") && s.ends_with("__") { continue; }
+                        }
+                        all_keys.insert(k.clone(), v.as_int().unwrap_or(0));
+                    }
+                    for (k, v) in rb.iter() {
+                        if let HashableKey::Str(s) = k {
+                            if s.starts_with("__") && s.ends_with("__") { continue; }
+                        }
+                        let b_count = v.as_int().unwrap_or(0);
+                        let entry = all_keys.entry(k.clone()).or_insert(0);
+                        *entry = (*entry).max(b_count);
+                    }
+                    for (k, count) in all_keys {
+                        if count > 0 {
+                            result.insert(k, PyObject::int(count));
+                        }
+                    }
+                    Ok(PyObject::dict(result))
+                } else {
+                    // Regular PEP 584: dict | dict
+                    let mut result = ra.clone();
+                    for (k, v) in rb.iter() { result.insert(k.clone(), v.clone()); }
+                    Ok(PyObject::dict(result))
+                }
             }
             _ => int_bitop(a, b, "|", |a, b| a | b),
         }

@@ -176,9 +176,10 @@ impl VirtualMachine {
                 let m = m.read().clone();
                 let mut parts = Vec::new();
                 for (k, v) in &m {
-                    // Hide defaultdict internal factory key
+                    // Hide internal marker keys
                     if let HashableKey::Str(s) = k {
-                        if s.as_str() == "__defaultdict_factory__" { continue; }
+                        let key = s.as_str();
+                        if key == "__defaultdict_factory__" || key == "__counter__" { continue; }
                     }
                     let kr = self.vm_repr(&k.to_object())?;
                     let vr = self.vm_repr(v)?;

@@ -1892,7 +1892,19 @@ impl Parser {
     }
 
     fn parse_target(&mut self) -> Result<Expression, ParseError> {
-        // Use parse_or_expr to stop before 'in' (which is a comparison op)
+        // Support starred targets: `for a, *b in items:`
+        if self.check(TokenKind::Star) {
+            let loc = self.current_location();
+            self.advance();
+            let expr = self.parse_or_expr()?;
+            return Ok(Expression::new(
+                ExpressionKind::Starred {
+                    value: Box::new(expr),
+                    ctx: ExprContext::Store,
+                },
+                loc,
+            ));
+        }
         self.parse_or_expr()
     }
 

@@ -1608,6 +1608,24 @@ impl VirtualMachine {
                     }
                 }
             }
+            Opcode::EndForLoop => {
+                // Pop iterator and close it if it's a generator.
+                // Ensures generator finally blocks run on loop break.
+                let iter = self.vm_pop();
+                if let PyObjectPayload::Generator(ref gen_arc) = iter.payload {
+                    let gen = gen_arc.read();
+                    if !gen.finished && gen.frame.is_some() {
+                        drop(gen);
+                        let gen_arc = gen_arc.clone();
+                        match self.gen_throw(&gen_arc, ExceptionKind::GeneratorExit, String::new()) {
+                            Ok(_) | Err(_) => {}
+                        }
+                        let mut gen = gen_arc.write();
+                        gen.finished = true;
+                        gen.frame = None;
+                    }
+                }
+            }
             _ => unreachable!(),
         }
         Ok(None)
