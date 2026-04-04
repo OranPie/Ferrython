@@ -212,7 +212,7 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
             Some(std::cmp::Ordering::Equal)
         }
         // Instance comparison: check __eq__ method on class (for dataclass, custom __eq__)
-        (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) => {
+        (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(_inst_b)) => {
             // Check if they are the same object
             if Arc::ptr_eq(a, b) { return Some(std::cmp::Ordering::Equal); }
             // Look for __eq__ in the class hierarchy

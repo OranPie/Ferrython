@@ -6,8 +6,6 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin,
 };
-#[allow(unused_imports)]
-use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 

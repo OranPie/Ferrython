@@ -8,7 +8,6 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::sync::Arc;
 
 pub fn create_typing_module() -> PyObjectRef {
@@ -163,42 +162,6 @@ pub fn create_typing_module() -> PyObjectRef {
     attrs.push(("TypedDict", make_typing_alias("TypedDict")));
     attrs.push(("ForwardRef", make_typing_alias("ForwardRef")));
     make_module("typing", attrs)
-}
-
-// ── abc module (stub) ──
-
-
-pub fn create_abc_module() -> PyObjectRef {
-    // ABC base class with __abstract_methods__ marker
-    let abc_class = PyObject::class(
-        CompactString::from("ABC"),
-        vec![],
-        IndexMap::new(),
-    );
-    if let PyObjectPayload::Class(ref cd) = abc_class.payload {
-        cd.namespace.write().insert(
-            CompactString::from("__abstractmethods__"),
-            PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(IndexMap::new())))),
-        );
-    }
-
-    make_module("abc", vec![
-        ("ABC", abc_class),
-        ("ABCMeta", PyObject::none()),
-        ("abstractmethod", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("abstractmethod requires 1 argument")); }
-            // Wrap function to mark it as abstract — store original with __isabstractmethod__ flag
-            let func = args[0].clone();
-            // Create a wrapper that carries the flag; the function itself is the wrapper
-            // We attach __isabstractmethod__ as a class-level attribute during class creation
-            // For now, return a special tuple marker: ("__abstract__", func)
-            let marker = PyObject::tuple(vec![
-                PyObject::str_val(CompactString::from("__abstract__")),
-                func,
-            ]);
-            Ok(marker)
-        })),
-    ])
 }
 
 // ── enum module (stub) ──

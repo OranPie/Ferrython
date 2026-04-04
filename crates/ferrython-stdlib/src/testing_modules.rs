@@ -450,7 +450,7 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
             w.insert(CompactString::from("attribute"), PyObject::str_val(CompactString::from(target.as_str())));
-            let ir = inst.clone();
+            let _ir = inst.clone();
             w.insert(CompactString::from("__enter__"), PyObject::native_closure(
                 "patch.__enter__", move |_: &[PyObjectRef]| {
                     // Return a fresh Mock

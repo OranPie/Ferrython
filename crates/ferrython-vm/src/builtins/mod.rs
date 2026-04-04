@@ -51,7 +51,7 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         "list", "tuple", "dict", "set", "frozenset", "range",
         "bytes", "bytearray", "complex", "slice", "memoryview",
         "super", "classmethod", "staticmethod", "property",
-        "map", "filter", "memoryview",
+        "map", "filter",
     ];
     for name in type_names {
         m.insert(

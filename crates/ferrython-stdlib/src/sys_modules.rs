@@ -10,8 +10,8 @@ use ferrython_core::object::{
 
 static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(1000);
 
-/// Thread-local active exception info for sys.exc_info().
-/// Set by the VM when entering an except block, cleared when leaving.
+// Thread-local active exception info for sys.exc_info().
+// Set by the VM when entering an except block, cleared when leaving.
 thread_local! {
     static ACTIVE_EXC_INFO: std::cell::RefCell<Option<(ExceptionKind, String, Option<PyObjectRef>)>> =
         const { std::cell::RefCell::new(None) };

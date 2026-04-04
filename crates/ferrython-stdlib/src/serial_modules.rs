@@ -250,7 +250,7 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
         PyObjectPayload::Set(map) => {
             // Sets serialize as JSON arrays (common pattern used by custom encoders)
             let r = map.read();
-            let mut items: Vec<PyObjectRef> = r.keys().map(|k| k.to_object()).collect();
+            let items: Vec<PyObjectRef> = r.keys().map(|k| k.to_object()).collect();
             let list = PyObject::list(items);
             py_to_json_sep(&list, item_sep, kv_sep, default)
         }
@@ -1159,7 +1159,7 @@ fn pickle_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::bytes(buf))
 }
 
-fn pickle_deserialize(data: &[u8], pos: &mut usize) -> PyResult<PyObjectRef> {
+fn _pickle_deserialize(data: &[u8], pos: &mut usize) -> PyResult<PyObjectRef> {
     if *pos >= data.len() {
         return Err(PyException::runtime_error("UnpicklingError: unexpected end of data"));
     }

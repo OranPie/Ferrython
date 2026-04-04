@@ -537,7 +537,7 @@ pub fn create_configparser_module() -> PyObjectRef {
             }
         }
         // Try to call write on the file-like object
-        if let Some(write_fn) = args[1].get_attr("write") {
+        if let Some(_write_fn) = args[1].get_attr("write") {
             // Just store output — we can't call from stdlib
             // Instead, write directly if it's a StringIO
         }

@@ -1129,7 +1129,7 @@ pub fn create_concurrent_futures_module() -> PyObjectRef {
 
     // wait function
     let wait_fn = make_builtin(|args: &[PyObjectRef]| {
-        let futures = if !args.is_empty() {
+        let _futures = if !args.is_empty() {
             match &args[0].payload {
                 PyObjectPayload::List(items) => items.read().clone(),
                 _ => vec![args[0].clone()],
