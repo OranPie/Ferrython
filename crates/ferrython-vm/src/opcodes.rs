@@ -1320,6 +1320,32 @@ impl VirtualMachine {
         }
         // 'in' / 'not in' with __contains__
         if instr.arg == 6 || instr.arg == 7 {
+            // Handle Class with __contains__ (e.g., Enum: Color.RED in Color)
+            if let PyObjectPayload::Class(cd) = &b.payload {
+                // Look in own namespace and MRO
+                let contains_fn = {
+                    let ns = cd.namespace.read();
+                    let mut found = ns.get("__contains__").cloned();
+                    if found.is_none() {
+                        for base in &cd.mro {
+                            if let PyObjectPayload::Class(bcd) = &base.payload {
+                                let bns = bcd.namespace.read();
+                                if let Some(f) = bns.get("__contains__") {
+                                    found = Some(f.clone());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    found
+                };
+                if let Some(method) = contains_fn {
+                    let r = self.call_object(method, vec![b.clone(), a.clone()])?;
+                    let val = if instr.arg == 6 { r.is_truthy() } else { !r.is_truthy() };
+                    self.vm_push(PyObject::bool_val(val));
+                    return Ok(None);
+                }
+            }
             if let PyObjectPayload::Instance(inst) = &b.payload {
                 // Dict subclass: use contains() directly
                 if inst.dict_storage.is_some() {

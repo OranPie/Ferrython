@@ -164,13 +164,50 @@ impl VirtualMachine {
         let mut ns = cd.namespace.write();
         let mut member_map = IndexMap::new();
 
+        // Check if class has a custom __init__ (not inherited from Enum base)
+        let has_custom_init = ns.get("__init__").is_some();
+
         for (name, value) in &members {
             let mut attrs = IndexMap::new();
             attrs.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
             attrs.insert(CompactString::from("value"), value.clone());
             attrs.insert(CompactString::from("_name_"), PyObject::str_val(name.clone()));
             attrs.insert(CompactString::from("_value_"), value.clone());
+
+            // If custom __init__ exists and value is a tuple, unpack it and call __init__
+            if has_custom_init {
+                if let PyObjectPayload::Tuple(items) = &value.payload {
+                    for (i, item) in items.iter().enumerate() {
+                        // Store positional args as attributes (will be overwritten by __init__)
+                        attrs.insert(CompactString::from(format!("__arg{}", i)), item.clone());
+                    }
+                }
+            }
+
             let member = PyObject::instance_with_attrs(cls.clone(), attrs);
+
+            // Call custom __init__ if present
+            if has_custom_init {
+                let init_fn = ns.get("__init__").cloned();
+                if let Some(init) = init_fn {
+                    let mut call_args = vec![member.clone()];
+                    if let PyObjectPayload::Tuple(items) = &value.payload {
+                        call_args.extend(items.iter().cloned());
+                    } else {
+                        call_args.push(value.clone());
+                    }
+                    // Drop ns write lock before calling VM methods
+                    drop(ns);
+                    self.call_object(init, call_args)?;
+                    // Re-acquire lock
+                    let cd2 = match &cls.payload {
+                        PyObjectPayload::Class(cd) => cd,
+                        _ => return Ok(()),
+                    };
+                    ns = cd2.namespace.write();
+                }
+            }
+
             ns.insert(name.clone(), member.clone());
             member_map.insert(name.clone(), member);
         }

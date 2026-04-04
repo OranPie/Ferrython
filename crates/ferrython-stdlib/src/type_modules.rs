@@ -277,6 +277,51 @@ pub fn create_enum_module() -> PyObjectRef {
         }
     ));
 
+    // __len__ on class — len(Color) returns member count
+    enum_ns.insert(CompactString::from("__len__"), PyObject::native_function(
+        "Enum.__len__", |args: &[PyObjectRef]| {
+            check_args_min("Enum.__len__", args, 1)?;
+            let cls = &args[0];
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                let ns = cd.namespace.read();
+                if let Some(members) = ns.get("__members__") {
+                    if let PyObjectPayload::Dict(map) = &members.payload {
+                        return Ok(PyObject::int(map.read().len() as i64));
+                    }
+                }
+            }
+            Ok(PyObject::int(0))
+        }
+    ));
+
+    // __contains__ on class — Color.RED in Color
+    enum_ns.insert(CompactString::from("__contains__"), PyObject::native_function(
+        "Enum.__contains__", |args: &[PyObjectRef]| {
+            check_args_min("Enum.__contains__", args, 2)?;
+            let cls = &args[0];
+            let item = &args[1];
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                let ns = cd.namespace.read();
+                if let Some(members) = ns.get("__members__") {
+                    if let PyObjectPayload::Dict(map) = &members.payload {
+                        for member in map.read().values() {
+                            if Arc::ptr_eq(member, item) {
+                                return Ok(PyObject::bool_val(true));
+                            }
+                            // Also check by value comparison
+                            if let (Some(mv), Some(iv)) = (member.get_attr("value"), item.get_attr("value")) {
+                                if mv.py_to_string() == iv.py_to_string() {
+                                    return Ok(PyObject::bool_val(true));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(PyObject::bool_val(false))
+        }
+    ));
+
     let enum_class = PyObject::class(
         CompactString::from("Enum"),
         vec![],

@@ -918,9 +918,14 @@ impl VirtualMachine {
 
     /// Compare two objects using __lt__, falling back to native comparison.
     pub(crate) fn vm_lt(&mut self, a: &PyObjectRef, b: &PyObjectRef) -> PyResult<bool> {
-        if let PyObjectPayload::Instance(_) = &a.payload {
+        if let PyObjectPayload::Instance(inst) = &a.payload {
             if let Some(method) = a.get_attr("__lt__") {
-                let result = self.call_object(method, vec![b.clone()])?;
+                // If method is from class namespace (not bound), pass self explicitly
+                let result = if matches!(&method.payload, PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } | PyObjectPayload::Function(_)) {
+                    self.call_object(method, vec![a.clone(), b.clone()])?
+                } else {
+                    self.call_object(method, vec![b.clone()])?
+                };
                 return Ok(result.is_truthy());
             }
         }

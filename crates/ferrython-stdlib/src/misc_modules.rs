@@ -296,20 +296,35 @@ pub fn create_dataclasses_module() -> PyObjectRef {
     make_module("dataclasses", vec![
         ("dataclass", make_builtin(dataclass_decorator)),
         ("field", make_builtin(|args| {
-            // field(default=..., default_factory=..., ...)
+            // field(default=..., default_factory=..., compare=..., ...)
             // kwargs passed as trailing dict by VM
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(kw_map) = &last.payload {
                     let r = kw_map.read();
+                    let compare = r.get(&HashableKey::Str(CompactString::from("compare")))
+                        .map(|v| v.is_truthy())
+                        .unwrap_or(true);
                     // Check for default_factory
                     if let Some(factory) = r.get(&HashableKey::Str(CompactString::from("default_factory"))) {
-                        // Return a sentinel with __field_factory__ marker
                         let mut attrs = IndexMap::new();
                         attrs.insert(CompactString::from("__field_factory__"), factory.clone());
+                        attrs.insert(CompactString::from("__field_compare__"), PyObject::bool_val(compare));
                         return Ok(PyObject::module_with_attrs(CompactString::from("_field"), attrs));
                     }
                     if let Some(default) = r.get(&HashableKey::Str(CompactString::from("default"))) {
+                        if !compare {
+                            // Wrap in sentinel to carry compare=False
+                            let mut attrs = IndexMap::new();
+                            attrs.insert(CompactString::from("__field_default__"), default.clone());
+                            attrs.insert(CompactString::from("__field_compare__"), PyObject::bool_val(false));
+                            return Ok(PyObject::module_with_attrs(CompactString::from("_field"), attrs));
+                        }
                         return Ok(default.clone());
+                    }
+                    if !compare {
+                        let mut attrs = IndexMap::new();
+                        attrs.insert(CompactString::from("__field_compare__"), PyObject::bool_val(false));
+                        return Ok(PyObject::module_with_attrs(CompactString::from("_field"), attrs));
                     }
                 }
             }
@@ -351,20 +366,33 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let cls = &args[0];
     
     // If called as @dataclass(eq=True, ...) the first arg is kwargs dict, not a class.
-    // In that case, return a decorator function that wraps the actual class.
+    // In that case, capture options and return a decorator closure.
     if !matches!(&cls.payload, PyObjectPayload::Class(_)) {
-        // Called with keyword arguments — return a decorator
-        return Ok(make_builtin(dataclass_decorator));
+        // Extract options from kwargs dict
+        let mut order = false;
+        if let PyObjectPayload::Dict(map) = &cls.payload {
+            let m = map.read();
+            if let Some(v) = m.get(&HashableKey::Str(CompactString::from("order"))) {
+                order = v.is_truthy();
+            }
+        }
+        let order_flag = order;
+        return Ok(PyObject::native_closure("dataclass", move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("dataclass requires 1 argument")); }
+            dataclass_apply(&args[0], order_flag)
+        }));
     }
     
-    dataclass_apply(cls)
+    dataclass_apply(cls, false)
 }
 
-fn dataclass_apply(cls: &PyObjectRef) -> PyResult<PyObjectRef> {
+fn dataclass_apply(cls: &PyObjectRef, order: bool) -> PyResult<PyObjectRef> {
     
     // Get annotations to discover fields
     let mut field_names: Vec<CompactString> = Vec::new();
     let mut field_defaults: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+    // Track which fields participate in comparison (compare=True by default)
+    let mut compare_fields: Vec<CompactString> = Vec::new();
     
     if let PyObjectPayload::Class(cd) = &cls.payload {
         let ns = cd.namespace.read();
@@ -373,11 +401,15 @@ fn dataclass_apply(cls: &PyObjectRef) -> PyResult<PyObjectRef> {
                 for (k, _v) in ann_map.read().iter() {
                     if let HashableKey::Str(name) = k {
                         field_names.push(name.clone());
+                        let mut compare = true;
                         // Check for default value in class namespace
                         if let Some(default) = ns.get(name.as_str()) {
                             // Check if it's a field() sentinel with factory (Module with __field_factory__ attr)
                             if let PyObjectPayload::Module(md) = &default.payload {
                                 let mod_attrs = md.attrs.read();
+                                if let Some(cmp_flag) = mod_attrs.get("__field_compare__") {
+                                    compare = cmp_flag.is_truthy();
+                                }
                                 if let Some(factory) = mod_attrs.get("__field_factory__") {
                                     field_defaults.insert(name.clone(), factory.clone());
                                 } else {
@@ -386,6 +418,9 @@ fn dataclass_apply(cls: &PyObjectRef) -> PyResult<PyObjectRef> {
                             } else {
                                 field_defaults.insert(name.clone(), default.clone());
                             }
+                        }
+                        if compare {
+                            compare_fields.push(name.clone());
                         }
                     }
                 }
@@ -410,9 +445,63 @@ fn dataclass_apply(cls: &PyObjectRef) -> PyResult<PyObjectRef> {
         ns.insert(CompactString::from("__dataclass_fields__"), PyObject::tuple(fields_info));
         // Mark it as a dataclass
         ns.insert(CompactString::from("__dataclass__"), PyObject::bool_val(true));
+
+        // Generate ordering methods if order=True
+        if order {
+            // Generate __lt__, __le__, __gt__, __ge__ as native closures
+            // Each captures compare_fields and compares tuples of field values
+            let fields_for_lt = compare_fields.clone();
+            ns.insert(CompactString::from("__lt__"), PyObject::native_closure("__lt__", move |args: &[PyObjectRef]| {
+                check_args("__lt__", args, 2)?;
+                let (a, b) = (&args[0], &args[1]);
+                let tup_a = extract_compare_tuple(a, &fields_for_lt);
+                let tup_b = extract_compare_tuple(b, &fields_for_lt);
+                tup_a.compare(&tup_b, ferrython_core::object::CompareOp::Lt)
+            }));
+
+            let fields_for_le = compare_fields.clone();
+            ns.insert(CompactString::from("__le__"), PyObject::native_closure("__le__", move |args: &[PyObjectRef]| {
+                check_args("__le__", args, 2)?;
+                let (a, b) = (&args[0], &args[1]);
+                let tup_a = extract_compare_tuple(a, &fields_for_le);
+                let tup_b = extract_compare_tuple(b, &fields_for_le);
+                tup_a.compare(&tup_b, ferrython_core::object::CompareOp::Le)
+            }));
+
+            let fields_for_gt = compare_fields.clone();
+            ns.insert(CompactString::from("__gt__"), PyObject::native_closure("__gt__", move |args: &[PyObjectRef]| {
+                check_args("__gt__", args, 2)?;
+                let (a, b) = (&args[0], &args[1]);
+                let tup_a = extract_compare_tuple(a, &fields_for_gt);
+                let tup_b = extract_compare_tuple(b, &fields_for_gt);
+                tup_a.compare(&tup_b, ferrython_core::object::CompareOp::Gt)
+            }));
+
+            let fields_for_ge = compare_fields.clone();
+            ns.insert(CompactString::from("__ge__"), PyObject::native_closure("__ge__", move |args: &[PyObjectRef]| {
+                check_args("__ge__", args, 2)?;
+                let (a, b) = (&args[0], &args[1]);
+                let tup_a = extract_compare_tuple(a, &fields_for_ge);
+                let tup_b = extract_compare_tuple(b, &fields_for_ge);
+                tup_a.compare(&tup_b, ferrython_core::object::CompareOp::Ge)
+            }));
+        }
     }
     
     Ok(cls.clone())
+}
+
+/// Extract a comparison tuple from a dataclass instance for ordering.
+fn extract_compare_tuple(obj: &PyObjectRef, fields: &[CompactString]) -> PyObjectRef {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        let attrs = inst.attrs.read();
+        let vals: Vec<PyObjectRef> = fields.iter()
+            .map(|f| attrs.get(f.as_str()).cloned().unwrap_or_else(PyObject::none))
+            .collect();
+        PyObject::tuple(vals)
+    } else {
+        PyObject::tuple(vec![])
+    }
 }
 
 // ── struct module ──

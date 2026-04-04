@@ -211,6 +211,18 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                             return v.py_to_string();
                         }
                     }
+                    // Deque → display as deque([items])
+                    if attrs.contains_key("__deque__") {
+                        if let Some(data) = attrs.get("_data") {
+                            let maxlen = attrs.get("__maxlen__");
+                            let items_str = data.py_to_string();
+                            return match maxlen {
+                                Some(ml) if !matches!(&ml.payload, PyObjectPayload::None) =>
+                                    format!("deque({}, maxlen={})", items_str, ml.py_to_string()),
+                                _ => format!("deque({})", items_str),
+                            };
+                        }
+                    }
                 }
                 // Check for __str__ method first
                 if let Some(str_fn) = obj.get_attr("__str__") {

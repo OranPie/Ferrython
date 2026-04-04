@@ -31,6 +31,35 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 }
                 Err(PyException::type_error(format!("object of type '{}' has no len()", obj.type_name())))
             },
+            PyObjectPayload::Class(cd) => {
+                // Support len() on classes with __len__ (e.g., Enum)
+                // Check own namespace and MRO
+                let len_fn = {
+                    let ns = cd.namespace.read();
+                    let mut found = ns.get("__len__").cloned();
+                    if found.is_none() {
+                        for base in &cd.mro {
+                            if let PyObjectPayload::Class(bcd) = &base.payload {
+                                let bns = bcd.namespace.read();
+                                if let Some(f) = bns.get("__len__") {
+                                    found = Some(f.clone());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    found
+                };
+                if let Some(len_method) = len_fn {
+                    if let PyObjectPayload::NativeFunction { func, .. } = &len_method.payload {
+                        let result = func(&[obj.clone()])?;
+                        if let Some(n) = result.as_int() {
+                            return Ok(n as usize);
+                        }
+                    }
+                }
+                Err(PyException::type_error(format!("object of type '{}' has no len()", obj.type_name())))
+            },
             PyObjectPayload::Range { start, stop, step } => {
                 if *step > 0 && *start < *stop {
                     Ok(((stop - start + step - 1) / step) as usize)
