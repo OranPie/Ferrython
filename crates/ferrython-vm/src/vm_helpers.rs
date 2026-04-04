@@ -10,7 +10,7 @@ use ferrython_core::object::{
     AsyncGenAction, GeneratorState, IteratorData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::{HashableKey, SharedGlobals};
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -507,7 +507,7 @@ impl VirtualMachine {
         if gen.finished {
             return Err(PyException::new(kind, msg));
         }
-        let mut frame = match gen.frame.take() {
+        let frame = match gen.frame.take() {
             Some(f) => *f.downcast::<Frame>().expect("generator frame downcast"),
             None => return Err(PyException::runtime_error("generator already executing")),
         };

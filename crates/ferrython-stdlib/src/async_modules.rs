@@ -27,17 +27,6 @@ pub fn take_asyncio_run_coro() -> Option<PyObjectRef> {
     ASYNCIO_RUN_CORO.with(|c| c.borrow_mut().take())
 }
 
-// ── Thread-local: asyncio.sleep() signal ────────────────────────────────
-// asyncio.sleep() stores the delay here so the VM event loop can honor it.
-thread_local! {
-    static ASYNCIO_SLEEP_SECS: RefCell<Option<f64>> = RefCell::new(None);
-}
-
-/// Called by the VM event loop to check if a sleep was requested.
-pub fn take_asyncio_sleep() -> Option<f64> {
-    ASYNCIO_SLEEP_SECS.with(|c| c.borrow_mut().take())
-}
-
 // ── asyncio module ──────────────────────────────────────────────────────
 
 pub fn create_asyncio_module() -> PyObjectRef {

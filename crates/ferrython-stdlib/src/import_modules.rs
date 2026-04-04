@@ -111,7 +111,7 @@ fn importlib_invalidate_caches(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn importlib_import_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("__import__", args, 1)?;
     let name = args[0].py_to_string();
-    let level = if args.len() >= 5 {
+    let _level = if args.len() >= 5 {
         args[4].as_int().unwrap_or(0) as usize
     } else {
         0

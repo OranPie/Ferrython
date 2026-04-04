@@ -23,21 +23,6 @@ fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
     None
 }
 
-/// Get positional args count, excluding trailing kwargs dict
-fn pos_arg_count(args: &[PyObjectRef]) -> usize {
-    if let Some(last) = args.last() {
-        if matches!(&last.payload, PyObjectPayload::Dict(_)) && args.len() > 0 {
-            // Check if this looks like a kwargs dict (has string keys)
-            // We need to distinguish real dict args from kwargs. Heuristic:
-            // if it's the last arg AND is a dict, could be kwargs. But for methods
-            // that take explicit dict args, this is ambiguous. Only use for methods
-            // that don't take dict positional args.
-            return args.len(); // Don't auto-strip; callers extract explicitly
-        }
-    }
-    args.len()
-}
-
 pub(super) fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::list(items.read().to_vec())),
@@ -1271,7 +1256,7 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
             let byte_val = args[0].to_int()? as u8;
             // Safety: single-threaded access, Vec is owned inside Arc<PyObject>
             unsafe {
-                let ptr = b as *const [u8] as *const Vec<u8>;
+                let _ptr = b as *const [u8] as *const Vec<u8>;
                 // Go from slice ptr back to Vec ptr (payload stores Vec<u8>)
                 let vec_ptr = &receiver.payload as *const PyObjectPayload;
                 if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {

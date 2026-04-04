@@ -30,7 +30,7 @@ impl VirtualMachine {
         self.ensure_sys_modules();
 
         // For simple (non-dotted) names, fast path
-        let top_name = name.split('.').next().unwrap_or(name);
+        let _top_name = name.split('.').next().unwrap_or(name);
         if !name.contains('.') {
             return self.resolve_single_module(name, level);
         }
@@ -167,7 +167,7 @@ impl VirtualMachine {
         }
 
         // 2. Try stdlib
-        let base_name = name.split('.').last().unwrap_or(name);
+        let _base_name = name.split('.').last().unwrap_or(name);
         if let Some(module) = ferrython_stdlib::load_module(name) {
             self.cache_module(name, &module);
             return Ok(module);

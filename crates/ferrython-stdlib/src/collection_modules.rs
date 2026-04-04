@@ -4,7 +4,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    IteratorData, InstanceData, CompareOp,
+    IteratorData, InstanceData,
     make_module, make_builtin,
 };
 use ferrython_core::types::HashableKey;

@@ -7,7 +7,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
-    CompareOp, check_args_min, make_builtin,
+    CompareOp, check_args_min,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;

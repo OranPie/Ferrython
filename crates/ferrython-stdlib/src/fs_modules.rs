@@ -395,7 +395,7 @@ fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     // Parse kwargs (last arg may be dict from VM kwarg passing)
     let mut text_mode = false;
-    let mut capture = false;
+    let mut _capture = false;
     let mut cwd: Option<String> = None;
     let mut shell = false;
     for arg in &args[1..] {
@@ -405,7 +405,7 @@ fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 text_mode = v.is_truthy();
             }
             if let Some(v) = r.get(&HashableKey::Str(CompactString::from("capture_output"))) {
-                capture = v.is_truthy();
+                _capture = v.is_truthy();
             }
             if let Some(v) = r.get(&HashableKey::Str(CompactString::from("cwd"))) {
                 cwd = Some(v.py_to_string());

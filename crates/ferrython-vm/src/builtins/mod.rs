@@ -7,12 +7,9 @@ mod file_io;
 mod instance_methods;
 
 use compact_str::CompactString;
-use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, CompareOp, InstanceData};
-use ferrython_core::types::{HashableKey, PyInt};
+use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use indexmap::IndexMap;
-use std::sync::Arc;
-use parking_lot::RwLock;
 
 use core_fns::*;
 use string_methods::*;
@@ -21,7 +18,7 @@ use file_io::*;
 use instance_methods::*;
 
 pub(crate) use core_fns::{builtin_abs, builtin_dir};
-pub(crate) use core_fns::{take_import_request, ImportRequest};
+pub(crate) use core_fns::take_import_request;
 pub(crate) use type_methods::partial_cmp_for_sort;
 pub use instance_methods::resolve_type_class_method;
 
@@ -184,7 +181,6 @@ pub fn get_builtin_fn(name: &str) -> Option<BuiltinFn> {
         "complex" => Some(builtin_complex),
         "breakpoint" => Some(builtin_breakpoint),
         "help" => Some(builtin_help),
-        "memoryview" => Some(builtin_memoryview),
         "__import__" => Some(builtin___import__),
         _ => None,
     }

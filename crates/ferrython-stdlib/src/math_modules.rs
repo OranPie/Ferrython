@@ -771,18 +771,6 @@ pub fn create_decimal_module() -> PyObjectRef {
         Ok(make_decimal(&decimal_format(neg, result, total_scale)))
     }
 
-    fn decimal_repr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("Decimal('0')"))); }
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
-        Ok(PyObject::str_val(CompactString::from(format!("Decimal('{}')", s))))
-    }
-
-    fn decimal_str(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("0"))); }
-        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
-        Ok(PyObject::str_val(CompactString::from(s)))
-    }
-
     fn decimal_eq(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
         let a = get_decimal_str(&args[0]);

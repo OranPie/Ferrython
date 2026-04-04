@@ -547,7 +547,7 @@ fn os_path_getsize(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let s = args[0].py_to_string();
     match std::fs::metadata(&s) {
         Ok(m) => Ok(PyObject::int(m.len() as i64)),
-        Err(e) => Err(PyException::os_error(format!("No such file: '{}'", s))),
+        Err(_e) => Err(PyException::os_error(format!("No such file: '{}'", s))),
     }
 }
 
