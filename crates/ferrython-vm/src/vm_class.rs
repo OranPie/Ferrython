@@ -147,10 +147,10 @@ impl VirtualMachine {
             _ => return,
         };
 
-        // Extract field names from __annotations__
-        let field_names: Vec<CompactString> = {
+        // Extract field names from __annotations__ and defaults from namespace
+        let (field_names, defaults): (Vec<CompactString>, Vec<(CompactString, PyObjectRef)>) = {
             let ns = cd.namespace.read();
-            if let Some(ann) = ns.get("__annotations__") {
+            let names: Vec<CompactString> = if let Some(ann) = ns.get("__annotations__") {
                 if let PyObjectPayload::Dict(d) = &ann.payload {
                     let d = d.read();
                     d.keys().map(|k| {
@@ -161,16 +161,33 @@ impl VirtualMachine {
                         }
                     }).collect()
                 } else { vec![] }
-            } else { vec![] }
+            } else { vec![] };
+            // Collect defaults: field names that have a value in the namespace
+            let defs: Vec<(CompactString, PyObjectRef)> = names.iter()
+                .filter_map(|name| {
+                    ns.get(name.as_str()).map(|v| (name.clone(), v.clone()))
+                })
+                .collect();
+            (names, defs)
         };
 
         let fields_tuple = PyObject::tuple(
             field_names.iter().map(|n| PyObject::str_val(n.clone())).collect()
         );
 
+        // Store _field_defaults as a dict
+        let mut defaults_map = IndexMap::new();
+        for (name, val) in &defaults {
+            defaults_map.insert(
+                HashableKey::Str(name.clone()),
+                val.clone(),
+            );
+        }
+
         let mut ns = cd.namespace.write();
         ns.insert(CompactString::from("__namedtuple__"), PyObject::bool_val(true));
         ns.insert(CompactString::from("_fields"), fields_tuple);
+        ns.insert(CompactString::from("_field_defaults"), PyObject::dict(defaults_map));
     }
 
     /// Process enum class: transform simple attributes into enum member instances.

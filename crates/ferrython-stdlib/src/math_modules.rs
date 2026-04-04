@@ -1125,7 +1125,16 @@ fn random_choice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn random_shuffle(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("random.shuffle", args, 1)?;
-    // Simplified in-place shuffle
+    // Fisher-Yates in-place shuffle
+    if let PyObjectPayload::List(list_arc) = &args[0].payload {
+        let mut items = list_arc.write();
+        let n = items.len();
+        for i in (1..n).rev() {
+            let j = (simple_random() * (i + 1) as f64) as usize;
+            let j = j.min(i);
+            items.swap(i, j);
+        }
+    }
     Ok(PyObject::none())
 }
 fn random_seed(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

@@ -356,13 +356,21 @@ pub fn create_functools_module() -> PyObjectRef {
             Ok(decorator)
         })),
         ("cached_property", make_builtin(|args| {
-            // Stub — just wrap the function in a property-like
             if args.is_empty() { return Err(PyException::type_error("cached_property requires 1 argument")); }
-            Ok(PyObject::wrap(PyObjectPayload::Property {
-                fget: Some(args[0].clone()),
-                fset: None,
-                fdel: None,
-            }))
+            let func = args[0].clone();
+            // Create a marker instance that the descriptor protocol recognizes
+            let cls = PyObject::class(CompactString::from("cached_property"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref id) = inst.payload {
+                let mut attrs = id.attrs.write();
+                attrs.insert(CompactString::from("__cached_property_func__"), func.clone());
+                // Store the function name for the attr name
+                let name = func.get_attr("__name__")
+                    .map(|n| n.py_to_string())
+                    .unwrap_or_else(|| "cached".to_string());
+                attrs.insert(CompactString::from("__name__"), PyObject::str_val(CompactString::from(name)));
+            }
+            Ok(inst)
         })),
         ("total_ordering", make_builtin(functools_total_ordering)),
         ("singledispatch", make_builtin(|args| {

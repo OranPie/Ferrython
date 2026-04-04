@@ -160,15 +160,34 @@ pub fn create_datetime_module() -> PyObjectRef {
         cd.namespace.write().insert(
             CompactString::from("__init__"),
             make_builtin(|args| {
-                // datetime(year, month, day, hour=0, minute=0, second=0, microsecond=0)
+                // datetime(year, month, day, hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
                 if args.len() < 4 { return Err(PyException::type_error("datetime() requires at least year, month, day")); }
+
+                // Detect trailing kwargs dict appended by the VM's call_object_kw
+                let mut tzinfo_val: Option<PyObjectRef> = None;
+                let positional_end = {
+                    let last = &args[args.len() - 1];
+                    if matches!(&last.payload, PyObjectPayload::Dict(_)) {
+                        // Extract tzinfo from kwargs dict
+                        if let PyObjectPayload::Dict(ref map) = last.payload {
+                            let map_r = map.read();
+                            if let Some(v) = map_r.get(&HashableKey::Str(CompactString::from("tzinfo"))) {
+                                tzinfo_val = Some(v.clone());
+                            }
+                        }
+                        args.len() - 1
+                    } else {
+                        args.len()
+                    }
+                };
+
                 let year = args[1].to_int()?;
                 let month = args[2].to_int()?;
                 let day = args[3].to_int()?;
-                let hour = if args.len() > 4 { args[4].to_int()? } else { 0 };
-                let minute = if args.len() > 5 { args[5].to_int()? } else { 0 };
-                let second = if args.len() > 6 { args[6].to_int()? } else { 0 };
-                let microsecond = if args.len() > 7 { args[7].to_int()? } else { 0 };
+                let hour = if positional_end > 4 { args[4].to_int()? } else { 0 };
+                let minute = if positional_end > 5 { args[5].to_int()? } else { 0 };
+                let second = if positional_end > 6 { args[6].to_int()? } else { 0 };
+                let microsecond = if positional_end > 7 { args[7].to_int()? } else { 0 };
                 if let PyObjectPayload::Instance(ref inst) = args[0].payload {
                     let mut w = inst.attrs.write();
                     w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
@@ -179,6 +198,11 @@ pub fn create_datetime_module() -> PyObjectRef {
                     w.insert(CompactString::from("minute"), PyObject::int(minute));
                     w.insert(CompactString::from("second"), PyObject::int(second));
                     w.insert(CompactString::from("microsecond"), PyObject::int(microsecond));
+                    if let Some(tz) = tzinfo_val {
+                        w.insert(CompactString::from("tzinfo"), tz);
+                    } else {
+                        w.insert(CompactString::from("tzinfo"), PyObject::none());
+                    }
                 }
                 Ok(PyObject::none())
             }),

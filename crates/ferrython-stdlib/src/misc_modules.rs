@@ -1020,13 +1020,65 @@ pub fn create_operator_module() -> PyObjectRef {
                     .ok_or_else(|| PyException::attribute_error(format!(
                         "'{}' object has no attribute '{}'", obj.type_name(), method_name
                     )))?;
+                // Build full args: [obj, ...extra_args]
+                let mut full_args = vec![obj.clone()];
+                full_args.extend(extra_args.iter().cloned());
                 match &method.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => func(&extra_args),
-                    PyObjectPayload::NativeClosure { func, .. } => func(&extra_args),
-                    PyObjectPayload::BuiltinBoundMethod { .. } => {
-                        // BuiltinBoundMethod needs VM to dispatch; return as-is
-                        // Caller should dispatch through VM
-                        Ok(method)
+                    PyObjectPayload::NativeFunction { func, .. } => func(&full_args),
+                    PyObjectPayload::NativeClosure { func, .. } => func(&full_args),
+                    PyObjectPayload::BuiltinBoundMethod { receiver, method_name, .. } => {
+                        // Try to resolve common methods without VM
+                        let result_str = match method_name.as_str() {
+                            "upper" => Some(receiver.py_to_string().to_uppercase()),
+                            "lower" => Some(receiver.py_to_string().to_lowercase()),
+                            "strip" => Some(receiver.py_to_string().trim().to_string()),
+                            "lstrip" => Some(receiver.py_to_string().trim_start().to_string()),
+                            "rstrip" => Some(receiver.py_to_string().trim_end().to_string()),
+                            "title" => {
+                                let s = receiver.py_to_string();
+                                let mut result = String::with_capacity(s.len());
+                                let mut capitalize_next = true;
+                                for c in s.chars() {
+                                    if c.is_alphanumeric() {
+                                        if capitalize_next { result.extend(c.to_uppercase()); capitalize_next = false; }
+                                        else { result.extend(c.to_lowercase()); }
+                                    } else { result.push(c); capitalize_next = true; }
+                                }
+                                Some(result)
+                            }
+                            "capitalize" => {
+                                let s = receiver.py_to_string();
+                                let mut chars = s.chars();
+                                Some(match chars.next() {
+                                    None => String::new(),
+                                    Some(f) => f.to_uppercase().collect::<String>() + &chars.collect::<String>().to_lowercase(),
+                                })
+                            }
+                            "swapcase" => {
+                                let s = receiver.py_to_string();
+                                Some(s.chars().map(|c| {
+                                    if c.is_uppercase() { c.to_lowercase().collect::<String>() }
+                                    else { c.to_uppercase().collect::<String>() }
+                                }).collect())
+                            }
+                            _ => None,
+                        };
+                        if let Some(s) = result_str {
+                            Ok(PyObject::str_val(CompactString::from(s)))
+                        } else {
+                            // Can't dispatch BuiltinBoundMethod from NativeClosure — return method ref
+                            Ok(method)
+                        }
+                    }
+                    PyObjectPayload::BoundMethod { receiver, method: meth, .. } => {
+                        match &meth.payload {
+                            PyObjectPayload::NativeFunction { func, .. } => {
+                                let mut bound_args = vec![receiver.clone()];
+                                bound_args.extend(extra_args.iter().cloned());
+                                func(&bound_args)
+                            }
+                            _ => Ok(method),
+                        }
                     }
                     _ => Ok(method),
                 }
@@ -1575,10 +1627,38 @@ pub fn create_abc_module() -> PyObjectRef {
         IndexMap::new(),
     );
     if let PyObjectPayload::Class(ref cd) = abc_class.payload {
-        cd.namespace.write().insert(
+        let mut ns = cd.namespace.write();
+        ns.insert(
             CompactString::from("__abstractmethods__"),
             PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(IndexMap::new())))),
         );
+        // ABC.register(subclass) — registers subclass as a virtual subclass
+        let register_fn = make_builtin(|args: &[PyObjectRef]| {
+            // args[0] = cls (the ABC), args[1] = subclass
+            if args.len() < 2 {
+                return Err(PyException::type_error("register() requires a subclass argument"));
+            }
+            let cls = &args[0];
+            let subclass = &args[1];
+            // Store virtual subclass in __abc_registry__ on the ABC class
+            if let PyObjectPayload::Class(ref cd) = cls.payload {
+                let mut ns = cd.namespace.write();
+                let registry = ns.entry(CompactString::from("__abc_registry__"))
+                    .or_insert_with(|| PyObject::list(vec![]));
+                if let PyObjectPayload::List(ref list) = registry.payload {
+                    list.write().push(subclass.clone());
+                }
+            }
+            // Also mark the subclass with __abc_registered__ pointing to the ABC
+            if let PyObjectPayload::Class(ref cd) = subclass.payload {
+                cd.namespace.write().insert(
+                    CompactString::from("__abc_registered__"),
+                    cls.clone(),
+                );
+            }
+            Ok(subclass.clone())
+        });
+        ns.insert(CompactString::from("register"), register_fn);
     }
 
     let abstractmethod_fn = make_builtin(|args: &[PyObjectRef]| {

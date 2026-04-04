@@ -303,6 +303,14 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if let Some(v) = inst.attrs.read().get(name) { return Some(v.clone()); }
                 // Non-data descriptors and other class attrs
                 if let Some(v) = class_attr {
+                    // cached_property: if instance has the cached value, return it
+                    if let PyObjectPayload::Instance(ref cp_inst) = v.payload {
+                        if cp_inst.attrs.read().contains_key("__cached_property_func__") {
+                            // This is a cached_property descriptor — return marker for VM
+                            // The VM's LoadAttr handler will call the function and cache the result
+                            return Some(v.clone());
+                        }
+                    }
                     if matches!(&v.payload, PyObjectPayload::Function(_)) {
                         return Some(Arc::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {

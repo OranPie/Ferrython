@@ -1549,6 +1549,30 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
 
 // ── datetime methods ──
 
+/// Given a base datetime string and an optional tzinfo, append the UTC offset suffix.
+fn append_tz_offset(base: &str, tzinfo: &Option<PyObjectRef>) -> String {
+    if let Some(ref tz) = tzinfo {
+        if !matches!(&tz.payload, PyObjectPayload::None) {
+            if let PyObjectPayload::Instance(ref tz_inst) = tz.payload {
+                let tz_attrs = tz_inst.attrs.read();
+                let offset_secs = tz_attrs.get("_offset_seconds")
+                    .and_then(|v| match &v.payload {
+                        PyObjectPayload::Float(f) => Some(*f as i64),
+                        PyObjectPayload::Int(i) => i.to_i64(),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                let sign = if offset_secs < 0 { '-' } else { '+' };
+                let abs_secs = offset_secs.unsigned_abs();
+                let oh = abs_secs / 3600;
+                let om = (abs_secs % 3600) / 60;
+                return format!("{}{}{:02}:{:02}", base, sign, oh, om);
+            }
+        }
+    }
+    base.to_string()
+}
+
 pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let attrs = inst.attrs.read();
     let year = attrs.get("year").and_then(|v| v.as_int()).unwrap_or(1970);
@@ -1560,6 +1584,7 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
     let microsecond = attrs.get("microsecond").and_then(|v| v.as_int()).unwrap_or(0);
     let date_only = attrs.contains_key("__date_only__");
     let time_only = attrs.contains_key("__time_only__");
+    let tzinfo = attrs.get("tzinfo").cloned();
     drop(attrs);
     match method {
         "strftime" => {
@@ -1581,11 +1606,12 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
                 Ok(PyObject::str_val(CompactString::from(&s)))
             } else {
                 let sep = if !args.is_empty() { args[0].py_to_string() } else { "T".to_string() };
-                let s = if microsecond != 0 {
+                let base = if microsecond != 0 {
                     format!("{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}.{:06}", year, month, day, sep, hour, minute, second, microsecond)
                 } else {
                     format!("{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}", year, month, day, sep, hour, minute, second)
                 };
+                let s = append_tz_offset(&base, &tzinfo);
                 Ok(PyObject::str_val(CompactString::from(&s)))
             }
         }
@@ -1701,7 +1727,8 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
                 let s = format!("{:04}-{:02}-{:02}", year, month, day);
                 Ok(PyObject::str_val(CompactString::from(&s)))
             } else {
-                let s = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second);
+                let base = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second);
+                let s = append_tz_offset(&base, &tzinfo);
                 Ok(PyObject::str_val(CompactString::from(&s)))
             }
         }
@@ -1723,11 +1750,44 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             Ok(inst_obj)
         }
         "utcoffset" => {
-            // Return None (naive datetime) or timedelta if tzinfo is set
+            if let Some(ref tz) = tzinfo {
+                if !matches!(&tz.payload, PyObjectPayload::None) {
+                    if let PyObjectPayload::Instance(ref tz_inst) = tz.payload {
+                        let tz_attrs = tz_inst.attrs.read();
+                        let offset_secs = tz_attrs.get("_offset_seconds")
+                            .and_then(|v| match &v.payload {
+                                PyObjectPayload::Float(f) => Some(*f as i64),
+                                PyObjectPayload::Int(i) => i.to_i64(),
+                                _ => None,
+                            })
+                            .unwrap_or(0);
+                        let td_cls = PyObject::class(CompactString::from("timedelta"), vec![], IndexMap::new());
+                        let td = PyObject::instance(td_cls);
+                        if let PyObjectPayload::Instance(ref d) = td.payload {
+                            let mut w = d.attrs.write();
+                            w.insert(CompactString::from("__timedelta__"), PyObject::bool_val(true));
+                            w.insert(CompactString::from("days"), PyObject::int(0));
+                            w.insert(CompactString::from("seconds"), PyObject::int(offset_secs));
+                            w.insert(CompactString::from("microseconds"), PyObject::int(0));
+                            w.insert(CompactString::from("_total_seconds"), PyObject::float(offset_secs as f64));
+                        }
+                        return Ok(td);
+                    }
+                }
+            }
             Ok(PyObject::none())
         }
         "tzname" => {
-            // Return None for naive datetimes
+            if let Some(ref tz) = tzinfo {
+                if !matches!(&tz.payload, PyObjectPayload::None) {
+                    if let PyObjectPayload::Instance(ref tz_inst) = tz.payload {
+                        let tz_attrs = tz_inst.attrs.read();
+                        if let Some(name) = tz_attrs.get("_name") {
+                            return Ok(name.clone());
+                        }
+                    }
+                }
+            }
             Ok(PyObject::none())
         }
         _ => Err(PyException::attribute_error(format!("'datetime' object has no attribute '{}'", method))),

@@ -3,7 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectRef,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -56,6 +56,7 @@ static FILE_STATES: std::sync::LazyLock<Mutex<IndexMap<usize, Arc<RwLock<FileSta
 
 struct FileState {
     content: String,
+    binary_content: Vec<u8>,
     position: usize,
     mode: String,
     path: String,
@@ -65,18 +66,26 @@ struct FileState {
 
 impl FileState {
     fn new(path: &str, mode: &str) -> PyResult<Self> {
-        let content = if mode.contains('r') || mode.contains('+') {
+        let is_binary = mode.contains('b');
+        let (content, binary_content) = if mode.contains('r') || mode.contains('+') {
             if mode.contains('r') && !std::path::Path::new(path).exists() {
                 return Err(PyException::os_error(format!(
                     "[Errno 2] No such file or directory: '{}'", path
                 )));
             }
-            std::fs::read_to_string(path).unwrap_or_default()
+            if is_binary {
+                let bytes = std::fs::read(path).unwrap_or_default();
+                (String::new(), bytes)
+            } else {
+                let text = std::fs::read_to_string(path).unwrap_or_default();
+                (text, Vec::new())
+            }
         } else {
-            String::new()
+            (String::new(), Vec::new())
         };
         Ok(Self {
             content,
+            binary_content,
             position: 0,
             mode: mode.to_string(),
             path: path.to_string(),
@@ -104,17 +113,30 @@ pub(super) fn file_read(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let state = get_file_state(args)?;
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
-    // args[0]=self, args[1]=optional max_bytes
-    let max_bytes = if args.len() > 1 { 
-        let n = args[1].to_int()?;
-        if n < 0 { s.content.len() } else { n as usize }
-    } else { 
-        s.content.len() 
-    };
-    let end = (s.position + max_bytes).min(s.content.len());
-    let result = s.content[s.position..end].to_string();
-    s.position = end;
-    Ok(PyObject::str_val(CompactString::from(result)))
+    let is_binary = s.mode.contains('b');
+    if is_binary {
+        let max_bytes = if args.len() > 1 {
+            let n = args[1].to_int()?;
+            if n < 0 { s.binary_content.len() } else { n as usize }
+        } else {
+            s.binary_content.len()
+        };
+        let end = (s.position + max_bytes).min(s.binary_content.len());
+        let result = s.binary_content[s.position..end].to_vec();
+        s.position = end;
+        Ok(PyObject::bytes(result))
+    } else {
+        let max_bytes = if args.len() > 1 { 
+            let n = args[1].to_int()?;
+            if n < 0 { s.content.len() } else { n as usize }
+        } else { 
+            s.content.len() 
+        };
+        let end = (s.position + max_bytes).min(s.content.len());
+        let result = s.content[s.position..end].to_string();
+        s.position = end;
+        Ok(PyObject::str_val(CompactString::from(result)))
+    }
 }
 
 pub(super) fn file_readline(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -144,17 +166,29 @@ pub(super) fn file_readlines(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn file_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // args[0]=self, args[1]=text
+    // args[0]=self, args[1]=text or bytes
     if args.len() < 2 {
         return Err(PyException::type_error("write() missing required argument: 'data'"));
     }
     let state = get_file_state(args)?;
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
-    let text = args[1].py_to_string();
-    let len = text.len();
-    s.write_buf.push_str(&text);
-    Ok(PyObject::int(len as i64))
+    if s.mode.contains('b') {
+        // Binary write: extract bytes from arg
+        let data = match &args[1].payload {
+            PyObjectPayload::Bytes(b) => b.clone(),
+            PyObjectPayload::ByteArray(b) => b.clone(),
+            _ => args[1].py_to_string().into_bytes(),
+        };
+        let len = data.len();
+        s.write_buf.push_str(&String::from_utf8_lossy(&data));
+        Ok(PyObject::int(len as i64))
+    } else {
+        let text = args[1].py_to_string();
+        let len = text.len();
+        s.write_buf.push_str(&text);
+        Ok(PyObject::int(len as i64))
+    }
 }
 
 pub(super) fn file_writelines(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

@@ -328,6 +328,20 @@ impl VirtualMachine {
                                     "unreadable attribute '{}'", name
                                 )));
                             }
+                        } else if v.get_attr("__cached_property_func__").is_some() {
+                            // cached_property: compute once, cache in instance dict
+                            let func = if let PyObjectPayload::Instance(ref cp_inst) = v.payload {
+                                cp_inst.attrs.read().get("__cached_property_func__").cloned()
+                            } else { None };
+                            if let Some(func) = func {
+                                let result = self.call_object(func, vec![obj.clone()])?;
+                                if let PyObjectPayload::Instance(ref inst) = obj.payload {
+                                    inst.attrs.write().insert(CompactString::from(name.as_str()), result.clone());
+                                }
+                                self.vm_push(result);
+                            } else {
+                                self.vm_push(v);
+                            }
                         } else if has_descriptor_get(&v) {
                             // Custom descriptor protocol: call __get__(self, instance, owner)
                             let get_method = v.get_attr("__get__").unwrap();

@@ -264,14 +264,20 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
     let mut ns = IndexMap::new();
     ns.insert(CompactString::from("name"), PyObject::str_val(logger_name.clone()));
+    let effective_level: Arc<RwLock<i64>> = Arc::new(RwLock::new(30)); // WARNING default
     ns.insert(CompactString::from("level"), PyObject::int(30)); // WARNING default
     let handlers_list = PyObject::list(vec![]);
     ns.insert(CompactString::from("handlers"), handlers_list.clone());
 
-    // Create log methods that capture the shared handlers list
-    let make_log_method = |level: i64, level_name: &'static str, handlers: PyObjectRef, name: CompactString| -> PyObjectRef {
+    // Create log methods that capture the shared handlers list and effective level
+    let make_log_method = |level: i64, level_name: &'static str, handlers: PyObjectRef, name: CompactString, eff_level: Arc<RwLock<i64>>| -> PyObjectRef {
         PyObject::native_closure(level_name, move |args: &[PyObjectRef]| {
             if args.is_empty() { return Ok(PyObject::none()); }
+            // Filter: only emit if message level >= logger's effective level
+            let current_level = *eff_level.read();
+            if current_level > 0 && level < current_level {
+                return Ok(PyObject::none());
+            }
             let msg = args[0].py_to_string();
 
             // Create a LogRecord-like instance
@@ -313,13 +319,22 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         })
     };
 
-    ns.insert(CompactString::from("debug"), make_log_method(10, "DEBUG", handlers_list.clone(), logger_name.clone()));
-    ns.insert(CompactString::from("info"), make_log_method(20, "INFO", handlers_list.clone(), logger_name.clone()));
-    ns.insert(CompactString::from("warning"), make_log_method(30, "WARNING", handlers_list.clone(), logger_name.clone()));
-    ns.insert(CompactString::from("error"), make_log_method(40, "ERROR", handlers_list.clone(), logger_name.clone()));
-    ns.insert(CompactString::from("critical"), make_log_method(50, "CRITICAL", handlers_list.clone(), logger_name.clone()));
+    ns.insert(CompactString::from("debug"), make_log_method(10, "DEBUG", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
+    ns.insert(CompactString::from("info"), make_log_method(20, "INFO", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
+    ns.insert(CompactString::from("warning"), make_log_method(30, "WARNING", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
+    ns.insert(CompactString::from("error"), make_log_method(40, "ERROR", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
+    ns.insert(CompactString::from("critical"), make_log_method(50, "CRITICAL", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
 
-    ns.insert(CompactString::from("setLevel"), make_builtin(|_| Ok(PyObject::none())));
+    // setLevel — update the shared effective level
+    let el = effective_level.clone();
+    ns.insert(CompactString::from("setLevel"), PyObject::native_closure(
+        "setLevel", move |args: &[PyObjectRef]| {
+            if let Some(v) = args.first() {
+                if let Some(n) = v.as_int() { *el.write() = n; }
+            }
+            Ok(PyObject::none())
+        }
+    ));
     // addHandler — push to shared handlers list
     let hl = handlers_list.clone();
     ns.insert(CompactString::from("addHandler"), PyObject::native_closure(
@@ -342,8 +357,24 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(PyObject::bool_val(false))
         }
     ));
-    ns.insert(CompactString::from("isEnabledFor"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-    ns.insert(CompactString::from("getEffectiveLevel"), make_builtin(|_| Ok(PyObject::int(30))));
+    let el2 = effective_level.clone();
+    ns.insert(CompactString::from("isEnabledFor"), PyObject::native_closure(
+        "isEnabledFor", move |args: &[PyObjectRef]| {
+            if let Some(v) = args.first() {
+                if let Some(n) = v.as_int() {
+                    let current = *el2.read();
+                    return Ok(PyObject::bool_val(current == 0 || n >= current));
+                }
+            }
+            Ok(PyObject::bool_val(true))
+        }
+    ));
+    let el3 = effective_level.clone();
+    ns.insert(CompactString::from("getEffectiveLevel"), PyObject::native_closure(
+        "getEffectiveLevel", move |_: &[PyObjectRef]| {
+            Ok(PyObject::int(*el3.read()))
+        }
+    ));
     
     let cls = PyObject::class(CompactString::from("Logger"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);

@@ -71,27 +71,130 @@ pub fn create_argparse_module() -> PyObjectRef {
             // parse_args(args=None) — closure captures shared arg_defs
             let pa = arg_defs.clone();
             attrs.insert(CompactString::from("parse_args"), PyObject::native_closure(
-                "parse_args", move |_args: &[PyObjectRef]| {
+                "parse_args", move |call_args: &[PyObjectRef]| {
                     let ns_cls = PyObject::class(CompactString::from("Namespace"), vec![], IndexMap::new());
                     let ns_inst = PyObject::instance(ns_cls);
-                    // Set defaults from stored argument definitions
                     let defs = pa.read();
+
+                    // Extract the args list to parse
+                    let arg_strings: Vec<String> = if !call_args.is_empty() {
+                        // First arg might be a list of strings, or a kwargs dict
+                        match &call_args[0].payload {
+                            PyObjectPayload::List(items) => {
+                                items.read().iter().map(|a| a.py_to_string()).collect()
+                            }
+                            PyObjectPayload::Tuple(items) => {
+                                items.iter().map(|a| a.py_to_string()).collect()
+                            }
+                            // Check for kwargs dict with 'args' key
+                            PyObjectPayload::Dict(d) => {
+                                let dr = d.read();
+                                if let Some(v) = dr.get(&HashableKey::Str(CompactString::from("args"))) {
+                                    if let PyObjectPayload::List(items) = &v.payload {
+                                        items.read().iter().map(|a| a.py_to_string()).collect()
+                                    } else { vec![] }
+                                } else { vec![] }
+                            }
+                            _ => vec![],
+                        }
+                    } else {
+                        vec![]
+                    };
+
+                    // Separate argument defs into positional and optional
+                    let mut positional_defs: Vec<(String, &IndexMap<CompactString, PyObjectRef>)> = Vec::new();
+                    let mut optional_defs: Vec<(Vec<String>, String, &IndexMap<CompactString, PyObjectRef>)> = Vec::new();
+
                     for (names, kwargs) in defs.iter() {
                         let dest = if let Some(d) = kwargs.get("dest") {
                             d.py_to_string()
                         } else {
-                            // Prefer long option names (--verbose) over short (-v)
                             let long = names.iter().find(|n| n.starts_with("--"));
                             let chosen = long.or(names.first());
                             if let Some(n) = chosen {
                                 n.trim_start_matches('-').replace('-', "_")
                             } else { continue; }
                         };
-                        let default = kwargs.get("default").cloned().unwrap_or_else(PyObject::none);
-                        if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
+                        let is_positional = names.iter().all(|n| !n.starts_with('-'));
+                        if is_positional {
+                            positional_defs.push((dest, kwargs));
+                        } else {
+                            optional_defs.push((names.clone(), dest, kwargs));
+                        }
+                    }
+
+                    // Set defaults first
+                    if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
+                        for (_, kwargs) in &positional_defs {
+                            // Positional defaults handled below
+                            let _ = kwargs;
+                        }
+                        for (_, dest, kwargs) in &optional_defs {
+                            let default = kwargs.get("default").cloned().unwrap_or_else(PyObject::none);
+                            // store_true defaults to False
+                            let action = kwargs.get("action").map(|a| a.py_to_string());
+                            let default = if action.as_deref() == Some("store_true") && !kwargs.contains_key("default") {
+                                PyObject::bool_val(false)
+                            } else { default };
                             nd.attrs.write().insert(CompactString::from(dest.as_str()), default);
                         }
                     }
+
+                    // Parse arg_strings
+                    let mut pos_idx = 0usize;
+                    let mut i = 0usize;
+                    while i < arg_strings.len() {
+                        let arg = &arg_strings[i];
+                        if arg.starts_with('-') {
+                            // Optional argument — find matching def
+                            if let Some((_, dest, kwargs)) = optional_defs.iter().find(|(names, _, _)| {
+                                names.iter().any(|n| n == arg)
+                            }) {
+                                let action = kwargs.get("action").map(|a| a.py_to_string());
+                                if action.as_deref() == Some("store_true") {
+                                    if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
+                                        nd.attrs.write().insert(CompactString::from(dest.as_str()), PyObject::bool_val(true));
+                                    }
+                                } else if action.as_deref() == Some("store_false") {
+                                    if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
+                                        nd.attrs.write().insert(CompactString::from(dest.as_str()), PyObject::bool_val(false));
+                                    }
+                                } else {
+                                    // Consume next arg as value
+                                    i += 1;
+                                    if i < arg_strings.len() {
+                                        let val_str = &arg_strings[i];
+                                        let type_fn = kwargs.get("type").map(|t| t.py_to_string());
+                                        let val = match type_fn.as_deref() {
+                                            Some("int") => PyObject::int(val_str.parse::<i64>().unwrap_or(0)),
+                                            Some("float") => PyObject::float(val_str.parse::<f64>().unwrap_or(0.0)),
+                                            _ => PyObject::str_val(CompactString::from(val_str.as_str())),
+                                        };
+                                        if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
+                                            nd.attrs.write().insert(CompactString::from(dest.as_str()), val);
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Positional argument
+                            if pos_idx < positional_defs.len() {
+                                let (dest, kwargs) = &positional_defs[pos_idx];
+                                let type_fn = kwargs.get("type").map(|t| t.py_to_string());
+                                let val = match type_fn.as_deref() {
+                                    Some("int") => PyObject::int(arg.parse::<i64>().unwrap_or(0)),
+                                    Some("float") => PyObject::float(arg.parse::<f64>().unwrap_or(0.0)),
+                                    _ => PyObject::str_val(CompactString::from(arg.as_str())),
+                                };
+                                if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
+                                    nd.attrs.write().insert(CompactString::from(dest.as_str()), val);
+                                }
+                                pos_idx += 1;
+                            }
+                        }
+                        i += 1;
+                    }
+
                     Ok(ns_inst)
                 }
             ));

@@ -592,6 +592,12 @@ impl VirtualMachine {
             if let Some(fields) = cls.get_attr("_fields") {
                 if let PyObjectPayload::Tuple(field_names) = &fields.payload {
                     if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        // Get defaults dict if available
+                        let defaults_map = cls.get_attr("_field_defaults").and_then(|d| {
+                            if let PyObjectPayload::Dict(map) = &d.payload {
+                                Some(map.read().clone())
+                            } else { None }
+                        });
                         let mut attrs = inst.attrs.write();
                         for (i, field) in field_names.iter().enumerate() {
                             let name = field.py_to_string();
@@ -599,6 +605,9 @@ impl VirtualMachine {
                                 v.clone()
                             } else if i < pos_args.len() {
                                 pos_args[i].clone()
+                            } else if let Some(ref dmap) = defaults_map {
+                                let key = HashableKey::Str(CompactString::from(name.as_str()));
+                                dmap.get(&key).cloned().unwrap_or_else(PyObject::none)
                             } else {
                                 PyObject::none()
                             };

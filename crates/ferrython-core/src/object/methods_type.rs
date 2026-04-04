@@ -186,7 +186,30 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                         let hour = attrs.get("hour").and_then(|v| v.as_int()).unwrap_or(0);
                         let minute = attrs.get("minute").and_then(|v| v.as_int()).unwrap_or(0);
                         let second = attrs.get("second").and_then(|v| v.as_int()).unwrap_or(0);
-                        return format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second);
+                        let base = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second);
+                        // Clone tzinfo out so we can drop the outer attrs lock before reading it
+                        let tz_cloned = attrs.get("tzinfo").cloned();
+                        drop(attrs);
+                        if let Some(ref tz) = tz_cloned {
+                            if !matches!(&tz.payload, PyObjectPayload::None) {
+                                if let PyObjectPayload::Instance(ref tz_inst) = tz.payload {
+                                    let tz_attrs = tz_inst.attrs.read();
+                                    let offset_secs = tz_attrs.get("_offset_seconds")
+                                        .and_then(|v| match &v.payload {
+                                            PyObjectPayload::Float(f) => Some(*f as i64),
+                                            PyObjectPayload::Int(i) => i.to_i64(),
+                                            _ => None,
+                                        })
+                                        .unwrap_or(0);
+                                    let sign = if offset_secs < 0 { '-' } else { '+' };
+                                    let abs_secs = offset_secs.unsigned_abs();
+                                    let oh = abs_secs / 3600;
+                                    let om = (abs_secs % 3600) / 60;
+                                    return format!("{}{}{:02}:{:02}", base, sign, oh, om);
+                                }
+                            }
+                        }
+                        return base;
                     }
                     // timedelta
                     if attrs.contains_key("__timedelta__") {
