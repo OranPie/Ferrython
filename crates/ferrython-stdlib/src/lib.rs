@@ -65,6 +65,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "csv" => Some(serial_modules::create_csv_module()),
         "base64" => Some(serial_modules::create_base64_module()),
         "struct" => Some(serial_modules::create_struct_module()),
+        "pickle" => Some(serial_modules::create_pickle_module()),
         // Filesystem & process
         "pathlib" => Some(fs_modules::create_pathlib_module()),
         "shutil" => Some(fs_modules::create_shutil_module()),
@@ -72,6 +73,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "tempfile" => Some(fs_modules::create_tempfile_module()),
         "io" => Some(fs_modules::create_io_module()),
         "subprocess" => Some(fs_modules::create_subprocess_module()),
+        "gzip" => Some(fs_modules::create_gzip_module()),
         // Time & datetime
         "time" => Some(time_modules::create_time_module()),
         "datetime" => Some(time_modules::create_datetime_module()),

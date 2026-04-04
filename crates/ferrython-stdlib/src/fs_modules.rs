@@ -506,6 +506,164 @@ fn subprocess_check_output(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
 }
 
+// ── gzip module ──
+
+pub fn create_gzip_module() -> PyObjectRef {
+    make_module("gzip", vec![
+        ("compress", make_builtin(gzip_compress)),
+        ("decompress", make_builtin(gzip_decompress)),
+        ("open", make_builtin(gzip_open)),
+    ])
+}
+
+fn gzip_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "gzip.compress() missing 1 required positional argument: 'data'",
+        ));
+    }
+    let data = gzip_extract_bytes(&args[0])?;
+
+    // Build a valid gzip container using DEFLATE stored blocks (no compression).
+    // Header: 10-byte standard gzip header
+    let mut out = Vec::with_capacity(10 + 5 + data.len() + 8);
+    // Magic number + compression method (deflate)
+    out.extend_from_slice(&[0x1f, 0x8b, 0x08]);
+    // Flags (none), mtime (0), xfl, OS (unknown)
+    out.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]);
+
+    // DEFLATE stored blocks — split data into ≤65535-byte blocks
+    let mut offset = 0;
+    while offset < data.len() {
+        let remaining = data.len() - offset;
+        let block_len = remaining.min(65535);
+        let is_final: u8 = if offset + block_len >= data.len() { 0x01 } else { 0x00 };
+        out.push(is_final);
+        let len16 = block_len as u16;
+        out.extend_from_slice(&len16.to_le_bytes());
+        let nlen16 = !len16;
+        out.extend_from_slice(&nlen16.to_le_bytes());
+        out.extend_from_slice(&data[offset..offset + block_len]);
+        offset += block_len;
+    }
+    if data.is_empty() {
+        // Empty DEFLATE final block
+        out.extend_from_slice(&[0x01, 0x00, 0x00, 0xff, 0xff]);
+    }
+
+    // CRC32 + original size (ISIZE)
+    let crc = gzip_crc32(&data);
+    out.extend_from_slice(&crc.to_le_bytes());
+    let isize_val = (data.len() as u32).to_le_bytes();
+    out.extend_from_slice(&isize_val);
+
+    Ok(PyObject::bytes(out))
+}
+
+fn gzip_decompress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "gzip.decompress() missing 1 required positional argument: 'data'",
+        ));
+    }
+    let data = gzip_extract_bytes(&args[0])?;
+
+    // Validate gzip header
+    if data.len() < 18 || data[0] != 0x1f || data[1] != 0x8b {
+        return Err(PyException::runtime_error("gzip.decompress: not a gzip file"));
+    }
+    if data[2] != 0x08 {
+        return Err(PyException::runtime_error("gzip.decompress: unsupported compression method"));
+    }
+
+    let flags = data[3];
+    let mut pos: usize = 10;
+    // Skip optional header fields
+    if flags & 0x04 != 0 { // FEXTRA
+        if pos + 2 > data.len() { return Err(PyException::runtime_error("gzip.decompress: truncated header")); }
+        let xlen = u16::from_le_bytes([data[pos], data[pos+1]]) as usize;
+        pos += 2 + xlen;
+    }
+    if flags & 0x08 != 0 { // FNAME — null-terminated
+        while pos < data.len() && data[pos] != 0 { pos += 1; }
+        pos += 1;
+    }
+    if flags & 0x10 != 0 { // FCOMMENT — null-terminated
+        while pos < data.len() && data[pos] != 0 { pos += 1; }
+        pos += 1;
+    }
+    if flags & 0x02 != 0 { // FHCRC
+        pos += 2;
+    }
+
+    // Parse DEFLATE stored blocks
+    let mut result = Vec::new();
+    let deflate_end = if data.len() >= 8 { data.len() - 8 } else { data.len() };
+
+    loop {
+        if pos >= deflate_end {
+            break;
+        }
+        let bfinal = data[pos] & 0x01;
+        let btype = (data[pos] >> 1) & 0x03;
+        pos += 1;
+        if btype == 0x00 {
+            // Stored block
+            if pos + 4 > deflate_end {
+                return Err(PyException::runtime_error("gzip.decompress: truncated stored block header"));
+            }
+            let len = u16::from_le_bytes([data[pos], data[pos+1]]) as usize;
+            pos += 4; // skip LEN + NLEN
+            if pos + len > deflate_end {
+                return Err(PyException::runtime_error("gzip.decompress: truncated stored block data"));
+            }
+            result.extend_from_slice(&data[pos..pos+len]);
+            pos += len;
+        } else {
+            return Err(PyException::runtime_error(
+                "gzip.decompress: only stored (no compression) blocks are supported",
+            ));
+        }
+        if bfinal != 0 { break; }
+    }
+
+    Ok(PyObject::bytes(result))
+}
+
+fn gzip_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "gzip.open() missing 1 required positional argument: 'filename'",
+        ));
+    }
+    let _ = args;
+    Err(PyException::runtime_error("gzip.open() is not yet implemented"))
+}
+
+/// CRC-32 (ISO 3309 / ITU-T V.42) used by gzip.
+fn gzip_crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
+}
+
+fn gzip_extract_bytes(obj: &PyObjectRef) -> PyResult<Vec<u8>> {
+    match &obj.payload {
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok(b.clone()),
+        PyObjectPayload::Str(s) => Ok(s.as_bytes().to_vec()),
+        _ => Err(PyException::type_error("expected bytes-like object")),
+    }
+}
+
 // ── pathlib module (basic) ──
 
 
