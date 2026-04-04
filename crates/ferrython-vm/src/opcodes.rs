@@ -1410,7 +1410,17 @@ impl VirtualMachine {
                 }
             }
             if let PyObjectPayload::Instance(inst) = &b.payload {
-                // Dict subclass: use contains() directly
+                // Check for user-defined __contains__ in the class (including dict subclasses)
+                let custom_contains = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    cd.namespace.read().get("__contains__").cloned()
+                } else { None };
+                if let Some(method) = custom_contains {
+                    let r = self.call_object(method, vec![b.clone(), a.clone()])?;
+                    let val = if instr.arg == 6 { r.is_truthy() } else { !r.is_truthy() };
+                    self.vm_push(PyObject::bool_val(val));
+                    return Ok(None);
+                }
+                // Dict subclass: use native contains() directly
                 if inst.dict_storage.is_some() {
                     let val = if instr.arg == 6 { b.contains(&a)? } else { !b.contains(&a)? };
                     self.vm_push(PyObject::bool_val(val));
