@@ -429,16 +429,24 @@ impl VirtualMachine {
                 }
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
                     if let Some(sa) = lookup_in_class_mro(&inst.class, "__setattr__") {
-                        if matches!(&sa.payload, PyObjectPayload::Function(_)) {
-                            let method = Arc::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: obj.clone(),
-                                    method: sa,
-                                }
-                            });
-                            let name_arg = PyObject::str_val(name);
-                            self.call_object(method, vec![name_arg, value])?;
-                            return Ok(None);
+                        match &sa.payload {
+                            PyObjectPayload::Function(_) => {
+                                let method = Arc::new(PyObject {
+                                    payload: PyObjectPayload::BoundMethod {
+                                        receiver: obj.clone(),
+                                        method: sa,
+                                    }
+                                });
+                                let name_arg = PyObject::str_val(name);
+                                self.call_object(method, vec![name_arg, value])?;
+                                return Ok(None);
+                            }
+                            PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => {
+                                let name_arg = PyObject::str_val(name);
+                                self.call_object(sa, vec![obj, name_arg, value])?;
+                                return Ok(None);
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -1833,8 +1841,8 @@ impl VirtualMachine {
                 frame.push(PyObject::slice(s_start, s_stop, step));
             }
             Opcode::UnpackSequence => {
-                let seq = frame.pop();
-                let items = seq.to_list()?;
+                let seq = self.vm_pop();
+                let items = self.vm_collect_iterable(&seq)?;
                 let count = instr.arg as usize;
                 if items.len() != count {
                     return Err(PyException::value_error(format!(
@@ -1842,13 +1850,14 @@ impl VirtualMachine {
                         count, items.len()
                     )));
                 }
+                let frame = self.vm_frame();
                 for item in items.into_iter().rev() {
                     frame.push(item);
                 }
             }
             Opcode::UnpackEx => {
-                let seq = frame.pop();
-                let items = seq.to_list()?;
+                let seq = self.vm_pop();
+                let items = self.vm_collect_iterable(&seq)?;
                 let before = (instr.arg & 0xFF) as usize;
                 let after = ((instr.arg >> 8) & 0xFF) as usize;
                 let total_fixed = before + after;
@@ -1859,6 +1868,7 @@ impl VirtualMachine {
                     )));
                 }
                 let star_count = items.len() - total_fixed;
+                let frame = self.vm_frame();
                 for i in (0..after).rev() {
                     let idx = before + star_count + i;
                     frame.push(items[idx].clone());

@@ -888,6 +888,42 @@ impl VirtualMachine {
         }
     }
 
+    /// Collect any iterable into a Vec, using VM-level iteration for lazy iterators.
+    /// Falls back to core `to_list()` for simple iterables.
+    pub(crate) fn vm_collect_iterable(&mut self, obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
+        // Try core to_list first (fast path for list, tuple, set, range, etc.)
+        match obj.to_list() {
+            Ok(items) => return Ok(items),
+            Err(_) => {}
+        }
+        // Get an iterator and collect via VM
+        let iter_obj = match &obj.payload {
+            PyObjectPayload::Iterator(_) | PyObjectPayload::Generator(_) => obj.clone(),
+            PyObjectPayload::Instance(_) => {
+                if let Some(iter_fn) = obj.get_attr("__iter__") {
+                    self.call_object(iter_fn, vec![])?
+                } else {
+                    return Err(PyException::type_error(format!(
+                        "cannot unpack non-iterable {} object", obj.type_name()
+                    )));
+                }
+            }
+            _ => {
+                return Err(PyException::type_error(format!(
+                    "cannot unpack non-iterable {} object", obj.type_name()
+                )));
+            }
+        };
+        let mut items = Vec::new();
+        loop {
+            match self.vm_iter_next(&iter_obj)? {
+                Some(val) => items.push(val),
+                None => break,
+            }
+        }
+        Ok(items)
+    }
+
     /// Sort items using VM-level comparison (supports custom __lt__).
     /// Uses insertion sort to allow &mut self access during comparisons.
     pub fn vm_sort(&mut self, items: &mut Vec<PyObjectRef>) -> PyResult<()> {

@@ -515,6 +515,7 @@ impl VirtualMachine {
 
         if is_dataclass && !has_user_init {
             // Dataclass auto-init: populate fields from args/kwargs
+            let is_frozen = class_has_key(cls, "__dataclass_frozen__");
             if let Some(fields) = cls.get_attr("__dataclass_fields__") {
                 if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
                     let mut arg_idx = 0;
@@ -523,15 +524,27 @@ impl VirtualMachine {
                             let name = info[0].py_to_string();
                             let has_default = info[1].is_truthy();
                             let default_val = &info[2];
+                            // init flag (index 3): whether field participates in __init__
+                            let field_init = if info.len() > 3 { info[3].is_truthy() } else { true };
 
-                            let value = if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
+                            let value = if !field_init {
+                                // init=False: use default if available, else skip (post_init sets it)
+                                if has_default {
+                                    if default_val.is_callable() {
+                                        self.call_object(default_val.clone(), vec![])?
+                                    } else {
+                                        default_val.clone()
+                                    }
+                                } else {
+                                    continue; // Will be set by __post_init__
+                                }
+                            } else if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
                                 v.clone()
                             } else if arg_idx < pos_args.len() {
                                 let v = pos_args[arg_idx].clone();
                                 arg_idx += 1;
                                 v
                             } else if has_default {
-                                // If default is callable (factory), call it
                                 if default_val.is_callable() {
                                     self.call_object(default_val.clone(), vec![])?
                                 } else {
@@ -547,6 +560,30 @@ impl VirtualMachine {
                                 inst.attrs.write().insert(CompactString::from(name.as_str()), value);
                             }
                         }
+                    }
+                }
+            }
+            // Call __post_init__ if defined
+            if let Some(post_init) = cls.get_attr("__post_init__") {
+                let pi_fn = match &post_init.payload {
+                    PyObjectPayload::BoundMethod { method, .. } => method.clone(),
+                    _ => post_init.clone(),
+                };
+                self.call_object(pi_fn, vec![instance.clone()])?;
+            }
+            // For frozen dataclasses, install __setattr__/__delattr__ that raise
+            if is_frozen {
+                if let PyObjectPayload::Class(cd) = &cls.payload {
+                    let ns = cd.namespace.read();
+                    if !ns.contains_key("__setattr__") {
+                        drop(ns);
+                        let mut ns = cd.namespace.write();
+                        ns.insert(CompactString::from("__setattr__"), PyObject::native_function("__setattr__", |_args| {
+                            Err(PyException::runtime_error(String::from("cannot assign to field of frozen dataclass")))
+                        }));
+                        ns.insert(CompactString::from("__delattr__"), PyObject::native_function("__delattr__", |_args| {
+                            Err(PyException::runtime_error(String::from("cannot delete field of frozen dataclass")))
+                        }));
                     }
                 }
             }
@@ -997,8 +1034,10 @@ impl VirtualMachine {
                         }
                         // itertools.groupby with key function
                         if name.as_str() == "itertools.groupby" {
-                            let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
-                            return self.vm_itertools_groupby(&pos_args, key_fn);
+                            let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone())
+                                .or_else(|| if pos_args.len() >= 2 { Some(pos_args[1].clone()) } else { None });
+                            let iterable = vec![pos_args[0].clone()];
+                            return self.vm_itertools_groupby(&iterable, key_fn);
                         }
                         // itertools.accumulate with initial kwarg
                         if name.as_str() == "itertools.accumulate" && !kwargs.is_empty() {
@@ -1950,14 +1989,24 @@ impl VirtualMachine {
                     }
                 }
                 if name.as_str() == "itertools.groupby" {
-                    let key_fn = args.last().and_then(|last| {
+                    let mut key_fn = None;
+                    let mut iterable_args = args.clone();
+                    // Check last arg for kwargs dict with "key"
+                    if let Some(last) = args.last() {
                         if let PyObjectPayload::Dict(map) = &last.payload {
-                            let map = map.read();
-                            map.get(&HashableKey::Str(CompactString::from("key"))).cloned()
-                        } else { None }
-                    });
-                    let pos_args: Vec<_> = if key_fn.is_some() { args[..args.len()-1].to_vec() } else { args.clone() };
-                    return self.vm_itertools_groupby(&pos_args, key_fn);
+                            let map_r = map.read();
+                            key_fn = map_r.get(&HashableKey::Str(CompactString::from("key"))).cloned();
+                            if key_fn.is_some() {
+                                iterable_args = args[..args.len()-1].to_vec();
+                            }
+                        }
+                    }
+                    // Check for positional key arg (2nd arg, not a dict)
+                    if key_fn.is_none() && iterable_args.len() >= 2 {
+                        key_fn = Some(iterable_args[1].clone());
+                        iterable_args = vec![iterable_args[0].clone()];
+                    }
+                    return self.vm_itertools_groupby(&iterable_args, key_fn);
                 }
                 if name.as_str() == "itertools.filterfalse" && args.len() >= 2 {
                     return self.vm_itertools_filterfalse(&args);

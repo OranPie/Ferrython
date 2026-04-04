@@ -296,45 +296,64 @@ pub fn create_dataclasses_module() -> PyObjectRef {
     make_module("dataclasses", vec![
         ("dataclass", make_builtin(dataclass_decorator)),
         ("field", make_builtin(|args| {
-            // field(default=..., default_factory=..., compare=..., ...)
+            // field(default=..., default_factory=..., compare=..., init=..., repr=..., ...)
             // kwargs passed as trailing dict by VM
+            let mut compare = true;
+            let mut init = true;
+            let mut default_val: Option<PyObjectRef> = None;
+            let mut factory_val: Option<PyObjectRef> = None;
+
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(kw_map) = &last.payload {
                     let r = kw_map.read();
-                    let compare = r.get(&HashableKey::Str(CompactString::from("compare")))
-                        .map(|v| v.is_truthy())
-                        .unwrap_or(true);
-                    // Check for default_factory
-                    if let Some(factory) = r.get(&HashableKey::Str(CompactString::from("default_factory"))) {
-                        let mut attrs = IndexMap::new();
-                        attrs.insert(CompactString::from("__field_factory__"), factory.clone());
-                        attrs.insert(CompactString::from("__field_compare__"), PyObject::bool_val(compare));
-                        return Ok(PyObject::module_with_attrs(CompactString::from("_field"), attrs));
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("compare"))) {
+                        compare = v.is_truthy();
                     }
-                    if let Some(default) = r.get(&HashableKey::Str(CompactString::from("default"))) {
-                        if !compare {
-                            // Wrap in sentinel to carry compare=False
-                            let mut attrs = IndexMap::new();
-                            attrs.insert(CompactString::from("__field_default__"), default.clone());
-                            attrs.insert(CompactString::from("__field_compare__"), PyObject::bool_val(false));
-                            return Ok(PyObject::module_with_attrs(CompactString::from("_field"), attrs));
-                        }
-                        return Ok(default.clone());
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("init"))) {
+                        init = v.is_truthy();
                     }
-                    if !compare {
-                        let mut attrs = IndexMap::new();
-                        attrs.insert(CompactString::from("__field_compare__"), PyObject::bool_val(false));
-                        return Ok(PyObject::module_with_attrs(CompactString::from("_field"), attrs));
+                    if let Some(f) = r.get(&HashableKey::Str(CompactString::from("default_factory"))) {
+                        factory_val = Some(f.clone());
+                    }
+                    if let Some(d) = r.get(&HashableKey::Str(CompactString::from("default"))) {
+                        default_val = Some(d.clone());
                     }
                 }
             }
-            let default = if args.is_empty() { PyObject::none() } else { args[0].clone() };
-            Ok(default)
+            // Always return a field sentinel Module
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("__field_compare__"), PyObject::bool_val(compare));
+            attrs.insert(CompactString::from("__field_init__"), PyObject::bool_val(init));
+            if let Some(factory) = factory_val {
+                attrs.insert(CompactString::from("__field_factory__"), factory);
+            } else if let Some(default) = default_val {
+                attrs.insert(CompactString::from("__field_default__"), default);
+            }
+            Ok(PyObject::module_with_attrs(CompactString::from("_field"), attrs))
         })),
         ("asdict", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("asdict requires 1 argument")); }
-            // Convert instance attrs to dict
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                // Use __dataclass_fields__ to get fields in order
+                if let Some(class) = inst.attrs.read().get("__class__").cloned()
+                    .or_else(|| Some(inst.class.clone())) {
+                    if let Some(fields) = class.get_attr("__dataclass_fields__") {
+                        if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                            let attrs = inst.attrs.read();
+                            let mut map = IndexMap::new();
+                            for ft in field_tuples {
+                                if let PyObjectPayload::Tuple(info) = &ft.payload {
+                                    let name = info[0].py_to_string();
+                                    if let Some(v) = attrs.get(name.as_str()) {
+                                        map.insert(HashableKey::Str(CompactString::from(name.as_str())), v.clone());
+                                    }
+                                }
+                            }
+                            return Ok(PyObject::dict(map));
+                        }
+                    }
+                }
+                // Fallback: all non-_ attrs
                 let attrs = inst.attrs.read();
                 let mut map = IndexMap::new();
                 for (k, v) in attrs.iter() {
@@ -350,6 +369,21 @@ pub fn create_dataclasses_module() -> PyObjectRef {
         ("astuple", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("astuple requires 1 argument")); }
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(class) = inst.attrs.read().get("__class__").cloned()
+                    .or_else(|| Some(inst.class.clone())) {
+                    if let Some(fields) = class.get_attr("__dataclass_fields__") {
+                        if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                            let attrs = inst.attrs.read();
+                            let items: Vec<_> = field_tuples.iter().filter_map(|ft| {
+                                if let PyObjectPayload::Tuple(info) = &ft.payload {
+                                    let name = info[0].py_to_string();
+                                    attrs.get(name.as_str()).cloned()
+                                } else { None }
+                            }).collect();
+                            return Ok(PyObject::tuple(items));
+                        }
+                    }
+                }
                 let attrs = inst.attrs.read();
                 let items: Vec<_> = attrs.values().cloned().collect();
                 Ok(PyObject::tuple(items))
@@ -357,7 +391,65 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                 Err(PyException::type_error("astuple() should be called on dataclass instances"))
             }
         })),
-        ("fields", make_builtin(|_| Ok(PyObject::tuple(vec![])))),
+        ("fields", make_builtin(|args| {
+            // fields(instance_or_class) -> tuple of Field objects
+            if args.is_empty() { return Err(PyException::type_error("fields requires 1 argument")); }
+            let cls = match &args[0].payload {
+                PyObjectPayload::Class(_) => args[0].clone(),
+                PyObjectPayload::Instance(inst) => inst.class.clone(),
+                _ => return Err(PyException::type_error("fields() argument must be a dataclass or instance")),
+            };
+            if let Some(fields_tuple) = cls.get_attr("__dataclass_fields__") {
+                if let PyObjectPayload::Tuple(field_tuples) = &fields_tuple.payload {
+                    let field_objs: Vec<PyObjectRef> = field_tuples.iter().map(|ft| {
+                        if let PyObjectPayload::Tuple(info) = &ft.payload {
+                            // Create a simple Field-like object with .name, .default, etc.
+                            let name = info[0].py_to_string();
+                            let mut field_attrs = IndexMap::new();
+                            field_attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name.as_str())));
+                            if info.len() > 2 {
+                                field_attrs.insert(CompactString::from("default"), info[2].clone());
+                            }
+                            if info.len() > 3 {
+                                field_attrs.insert(CompactString::from("init"), info[3].clone());
+                            }
+                            if info.len() > 4 {
+                                field_attrs.insert(CompactString::from("compare"), info[4].clone());
+                            }
+                            PyObject::instance_with_attrs(
+                                PyObject::builtin_type(CompactString::from("Field")),
+                                field_attrs,
+                            )
+                        } else { ft.clone() }
+                    }).collect();
+                    return Ok(PyObject::tuple(field_objs));
+                }
+            }
+            Ok(PyObject::tuple(vec![]))
+        })),
+        ("replace", make_builtin(|args| {
+            // replace(instance, **kwargs)
+            if args.is_empty() { return Err(PyException::type_error("replace requires at least 1 argument")); }
+            let instance = &args[0];
+            if let PyObjectPayload::Instance(inst) = &instance.payload {
+                let cls = inst.class.clone();
+                // Clone all attrs
+                let mut new_attrs = inst.attrs.read().clone();
+                // Apply kwargs overrides
+                if args.len() > 1 {
+                    if let PyObjectPayload::Dict(kw_map) = &args[1].payload {
+                        for (k, v) in kw_map.read().iter() {
+                            if let HashableKey::Str(name) = k {
+                                new_attrs.insert(name.clone(), v.clone());
+                            }
+                        }
+                    }
+                }
+                Ok(PyObject::instance_with_attrs(cls, new_attrs))
+            } else {
+                Err(PyException::type_error("replace() argument must be a dataclass instance"))
+            }
+        })),
     ])
 }
 
@@ -366,33 +458,36 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let cls = &args[0];
     
     // If called as @dataclass(eq=True, ...) the first arg is kwargs dict, not a class.
-    // In that case, capture options and return a decorator closure.
     if !matches!(&cls.payload, PyObjectPayload::Class(_)) {
-        // Extract options from kwargs dict
         let mut order = false;
+        let mut frozen = false;
         if let PyObjectPayload::Dict(map) = &cls.payload {
             let m = map.read();
             if let Some(v) = m.get(&HashableKey::Str(CompactString::from("order"))) {
                 order = v.is_truthy();
             }
+            if let Some(v) = m.get(&HashableKey::Str(CompactString::from("frozen"))) {
+                frozen = v.is_truthy();
+            }
         }
         let order_flag = order;
+        let frozen_flag = frozen;
         return Ok(PyObject::native_closure("dataclass", move |args: &[PyObjectRef]| {
             if args.is_empty() { return Err(PyException::type_error("dataclass requires 1 argument")); }
-            dataclass_apply(&args[0], order_flag)
+            dataclass_apply(&args[0], order_flag, frozen_flag)
         }));
     }
     
-    dataclass_apply(cls, false)
+    dataclass_apply(cls, false, false)
 }
 
-fn dataclass_apply(cls: &PyObjectRef, order: bool) -> PyResult<PyObjectRef> {
+fn dataclass_apply(cls: &PyObjectRef, order: bool, frozen: bool) -> PyResult<PyObjectRef> {
     
     // Get annotations to discover fields
     let mut field_names: Vec<CompactString> = Vec::new();
     let mut field_defaults: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
-    // Track which fields participate in comparison (compare=True by default)
     let mut compare_fields: Vec<CompactString> = Vec::new();
+    let mut init_fields: Vec<CompactString> = Vec::new(); // fields that participate in __init__
     
     if let PyObjectPayload::Class(cd) = &cls.payload {
         let ns = cd.namespace.read();
@@ -402,54 +497,62 @@ fn dataclass_apply(cls: &PyObjectRef, order: bool) -> PyResult<PyObjectRef> {
                     if let HashableKey::Str(name) = k {
                         field_names.push(name.clone());
                         let mut compare = true;
-                        // Check for default value in class namespace
+                        let mut init = true;
+                        
                         if let Some(default) = ns.get(name.as_str()) {
-                            // Check if it's a field() sentinel with factory (Module with __field_factory__ attr)
                             if let PyObjectPayload::Module(md) = &default.payload {
                                 let mod_attrs = md.attrs.read();
                                 if let Some(cmp_flag) = mod_attrs.get("__field_compare__") {
                                     compare = cmp_flag.is_truthy();
                                 }
+                                if let Some(init_flag) = mod_attrs.get("__field_init__") {
+                                    init = init_flag.is_truthy();
+                                }
                                 if let Some(factory) = mod_attrs.get("__field_factory__") {
                                     field_defaults.insert(name.clone(), factory.clone());
-                                } else {
-                                    field_defaults.insert(name.clone(), default.clone());
+                                } else if let Some(default_val) = mod_attrs.get("__field_default__") {
+                                    field_defaults.insert(name.clone(), default_val.clone());
                                 }
+                                // field() with no default/factory: no default entry
                             } else {
                                 field_defaults.insert(name.clone(), default.clone());
                             }
                         }
-                        if compare {
-                            compare_fields.push(name.clone());
-                        }
+                        if compare { compare_fields.push(name.clone()); }
+                        if init { init_fields.push(name.clone()); }
                     }
                 }
             }
         }
     }
     
-    // Store __dataclass_fields__ as a tuple of (name, has_default, default_val) tuples
+    // Store __dataclass_fields__ as tuple of (name, has_default, default_val, init, compare) tuples
     let fields_info: Vec<PyObjectRef> = field_names.iter().map(|name| {
         let has_default = field_defaults.contains_key(name.as_str());
         let default_val = field_defaults.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
+        let init_flag = init_fields.contains(name);
+        let compare_flag = compare_fields.contains(name);
         PyObject::tuple(vec![
             PyObject::str_val(CompactString::from(name.as_str())),
             PyObject::bool_val(has_default),
             default_val,
+            PyObject::bool_val(init_flag),
+            PyObject::bool_val(compare_flag),
         ])
     }).collect();
     
-    // Store on the class
     if let PyObjectPayload::Class(cd) = &cls.payload {
         let mut ns = cd.namespace.write();
         ns.insert(CompactString::from("__dataclass_fields__"), PyObject::tuple(fields_info));
-        // Mark it as a dataclass
         ns.insert(CompactString::from("__dataclass__"), PyObject::bool_val(true));
+
+        // Generate __setattr__ and __delattr__ for frozen=True
+        if frozen {
+            ns.insert(CompactString::from("__dataclass_frozen__"), PyObject::bool_val(true));
+        }
 
         // Generate ordering methods if order=True
         if order {
-            // Generate __lt__, __le__, __gt__, __ge__ as native closures
-            // Each captures compare_fields and compares tuples of field values
             let fields_for_lt = compare_fields.clone();
             ns.insert(CompactString::from("__lt__"), PyObject::native_closure("__lt__", move |args: &[PyObjectRef]| {
                 check_args("__lt__", args, 2)?;
