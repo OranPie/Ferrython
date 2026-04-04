@@ -9,6 +9,7 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::SharedGlobals;
+use ferrython_debug::{ExecutionProfiler, BreakpointManager};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -22,6 +23,10 @@ pub struct VirtualMachine {
     pub(crate) active_exception: Option<PyException>,
     /// Reference to the sys.modules dict for synchronization.
     pub(crate) sys_modules_dict: Option<PyObjectRef>,
+    /// Execution profiler (disabled by default — zero overhead when off).
+    pub profiler: ExecutionProfiler,
+    /// Breakpoint manager for debugger support.
+    pub breakpoints: BreakpointManager,
 }
 
 impl VirtualMachine {
@@ -32,6 +37,8 @@ impl VirtualMachine {
             modules: IndexMap::new(),
             active_exception: None,
             sys_modules_dict: None,
+            profiler: ExecutionProfiler::new(),
+            breakpoints: BreakpointManager::new(),
         }
     }
 
@@ -64,6 +71,7 @@ impl VirtualMachine {
 
     /// Execute a code object as a function call with arguments.
     pub(crate) fn run_frame(&mut self) -> PyResult<PyObjectRef> {
+        let profiling = self.profiler.is_enabled();
         loop {
             let frame = self.call_stack.last().unwrap();
             if frame.ip >= frame.code.instructions.len() {
@@ -74,9 +82,16 @@ impl VirtualMachine {
             let frame = self.call_stack.last_mut().unwrap();
             frame.ip += 1;
 
+            if profiling { self.profiler.start_instruction(instr.op); }
+
             match self.execute_one(instr) {
-                Ok(Some(ret)) => return Ok(ret),
-                Ok(None) => {}
+                Ok(Some(ret)) => {
+                    if profiling { self.profiler.end_instruction(instr.op); }
+                    return Ok(ret);
+                }
+                Ok(None) => {
+                    if profiling { self.profiler.end_instruction(instr.op); }
+                }
                 Err(mut exc) => {
                     // Always attach traceback from the call stack
                     if exc.traceback.is_empty() {
@@ -193,6 +208,35 @@ impl VirtualMachine {
                 attrs.write().insert(CompactString::from(name), value);
             }
             _ => {}
+        }
+    }
+
+    /// Handle a breakpoint hit — print location info and current stack state.
+    pub(crate) fn handle_breakpoint_hit(&self) {
+        if let Some(frame) = self.call_stack.last() {
+            let lineno = ferrython_debug::resolve_lineno(
+                &frame.code,
+                frame.ip.saturating_sub(1),
+            );
+            eprintln!(
+                "*** Breakpoint hit: File \"{}\", line {}, in {} ***",
+                frame.code.filename, lineno, frame.code.name
+            );
+            // Print local variables if in a function scope
+            if frame.scope_kind == crate::frame::ScopeKind::Function {
+                let mut locals_info = Vec::new();
+                for (i, name) in frame.code.varnames.iter().enumerate() {
+                    if let Some(val) = frame.locals.get(i).and_then(|v| v.as_ref()) {
+                        locals_info.push(format!("  {} = {}", name, val.py_to_string()));
+                    }
+                }
+                if !locals_info.is_empty() {
+                    eprintln!("  Locals:");
+                    for info in &locals_info {
+                        eprintln!("{}", info);
+                    }
+                }
+            }
         }
     }
 

@@ -4,7 +4,6 @@ use crate::builtins;
 use crate::frame::Frame;
 use crate::VirtualMachine;
 use compact_str::CompactString;
-use ferrython_bytecode::code::ConstantValue;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     AsyncGenAction, GeneratorState, IteratorData, PyObject, PyObjectMethods,
@@ -1055,36 +1054,6 @@ impl VirtualMachine {
             result = self.reload_module(req.module)?;
         }
         Ok(result)
-    }
-}
-
-/// Convert a bytecode constant to a runtime PyObject.
-pub(crate) fn constant_to_object(constant: &ConstantValue) -> PyObjectRef {
-    match constant {
-        ConstantValue::None => PyObject::none(),
-        ConstantValue::Bool(b) => PyObject::bool_val(*b),
-        ConstantValue::Integer(n) => PyObject::int(*n),
-        ConstantValue::BigInteger(n) => PyObject::big_int(n.as_ref().clone()),
-        ConstantValue::Float(f) => PyObject::float(*f),
-        ConstantValue::Complex { real, imag } => PyObject::complex(*real, *imag),
-        ConstantValue::Str(s) => PyObject::str_val(s.clone()),
-        ConstantValue::Bytes(b) => PyObject::bytes(b.clone()),
-        ConstantValue::Ellipsis => PyObject::ellipsis(),
-        ConstantValue::Code(code) => PyObject::code(*code.clone()),
-        ConstantValue::Tuple(items) => {
-            let objs: Vec<PyObjectRef> = items.iter().map(constant_to_object).collect();
-            PyObject::tuple(objs)
-        }
-        ConstantValue::FrozenSet(items) => {
-            let mut set = IndexMap::new();
-            for item in items {
-                let obj = constant_to_object(item);
-                if let Ok(key) = obj.to_hashable_key() {
-                    set.insert(key, obj);
-                }
-            }
-            PyObject::set(set)
-        }
     }
 }
 

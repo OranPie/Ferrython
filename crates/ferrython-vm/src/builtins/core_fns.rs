@@ -1308,9 +1308,15 @@ pub(super) fn builtin_dict_fromkeys(args: &[PyObjectRef]) -> PyResult<PyObjectRe
 }
 
 pub(super) fn builtin_breakpoint(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    eprintln!("*** breakpoint() not supported in ferrython ***");
+    // Signal to the VM that breakpoint() was called.
+    // The VM checks BREAKPOINT_TRIGGERED after each BuiltinFunction call.
+    BREAKPOINT_TRIGGERED.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(PyObject::none())
 }
+
+/// Global flag for breakpoint() → VM communication.
+pub(crate) static BREAKPOINT_TRIGGERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 pub(super) fn builtin_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {

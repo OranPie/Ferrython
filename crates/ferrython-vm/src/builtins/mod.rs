@@ -1,6 +1,6 @@
 //! Built-in functions available in Python's builtins module.
 
-mod core_fns;
+pub(crate) mod core_fns;
 mod string_methods;
 mod type_methods;
 mod file_io;

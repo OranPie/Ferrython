@@ -6,7 +6,6 @@
 use crate::builtins;
 use crate::frame::{BlockKind, Frame, ScopeKind};
 use crate::vm::exception_kind_matches;
-use crate::vm_helpers::constant_to_object;
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
@@ -112,8 +111,7 @@ impl VirtualMachine {
             }
             Opcode::LoadConst => {
                 let idx = instr.arg as usize;
-                let constant = &frame.code.constants[idx];
-                let obj = constant_to_object(constant);
+                let obj = frame.constant_cache[idx].clone();
                 frame.push(obj);
             }
             _ => unreachable!(),

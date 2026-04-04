@@ -1727,7 +1727,17 @@ impl VirtualMachine {
                     _ => {}
                 }
                 match builtins::get_builtin_fn(name.as_str()) {
-                    Some(f) => f(&args),
+                    Some(f) => {
+                        let result = f(&args);
+                        // Check if breakpoint() was called
+                        if crate::builtins::core_fns::BREAKPOINT_TRIGGERED
+                            .swap(false, std::sync::atomic::Ordering::Relaxed)
+                        {
+                            self.breakpoints.builtin_breakpoint_pending = true;
+                            self.handle_breakpoint_hit();
+                        }
+                        result
+                    }
                     None => Err(PyException::type_error(format!(
                         "'{}' is not callable", name
                     ))),

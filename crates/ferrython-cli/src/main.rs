@@ -91,6 +91,55 @@ fn main() {
         return;
     }
 
+    if args[1] == "--profile" {
+        if args.len() < 3 {
+            eprintln!("Usage: ferrython --profile <script.py>");
+            process::exit(2);
+        }
+        let filename = &args[2];
+        if let Some(parent) = std::path::Path::new(filename).parent() {
+            ferrython_import::prepend_search_path(parent.to_path_buf());
+        }
+        match fs::read_to_string(filename) {
+            Ok(source) => run_profiled(&source, filename),
+            Err(e) => {
+                eprintln!("ferrython: can't open file '{}': {}", filename, e);
+                process::exit(2);
+            }
+        }
+        return;
+    }
+
+    if args[1] == "--stats" {
+        if args.len() < 3 {
+            eprintln!("Usage: ferrython --stats <script.py>");
+            process::exit(2);
+        }
+        let filename = &args[2];
+        match fs::read_to_string(filename) {
+            Ok(source) => stats_string(&source, filename),
+            Err(e) => {
+                eprintln!("ferrython: can't open file '{}': {}", filename, e);
+                process::exit(2);
+            }
+        }
+        return;
+    }
+
+    if args[1] == "--help" || args[1] == "-h" {
+        println!("Usage: ferrython [options] [script.py]");
+        println!();
+        println!("Options:");
+        println!("  -c CMD        Execute CMD as a string");
+        println!("  -m MODULE     Run library module as a script (NYI)");
+        println!("  -V, --version Show version");
+        println!("  --dis FILE    Disassemble bytecode");
+        println!("  --profile FILE  Run with execution profiling");
+        println!("  --stats FILE    Show bytecode statistics");
+        println!("  -h, --help    Show this help");
+        return;
+    }
+
     let filename = &args[1];
     if let Some(parent) = std::path::Path::new(filename).parent() {
         ferrython_import::prepend_search_path(parent.to_path_buf());
@@ -137,6 +186,48 @@ fn dis_pipeline(source: &str, filename: &str) -> Result<(), PipelineError> {
 
 fn dis_string(source: &str, filename: &str) {
     if let Err(e) = dis_pipeline(source, filename) {
+        e.report(filename);
+        process::exit(1);
+    }
+}
+
+fn profiled_pipeline(source: &str, filename: &str) -> Result<(), PipelineError> {
+    let module = ferrython_parser::parse(source, filename)?;
+    let code = ferrython_compiler::compile(&module, filename)?;
+    let mut vm = ferrython_vm::VirtualMachine::new();
+    vm.profiler.set_enabled(true);
+    let result = vm.execute(code);
+    eprintln!();
+    vm.profiler.report();
+    result?;
+    Ok(())
+}
+
+fn run_profiled(source: &str, filename: &str) {
+    if let Err(e) = profiled_pipeline(source, filename) {
+        if let PipelineError::Runtime(ref exc) = e {
+            if exc.kind == ferrython_core::error::ExceptionKind::SystemExit {
+                let code = exc.value.as_ref()
+                    .map(|v| v.to_int().unwrap_or(1) as i32)
+                    .unwrap_or(0);
+                process::exit(code);
+            }
+        }
+        e.report(filename);
+        process::exit(1);
+    }
+}
+
+fn stats_pipeline(source: &str, filename: &str) -> Result<(), PipelineError> {
+    let module = ferrython_parser::parse(source, filename)?;
+    let code = ferrython_compiler::compile(&module, filename)?;
+    let stats = ferrython_debug::code_stats(&code);
+    ferrython_debug::stats::print_stats_report(&stats);
+    Ok(())
+}
+
+fn stats_string(source: &str, filename: &str) {
+    if let Err(e) = stats_pipeline(source, filename) {
         e.report(filename);
         process::exit(1);
     }
