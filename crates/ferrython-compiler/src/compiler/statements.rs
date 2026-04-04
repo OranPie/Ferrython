@@ -440,6 +440,19 @@ impl Compiler {
         }
 
         // Compile the function body
+        // Extract docstring: if first statement is a string literal, store as first constant
+        if let Some(first) = body.first() {
+            if let StatementKind::Expr { value } = &first.node {
+                if let ExpressionKind::Constant { value: Constant::Str(doc) } = &value.node {
+                    // Ensure docstring is the first constant in the code object
+                    let unit = self.current_unit_mut();
+                    let doc_const = ConstantValue::Str(doc.clone());
+                    if unit.code.constants.is_empty() || unit.code.constants[0] != doc_const {
+                        unit.code.constants.insert(0, doc_const);
+                    }
+                }
+            }
+        }
         self.compile_body(body)?;
 
         // Check if the function body contains yield — if so, mark as generator
@@ -557,6 +570,17 @@ impl Compiler {
 
         // Setup annotations dict for the class body
         self.emit_op(Opcode::SetupAnnotations);
+
+        // Extract docstring from first statement if it's a string literal
+        if let Some(first) = body.first() {
+            if let StatementKind::Expr { value } = &first.node {
+                if let ExpressionKind::Constant { value: Constant::Str(doc) } = &value.node {
+                    let doc_idx = self.add_const(ConstantValue::Str(doc.clone()));
+                    self.emit_arg(Opcode::LoadConst, doc_idx);
+                    self.store_name("__doc__");
+                }
+            }
+        }
 
         // Compile the class body
         self.compile_body(body)?;

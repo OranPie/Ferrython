@@ -842,21 +842,38 @@ impl VirtualMachine {
                                             arg_idx += 1;
                                         }
                                     } else {
-                                        let mut field = String::new();
+                                        let mut field_spec = String::new();
                                         for c in chars.by_ref() {
                                             if c == '}' { break; }
-                                            field.push(c);
+                                            field_spec.push(c);
                                         }
-                                        // Try numeric index first
-                                        if let Ok(idx) = field.parse::<usize>() {
-                                            if idx < pos_args.len() {
-                                                result.push_str(&pos_args[idx].py_to_string());
-                                            }
+                                        // Parse {field_name!conversion:format_spec}
+                                        let (field_part, format_spec) = if let Some(cp) = field_spec.find(':') {
+                                            (&field_spec[..cp], Some(&field_spec[cp+1..]))
                                         } else {
-                                            // Named arg lookup
-                                            let found = kwargs.iter().find(|(k, _)| k.as_str() == field);
-                                            if let Some((_, v)) = found {
-                                                result.push_str(&v.py_to_string());
+                                            (field_spec.as_str(), None)
+                                        };
+                                        let (field_name, conversion) = if let Some(bp) = field_part.find('!') {
+                                            (&field_part[..bp], Some(&field_part[bp+1..]))
+                                        } else {
+                                            (field_part, None)
+                                        };
+                                        // Resolve value
+                                        let value = if let Ok(idx) = field_name.parse::<usize>() {
+                                            pos_args.get(idx).cloned()
+                                        } else {
+                                            kwargs.iter().find(|(k, _)| k.as_str() == field_name).map(|(_, v)| v.clone())
+                                        };
+                                        if let Some(val) = value {
+                                            let text = match conversion {
+                                                Some("r") | Some("a") => val.repr(),
+                                                Some("s") => val.py_to_string(),
+                                                _ => val.py_to_string(),
+                                            };
+                                            if let Some(spec) = format_spec {
+                                                result.push_str(&crate::builtins::apply_format_spec_str(&text, spec));
+                                            } else {
+                                                result.push_str(&text);
                                             }
                                         }
                                     }

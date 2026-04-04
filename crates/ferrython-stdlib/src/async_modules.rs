@@ -5,7 +5,7 @@
 //! cooperatively via round-robin scheduling.
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min,
@@ -223,9 +223,63 @@ fn make_asyncio_queue_class() -> PyObjectRef {
             0
         };
         let q_cls = PyObject::class(CompactString::from("Queue"), vec![], IndexMap::new());
+        let items_list = PyObject::list(vec![]);
+        let items_ref = items_list.clone();
+        let items_ref2 = items_list.clone();
+        let items_ref3 = items_list.clone();
+        let items_ref4 = items_list.clone();
+        let items_ref5 = items_list.clone();
+        
+        let put_fn = PyObject::native_closure("Queue.put", move |put_args: &[PyObjectRef]| {
+            if put_args.is_empty() {
+                return Err(PyException::type_error("Queue.put() requires an argument"));
+            }
+            if let PyObjectPayload::List(items) = &items_ref.payload {
+                items.write().push(put_args[0].clone());
+            }
+            Ok(PyObject::none())
+        });
+        let get_fn = PyObject::native_closure("Queue.get", move |_args: &[PyObjectRef]| {
+            if let PyObjectPayload::List(items) = &items_ref2.payload {
+                let mut w = items.write();
+                if w.is_empty() {
+                    // In real asyncio this would block; we raise Empty for sync usage
+                    return Err(PyException::new(ExceptionKind::RuntimeError, "Queue is empty"));
+                }
+                return Ok(w.remove(0));
+            }
+            Ok(PyObject::none())
+        });
+        let qsize_fn = PyObject::native_closure("Queue.qsize", move |_args: &[PyObjectRef]| {
+            if let PyObjectPayload::List(items) = &items_ref3.payload {
+                return Ok(PyObject::int(items.read().len() as i64));
+            }
+            Ok(PyObject::int(0))
+        });
+        let empty_fn = PyObject::native_closure("Queue.empty", move |_args: &[PyObjectRef]| {
+            if let PyObjectPayload::List(items) = &items_ref4.payload {
+                return Ok(PyObject::bool_val(items.read().is_empty()));
+            }
+            Ok(PyObject::bool_val(true))
+        });
+        let put_nowait_fn = PyObject::native_closure("Queue.put_nowait", move |put_args: &[PyObjectRef]| {
+            if put_args.is_empty() {
+                return Err(PyException::type_error("Queue.put_nowait() requires an argument"));
+            }
+            if let PyObjectPayload::List(items) = &items_ref5.payload {
+                items.write().push(put_args[0].clone());
+            }
+            Ok(PyObject::none())
+        });
+        
         let mut attrs = IndexMap::new();
-        attrs.insert(CompactString::from("_items"), PyObject::list(vec![]));
+        attrs.insert(CompactString::from("_items"), items_list);
         attrs.insert(CompactString::from("maxsize"), PyObject::int(maxsize));
+        attrs.insert(CompactString::from("put"), put_fn);
+        attrs.insert(CompactString::from("get"), get_fn);
+        attrs.insert(CompactString::from("qsize"), qsize_fn);
+        attrs.insert(CompactString::from("empty"), empty_fn);
+        attrs.insert(CompactString::from("put_nowait"), put_nowait_fn);
         Ok(PyObject::instance_with_attrs(q_cls, attrs))
     })
 }
