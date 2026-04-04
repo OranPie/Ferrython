@@ -16,6 +16,7 @@ mod introspection_modules;
 mod concurrency_modules;
 mod async_modules;
 mod import_modules;
+mod network_modules;
 
 use ferrython_core::object::PyObjectRef;
 
@@ -115,6 +116,13 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "asyncio" => Some(async_modules::create_asyncio_module()),
         // Import system
         "importlib" => Some(import_modules::create_importlib_module()),
+        // Networking
+        "socket" => Some(network_modules::create_socket_module()),
+        "urllib" => Some(network_modules::create_urllib_module()),
+        "urllib.request" => Some(network_modules::create_urllib_module()),
+        "urllib.parse" => Some(network_modules::create_urllib_parse_module()),
+        "http" => Some(network_modules::create_http_module()),
+        "http.client" => Some(network_modules::create_http_module()),
         _ => None,
     }
 }
