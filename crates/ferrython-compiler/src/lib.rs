@@ -6,6 +6,7 @@
 mod compiler;
 pub mod error;
 pub mod symbol_table;
+mod peephole;
 
 pub use compiler::Compiler;
 pub use error::CompileError;
@@ -23,7 +24,9 @@ use ferrython_bytecode::CodeObject;
 /// (e.g., `break` outside a loop, invalid assignment targets).
 pub fn compile(module: &Module, filename: &str) -> Result<CodeObject, CompileError> {
     let mut compiler = Compiler::new(filename);
-    compiler.compile_module(module)
+    let mut code = compiler.compile_module(module)?;
+    peephole::optimize(&mut code);
+    Ok(code)
 }
 
 /// Compile in interactive (REPL) mode. Expression statements emit `PrintExpr`
@@ -31,5 +34,7 @@ pub fn compile(module: &Module, filename: &str) -> Result<CodeObject, CompileErr
 pub fn compile_interactive(module: &Module, filename: &str) -> Result<CodeObject, CompileError> {
     let mut compiler = Compiler::new(filename);
     compiler.set_interactive(true);
-    compiler.compile_module(module)
+    let mut code = compiler.compile_module(module)?;
+    peephole::optimize(&mut code);
+    Ok(code)
 }
