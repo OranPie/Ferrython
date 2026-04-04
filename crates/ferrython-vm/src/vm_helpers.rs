@@ -391,6 +391,18 @@ impl VirtualMachine {
                         } else { break; }
                     }
                     Ok(items)
+                } else if let Some(getitem) = obj.get_attr("__getitem__") {
+                    // Fall back to __getitem__-based iteration (old-style sequence protocol)
+                    let mut items = Vec::new();
+                    let mut idx: i64 = 0;
+                    loop {
+                        match self.call_object(getitem.clone(), vec![PyObject::int(idx)]) {
+                            Ok(val) => { items.push(val); idx += 1; }
+                            Err(e) if e.kind == ExceptionKind::IndexError => break,
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    Ok(items)
                 } else {
                     obj.to_list()
                 }

@@ -1466,7 +1466,28 @@ impl VirtualMachine {
                 if let Some(r) = self.try_call_dunder(&obj, "__iter__", vec![])? {
                     self.vm_push(r);
                 } else {
-                    self.vm_push(obj.get_iter()?);
+                    match obj.get_iter() {
+                        Ok(iter) => self.vm_push(iter),
+                        Err(_) => {
+                            // Fall back to __getitem__-based iteration (old-style sequence protocol)
+                            if let Some(getitem) = obj.get_attr("__getitem__") {
+                                let mut items = Vec::new();
+                                let mut idx: i64 = 0;
+                                loop {
+                                    match self.call_object(getitem.clone(), vec![PyObject::int(idx)]) {
+                                        Ok(val) => { items.push(val); idx += 1; }
+                                        Err(e) if e.kind == ExceptionKind::IndexError => break,
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                                self.vm_push(PyObject::list(items).get_iter()?);
+                            } else {
+                                return Err(PyException::type_error(
+                                    format!("'{}' object is not iterable", obj.type_name())
+                                ));
+                            }
+                        }
+                    }
                 }
             }
             Opcode::GetYieldFromIter => {
@@ -1523,6 +1544,7 @@ impl VirtualMachine {
                             | IteratorData::Zip { .. }
                             | IteratorData::Map { .. }
                             | IteratorData::Filter { .. }
+                            | IteratorData::Sentinel { .. }
                             | IteratorData::TakeWhile { .. }
                             | IteratorData::DropWhile { .. })
                     };
@@ -1853,7 +1875,8 @@ impl VirtualMachine {
                 let kwargs_obj = if has_kwargs { Some(frame.pop()) } else { None };
                 let args_obj = frame.pop();
                 let func = frame.pop();
-                let pos_args = args_obj.to_list().unwrap_or_default();
+                // Use collect_iterable to handle generators and lazy iterators
+                let pos_args = self.collect_iterable(&args_obj)?;
                 if let Some(kw_obj) = kwargs_obj {
                     let mut kw_vec: Vec<(CompactString, PyObjectRef)> = Vec::new();
                     if let PyObjectPayload::Dict(map) = &kw_obj.payload {
