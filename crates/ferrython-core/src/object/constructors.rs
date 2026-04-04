@@ -20,6 +20,17 @@ static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObje
 static ELLIPSIS_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Ellipsis }));
 static NOT_IMPLEMENTED_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::NotImplemented }));
 
+// ── Small-int cache (CPython caches -5..=256) ──
+const SMALL_INT_MIN: i64 = -5;
+const SMALL_INT_MAX: i64 = 256;
+const SMALL_INT_COUNT: usize = (SMALL_INT_MAX - SMALL_INT_MIN + 1) as usize;
+
+static SMALL_INT_CACHE: LazyLock<Vec<PyObjectRef>> = LazyLock::new(|| {
+    (SMALL_INT_MIN..=SMALL_INT_MAX)
+        .map(|n| Arc::new(PyObject { payload: PyObjectPayload::Int(PyInt::Small(n)) }))
+        .collect()
+});
+
 // ── GC Tracking for Instance objects (cycle detection) ──
 static TRACKED_INSTANCES: LazyLock<Mutex<Vec<Weak<PyObject>>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -140,7 +151,13 @@ impl PyObject {
     pub fn ellipsis() -> PyObjectRef { ELLIPSIS_SINGLETON.clone() }
     pub fn not_implemented() -> PyObjectRef { NOT_IMPLEMENTED_SINGLETON.clone() }
     pub fn bool_val(v: bool) -> PyObjectRef { if v { TRUE_SINGLETON.clone() } else { FALSE_SINGLETON.clone() } }
-    pub fn int(v: i64) -> PyObjectRef { Self::wrap(PyObjectPayload::Int(PyInt::Small(v))) }
+    pub fn int(v: i64) -> PyObjectRef {
+        if v >= SMALL_INT_MIN && v <= SMALL_INT_MAX {
+            SMALL_INT_CACHE[(v - SMALL_INT_MIN) as usize].clone()
+        } else {
+            Self::wrap(PyObjectPayload::Int(PyInt::Small(v)))
+        }
+    }
     pub fn big_int(v: BigInt) -> PyObjectRef { Self::wrap(PyObjectPayload::Int(PyInt::Big(Box::new(v)))) }
     pub fn float(v: f64) -> PyObjectRef { Self::wrap(PyObjectPayload::Float(v)) }
     pub fn complex(real: f64, imag: f64) -> PyObjectRef { Self::wrap(PyObjectPayload::Complex { real, imag }) }

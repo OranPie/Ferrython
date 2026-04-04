@@ -15,7 +15,7 @@ use ferrython_core::object::{
     has_descriptor_get, is_data_descriptor, lookup_in_class_mro, CompareOp, IteratorData,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::{HashableKey, PyFunction};
+use ferrython_core::types::{HashableKey, PyFunction, PyInt};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -724,6 +724,55 @@ impl VirtualMachine {
 
     pub(crate) fn exec_binary_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         let (a, b) = self.vm_pop2();
+
+        // ── Fast paths for primitive types ──
+        // Skip dunder dispatch and py_add/sub/mul overhead for the most common cases.
+        // Only applies to BinaryAdd/Sub/Mul — the hottest arithmetic opcodes.
+        macro_rules! fast_int_op {
+            ($a:expr, $b:expr, $checked_op:ident, $big_op:tt) => {
+                match (&$a.payload, &$b.payload) {
+                    (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                        let result = match x.$checked_op(*y) {
+                            Some(r) => PyObject::int(r),
+                            None => {
+                                use num_bigint::BigInt;
+                                PyObject::big_int(BigInt::from(*x) $big_op BigInt::from(*y))
+                            }
+                        };
+                        self.vm_push(result);
+                        return Ok(None);
+                    }
+                    (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                        self.vm_push(PyObject::float(*x $big_op *y));
+                        return Ok(None);
+                    }
+                    _ => {}
+                }
+            };
+        }
+
+        match instr.op {
+            Opcode::BinaryAdd | Opcode::InplaceAdd => {
+                fast_int_op!(a, b, checked_add, +);
+                // Also fast-path str + str
+                if let (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) = (&a.payload, &b.payload) {
+                    let mut s = String::with_capacity(x.len() + y.len());
+                    s.push_str(x.as_str());
+                    s.push_str(y.as_str());
+                    self.vm_push(PyObject::str_val(CompactString::from(s)));
+                    return Ok(None);
+                }
+            }
+            Opcode::BinarySubtract | Opcode::InplaceSubtract => {
+                fast_int_op!(a, b, checked_sub, -);
+            }
+            Opcode::BinaryMultiply | Opcode::InplaceMultiply => {
+                fast_int_op!(a, b, checked_mul, *);
+            }
+            _ => {}
+        }
+
+        // ── Standard path: dunder dispatch + fallback ──
         // For IntEnum/IntFlag members, if the primitive op fails, retry with _value_
         macro_rules! with_enum_fallback {
             ($a:expr, $b:expr, $op:ident) => {
