@@ -122,10 +122,55 @@ impl VirtualMachine {
             }
         }
 
+        // NamedTuple metaclass behavior: add __namedtuple__ marker and _fields
+        self.process_namedtuple_class(&cls, &bases);
+
         // Enum metaclass behavior: transform class attributes into enum members
         self.process_enum_class(&cls, &bases)?;
 
         Ok(cls)
+    }
+
+    /// Process typing.NamedTuple class syntax: add __namedtuple__ marker and _fields from annotations.
+    fn process_namedtuple_class(&mut self, cls: &PyObjectRef, bases: &[PyObjectRef]) {
+        let is_namedtuple = bases.iter().any(|b| {
+            if let PyObjectPayload::BuiltinType(name) = &b.payload {
+                name.as_str() == "NamedTuple"
+            } else {
+                false
+            }
+        });
+        if !is_namedtuple { return; }
+
+        let cd = match &cls.payload {
+            PyObjectPayload::Class(cd) => cd,
+            _ => return,
+        };
+
+        // Extract field names from __annotations__
+        let field_names: Vec<CompactString> = {
+            let ns = cd.namespace.read();
+            if let Some(ann) = ns.get("__annotations__") {
+                if let PyObjectPayload::Dict(d) = &ann.payload {
+                    let d = d.read();
+                    d.keys().map(|k| {
+                        if let HashableKey::Str(s) = k {
+                            s.clone()
+                        } else {
+                            CompactString::from(k.to_object().py_to_string())
+                        }
+                    }).collect()
+                } else { vec![] }
+            } else { vec![] }
+        };
+
+        let fields_tuple = PyObject::tuple(
+            field_names.iter().map(|n| PyObject::str_val(n.clone())).collect()
+        );
+
+        let mut ns = cd.namespace.write();
+        ns.insert(CompactString::from("__namedtuple__"), PyObject::bool_val(true));
+        ns.insert(CompactString::from("_fields"), fields_tuple);
     }
 
     /// Process enum class: transform simple attributes into enum member instances.
@@ -167,12 +212,31 @@ impl VirtualMachine {
         // Check if class has a custom __init__ (not inherited from Enum base)
         let has_custom_init = ns.get("__init__").is_some();
 
+        let class_name = cd.name.clone();
+
         for (name, value) in &members {
             let mut attrs = IndexMap::new();
             attrs.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
             attrs.insert(CompactString::from("value"), value.clone());
             attrs.insert(CompactString::from("_name_"), PyObject::str_val(name.clone()));
             attrs.insert(CompactString::from("_value_"), value.clone());
+
+            // Enum __repr__ and __str__: "ClassName.MemberName"
+            let enum_repr = CompactString::from(format!("{}.{}", class_name, name));
+            let repr_copy = enum_repr.clone();
+            attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+                "__repr__",
+                move |_args| {
+                    Ok(PyObject::str_val(repr_copy.clone()))
+                }
+            ));
+            let str_copy = enum_repr;
+            attrs.insert(CompactString::from("__str__"), PyObject::native_closure(
+                "__str__",
+                move |_args| {
+                    Ok(PyObject::str_val(str_copy.clone()))
+                }
+            ));
 
             // If custom __init__ exists and value is a tuple, unpack it and call __init__
             if has_custom_init {

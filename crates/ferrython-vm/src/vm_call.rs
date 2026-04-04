@@ -579,10 +579,10 @@ impl VirtualMachine {
                         drop(ns);
                         let mut ns = cd.namespace.write();
                         ns.insert(CompactString::from("__setattr__"), PyObject::native_function("__setattr__", |_args| {
-                            Err(PyException::runtime_error(String::from("cannot assign to field of frozen dataclass")))
+                            Err(PyException::attribute_error(String::from("cannot assign to field of frozen dataclass")))
                         }));
                         ns.insert(CompactString::from("__delattr__"), PyObject::native_function("__delattr__", |_args| {
-                            Err(PyException::runtime_error(String::from("cannot delete field of frozen dataclass")))
+                            Err(PyException::attribute_error(String::from("cannot delete field of frozen dataclass")))
                         }));
                     }
                 }

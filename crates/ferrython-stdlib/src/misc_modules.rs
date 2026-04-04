@@ -205,6 +205,7 @@ pub fn create_contextlib_module() -> PyObjectRef {
     });
 
     // closing(thing) — context manager that calls thing.close() on exit
+    // Uses __closing_thing__ marker so the VM can call close() through normal dispatch
     let closing_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() { return Err(PyException::type_error("closing requires 1 argument")); }
         let thing = args[0].clone();
@@ -216,19 +217,13 @@ pub fn create_contextlib_module() -> PyObjectRef {
                 Ok(thing_enter.clone())
             }
         ));
-        let thing_exit = thing.clone();
-        attrs.insert(CompactString::from("__exit__"), PyObject::native_closure(
-            "closing.__exit__", move |_args: &[PyObjectRef]| {
-                if let Some(close_fn) = thing_exit.get_attr("close") {
-                    match &close_fn.payload {
-                        PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&[thing_exit.clone()]); }
-                        PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[thing_exit.clone()]); }
-                        _ => {}
-                    }
-                }
+        // __exit__ is a no-op; the VM handles calling close() via __closing_thing__ marker
+        attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
+            "closing.__exit__", |_args: &[PyObjectRef]| {
                 Ok(PyObject::bool_val(false))
             }
         ));
+        attrs.insert(CompactString::from("__closing_thing__"), thing);
         Ok(PyObject::instance_with_attrs(cls, attrs))
     });
 

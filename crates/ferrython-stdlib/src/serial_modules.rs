@@ -888,59 +888,103 @@ fn struct_pack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         _ => cfg!(target_endian = "little"),
     };
     while let Some(c) = chars.next() {
-        if c.is_ascii_digit() { continue; } // count handling simplified
-        match c {
-            'b' | 'B' => {
-                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
-                let val = args[arg_idx].to_int()? as u8;
-                result.push(val);
-                arg_idx += 1;
+        // Parse optional repeat count
+        let count = if c.is_ascii_digit() {
+            let mut n = (c as u8 - b'0') as usize;
+            while let Some(&d) = chars.peek() {
+                if d.is_ascii_digit() { n = n * 10 + (d as u8 - b'0') as usize; chars.next(); } else { break; }
             }
-            'h' | 'H' => {
-                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
-                let val = args[arg_idx].to_int()? as u16;
-                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
-                result.extend_from_slice(&bytes);
-                arg_idx += 1;
-            }
-            'i' | 'I' | 'l' | 'L' => {
-                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
-                let val = args[arg_idx].to_int()? as u32;
-                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
-                result.extend_from_slice(&bytes);
-                arg_idx += 1;
-            }
-            'q' | 'Q' => {
-                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
-                let val = args[arg_idx].to_int()? as u64;
-                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
-                result.extend_from_slice(&bytes);
-                arg_idx += 1;
-            }
-            'f' => {
-                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
-                let val = args[arg_idx].to_float()? as f32;
-                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
-                result.extend_from_slice(&bytes);
-                arg_idx += 1;
-            }
-            'd' => {
-                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
-                let val = args[arg_idx].to_float()?;
-                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
-                result.extend_from_slice(&bytes);
-                arg_idx += 1;
-            }
-            '?' => {
-                if arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
-                result.push(if args[arg_idx].is_truthy() { 1 } else { 0 });
-                arg_idx += 1;
-            }
-            'x' => result.push(0),
-            _ => {}
-        }
+            let fc = match chars.next() {
+                Some(fc) => fc,
+                None => break,
+            };
+            pack_one_format(fc, n, &args, &mut arg_idx, &mut result, little_endian)?;
+            continue;
+        } else { 1usize };
+        pack_one_format(c, count, &args, &mut arg_idx, &mut result, little_endian)?;
     }
     Ok(PyObject::bytes(result))
+}
+
+fn pack_one_format(c: char, count: usize, args: &[PyObjectRef], arg_idx: &mut usize, result: &mut Vec<u8>, little_endian: bool) -> PyResult<()> {
+    match c {
+        's' => {
+            if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+            let src = match &args[*arg_idx].payload {
+                PyObjectPayload::Bytes(b) => b.clone(),
+                _ => args[*arg_idx].py_to_string().into_bytes(),
+            };
+            for i in 0..count {
+                result.push(if i < src.len() { src[i] } else { 0 });
+            }
+            *arg_idx += 1;
+        }
+        'b' | 'B' => {
+            for _ in 0..count {
+                if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[*arg_idx].to_int()? as u8;
+                result.push(val);
+                *arg_idx += 1;
+            }
+        }
+        'h' | 'H' => {
+            for _ in 0..count {
+                if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[*arg_idx].to_int()? as u16;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                *arg_idx += 1;
+            }
+        }
+        'i' | 'I' | 'l' | 'L' => {
+            for _ in 0..count {
+                if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[*arg_idx].to_int()? as u32;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                *arg_idx += 1;
+            }
+        }
+        'q' | 'Q' => {
+            for _ in 0..count {
+                if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[*arg_idx].to_int()? as u64;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                *arg_idx += 1;
+            }
+        }
+        'f' => {
+            for _ in 0..count {
+                if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[*arg_idx].to_float()? as f32;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                *arg_idx += 1;
+            }
+        }
+        'd' => {
+            for _ in 0..count {
+                if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[*arg_idx].to_float()?;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                *arg_idx += 1;
+            }
+        }
+        '?' => {
+            for _ in 0..count {
+                if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                result.push(if args[*arg_idx].is_truthy() { 1 } else { 0 });
+                *arg_idx += 1;
+            }
+        }
+        'x' => {
+            for _ in 0..count { result.push(0); }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn struct_unpack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -960,87 +1004,131 @@ fn struct_unpack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         _ => cfg!(target_endian = "little"),
     };
     while let Some(c) = chars.next() {
-        if c.is_ascii_digit() { continue; }
-        match c {
-            'b' => {
-                if offset >= data.len() { break; }
-                result.push(PyObject::int(data[offset] as i8 as i64));
-                offset += 1;
+        // Parse optional repeat count
+        let count = if c.is_ascii_digit() {
+            let mut n = (c as u8 - b'0') as usize;
+            while let Some(&d) = chars.peek() {
+                if d.is_ascii_digit() { n = n * 10 + (d as u8 - b'0') as usize; chars.next(); } else { break; }
             }
-            'B' => {
-                if offset >= data.len() { break; }
-                result.push(PyObject::int(data[offset] as i64));
-                offset += 1;
-            }
-            'h' => {
-                if offset + 2 > data.len() { break; }
-                let bytes: [u8; 2] = [data[offset], data[offset + 1]];
-                let val = if little_endian { i16::from_le_bytes(bytes) } else { i16::from_be_bytes(bytes) };
-                result.push(PyObject::int(val as i64));
-                offset += 2;
-            }
-            'H' => {
-                if offset + 2 > data.len() { break; }
-                let bytes: [u8; 2] = [data[offset], data[offset + 1]];
-                let val = if little_endian { u16::from_le_bytes(bytes) } else { u16::from_be_bytes(bytes) };
-                result.push(PyObject::int(val as i64));
-                offset += 2;
-            }
-            'i' | 'l' => {
-                if offset + 4 > data.len() { break; }
-                let bytes: [u8; 4] = [data[offset], data[offset+1], data[offset+2], data[offset+3]];
-                let val = if little_endian { i32::from_le_bytes(bytes) } else { i32::from_be_bytes(bytes) };
-                result.push(PyObject::int(val as i64));
-                offset += 4;
-            }
-            'I' | 'L' => {
-                if offset + 4 > data.len() { break; }
-                let bytes: [u8; 4] = [data[offset], data[offset+1], data[offset+2], data[offset+3]];
-                let val = if little_endian { u32::from_le_bytes(bytes) } else { u32::from_be_bytes(bytes) };
-                result.push(PyObject::int(val as i64));
-                offset += 4;
-            }
-            'q' => {
-                if offset + 8 > data.len() { break; }
-                let mut bytes = [0u8; 8];
-                bytes.copy_from_slice(&data[offset..offset+8]);
-                let val = if little_endian { i64::from_le_bytes(bytes) } else { i64::from_be_bytes(bytes) };
-                result.push(PyObject::int(val));
-                offset += 8;
-            }
-            'Q' => {
-                if offset + 8 > data.len() { break; }
-                let mut bytes = [0u8; 8];
-                bytes.copy_from_slice(&data[offset..offset+8]);
-                let val = if little_endian { u64::from_le_bytes(bytes) } else { u64::from_be_bytes(bytes) };
-                result.push(PyObject::int(val as i64));
-                offset += 8;
-            }
-            'f' => {
-                if offset + 4 > data.len() { break; }
-                let bytes: [u8; 4] = [data[offset], data[offset+1], data[offset+2], data[offset+3]];
-                let val = if little_endian { f32::from_le_bytes(bytes) } else { f32::from_be_bytes(bytes) };
-                result.push(PyObject::float(val as f64));
-                offset += 4;
-            }
-            'd' => {
-                if offset + 8 > data.len() { break; }
-                let mut bytes = [0u8; 8];
-                bytes.copy_from_slice(&data[offset..offset+8]);
-                let val = if little_endian { f64::from_le_bytes(bytes) } else { f64::from_be_bytes(bytes) };
-                result.push(PyObject::float(val));
-                offset += 8;
-            }
-            '?' => {
-                if offset >= data.len() { break; }
-                result.push(PyObject::bool_val(data[offset] != 0));
-                offset += 1;
-            }
-            'x' => { offset += 1; }
-            _ => {}
-        }
+            let fc = match chars.next() {
+                Some(fc) => fc,
+                None => break,
+            };
+            unpack_one_format(fc, n, &data, &mut offset, &mut result, little_endian);
+            continue;
+        } else { 1usize };
+        unpack_one_format(c, count, &data, &mut offset, &mut result, little_endian);
     }
     Ok(PyObject::tuple(result))
+}
+
+fn unpack_one_format(c: char, count: usize, data: &[u8], offset: &mut usize, result: &mut Vec<PyObjectRef>, little_endian: bool) {
+    match c {
+        's' => {
+            if *offset + count > data.len() { return; }
+            let slice = data[*offset..*offset + count].to_vec();
+            result.push(PyObject::bytes(slice));
+            *offset += count;
+        }
+        'b' => {
+            for _ in 0..count {
+                if *offset >= data.len() { break; }
+                result.push(PyObject::int(data[*offset] as i8 as i64));
+                *offset += 1;
+            }
+        }
+        'B' => {
+            for _ in 0..count {
+                if *offset >= data.len() { break; }
+                result.push(PyObject::int(data[*offset] as i64));
+                *offset += 1;
+            }
+        }
+        'h' => {
+            for _ in 0..count {
+                if *offset + 2 > data.len() { break; }
+                let bytes: [u8; 2] = [data[*offset], data[*offset + 1]];
+                let val = if little_endian { i16::from_le_bytes(bytes) } else { i16::from_be_bytes(bytes) };
+                result.push(PyObject::int(val as i64));
+                *offset += 2;
+            }
+        }
+        'H' => {
+            for _ in 0..count {
+                if *offset + 2 > data.len() { break; }
+                let bytes: [u8; 2] = [data[*offset], data[*offset + 1]];
+                let val = if little_endian { u16::from_le_bytes(bytes) } else { u16::from_be_bytes(bytes) };
+                result.push(PyObject::int(val as i64));
+                *offset += 2;
+            }
+        }
+        'i' | 'l' => {
+            for _ in 0..count {
+                if *offset + 4 > data.len() { break; }
+                let bytes: [u8; 4] = [data[*offset], data[*offset+1], data[*offset+2], data[*offset+3]];
+                let val = if little_endian { i32::from_le_bytes(bytes) } else { i32::from_be_bytes(bytes) };
+                result.push(PyObject::int(val as i64));
+                *offset += 4;
+            }
+        }
+        'I' | 'L' => {
+            for _ in 0..count {
+                if *offset + 4 > data.len() { break; }
+                let bytes: [u8; 4] = [data[*offset], data[*offset+1], data[*offset+2], data[*offset+3]];
+                let val = if little_endian { u32::from_le_bytes(bytes) } else { u32::from_be_bytes(bytes) };
+                result.push(PyObject::int(val as i64));
+                *offset += 4;
+            }
+        }
+        'q' => {
+            for _ in 0..count {
+                if *offset + 8 > data.len() { break; }
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&data[*offset..*offset+8]);
+                let val = if little_endian { i64::from_le_bytes(bytes) } else { i64::from_be_bytes(bytes) };
+                result.push(PyObject::int(val));
+                *offset += 8;
+            }
+        }
+        'Q' => {
+            for _ in 0..count {
+                if *offset + 8 > data.len() { break; }
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&data[*offset..*offset+8]);
+                let val = if little_endian { u64::from_le_bytes(bytes) } else { u64::from_be_bytes(bytes) };
+                result.push(PyObject::int(val as i64));
+                *offset += 8;
+            }
+        }
+        'f' => {
+            for _ in 0..count {
+                if *offset + 4 > data.len() { break; }
+                let bytes: [u8; 4] = [data[*offset], data[*offset+1], data[*offset+2], data[*offset+3]];
+                let val = if little_endian { f32::from_le_bytes(bytes) } else { f32::from_be_bytes(bytes) };
+                result.push(PyObject::float(val as f64));
+                *offset += 4;
+            }
+        }
+        'd' => {
+            for _ in 0..count {
+                if *offset + 8 > data.len() { break; }
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&data[*offset..*offset+8]);
+                let val = if little_endian { f64::from_le_bytes(bytes) } else { f64::from_be_bytes(bytes) };
+                result.push(PyObject::float(val));
+                *offset += 8;
+            }
+        }
+        '?' => {
+            for _ in 0..count {
+                if *offset >= data.len() { break; }
+                result.push(PyObject::bool_val(data[*offset] != 0));
+                *offset += 1;
+            }
+        }
+        'x' => { *offset += count; }
+        _ => {}
+    }
 }
 
 // ── pickle module ──

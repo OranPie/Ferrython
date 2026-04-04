@@ -90,8 +90,8 @@ impl VirtualMachine {
                         };
                     }
                 }
-                // Fall back to py_to_string which handles datetime/time/date/timedelta markers
-                Ok(obj.py_to_string())
+                // Fall back to vm_repr for dataclass/namedtuple auto-repr and generic display
+                self.vm_repr(obj)
             }
             // For containers, str() is same as repr() (elements use repr)
             PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) |
@@ -99,6 +99,24 @@ impl VirtualMachine {
             PyObjectPayload::FrozenSet(_) => self.vm_repr(obj),
             _ => Ok(obj.py_to_string()),
         }
+    }
+
+    /// Call close() on an object through normal VM dispatch (used by contextlib.closing).
+    pub(crate) fn call_close_on(&mut self, obj: &PyObjectRef) -> PyResult<()> {
+        if let Some(close_fn) = obj.get_attr("close") {
+            if matches!(&close_fn.payload, PyObjectPayload::BoundMethod { .. }) {
+                let _ = self.call_object(close_fn, vec![])?;
+            } else {
+                let bound = Arc::new(PyObject {
+                    payload: PyObjectPayload::BoundMethod {
+                        receiver: obj.clone(),
+                        method: close_fn,
+                    }
+                });
+                let _ = self.call_object(bound, vec![])?;
+            }
+        }
+        Ok(())
     }
 
     /// Produce a repr string for an object, dispatching __repr__ on instances.

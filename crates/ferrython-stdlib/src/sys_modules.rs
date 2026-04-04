@@ -346,6 +346,7 @@ pub fn create_os_module() -> PyObjectRef {
         ("readlink", make_builtin(os_readlink)),
         ("isatty", make_builtin(os_isatty)),
         ("chdir", make_builtin(os_chdir)),
+        ("system", make_builtin(os_system)),
     ])
 }
 
@@ -598,6 +599,17 @@ fn os_chdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     std::env::set_current_dir(&path)
         .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
     Ok(PyObject::none())
+}
+
+fn os_system(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.system", args, 1)?;
+    let cmd = args[0].py_to_string();
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .status()
+        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    Ok(PyObject::int(status.code().unwrap_or(-1) as i64))
 }
 
 // ── os.path module ──

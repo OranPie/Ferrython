@@ -2445,6 +2445,17 @@ impl VirtualMachine {
 
             Opcode::WithCleanupStart => {
                 let tos = self.vm_frame().peek().clone();
+                // Extract __closing_thing__ from context manager (for contextlib.closing)
+                // We peek at exit_fn (2nd from top) to get the receiver before consumption
+                let closing_thing = {
+                    let stack = &self.vm_frame().stack;
+                    if stack.len() >= 2 {
+                        let exit_fn_ref = &stack[stack.len() - 2];
+                        if let PyObjectPayload::BoundMethod { receiver, .. } = &exit_fn_ref.payload {
+                            receiver.get_attr("__closing_thing__")
+                        } else { None }
+                    } else { None }
+                };
                 if matches!(tos.payload, PyObjectPayload::None) {
                     // Normal exit (no exception)
                     self.vm_pop(); // pop None
@@ -2462,6 +2473,10 @@ impl VirtualMachine {
                         let result = self.call_object(exit_fn, vec![
                             PyObject::none(), PyObject::none(), PyObject::none()
                         ])?;
+                        // Call close() on closing thing if present
+                        if let Some(thing) = &closing_thing {
+                            self.call_close_on(thing)?;
+                        }
                         // If __aexit__ returns a coroutine, drive it to completion
                         let result = self.maybe_await_result(result)?;
                         let f = self.vm_frame();
@@ -2509,6 +2524,10 @@ impl VirtualMachine {
                         let result = self.call_object(exit_fn, vec![
                             exc_type.clone(), exc_val.clone(), exc_tb.clone()
                         ])?;
+                        // Call close() on closing thing if present
+                        if let Some(thing) = &closing_thing {
+                            let _ = self.call_close_on(thing);
+                        }
                         // If __aexit__ returns a coroutine, drive it to completion
                         let result = self.maybe_await_result(result)?;
                         let f = self.vm_frame();
@@ -2534,6 +2553,10 @@ impl VirtualMachine {
                         let result = self.call_object(exit_fn, vec![
                             PyObject::none(), PyObject::none(), PyObject::none()
                         ])?;
+                        // Call close() on closing thing if present
+                        if let Some(thing) = &closing_thing {
+                            let _ = self.call_close_on(thing);
+                        }
                         let result = self.maybe_await_result(result)?;
                         let f = self.vm_frame();
                         f.push(PyObject::none());

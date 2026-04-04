@@ -530,10 +530,40 @@ fn re_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let maxsplit = if args.len() > 2 { args[2].to_int().unwrap_or(0) as usize } else { 0 };
     let flags = if args.len() > 3 { args[3].to_int().unwrap_or(0) } else { 0 };
     let re = build_regex(&pattern, flags)?;
-    let parts: Vec<PyObjectRef> = if maxsplit == 0 {
-        re.split(&text).map(|s| PyObject::str_val(CompactString::from(s))).collect()
+    let num_groups = re.captures_len() - 1; // excluding group 0
+
+    let parts: Vec<PyObjectRef> = if num_groups == 0 {
+        // No capturing groups: use simple split
+        if maxsplit == 0 {
+            re.split(&text).map(|s| PyObject::str_val(CompactString::from(s))).collect()
+        } else {
+            re.splitn(&text, maxsplit + 1).map(|s| PyObject::str_val(CompactString::from(s))).collect()
+        }
     } else {
-        re.splitn(&text, maxsplit + 1).map(|s| PyObject::str_val(CompactString::from(s))).collect()
+        // Capturing groups: include captured text in result (CPython behavior)
+        let mut result = Vec::new();
+        let mut last = 0;
+        let mut splits = 0;
+        for caps in re.captures_iter(&text) {
+            if maxsplit > 0 && splits >= maxsplit {
+                break;
+            }
+            let whole = caps.get(0).unwrap();
+            // Text before the match
+            result.push(PyObject::str_val(CompactString::from(&text[last..whole.start()])));
+            // Each capturing group
+            for i in 1..=num_groups {
+                match caps.get(i) {
+                    Some(m) => result.push(PyObject::str_val(CompactString::from(m.as_str()))),
+                    None => result.push(PyObject::none()),
+                }
+            }
+            last = whole.end();
+            splits += 1;
+        }
+        // Remaining text after last match
+        result.push(PyObject::str_val(CompactString::from(&text[last..])));
+        result
     };
     Ok(PyObject::list(parts))
 }
