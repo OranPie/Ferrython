@@ -172,7 +172,7 @@ impl PyObject {
     pub fn builtin_type(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinType(name)) }
     pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef { Self::wrap(PyObjectPayload::Code(Box::new(code))) }
     pub fn class(name: CompactString, bases: Vec<PyObjectRef>, namespace: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Class(ClassData { name, bases, namespace: Arc::new(RwLock::new(namespace)), mro: Vec::new(), metaclass: None }))
+        Self::wrap(PyObjectPayload::Class(ClassData::new(name, bases, namespace, Vec::new(), None)))
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
         let dict_storage = Self::detect_dict_subclass(&class);

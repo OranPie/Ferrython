@@ -5,5 +5,6 @@
 //! helper types like `HashableKey` and `PyInt`.
 
 pub mod error;
+pub mod intern;
 pub mod object;
 pub mod types;

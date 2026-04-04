@@ -125,24 +125,13 @@ pub(super) fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &st
 pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "keys" => {
-            let keys: Vec<PyObjectRef> = map.read().keys()
-                .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
-                .map(|k| k.to_object()).collect();
-            Ok(PyObject::list(keys))
+            Ok(PyObject::wrap(PyObjectPayload::DictKeys(map.clone())))
         }
         "values" => {
-            let r = map.read();
-            let vals: Vec<PyObjectRef> = r.iter()
-                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
-                .map(|(_, v)| v.clone()).collect();
-            Ok(PyObject::list(vals))
+            Ok(PyObject::wrap(PyObjectPayload::DictValues(map.clone())))
         }
         "items" => {
-            let pairs: Vec<PyObjectRef> = map.read().iter()
-                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
-                .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
-                .collect();
-            Ok(PyObject::list(pairs))
+            Ok(PyObject::wrap(PyObjectPayload::DictItems(map.clone())))
         }
         "get" => {
             check_args_min("get", args, 1)?;

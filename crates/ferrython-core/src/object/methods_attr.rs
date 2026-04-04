@@ -11,24 +11,47 @@ use super::helpers::*;
 use super::methods::PyObjectMethods;
 
 /// Walk a class and its base classes (MRO) to find an attribute.
+/// Uses per-class method cache to avoid repeated linear MRO scans.
 pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
     if let PyObjectPayload::Class(cd) = &class.payload {
-        // Check own namespace first
-        if let Some(v) = cd.namespace.read().get(name).cloned() {
-            return Some(v);
+        // Fast path: check method cache first
+        {
+            let cache = cd.method_cache.read();
+            if let Some(cached) = cache.get(name) {
+                return cached.clone();
+            }
         }
-        // Use computed MRO if available, otherwise walk bases recursively
-        if !cd.mro.is_empty() {
-            for base in &cd.mro {
-                if let PyObjectPayload::Class(bcd) = &base.payload {
-                    if let Some(v) = bcd.namespace.read().get(name).cloned() {
-                        return Some(v);
-                    }
+
+        // Slow path: linear MRO scan
+        let result = lookup_in_class_mro_uncached(cd, name);
+
+        // Populate cache (cache both hits and misses)
+        cd.method_cache.write().insert(CompactString::from(name), result.clone());
+
+        return result;
+    }
+    None
+}
+
+/// Uncached MRO lookup — scans own namespace then bases.
+fn lookup_in_class_mro_uncached(cd: &ClassData, name: &str) -> Option<PyObjectRef> {
+    // Check own namespace first
+    if let Some(v) = cd.namespace.read().get(name).cloned() {
+        return Some(v);
+    }
+    // Use computed MRO if available, otherwise walk bases recursively
+    if !cd.mro.is_empty() {
+        for base in &cd.mro {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                if let Some(v) = bcd.namespace.read().get(name).cloned() {
+                    return Some(v);
                 }
             }
-        } else {
-            for base in &cd.bases {
-                if let Some(v) = lookup_in_class_mro(base, name) {
+        }
+    } else {
+        for base in &cd.bases {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                if let Some(v) = lookup_in_class_mro_uncached(bcd, name) {
                     return Some(v);
                 }
             }

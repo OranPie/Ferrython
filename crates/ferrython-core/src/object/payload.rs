@@ -98,6 +98,10 @@ pub enum PyObjectPayload {
     /// Used by asyncio.sleep(), asyncio.gather(), etc. to return proper awaitables
     /// from native functions that don't have their own coroutine frame.
     BuiltinAwaitable(PyObjectRef),
+    /// Dict view objects — live views backed by the underlying dict's Arc
+    DictKeys(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
+    DictValues(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
+    DictItems(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
 }
 
 impl fmt::Debug for PyObjectPayload {
@@ -146,6 +150,9 @@ impl fmt::Debug for PyObjectPayload {
             Self::Super { .. } => write!(f, "Super(...)"),
             Self::Range { start, stop, step } => write!(f, "Range({start}, {stop}, {step})"),
             Self::BuiltinAwaitable(_) => write!(f, "BuiltinAwaitable(...)"),
+            Self::DictKeys(_) => write!(f, "dict_keys(...)"),
+            Self::DictValues(_) => write!(f, "dict_values(...)"),
+            Self::DictItems(_) => write!(f, "dict_items(...)"),
         }
     }
 }
@@ -197,6 +204,33 @@ pub struct ClassData {
     pub mro: Vec<PyObjectRef>,
     /// Custom metaclass, if any (e.g., SingletonMeta). None = default `type`.
     pub metaclass: Option<PyObjectRef>,
+    /// Per-class method resolution cache: avoids repeated MRO scans for the same attr name.
+    /// Cleared on any namespace mutation (class attr assignment).
+    pub method_cache: Arc<RwLock<IndexMap<CompactString, Option<PyObjectRef>>>>,
+}
+
+impl ClassData {
+    pub fn new(
+        name: CompactString,
+        bases: Vec<PyObjectRef>,
+        namespace: IndexMap<CompactString, PyObjectRef>,
+        mro: Vec<PyObjectRef>,
+        metaclass: Option<PyObjectRef>,
+    ) -> Self {
+        Self {
+            name,
+            bases,
+            namespace: Arc::new(RwLock::new(namespace)),
+            mro,
+            metaclass,
+            method_cache: Arc::new(RwLock::new(IndexMap::new())),
+        }
+    }
+
+    /// Invalidate the method cache (call after any namespace mutation).
+    pub fn invalidate_cache(&self) {
+        self.method_cache.write().clear();
+    }
 }
 
 #[derive(Debug, Clone)]

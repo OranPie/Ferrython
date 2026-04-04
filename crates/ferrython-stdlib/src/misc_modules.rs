@@ -86,18 +86,21 @@ pub fn create_contextlib_module() -> PyObjectRef {
             let mut attrs = inst_data.attrs.write();
             attrs.insert(CompactString::from("_callbacks"), PyObject::list(vec![]));
 
-            attrs.insert(CompactString::from("__enter__"), PyObject::native_function(
-                "ExitStack.__enter__", |args: &[PyObjectRef]| {
-                    if args.is_empty() { return Ok(PyObject::none()); }
-                    Ok(args[0].clone())
+            // ExitStack methods are stored as instance attrs. Instance attr lookup
+            // does NOT bind self, so we capture inst via closure (NativeClosure).
+            let self_ref = inst.clone();
+            attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "ExitStack.__enter__", {
+                    let self_ref = self_ref.clone();
+                    move |_args: &[PyObjectRef]| Ok(self_ref.clone())
                 }
             ));
 
-            attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
-                "ExitStack.__exit__", |args: &[PyObjectRef]| {
-                    // Call registered callbacks in reverse order (best-effort for native fns)
-                    if let Some(self_obj) = args.first() {
-                        if let Some(cbs) = self_obj.get_attr("_callbacks") {
+            attrs.insert(CompactString::from("__exit__"), PyObject::native_closure(
+                "ExitStack.__exit__", {
+                    let self_ref = self_ref.clone();
+                    move |_args: &[PyObjectRef]| {
+                        if let Some(cbs) = self_ref.get_attr("_callbacks") {
                             if let Ok(items) = cbs.to_list() {
                                 for cb in items.iter().rev() {
                                     match &cb.payload {
@@ -112,67 +115,71 @@ pub fn create_contextlib_module() -> PyObjectRef {
                                 }
                             }
                         }
+                        Ok(PyObject::bool_val(false))
                     }
-                    Ok(PyObject::bool_val(false))
                 }
             ));
 
-            attrs.insert(CompactString::from("push"), PyObject::native_function(
-                "ExitStack.push", |args: &[PyObjectRef]| {
-                    check_args_min("ExitStack.push", args, 2)?;
-                    let self_obj = &args[0];
-                    let callback = &args[1];
-                    if let Some(cbs) = self_obj.get_attr("_callbacks") {
-                        if let PyObjectPayload::List(items) = &cbs.payload {
-                            items.write().push(callback.clone());
-                        }
-                    }
-                    Ok(callback.clone())
-                }
-            ));
-
-            attrs.insert(CompactString::from("callback"), PyObject::native_function(
-                "ExitStack.callback", |args: &[PyObjectRef]| {
-                    check_args_min("ExitStack.callback", args, 2)?;
-                    let self_obj = &args[0];
-                    let func = &args[1];
-                    if let Some(cbs) = self_obj.get_attr("_callbacks") {
-                        if let PyObjectPayload::List(items) = &cbs.payload {
-                            items.write().push(func.clone());
-                        }
-                    }
-                    Ok(func.clone())
-                }
-            ));
-
-            attrs.insert(CompactString::from("enter_context"), PyObject::native_function(
-                "ExitStack.enter_context", |args: &[PyObjectRef]| {
-                    check_args_min("ExitStack.enter_context", args, 2)?;
-                    let self_obj = &args[0];
-                    let cm = &args[1];
-                    // Call __enter__ if it's a native function
-                    let result = if let Some(enter) = cm.get_attr("__enter__") {
-                        match &enter.payload {
-                            PyObjectPayload::NativeFunction { func, .. } => {
-                                func(&[cm.clone()])?
-                            }
-                            PyObjectPayload::NativeClosure { func, .. } => {
-                                func(&[cm.clone()])?
-                            }
-                            _ => PyObject::none()
-                        }
-                    } else {
-                        PyObject::none()
-                    };
-                    // Register __exit__ as callback
-                    if let Some(exit_fn) = cm.get_attr("__exit__") {
-                        if let Some(cbs) = self_obj.get_attr("_callbacks") {
+            attrs.insert(CompactString::from("push"), PyObject::native_closure(
+                "ExitStack.push", {
+                    let self_ref = self_ref.clone();
+                    move |args: &[PyObjectRef]| {
+                        check_args_min("ExitStack.push", args, 1)?;
+                        let callback = &args[0];
+                        if let Some(cbs) = self_ref.get_attr("_callbacks") {
                             if let PyObjectPayload::List(items) = &cbs.payload {
-                                items.write().push(exit_fn);
+                                items.write().push(callback.clone());
                             }
                         }
+                        Ok(callback.clone())
                     }
-                    Ok(result)
+                }
+            ));
+
+            attrs.insert(CompactString::from("callback"), PyObject::native_closure(
+                "ExitStack.callback", {
+                    let self_ref = self_ref.clone();
+                    move |args: &[PyObjectRef]| {
+                        check_args_min("ExitStack.callback", args, 1)?;
+                        let func = &args[0];
+                        if let Some(cbs) = self_ref.get_attr("_callbacks") {
+                            if let PyObjectPayload::List(items) = &cbs.payload {
+                                items.write().push(func.clone());
+                            }
+                        }
+                        Ok(func.clone())
+                    }
+                }
+            ));
+
+            attrs.insert(CompactString::from("enter_context"), PyObject::native_closure(
+                "ExitStack.enter_context", {
+                    let self_ref = self_ref.clone();
+                    move |args: &[PyObjectRef]| {
+                        check_args_min("ExitStack.enter_context", args, 1)?;
+                        let cm = &args[0];
+                        // Call __enter__
+                        let result = if let Some(enter) = cm.get_attr("__enter__") {
+                            match &enter.payload {
+                                PyObjectPayload::NativeFunction { func, .. } => func(&[cm.clone()])?,
+                                PyObjectPayload::NativeClosure { func, .. } => func(&[cm.clone()])?,
+                                // BuiltinBoundMethod: for all builtin types __enter__ returns self
+                                PyObjectPayload::BuiltinBoundMethod { .. } => cm.clone(),
+                                _ => cm.clone()
+                            }
+                        } else {
+                            PyObject::none()
+                        };
+                        // Register __exit__ as callback
+                        if let Some(exit_fn) = cm.get_attr("__exit__") {
+                            if let Some(cbs) = self_ref.get_attr("_callbacks") {
+                                if let PyObjectPayload::List(items) = &cbs.payload {
+                                    items.write().push(exit_fn);
+                                }
+                            }
+                        }
+                        Ok(result)
+                    }
                 }
             ));
         }

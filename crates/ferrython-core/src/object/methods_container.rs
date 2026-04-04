@@ -87,6 +87,13 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                     _ => Err(PyException::type_error("object of type 'iterator' has no len()")),
                 }
             }
+            PyObjectPayload::DictKeys(m) | PyObjectPayload::DictValues(m) | PyObjectPayload::DictItems(m) => {
+                let map = m.read();
+                let mut hidden = 0;
+                if map.contains_key(&HashableKey::Str(CompactString::from("__defaultdict_factory__"))) { hidden += 1; }
+                if map.contains_key(&HashableKey::Str(CompactString::from("__counter__"))) { hidden += 1; }
+                Ok(map.len() - hidden)
+            },
             _ => Err(PyException::type_error(format!("object of type '{}' has no len()", obj.type_name()))),
         }
 }
@@ -266,6 +273,27 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                     }
                 }
             }
+            PyObjectPayload::DictKeys(m) => {
+                let hk = item.to_hashable_key()?;
+                Ok(m.read().contains_key(&hk))
+            }
+            PyObjectPayload::DictValues(m) => {
+                let r = m.read();
+                Ok(r.values().any(|v| partial_cmp_objects(v, item) == Some(std::cmp::Ordering::Equal)))
+            }
+            PyObjectPayload::DictItems(m) => {
+                // item should be a (key, value) tuple
+                if let PyObjectPayload::Tuple(pair) = &item.payload {
+                    if pair.len() == 2 {
+                        let hk = pair[0].to_hashable_key()?;
+                        let r = m.read();
+                        if let Some(val) = r.get(&hk) {
+                            return Ok(partial_cmp_objects(val, &pair[1]) == Some(std::cmp::Ordering::Equal));
+                        }
+                    }
+                }
+                Ok(false)
+            }
             _ => Err(PyException::type_error(format!("argument of type '{}' is not iterable", obj.type_name()))),
         }
 }
@@ -311,6 +339,24 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     }
                 }
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Tuple { items: vec![], index: 0 })))))
+            }
+            PyObjectPayload::DictKeys(m) => {
+                let keys: Vec<PyObjectRef> = m.read().keys()
+                    .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .map(|k| k.to_object()).collect();
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
+            }
+            PyObjectPayload::DictValues(m) => {
+                let vals: Vec<PyObjectRef> = m.read().iter()
+                    .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .map(|(_, v)| v.clone()).collect();
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: vals, index: 0 })))))
+            }
+            PyObjectPayload::DictItems(m) => {
+                let items: Vec<PyObjectRef> = m.read().iter()
+                    .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()])).collect();
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items, index: 0 })))))
             }
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name()))),
         }

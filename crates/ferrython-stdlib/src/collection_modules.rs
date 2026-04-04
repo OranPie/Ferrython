@@ -1614,30 +1614,30 @@ pub fn create_operator_module() -> PyObjectRef {
         ("length_hint", make_builtin(|args| {
             check_args_min("length_hint", args, 1)?;
             let default = if args.len() > 1 { args[1].to_int().unwrap_or(0) } else { 0 };
+            // Helper to call a method on the object
+            let try_call = |method: &PyObjectRef, obj: &PyObjectRef| -> Option<i64> {
+                let result = match &method.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => func(&[obj.clone()]).ok(),
+                    PyObjectPayload::NativeClosure { func, .. } => func(&[obj.clone()]).ok(),
+                    PyObjectPayload::BuiltinBoundMethod { .. } => {
+                        // BuiltinBoundMethod is dispatched by the VM; for length_hint
+                        // we just try py_len() below
+                        None
+                    }
+                    _ => None,
+                };
+                result.and_then(|r: PyObjectRef| r.to_int().ok())
+            };
             // Try __length_hint__ first
             if let Some(method) = args[0].get_attr("__length_hint__") {
-                match &method.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => {
-                        if let Ok(result) = func(&[args[0].clone()]) {
-                            if let Ok(n) = result.to_int() {
-                                return Ok(PyObject::int(n));
-                            }
-                        }
-                    }
-                    _ => {}
+                if let Some(n) = try_call(&method, &args[0]) {
+                    return Ok(PyObject::int(n));
                 }
             }
             // Try __len__
             if let Some(method) = args[0].get_attr("__len__") {
-                match &method.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => {
-                        if let Ok(result) = func(&[args[0].clone()]) {
-                            if let Ok(n) = result.to_int() {
-                                return Ok(PyObject::int(n));
-                            }
-                        }
-                    }
-                    _ => {}
+                if let Some(n) = try_call(&method, &args[0]) {
+                    return Ok(PyObject::int(n));
                 }
             }
             // Try len() directly

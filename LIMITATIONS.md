@@ -22,7 +22,7 @@
 |---------|--------|-------|
 | Constant folding | ✅ | Multi-pass: `2*3+4` → `10`, string concat+repeat |
 | Peephole optimization | ✅ | Jump chain collapse, dead store elimination, NOP removal |
-| Dead code elimination | ❌ | Code after unconditional `return` still emitted |
+| Dead code elimination | ✅ | Unreachable code after return/jump/raise NOP'd out |
 | `SETUP_ASYNC_WITH` opcode | ❌ | Missing; `async with` partially supported via fallback |
 | Exception tables (3.11+) | ❌ | Uses legacy jump-opcode exception style |
 
@@ -38,7 +38,7 @@
 | Feature | Status | Notes |
 |---------|--------|-------|
 | `sys.exc_info()` | ✅ | Thread-local tracking, set on handler entry, cleared on PopExcept |
-| `__traceback__` attribute | ❌ | Exception objects lack `.tb_lineno`, `.tb_frame` etc. |
+| `__traceback__` attribute | ✅ | Proper linked traceback objects with tb_lineno, tb_filename, tb_name, tb_next |
 | `finally` return override | ⚠️ | `return` in `try` not always overridden by `return` in `finally` |
 
 ### 3.3 I/O Redirection
@@ -55,7 +55,7 @@
 | `__kwdefaults__` | ✅ | Returns keyword-only defaults dict |
 | `__globals__` | ✅ | Returns function's global namespace |
 | `type.__subclasses__()` | ❌ | Not tracked |
-| `operator.length_hint()` | ❌ | Ignores `__length_hint__`, returns 0 |
+| `operator.length_hint()` | ✅ | Handles NativeFunction, NativeClosure, falls back to py_len() |
 | `dir()` completeness | ⚠️ | Missing imported names in some scopes |
 | Dict views (`.keys()`) | ⚠️ | Returns snapshot list, not live view object |
 
@@ -95,15 +95,15 @@
 | Module | Gap |
 |--------|-----|
 | `pickle` | Custom simplified format, not CPython-compatible |
-| `csv` | `DictWriter` not implemented |
-| `datetime` | `strptime()` raises `AttributeError` |
-| `contextlib` | `ExitStack.enter_context()` raises `TypeError`; `redirect_stdout/stderr` are stubs |
+| `csv` | `DictWriter` writerow/writerows/writeheader implemented |
+| `datetime` | `strptime()` works |
+| `contextlib` | `ExitStack.enter_context()` works for native CMs; `redirect_stdout/stderr` are stubs |
 | `multiprocessing` | `Pool` is a stub |
 | `socket` | `setsockopt()`, `fileno()` are stubs; no real socket I/O |
 | `ssl` | OpenSSL version hardcoded to `"(stub)"` |
 | `configparser` | `write()` returns string instead of writing to file |
 | `textwrap` | Placeholder suffix handling simplified |
-| `bytes.join()` | Only accepts `list`, not arbitrary iterables |
+| `bytes.join()` | ✅ | Accepts list, tuple, frozenset, set |
 
 ### 4.3 Missing Modules (ImportError)
 

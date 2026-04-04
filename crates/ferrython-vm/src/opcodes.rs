@@ -528,6 +528,7 @@ impl VirtualMachine {
             }
             PyObjectPayload::Class(cd) => {
                 cd.namespace.write().insert(name.clone(), value);
+                cd.invalidate_cache();
             }
             PyObjectPayload::Module(md) => {
                 md.attrs.write().insert(name.clone(), value);
@@ -626,6 +627,7 @@ impl VirtualMachine {
                     return Err(PyException::attribute_error(format!(
                         "type object has no attribute '{}'", name)));
                 }
+                cd.invalidate_cache();
             }
             _ => return Err(PyException::attribute_error(format!(
                 "'{}' object does not support attribute deletion", obj.type_name()))),

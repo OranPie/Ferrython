@@ -114,6 +114,7 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         namespace: cd.namespace.clone(),
                         mro: cd.mro.clone(),
                         metaclass: Some(mcs.clone()),
+                        method_cache: Arc::new(RwLock::new(IndexMap::new())),
                     })));
                 }
             }
@@ -167,13 +168,13 @@ fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj
             }
         }
     }
-    Ok(PyObject::wrap(PyObjectPayload::Class(ferrython_core::object::ClassData {
-        name: CompactString::from(name),
+    Ok(PyObject::wrap(PyObjectPayload::Class(ferrython_core::object::ClassData::new(
+        CompactString::from(name),
         bases,
-        namespace: Arc::new(RwLock::new(namespace)),
+        namespace,
         mro,
-        metaclass: None,
-    })))
+        None,
+    ))))
 }
 
 pub(super) fn builtin_id(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -981,6 +982,7 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         PyObjectPayload::Class(cd) => {
             cd.namespace.write().insert(CompactString::from(name), args[2].clone());
+            cd.invalidate_cache();
         }
         PyObjectPayload::Module(_m) => {
             // Modules are immutable in our current design; skip for now

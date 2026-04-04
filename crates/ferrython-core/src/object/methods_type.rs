@@ -58,6 +58,9 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
             PyObjectPayload::Partial { .. } => "functools.partial",
             PyObjectPayload::InstanceDict(_) => "dict",
             PyObjectPayload::BuiltinAwaitable(_) => "coroutine",
+            PyObjectPayload::DictKeys(_) => "dict_keys",
+            PyObjectPayload::DictValues(_) => "dict_values",
+            PyObjectPayload::DictItems(_) => "dict_items",
         }
 }
 
@@ -75,6 +78,7 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
             PyObjectPayload::Set(m) => !m.read().is_empty(),
             PyObjectPayload::FrozenSet(m) => !m.is_empty(),
             PyObjectPayload::Dict(m) => !m.read().is_empty(),
+            PyObjectPayload::DictKeys(m) | PyObjectPayload::DictValues(m) | PyObjectPayload::DictItems(m) => !m.read().is_empty(),
             _ => true,
         }
 }
@@ -304,6 +308,24 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                     message.to_string()
                 }
             }
+            PyObjectPayload::DictKeys(map) => {
+                let keys: Vec<String> = map.read().keys()
+                    .filter(|k| !matches!(k, HashableKey::Str(s) if s.starts_with("__") && (s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__")))
+                    .map(|k| k.to_object().repr()).collect();
+                format!("dict_keys([{}])", keys.join(", "))
+            }
+            PyObjectPayload::DictValues(map) => {
+                let vals: Vec<String> = map.read().iter()
+                    .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .map(|(_, v)| v.repr()).collect();
+                format!("dict_values([{}])", vals.join(", "))
+            }
+            PyObjectPayload::DictItems(map) => {
+                let items: Vec<String> = map.read().iter()
+                    .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .map(|(k, v)| format!("({}, {})", k.to_object().repr(), v.repr())).collect();
+                format!("dict_items([{}])", items.join(", "))
+            }
             _ => format!("<{}>", obj.type_name()),
         }
 }
@@ -460,6 +482,15 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 }
                 Ok(vec![])
             }
+            PyObjectPayload::DictKeys(m) => Ok(m.read().keys()
+                .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                .map(|k| k.to_object()).collect()),
+            PyObjectPayload::DictValues(m) => Ok(m.read().iter()
+                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                .map(|(_, v)| v.clone()).collect()),
+            PyObjectPayload::DictItems(m) => Ok(m.read().iter()
+                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()])).collect()),
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name()))),
         }
 }

@@ -610,13 +610,76 @@ fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__csv_dictwriter__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_fileobj"), args[0].clone());
-        attrs.insert(CompactString::from("_fieldnames"), PyObject::list(
-            fieldnames.iter().map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect()
-        ));
-        attrs.insert(CompactString::from("fieldnames"), PyObject::list(
-            fieldnames.iter().map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect()
-        ));
+        let fieldnames_list: Vec<PyObjectRef> = fieldnames.iter()
+            .map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect();
+        attrs.insert(CompactString::from("_fieldnames"), PyObject::list(fieldnames_list.clone()));
+        attrs.insert(CompactString::from("fieldnames"), PyObject::list(fieldnames_list));
         attrs.insert(CompactString::from("_rows"), PyObject::list(vec![]));
+
+        // writerow(rowdict) — appends one row (dict) to internal buffer
+        let self_ref = inst.clone();
+        attrs.insert(CompactString::from("writerow"), PyObject::native_closure(
+            "DictWriter.writerow", {
+                let self_ref = self_ref.clone();
+                move |args: &[PyObjectRef]| {
+                    check_args_min("DictWriter.writerow", args, 1)?;
+                    if let Some(rows) = self_ref.get_attr("_rows") {
+                        if let PyObjectPayload::List(items) = &rows.payload {
+                            items.write().push(args[0].clone());
+                        }
+                    }
+                    Ok(PyObject::none())
+                }
+            }
+        ));
+
+        // writerows(rows) — appends multiple rows
+        attrs.insert(CompactString::from("writerows"), PyObject::native_closure(
+            "DictWriter.writerows", {
+                let self_ref = self_ref.clone();
+                move |args: &[PyObjectRef]| {
+                    check_args_min("DictWriter.writerows", args, 1)?;
+                    let new_rows = args[0].to_list()?;
+                    if let Some(rows) = self_ref.get_attr("_rows") {
+                        if let PyObjectPayload::List(items) = &rows.payload {
+                            let mut w = items.write();
+                            for row in new_rows {
+                                w.push(row);
+                            }
+                        }
+                    }
+                    Ok(PyObject::none())
+                }
+            }
+        ));
+
+        // writeheader() — writes fieldnames as first row
+        attrs.insert(CompactString::from("writeheader"), PyObject::native_closure(
+            "DictWriter.writeheader", {
+                let self_ref = self_ref.clone();
+                move |_args: &[PyObjectRef]| {
+                    if let Some(fnames) = self_ref.get_attr("_fieldnames") {
+                        if let Some(rows) = self_ref.get_attr("_rows") {
+                            if let PyObjectPayload::List(items) = &rows.payload {
+                                // Create a dict mapping fieldname->fieldname (header row)
+                                let header_items: Vec<PyObjectRef> = if let Ok(fl) = fnames.to_list() {
+                                    fl
+                                } else {
+                                    vec![]
+                                };
+                                let mut map = IndexMap::new();
+                                for f in &header_items {
+                                    let key = HashableKey::Str(CompactString::from(f.py_to_string()));
+                                    map.insert(key, f.clone());
+                                }
+                                items.write().push(PyObject::dict(map));
+                            }
+                        }
+                    }
+                    Ok(PyObject::none())
+                }
+            }
+        ));
     }
     Ok(inst)
 }
