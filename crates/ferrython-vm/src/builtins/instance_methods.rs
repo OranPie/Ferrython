@@ -511,15 +511,15 @@ pub(super) fn call_csv_dictwriter_method(inst: &ferrython_core::object::Instance
             let row_dict = &args[0];
             let mut fields = Vec::new();
             for name in &names {
-                let val = row_dict.get_attr(name).unwrap_or_else(|| {
-                    // Try dict key lookup
-                    if let PyObjectPayload::Dict(map) = &row_dict.payload {
-                        map.read().get(&HashableKey::Str(CompactString::from(name.as_str())))
-                            .cloned().unwrap_or_else(PyObject::none)
-                    } else {
-                        PyObject::none()
-                    }
-                });
+                // Dict key lookup first (avoids clashing with dict method names like "pop")
+                let val = if let PyObjectPayload::Dict(map) = &row_dict.payload {
+                    map.read().get(&HashableKey::Str(CompactString::from(name.as_str())))
+                        .cloned().unwrap_or_else(PyObject::none)
+                } else if let Some(v) = row_dict.get_attr(name) {
+                    v
+                } else {
+                    PyObject::none()
+                };
                 let s = val.py_to_string();
                 if s.contains(',') || s.contains('"') || s.contains('\n') {
                     fields.push(format!("\"{}\"", s.replace('"', "\"\"")));
@@ -537,6 +537,14 @@ pub(super) fn call_csv_dictwriter_method(inst: &ferrython_core::object::Instance
                             PyObject::str_val(CompactString::from(format!("{}{}", existing, line))));
                     }
                 }
+            }
+            Ok(PyObject::none())
+        }
+        "writerows" => {
+            if args.is_empty() { return Err(PyException::type_error("writerows() requires an iterable")); }
+            let rows = args[0].to_list()?;
+            for row in rows.iter() {
+                call_csv_dictwriter_method(inst, "writerow", &[row.clone()])?;
             }
             Ok(PyObject::none())
         }
@@ -1279,6 +1287,99 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
                 }
             }
             Ok(PyObject::list(results))
+        }
+        "name" => {
+            let path = get_path();
+            let p = std::path::Path::new(&path);
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            Ok(PyObject::str_val(CompactString::from(name)))
+        }
+        "stem" => {
+            let path = get_path();
+            let p = std::path::Path::new(&path);
+            let stem = p.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            Ok(PyObject::str_val(CompactString::from(stem)))
+        }
+        "suffix" => {
+            let path = get_path();
+            let p = std::path::Path::new(&path);
+            let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+            Ok(PyObject::str_val(CompactString::from(ext)))
+        }
+        "suffixes" => {
+            let path = get_path();
+            let name = std::path::Path::new(&path).file_name()
+                .map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let parts: Vec<PyObjectRef> = name.match_indices('.')
+                .map(|(i, _)| PyObject::str_val(CompactString::from(&name[i..])))
+                .collect();
+            // Actually need individual suffixes: ".tar.gz" → [".tar", ".gz"]
+            let mut suffixes = Vec::new();
+            let mut remaining = name.as_str();
+            if let Some(first_dot) = remaining.find('.') {
+                remaining = &remaining[first_dot..];
+                for part in remaining.split('.').skip(1) {
+                    suffixes.push(PyObject::str_val(CompactString::from(format!(".{}", part))));
+                }
+            }
+            let _ = parts; // replaced
+            Ok(PyObject::list(suffixes))
+        }
+        "parent" => {
+            let path = get_path();
+            let p = std::path::Path::new(&path);
+            let parent = p.parent().map(|pp| pp.to_string_lossy().to_string()).unwrap_or_else(|| ".".to_string());
+            Ok(PyObject::str_val(CompactString::from(parent)))
+        }
+        "parents" => {
+            let path = get_path();
+            let p = std::path::Path::new(&path);
+            let mut parents = Vec::new();
+            let mut cur = p.parent();
+            while let Some(pp) = cur {
+                parents.push(PyObject::str_val(CompactString::from(pp.to_string_lossy().to_string())));
+                cur = pp.parent();
+                if pp.as_os_str().is_empty() { break; }
+            }
+            Ok(PyObject::list(parents))
+        }
+        "parts" => {
+            let path = get_path();
+            let p = std::path::Path::new(&path);
+            let parts: Vec<PyObjectRef> = p.components()
+                .map(|c| PyObject::str_val(CompactString::from(c.as_os_str().to_string_lossy().to_string())))
+                .collect();
+            Ok(PyObject::tuple(parts))
+        }
+        "as_posix" => {
+            let path = get_path();
+            Ok(PyObject::str_val(CompactString::from(path.replace('\\', "/"))))
+        }
+        "relative_to" => {
+            check_args_min("relative_to", args, 1)?;
+            let path = get_path();
+            let base = args[0].py_to_string();
+            if let Ok(rel) = std::path::Path::new(&path).strip_prefix(&base) {
+                Ok(PyObject::str_val(CompactString::from(rel.to_string_lossy().to_string())))
+            } else {
+                Err(PyException::value_error(format!(
+                    "'{}' is not relative to '{}'", path, base
+                )))
+            }
+        }
+        "is_symlink" => {
+            let path = get_path();
+            Ok(PyObject::bool_val(std::path::Path::new(&path).is_symlink()))
+        }
+        "absolute" => {
+            let path = get_path();
+            let p = std::path::Path::new(&path);
+            if p.is_absolute() {
+                Ok(PyObject::str_val(CompactString::from(path)))
+            } else {
+                let abs = std::env::current_dir().unwrap_or_default().join(p);
+                Ok(PyObject::str_val(CompactString::from(abs.to_string_lossy().to_string())))
+            }
         }
         "resolve" => {
             let path = get_path();

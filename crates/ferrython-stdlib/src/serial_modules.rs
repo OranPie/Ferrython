@@ -483,10 +483,26 @@ fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.len() < 2 {
+    if args.is_empty() {
         return Err(PyException::type_error("csv.DictWriter requires fileobj and fieldnames"));
     }
-    let fieldnames = args[1].to_list()?.iter().map(|f| f.py_to_string()).collect::<Vec<_>>();
+    // Extract fieldnames: either positional arg[1] or kwarg "fieldnames"
+    let fieldnames: Vec<String> = if args.len() >= 2 {
+        // Check if args[1] is a kwargs dict containing "fieldnames"
+        if let PyObjectPayload::Dict(map) = &args[1].payload {
+            let r = map.read();
+            if let Some(fnames) = r.get(&HashableKey::Str(CompactString::from("fieldnames"))) {
+                fnames.to_list()?.iter().map(|f| f.py_to_string()).collect()
+            } else {
+                // It's a plain list
+                args[1].to_list()?.iter().map(|f| f.py_to_string()).collect()
+            }
+        } else {
+            args[1].to_list()?.iter().map(|f| f.py_to_string()).collect()
+        }
+    } else {
+        return Err(PyException::type_error("csv.DictWriter requires fileobj and fieldnames"));
+    };
     let cls = PyObject::class(CompactString::from("csv_DictWriter"), vec![], indexmap::IndexMap::new());
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(inst_data) = &inst.payload {

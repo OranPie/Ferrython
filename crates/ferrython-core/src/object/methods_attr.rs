@@ -138,9 +138,10 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
             return Some(v);
         }
         // Methods are returned as bound methods
-        if matches!(name, "exists" | "is_file" | "is_dir" | "is_absolute"
+        if matches!(name, "exists" | "is_file" | "is_dir" | "is_absolute" | "is_symlink"
             | "__str__" | "__fspath__" | "__repr__"
-            | "resolve" | "absolute" | "with_suffix" | "with_name"
+            | "resolve" | "absolute" | "as_posix" | "relative_to"
+            | "with_suffix" | "with_name"
             | "read_text" | "read_bytes" | "write_text" | "write_bytes"
             | "mkdir" | "rmdir" | "unlink" | "iterdir" | "glob" | "stat"
             | "joinpath" | "__truediv__")
