@@ -1874,7 +1874,11 @@ impl VirtualMachine {
                             }
                         }
                     } else {
-                        let new_items = iterable.to_list()?;
+                        // Try to_list first, fall back to collect_iterable for custom __iter__
+                        let new_items = match iterable.to_list() {
+                            Ok(v) => v,
+                            Err(_) => self.collect_iterable(&iterable)?,
+                        };
                         items.write().extend(new_items);
                     }
                 }

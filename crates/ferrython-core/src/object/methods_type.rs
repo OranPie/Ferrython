@@ -169,8 +169,14 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                     if attrs.contains_key("__pathlib_path__") {
                         return attrs.get("_path").map(|v| v.py_to_string()).unwrap_or_default();
                     }
-                    // datetime/date → format date string
+                    // datetime/date/time → format string
                     if attrs.contains_key("__datetime__") {
+                        if attrs.contains_key("__time_only__") {
+                            let hour = attrs.get("hour").and_then(|v| v.as_int()).unwrap_or(0);
+                            let minute = attrs.get("minute").and_then(|v| v.as_int()).unwrap_or(0);
+                            let second = attrs.get("second").and_then(|v| v.as_int()).unwrap_or(0);
+                            return format!("{:02}:{:02}:{:02}", hour, minute, second);
+                        }
                         let year = attrs.get("year").and_then(|v| v.as_int()).unwrap_or(1970);
                         let month = attrs.get("month").and_then(|v| v.as_int()).unwrap_or(1);
                         let day = attrs.get("day").and_then(|v| v.as_int()).unwrap_or(1);

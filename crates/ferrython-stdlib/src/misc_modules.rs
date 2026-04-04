@@ -483,43 +483,52 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn dataclass_apply(cls: &PyObjectRef, order: bool, frozen: bool) -> PyResult<PyObjectRef> {
     
-    // Get annotations to discover fields
+    // Get annotations to discover fields — walk MRO for inherited dataclass fields
     let mut field_names: Vec<CompactString> = Vec::new();
     let mut field_defaults: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
     let mut compare_fields: Vec<CompactString> = Vec::new();
-    let mut init_fields: Vec<CompactString> = Vec::new(); // fields that participate in __init__
+    let mut init_fields: Vec<CompactString> = Vec::new();
     
     if let PyObjectPayload::Class(cd) = &cls.payload {
-        let ns = cd.namespace.read();
-        if let Some(annotations) = ns.get("__annotations__") {
-            if let PyObjectPayload::Dict(ann_map) = &annotations.payload {
-                for (k, _v) in ann_map.read().iter() {
-                    if let HashableKey::Str(name) = k {
-                        field_names.push(name.clone());
-                        let mut compare = true;
-                        let mut init = true;
-                        
-                        if let Some(default) = ns.get(name.as_str()) {
-                            if let PyObjectPayload::Module(md) = &default.payload {
-                                let mod_attrs = md.attrs.read();
-                                if let Some(cmp_flag) = mod_attrs.get("__field_compare__") {
-                                    compare = cmp_flag.is_truthy();
+        // Collect fields from base classes first (MRO order), then own class
+        let mut all_classes: Vec<PyObjectRef> = cd.bases.iter().rev().cloned().collect();
+        all_classes.push(cls.clone());
+        
+        for base_cls in &all_classes {
+            if let PyObjectPayload::Class(bcd) = &base_cls.payload {
+                let ns = bcd.namespace.read();
+                if let Some(annotations) = ns.get("__annotations__") {
+                    if let PyObjectPayload::Dict(ann_map) = &annotations.payload {
+                        for (k, _v) in ann_map.read().iter() {
+                            if let HashableKey::Str(name) = k {
+                                if !field_names.contains(name) {
+                                    field_names.push(name.clone());
                                 }
-                                if let Some(init_flag) = mod_attrs.get("__field_init__") {
-                                    init = init_flag.is_truthy();
+                                let mut compare = true;
+                                let mut init = true;
+                                
+                                if let Some(default) = ns.get(name.as_str()) {
+                                    if let PyObjectPayload::Module(md) = &default.payload {
+                                        let mod_attrs = md.attrs.read();
+                                        if let Some(cmp_flag) = mod_attrs.get("__field_compare__") {
+                                            compare = cmp_flag.is_truthy();
+                                        }
+                                        if let Some(init_flag) = mod_attrs.get("__field_init__") {
+                                            init = init_flag.is_truthy();
+                                        }
+                                        if let Some(factory) = mod_attrs.get("__field_factory__") {
+                                            field_defaults.insert(name.clone(), factory.clone());
+                                        } else if let Some(default_val) = mod_attrs.get("__field_default__") {
+                                            field_defaults.insert(name.clone(), default_val.clone());
+                                        }
+                                    } else {
+                                        field_defaults.insert(name.clone(), default.clone());
+                                    }
                                 }
-                                if let Some(factory) = mod_attrs.get("__field_factory__") {
-                                    field_defaults.insert(name.clone(), factory.clone());
-                                } else if let Some(default_val) = mod_attrs.get("__field_default__") {
-                                    field_defaults.insert(name.clone(), default_val.clone());
-                                }
-                                // field() with no default/factory: no default entry
-                            } else {
-                                field_defaults.insert(name.clone(), default.clone());
+                                if compare { compare_fields.push(name.clone()); }
+                                if init { init_fields.push(name.clone()); }
                             }
                         }
-                        if compare { compare_fields.push(name.clone()); }
-                        if init { init_fields.push(name.clone()); }
                     }
                 }
             }

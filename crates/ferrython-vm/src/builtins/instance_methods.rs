@@ -1559,6 +1559,7 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
     let second = attrs.get("second").and_then(|v| v.as_int()).unwrap_or(0);
     let microsecond = attrs.get("microsecond").and_then(|v| v.as_int()).unwrap_or(0);
     let date_only = attrs.contains_key("__date_only__");
+    let time_only = attrs.contains_key("__time_only__");
     drop(attrs);
     match method {
         "strftime" => {
@@ -1568,19 +1569,33 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             Ok(PyObject::str_val(CompactString::from(&result)))
         }
         "isoformat" => {
-            let sep = if !args.is_empty() { args[0].py_to_string() } else { "T".to_string() };
-            let s = if microsecond != 0 {
-                format!("{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}.{:06}", year, month, day, sep, hour, minute, second, microsecond)
+            if time_only {
+                let s = if microsecond != 0 {
+                    format!("{:02}:{:02}:{:02}.{:06}", hour, minute, second, microsecond)
+                } else {
+                    format!("{:02}:{:02}:{:02}", hour, minute, second)
+                };
+                Ok(PyObject::str_val(CompactString::from(&s)))
+            } else if date_only {
+                let s = format!("{:04}-{:02}-{:02}", year, month, day);
+                Ok(PyObject::str_val(CompactString::from(&s)))
             } else {
-                format!("{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}", year, month, day, sep, hour, minute, second)
-            };
-            Ok(PyObject::str_val(CompactString::from(&s)))
+                let sep = if !args.is_empty() { args[0].py_to_string() } else { "T".to_string() };
+                let s = if microsecond != 0 {
+                    format!("{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}.{:06}", year, month, day, sep, hour, minute, second, microsecond)
+                } else {
+                    format!("{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}", year, month, day, sep, hour, minute, second)
+                };
+                Ok(PyObject::str_val(CompactString::from(&s)))
+            }
         }
         "date" => {
             let cls = PyObject::class(CompactString::from("date"), vec![], IndexMap::new());
             let inst_obj = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst_obj.payload {
                 let mut w = d.attrs.write();
+                w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+                w.insert(CompactString::from("__date_only__"), PyObject::bool_val(true));
                 w.insert(CompactString::from("year"), PyObject::int(year));
                 w.insert(CompactString::from("month"), PyObject::int(month));
                 w.insert(CompactString::from("day"), PyObject::int(day));
@@ -1592,6 +1607,8 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             let inst_obj = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst_obj.payload {
                 let mut w = d.attrs.write();
+                w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+                w.insert(CompactString::from("__time_only__"), PyObject::bool_val(true));
                 w.insert(CompactString::from("hour"), PyObject::int(hour));
                 w.insert(CompactString::from("minute"), PyObject::int(minute));
                 w.insert(CompactString::from("second"), PyObject::int(second));
@@ -1677,7 +1694,10 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             ]))
         }
         "__str__" | "__repr__" => {
-            if date_only {
+            if time_only {
+                let s = format!("{:02}:{:02}:{:02}", hour, minute, second);
+                Ok(PyObject::str_val(CompactString::from(&s)))
+            } else if date_only {
                 let s = format!("{:04}-{:02}-{:02}", year, month, day);
                 Ok(PyObject::str_val(CompactString::from(&s)))
             } else {

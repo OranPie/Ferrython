@@ -100,9 +100,13 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
 
     // Deque
     if inst.attrs.read().contains_key("__deque__") {
+        // maxlen is a property, not a method — return the value directly
+        if name == "maxlen" {
+            return Some(inst.attrs.read().get("__maxlen__").cloned().unwrap_or_else(PyObject::none));
+        }
         if matches!(name, "append" | "appendleft" | "pop" | "popleft" | "extend"
             | "extendleft" | "rotate" | "clear" | "copy" | "count" | "index"
-            | "insert" | "remove" | "reverse" | "maxlen"
+            | "insert" | "remove" | "reverse"
             | "__iter__" | "__len__" | "__contains__" | "__getitem__")
         {
             return Some(make_bound(name));

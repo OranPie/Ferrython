@@ -90,7 +90,8 @@ impl VirtualMachine {
                         };
                     }
                 }
-                self.vm_repr(obj)
+                // Fall back to py_to_string which handles datetime/time/date/timedelta markers
+                Ok(obj.py_to_string())
             }
             // For containers, str() is same as repr() (elements use repr)
             PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) |

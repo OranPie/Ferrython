@@ -149,6 +149,11 @@ pub fn create_datetime_module() -> PyObjectRef {
     dt_ns.insert(CompactString::from("fromordinal"), make_builtin(datetime_fromordinal));
     dt_ns.insert(CompactString::from("__add__"), make_builtin(datetime_add_dunder));
     dt_ns.insert(CompactString::from("__sub__"), make_builtin(datetime_sub_dunder));
+    dt_ns.insert(CompactString::from("__eq__"), make_builtin(datetime_eq));
+    dt_ns.insert(CompactString::from("__lt__"), make_builtin(datetime_lt));
+    dt_ns.insert(CompactString::from("__le__"), make_builtin(datetime_le));
+    dt_ns.insert(CompactString::from("__gt__"), make_builtin(datetime_gt));
+    dt_ns.insert(CompactString::from("__ge__"), make_builtin(datetime_ge));
     let datetime_cls = PyObject::class(CompactString::from("datetime"), vec![], dt_ns);
     // Store __init__ for constructor dispatch
     if let PyObjectPayload::Class(ref cd) = datetime_cls.payload {
@@ -187,6 +192,11 @@ pub fn create_datetime_module() -> PyObjectRef {
     date_ns.insert(CompactString::from("fromordinal"), make_builtin(date_fromordinal));
     date_ns.insert(CompactString::from("__add__"), make_builtin(date_add));
     date_ns.insert(CompactString::from("__sub__"), make_builtin(date_sub));
+    date_ns.insert(CompactString::from("__eq__"), make_builtin(date_eq));
+    date_ns.insert(CompactString::from("__lt__"), make_builtin(date_lt));
+    date_ns.insert(CompactString::from("__le__"), make_builtin(date_le));
+    date_ns.insert(CompactString::from("__gt__"), make_builtin(date_gt));
+    date_ns.insert(CompactString::from("__ge__"), make_builtin(date_ge));
     let date_cls = PyObject::class(CompactString::from("date"), vec![], date_ns);
     if let PyObjectPayload::Class(ref cd) = date_cls.payload {
         cd.namespace.write().insert(
@@ -552,6 +562,11 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
     let mut dt_ns = IndexMap::new();
     dt_ns.insert(CompactString::from("__add__"), make_builtin(datetime_add_dunder));
     dt_ns.insert(CompactString::from("__sub__"), make_builtin(datetime_sub_dunder));
+    dt_ns.insert(CompactString::from("__eq__"), make_builtin(datetime_eq));
+    dt_ns.insert(CompactString::from("__lt__"), make_builtin(datetime_lt));
+    dt_ns.insert(CompactString::from("__le__"), make_builtin(datetime_le));
+    dt_ns.insert(CompactString::from("__gt__"), make_builtin(datetime_gt));
+    dt_ns.insert(CompactString::from("__ge__"), make_builtin(datetime_ge));
     let class = PyObject::class(CompactString::from("datetime"), vec![], dt_ns);
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
@@ -585,6 +600,8 @@ fn datetime_time_obj(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
+        w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+        w.insert(CompactString::from("__time_only__"), PyObject::bool_val(true));
         w.insert(CompactString::from("hour"), PyObject::int(hour));
         w.insert(CompactString::from("minute"), PyObject::int(minute));
         w.insert(CompactString::from("second"), PyObject::int(second));
@@ -645,6 +662,11 @@ fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
     let mut date_cls_ns = IndexMap::new();
     date_cls_ns.insert(CompactString::from("__add__"), make_builtin(date_add));
     date_cls_ns.insert(CompactString::from("__sub__"), make_builtin(date_sub));
+    date_cls_ns.insert(CompactString::from("__eq__"), make_builtin(date_eq));
+    date_cls_ns.insert(CompactString::from("__lt__"), make_builtin(date_lt));
+    date_cls_ns.insert(CompactString::from("__le__"), make_builtin(date_le));
+    date_cls_ns.insert(CompactString::from("__gt__"), make_builtin(date_gt));
+    date_cls_ns.insert(CompactString::from("__ge__"), make_builtin(date_ge));
     let class = PyObject::class(CompactString::from("date"), vec![], date_cls_ns);
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
@@ -696,6 +718,38 @@ fn date_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         Err(PyException::type_error("unsupported operand type(s) for -"))
     }
+}
+
+fn date_ordinal(obj: &PyObjectRef) -> i64 {
+    let y = obj.get_attr("year").and_then(|v| v.as_int()).unwrap_or(1970);
+    let m = obj.get_attr("month").and_then(|v| v.as_int()).unwrap_or(1);
+    let d = obj.get_attr("day").and_then(|v| v.as_int()).unwrap_or(1);
+    ymd_to_ordinal(y, m, d)
+}
+
+fn date_eq(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+    Ok(PyObject::bool_val(date_ordinal(&args[0]) == date_ordinal(&args[1])))
+}
+
+fn date_lt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+    Ok(PyObject::bool_val(date_ordinal(&args[0]) < date_ordinal(&args[1])))
+}
+
+fn date_le(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+    Ok(PyObject::bool_val(date_ordinal(&args[0]) <= date_ordinal(&args[1])))
+}
+
+fn date_gt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+    Ok(PyObject::bool_val(date_ordinal(&args[0]) > date_ordinal(&args[1])))
+}
+
+fn date_ge(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+    Ok(PyObject::bool_val(date_ordinal(&args[0]) >= date_ordinal(&args[1])))
 }
 
 
@@ -873,6 +927,48 @@ fn datetime_sub_dunder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn datetime_add_dunder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("datetime.__add__ requires 2 args")); }
     datetime_add_timedelta(&args[0], &args[1])
+}
+
+fn datetime_to_ordinal_secs(obj: &PyObjectRef) -> (i64, i64) {
+    let y = obj.get_attr("year").and_then(|v| v.as_int()).unwrap_or(1970);
+    let m = obj.get_attr("month").and_then(|v| v.as_int()).unwrap_or(1);
+    let d = obj.get_attr("day").and_then(|v| v.as_int()).unwrap_or(1);
+    let h = obj.get_attr("hour").and_then(|v| v.as_int()).unwrap_or(0);
+    let mi = obj.get_attr("minute").and_then(|v| v.as_int()).unwrap_or(0);
+    let s = obj.get_attr("second").and_then(|v| v.as_int()).unwrap_or(0);
+    let ord = ymd_to_ordinal(y, m, d);
+    (ord, h * 3600 + mi * 60 + s)
+}
+
+fn datetime_cmp(a: &PyObjectRef, b: &PyObjectRef) -> std::cmp::Ordering {
+    let (ord_a, sec_a) = datetime_to_ordinal_secs(a);
+    let (ord_b, sec_b) = datetime_to_ordinal_secs(b);
+    ord_a.cmp(&ord_b).then(sec_a.cmp(&sec_b))
+}
+
+fn datetime_eq(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+    Ok(PyObject::bool_val(datetime_cmp(&args[0], &args[1]) == std::cmp::Ordering::Equal))
+}
+
+fn datetime_lt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+    Ok(PyObject::bool_val(datetime_cmp(&args[0], &args[1]) == std::cmp::Ordering::Less))
+}
+
+fn datetime_le(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+    Ok(PyObject::bool_val(datetime_cmp(&args[0], &args[1]) != std::cmp::Ordering::Greater))
+}
+
+fn datetime_gt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+    Ok(PyObject::bool_val(datetime_cmp(&args[0], &args[1]) == std::cmp::Ordering::Greater))
+}
+
+fn datetime_ge(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+    Ok(PyObject::bool_val(datetime_cmp(&args[0], &args[1]) != std::cmp::Ordering::Less))
 }
 
 
