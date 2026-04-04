@@ -188,14 +188,22 @@ impl VirtualMachine {
         if entries.is_empty() {
             return PyObject::none();
         }
-        let items: Vec<PyObjectRef> = entries.iter().map(|e| {
-            PyObject::tuple(vec![
-                PyObject::str_val(CompactString::from(&e.filename)),
-                PyObject::int(e.lineno as i64),
-                PyObject::str_val(CompactString::from(&e.function)),
-            ])
-        }).collect();
-        PyObject::wrap(PyObjectPayload::List(Arc::new(RwLock::new(items))))
+        // Build a traceback chain: last entry is the innermost frame.
+        // Each traceback object has tb_lineno, tb_frame (None), and tb_next.
+        let tb_class = PyObject::builtin_type(CompactString::from("traceback"));
+        let mut tb_next = PyObject::none();
+        for entry in entries {
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("tb_lineno"), PyObject::int(entry.lineno as i64));
+            attrs.insert(CompactString::from("tb_frame"), PyObject::none());
+            attrs.insert(CompactString::from("tb_next"), tb_next);
+            attrs.insert(CompactString::from("tb_filename"),
+                PyObject::str_val(CompactString::from(&entry.filename)));
+            attrs.insert(CompactString::from("tb_name"),
+                PyObject::str_val(CompactString::from(&entry.function)));
+            tb_next = PyObject::instance_with_attrs(tb_class.clone(), attrs);
+        }
+        tb_next
     }
 
     /// Store an attribute on an exception value object (works for both Instance and ExceptionInstance).

@@ -1398,6 +1398,56 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 None
             }
+            PyObjectPayload::Code(code) => match name {
+                "co_name" => Some(PyObject::str_val(code.name.clone())),
+                "co_qualname" => Some(PyObject::str_val(code.qualname.clone())),
+                "co_filename" => Some(PyObject::str_val(code.filename.clone())),
+                "co_firstlineno" => Some(PyObject::int(code.first_line_number as i64)),
+                "co_argcount" => Some(PyObject::int(code.arg_count as i64)),
+                "co_posonlyargcount" => Some(PyObject::int(code.posonlyarg_count as i64)),
+                "co_kwonlyargcount" => Some(PyObject::int(code.kwonlyarg_count as i64)),
+                "co_nlocals" => Some(PyObject::int(code.num_locals as i64)),
+                "co_stacksize" => Some(PyObject::int(code.max_stack_size as i64)),
+                "co_flags" => Some(PyObject::int(code.flags.bits() as i64)),
+                "co_varnames" => Some(PyObject::tuple(
+                    code.varnames.iter().map(|s| PyObject::str_val(s.clone())).collect(),
+                )),
+                "co_names" => Some(PyObject::tuple(
+                    code.names.iter().map(|s| PyObject::str_val(s.clone())).collect(),
+                )),
+                "co_freevars" => Some(PyObject::tuple(
+                    code.freevars.iter().map(|s| PyObject::str_val(s.clone())).collect(),
+                )),
+                "co_cellvars" => Some(PyObject::tuple(
+                    code.cellvars.iter().map(|s| PyObject::str_val(s.clone())).collect(),
+                )),
+                "co_consts" => {
+                    use ferrython_bytecode::code::ConstantValue;
+                    fn cv_to_obj(c: &ConstantValue) -> PyObjectRef {
+                        match c {
+                            ConstantValue::None => PyObject::none(),
+                            ConstantValue::Bool(b) => PyObject::bool_val(*b),
+                            ConstantValue::Integer(n) => PyObject::int(*n),
+                            ConstantValue::BigInteger(n) => PyObject::big_int(n.as_ref().clone()),
+                            ConstantValue::Float(f) => PyObject::float(*f),
+                            ConstantValue::Complex { real, imag } => PyObject::complex(*real, *imag),
+                            ConstantValue::Str(s) => PyObject::str_val(s.clone()),
+                            ConstantValue::Bytes(b) => PyObject::bytes(b.clone()),
+                            ConstantValue::Ellipsis => PyObject::ellipsis(),
+                            ConstantValue::Code(co) => PyObject::code(*co.clone()),
+                            ConstantValue::Tuple(items) => {
+                                PyObject::tuple(items.iter().map(|i| cv_to_obj(i)).collect())
+                            }
+                            ConstantValue::FrozenSet(_) => PyObject::str_val(CompactString::from("<frozenset>")),
+                        }
+                    }
+                    Some(PyObject::tuple(
+                        code.constants.iter().map(|c| cv_to_obj(c)).collect(),
+                    ))
+                }
+                "__class__" => Some(PyObject::builtin_type(CompactString::from("code"))),
+                _ => None,
+            }
             _ => None,
         }
 }

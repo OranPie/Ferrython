@@ -50,8 +50,10 @@
 ### 3.4 Introspection
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `__closure__` | ❌ | Returns raw values instead of cell objects |
-| `__code__` | ❌ | Returns `None` on function objects |
+| `__closure__` | ✅ | Returns tuple of cell objects |
+| `__code__` | ✅ | Returns actual CodeObject |
+| `__kwdefaults__` | ✅ | Returns keyword-only defaults dict |
+| `__globals__` | ✅ | Returns function's global namespace |
 | `type.__subclasses__()` | ❌ | Not tracked |
 | `operator.length_hint()` | ❌ | Ignores `__length_hint__`, returns 0 |
 | `dir()` completeness | ⚠️ | Missing imported names in some scopes |
