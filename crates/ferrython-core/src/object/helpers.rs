@@ -143,6 +143,37 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
             }
             Some(std::cmp::Ordering::Equal)
         }
+        // Cross-type: InstanceDict == Dict
+        (PyObjectPayload::InstanceDict(a), PyObjectPayload::Dict(b)) => {
+            let a = a.read(); let b = b.read();
+            if a.len() != b.len() { return None; }
+            for (k, v1) in a.iter() {
+                let hk = match PyObject::str_val(CompactString::from(k.as_str())).to_hashable_key() {
+                    Ok(hk) => hk,
+                    Err(_) => return None,
+                };
+                match b.get(&hk) {
+                    Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
+                    _ => return None,
+                }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
+        (PyObjectPayload::Dict(a_dict), PyObjectPayload::InstanceDict(b_idict)) => {
+            let a_r = a_dict.read(); let b_r = b_idict.read();
+            if a_r.len() != b_r.len() { return None; }
+            for (k, v1) in b_r.iter() {
+                let hk = match PyObject::str_val(CompactString::from(k.as_str())).to_hashable_key() {
+                    Ok(hk) => hk,
+                    Err(_) => return None,
+                };
+                match a_r.get(&hk) {
+                    Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
+                    _ => return None,
+                }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
         _ => None,
     }
 }
