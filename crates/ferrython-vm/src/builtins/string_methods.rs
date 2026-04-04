@@ -1,7 +1,7 @@
 //! String method dispatch (upper, lower, split, replace, strip, join, find, format, etc.)
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args_min,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -312,9 +312,12 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                                     result.extend_from_slice(format!("&#{};", ch as u32).as_bytes());
                                 }
                                 _ => {
-                                    return Err(PyException::value_error(format!(
-                                        "'ascii' codec can't encode character '\\u{:04x}' in position", ch as u32
-                                    )));
+                                    return Err(PyException::new(
+                                        ExceptionKind::UnicodeEncodeError,
+                                        format!(
+                                            "'ascii' codec can't encode character '\\u{:04x}' in position", ch as u32
+                                        ),
+                                    ));
                                 }
                             }
                         }
@@ -331,9 +334,12 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                                 "ignore" => {}
                                 "replace" => result.push(b'?'),
                                 _ => {
-                                    return Err(PyException::value_error(format!(
-                                        "'latin-1' codec can't encode character '\\u{:04x}'", ch as u32
-                                    )));
+                                    return Err(PyException::new(
+                                        ExceptionKind::UnicodeEncodeError,
+                                        format!(
+                                            "'latin-1' codec can't encode character '\\u{:04x}'", ch as u32
+                                        ),
+                                    ));
                                 }
                             }
                         }

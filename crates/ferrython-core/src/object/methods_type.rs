@@ -108,8 +108,13 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             PyObjectPayload::Int(n) => n.to_string(),
             PyObjectPayload::Float(f) => float_to_str(*f),
             PyObjectPayload::Complex { real, imag } => {
-                if *real == 0.0 { format!("{}j", imag) }
-                else { format!("({}+{}j)", real, imag) }
+                if *real == 0.0 {
+                    format!("{}j", imag)
+                } else if *imag >= 0.0 || imag.is_nan() {
+                    format!("({}+{}j)", real, imag)
+                } else {
+                    format!("({}{}j)", real, imag) // imag already has '-' prefix
+                }
             }
             PyObjectPayload::Str(s) => s.to_string(),
             PyObjectPayload::Bytes(b) => {
@@ -127,6 +132,10 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 let m = m.read();
                 if m.is_empty() { "set()".into() }
                 else { format_set("{", "}", &m) }
+            }
+            PyObjectPayload::FrozenSet(m) => {
+                if m.is_empty() { "frozenset()".into() }
+                else { format!("frozenset({})", format_set("{", "}", m)) }
             }
             PyObjectPayload::Dict(m) => format_dict(&m.read()),
             PyObjectPayload::InstanceDict(attrs) => {

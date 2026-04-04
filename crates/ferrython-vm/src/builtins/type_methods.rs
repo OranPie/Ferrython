@@ -1,7 +1,7 @@
 //! Collection/numeric type method dispatch (list, dict, set, tuple, int, float, bytes)
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args_min,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -809,9 +809,61 @@ pub(super) fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> 
 pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "decode" => {
-            // Simple UTF-8 decode
-            let s = String::from_utf8_lossy(b);
-            Ok(PyObject::str_val(CompactString::from(s)))
+            let encoding = if !args.is_empty() { args[0].py_to_string().to_lowercase() } else { "utf-8".to_string() };
+            let errors = if args.len() > 1 { args[1].py_to_string() } else { "strict".to_string() };
+            match encoding.as_str() {
+                "utf-8" | "utf8" => {
+                    match errors.as_str() {
+                        "strict" => {
+                            match std::str::from_utf8(b) {
+                                Ok(s) => Ok(PyObject::str_val(CompactString::from(s))),
+                                Err(e) => Err(PyException::new(
+                                    ExceptionKind::UnicodeDecodeError,
+                                    format!("'utf-8' codec can't decode byte 0x{:02x} in position {}", b[e.valid_up_to()], e.valid_up_to()),
+                                )),
+                            }
+                        }
+                        "ignore" => {
+                            let s: String = b.iter().filter(|&&x| x < 0x80).map(|&x| x as char).collect();
+                            Ok(PyObject::str_val(CompactString::from(s)))
+                        }
+                        "replace" | _ => {
+                            Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(b))))
+                        }
+                    }
+                }
+                "ascii" => {
+                    match errors.as_str() {
+                        "strict" => {
+                            for (i, &byte) in b.iter().enumerate() {
+                                if byte > 127 {
+                                    return Err(PyException::new(
+                                        ExceptionKind::UnicodeDecodeError,
+                                        format!("'ascii' codec can't decode byte 0x{:02x} in position {}", byte, i),
+                                    ));
+                                }
+                            }
+                            Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(b))))
+                        }
+                        "ignore" => {
+                            let s: String = b.iter().filter(|&&x| x < 128).map(|&x| x as char).collect();
+                            Ok(PyObject::str_val(CompactString::from(s)))
+                        }
+                        "replace" | _ => {
+                            let s: String = b.iter().map(|&x| if x < 128 { x as char } else { '\u{FFFD}' }).collect();
+                            Ok(PyObject::str_val(CompactString::from(s)))
+                        }
+                    }
+                }
+                "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
+                    let s: String = b.iter().map(|&x| x as char).collect();
+                    Ok(PyObject::str_val(CompactString::from(s)))
+                }
+                _ => Err(PyException::new(
+                    ExceptionKind::LookupError,
+                    format!("unknown encoding: {}", encoding),
+                )),
+            }
         }
         "hex" => Ok(PyObject::str_val(CompactString::from(hex::encode(b)))),
         "count" => {
