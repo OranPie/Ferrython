@@ -1214,36 +1214,7 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
 
 /// Check if exception kind `child` is a subclass of `parent` in the hierarchy.
 pub(crate) fn is_exception_subclass(child: &ExceptionKind, parent: &ExceptionKind) -> bool {
-    if std::mem::discriminant(child) == std::mem::discriminant(parent) { return true; }
-    match parent {
-        ExceptionKind::BaseException => true,
-        ExceptionKind::Exception => !matches!(child,
-            ExceptionKind::SystemExit | ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit
-        ),
-        ExceptionKind::ArithmeticError => matches!(child,
-            ExceptionKind::ArithmeticError | ExceptionKind::FloatingPointError |
-            ExceptionKind::OverflowError | ExceptionKind::ZeroDivisionError
-        ),
-        ExceptionKind::LookupError => matches!(child,
-            ExceptionKind::LookupError | ExceptionKind::IndexError | ExceptionKind::KeyError
-        ),
-        ExceptionKind::OSError => matches!(child,
-            ExceptionKind::OSError | ExceptionKind::FileExistsError |
-            ExceptionKind::FileNotFoundError | ExceptionKind::PermissionError
-        ),
-        ExceptionKind::ValueError => matches!(child,
-            ExceptionKind::ValueError | ExceptionKind::UnicodeError |
-            ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError
-        ),
-        ExceptionKind::Warning => matches!(child,
-            ExceptionKind::Warning | ExceptionKind::DeprecationWarning |
-            ExceptionKind::RuntimeWarning | ExceptionKind::UserWarning
-        ),
-        ExceptionKind::ImportError => matches!(child,
-            ExceptionKind::ImportError | ExceptionKind::ModuleNotFoundError
-        ),
-        _ => false,
-    }
+    child.is_subclass_of(parent)
 }
 
 pub(super) fn builtin_object(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

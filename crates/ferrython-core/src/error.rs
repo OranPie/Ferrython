@@ -86,6 +86,73 @@ impl fmt::Display for ExceptionKind {
 }
 
 impl ExceptionKind {
+    /// Check if this exception kind is a subclass of `parent`, following CPython's hierarchy.
+    pub fn is_subclass_of(&self, parent: &ExceptionKind) -> bool {
+        if std::mem::discriminant(self) == std::mem::discriminant(parent) { return true; }
+        match parent {
+            ExceptionKind::BaseException => true,
+            ExceptionKind::Exception => !matches!(self,
+                ExceptionKind::SystemExit | ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit
+            ),
+            ExceptionKind::ArithmeticError => matches!(self,
+                ExceptionKind::ArithmeticError | ExceptionKind::FloatingPointError |
+                ExceptionKind::OverflowError | ExceptionKind::ZeroDivisionError
+            ),
+            ExceptionKind::LookupError => matches!(self,
+                ExceptionKind::LookupError | ExceptionKind::IndexError | ExceptionKind::KeyError
+            ),
+            ExceptionKind::OSError => matches!(self,
+                ExceptionKind::OSError | ExceptionKind::FileExistsError |
+                ExceptionKind::FileNotFoundError | ExceptionKind::PermissionError |
+                ExceptionKind::TimeoutError | ExceptionKind::IsADirectoryError |
+                ExceptionKind::NotADirectoryError | ExceptionKind::ProcessLookupError |
+                ExceptionKind::ConnectionError | ExceptionKind::ConnectionResetError |
+                ExceptionKind::ConnectionAbortedError | ExceptionKind::ConnectionRefusedError |
+                ExceptionKind::InterruptedError | ExceptionKind::ChildProcessError |
+                ExceptionKind::BlockingIOError | ExceptionKind::BrokenPipeError
+            ),
+            ExceptionKind::ConnectionError => matches!(self,
+                ExceptionKind::ConnectionError | ExceptionKind::ConnectionResetError |
+                ExceptionKind::ConnectionAbortedError | ExceptionKind::ConnectionRefusedError |
+                ExceptionKind::BrokenPipeError
+            ),
+            ExceptionKind::ValueError => matches!(self,
+                ExceptionKind::ValueError | ExceptionKind::UnicodeError |
+                ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError
+            ),
+            ExceptionKind::UnicodeError => matches!(self,
+                ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
+                ExceptionKind::UnicodeEncodeError
+            ),
+            ExceptionKind::Warning => matches!(self,
+                ExceptionKind::Warning | ExceptionKind::DeprecationWarning |
+                ExceptionKind::RuntimeWarning | ExceptionKind::UserWarning |
+                ExceptionKind::SyntaxWarning | ExceptionKind::FutureWarning |
+                ExceptionKind::ImportWarning | ExceptionKind::UnicodeWarning |
+                ExceptionKind::BytesWarning | ExceptionKind::ResourceWarning |
+                ExceptionKind::PendingDeprecationWarning
+            ),
+            ExceptionKind::ImportError => matches!(self,
+                ExceptionKind::ImportError | ExceptionKind::ModuleNotFoundError
+            ),
+            ExceptionKind::RuntimeError => matches!(self,
+                ExceptionKind::RuntimeError | ExceptionKind::RecursionError |
+                ExceptionKind::NotImplementedError
+            ),
+            ExceptionKind::SyntaxError => matches!(self,
+                ExceptionKind::SyntaxError | ExceptionKind::IndentationError |
+                ExceptionKind::TabError
+            ),
+            ExceptionKind::IndentationError => matches!(self,
+                ExceptionKind::IndentationError | ExceptionKind::TabError
+            ),
+            ExceptionKind::NameError => matches!(self,
+                ExceptionKind::NameError | ExceptionKind::UnboundLocalError
+            ),
+            _ => false,
+        }
+    }
+
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "BaseException" => Some(Self::BaseException),

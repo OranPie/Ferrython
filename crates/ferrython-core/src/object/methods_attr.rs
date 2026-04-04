@@ -439,7 +439,31 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             }
             PyObjectPayload::BuiltinType(n) => {
                 match name {
-                    "__name__" => Some(PyObject::str_val(n.clone())),
+                    "__name__" | "__qualname__" => Some(PyObject::str_val(n.clone())),
+                    "__bases__" => {
+                        let parent = match n.as_str() {
+                            "object" => vec![],
+                            "bool" => vec![PyObject::builtin_type(CompactString::from("int"))],
+                            "bytearray" => vec![PyObject::builtin_type(CompactString::from("object"))],
+                            _ => vec![PyObject::builtin_type(CompactString::from("object"))],
+                        };
+                        Some(PyObject::tuple(parent))
+                    }
+                    "__mro__" => {
+                        let mro = match n.as_str() {
+                            "object" => vec![obj.clone()],
+                            "bool" => vec![
+                                obj.clone(),
+                                PyObject::builtin_type(CompactString::from("int")),
+                                PyObject::builtin_type(CompactString::from("object")),
+                            ],
+                            _ => vec![
+                                obj.clone(),
+                                PyObject::builtin_type(CompactString::from("object")),
+                            ],
+                        };
+                        Some(PyObject::tuple(mro))
+                    }
                     "fromkeys" if n.as_str() == "dict" => {
                         Some(PyObject::native_function("dict.fromkeys", |args| {
                             if args.is_empty() { return Err(PyException::type_error("fromkeys() requires at least 1 argument")); }
@@ -639,7 +663,114 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             }
             PyObjectPayload::ExceptionType(kind) => {
                 match name {
-                    "__name__" => Some(PyObject::str_val(CompactString::from(format!("{:?}", kind)))),
+                    "__name__" | "__qualname__" => Some(PyObject::str_val(CompactString::from(format!("{:?}", kind)))),
+                    "__bases__" => {
+                        // Return the parent exception type in the hierarchy
+                        use crate::error::ExceptionKind;
+                        let parent = match kind {
+                            ExceptionKind::BaseException => None,
+                            ExceptionKind::Exception | ExceptionKind::SystemExit |
+                            ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit => {
+                                Some(ExceptionKind::BaseException)
+                            }
+                            ExceptionKind::ArithmeticError | ExceptionKind::LookupError |
+                            ExceptionKind::OSError | ExceptionKind::ValueError |
+                            ExceptionKind::Warning | ExceptionKind::ImportError |
+                            ExceptionKind::RuntimeError | ExceptionKind::SyntaxError |
+                            ExceptionKind::NameError | ExceptionKind::TypeError |
+                            ExceptionKind::AttributeError | ExceptionKind::AssertionError |
+                            ExceptionKind::BufferError | ExceptionKind::EOFError |
+                            ExceptionKind::MemoryError | ExceptionKind::ReferenceError |
+                            ExceptionKind::SystemError | ExceptionKind::StopIteration |
+                            ExceptionKind::StopAsyncIteration => {
+                                Some(ExceptionKind::Exception)
+                            }
+                            ExceptionKind::FloatingPointError | ExceptionKind::OverflowError |
+                            ExceptionKind::ZeroDivisionError => Some(ExceptionKind::ArithmeticError),
+                            ExceptionKind::IndexError | ExceptionKind::KeyError => Some(ExceptionKind::LookupError),
+                            ExceptionKind::FileExistsError | ExceptionKind::FileNotFoundError |
+                            ExceptionKind::PermissionError | ExceptionKind::TimeoutError |
+                            ExceptionKind::IsADirectoryError | ExceptionKind::NotADirectoryError |
+                            ExceptionKind::ProcessLookupError | ExceptionKind::ConnectionError |
+                            ExceptionKind::InterruptedError | ExceptionKind::ChildProcessError |
+                            ExceptionKind::BlockingIOError | ExceptionKind::BrokenPipeError => {
+                                Some(ExceptionKind::OSError)
+                            }
+                            ExceptionKind::ConnectionResetError | ExceptionKind::ConnectionAbortedError |
+                            ExceptionKind::ConnectionRefusedError => Some(ExceptionKind::ConnectionError),
+                            ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
+                            ExceptionKind::UnicodeEncodeError => Some(ExceptionKind::ValueError),
+                            ExceptionKind::ModuleNotFoundError => Some(ExceptionKind::ImportError),
+                            ExceptionKind::NotImplementedError | ExceptionKind::RecursionError => {
+                                Some(ExceptionKind::RuntimeError)
+                            }
+                            ExceptionKind::UnboundLocalError => Some(ExceptionKind::NameError),
+                            ExceptionKind::IndentationError => Some(ExceptionKind::SyntaxError),
+                            ExceptionKind::TabError => Some(ExceptionKind::IndentationError),
+                            ExceptionKind::DeprecationWarning | ExceptionKind::RuntimeWarning |
+                            ExceptionKind::UserWarning | ExceptionKind::SyntaxWarning |
+                            ExceptionKind::FutureWarning | ExceptionKind::ImportWarning |
+                            ExceptionKind::UnicodeWarning | ExceptionKind::BytesWarning |
+                            ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning => {
+                                Some(ExceptionKind::Warning)
+                            }
+                        };
+                        let bases = match parent {
+                            Some(p) => vec![PyObject::exception_type(p)],
+                            None => vec![PyObject::builtin_type(CompactString::from("object"))],
+                        };
+                        Some(PyObject::tuple(bases))
+                    }
+                    "__mro__" => {
+                        // Build the MRO chain by walking up the hierarchy
+                        use crate::error::ExceptionKind;
+                        let mut mro = vec![obj.clone()];
+                        let mut current = kind.clone();
+                        loop {
+                            let parent = match &current {
+                                ExceptionKind::BaseException => break,
+                                ExceptionKind::Exception | ExceptionKind::SystemExit |
+                                ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit => ExceptionKind::BaseException,
+                                ExceptionKind::ArithmeticError | ExceptionKind::LookupError |
+                                ExceptionKind::OSError | ExceptionKind::ValueError |
+                                ExceptionKind::Warning | ExceptionKind::ImportError |
+                                ExceptionKind::RuntimeError | ExceptionKind::SyntaxError |
+                                ExceptionKind::NameError | ExceptionKind::TypeError |
+                                ExceptionKind::AttributeError | ExceptionKind::AssertionError |
+                                ExceptionKind::BufferError | ExceptionKind::EOFError |
+                                ExceptionKind::MemoryError | ExceptionKind::ReferenceError |
+                                ExceptionKind::SystemError | ExceptionKind::StopIteration |
+                                ExceptionKind::StopAsyncIteration => ExceptionKind::Exception,
+                                ExceptionKind::FloatingPointError | ExceptionKind::OverflowError |
+                                ExceptionKind::ZeroDivisionError => ExceptionKind::ArithmeticError,
+                                ExceptionKind::IndexError | ExceptionKind::KeyError => ExceptionKind::LookupError,
+                                ExceptionKind::FileExistsError | ExceptionKind::FileNotFoundError |
+                                ExceptionKind::PermissionError | ExceptionKind::TimeoutError |
+                                ExceptionKind::IsADirectoryError | ExceptionKind::NotADirectoryError |
+                                ExceptionKind::ProcessLookupError | ExceptionKind::ConnectionError |
+                                ExceptionKind::InterruptedError | ExceptionKind::ChildProcessError |
+                                ExceptionKind::BlockingIOError | ExceptionKind::BrokenPipeError => ExceptionKind::OSError,
+                                ExceptionKind::ConnectionResetError | ExceptionKind::ConnectionAbortedError |
+                                ExceptionKind::ConnectionRefusedError => ExceptionKind::ConnectionError,
+                                ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
+                                ExceptionKind::UnicodeEncodeError => ExceptionKind::ValueError,
+                                ExceptionKind::ModuleNotFoundError => ExceptionKind::ImportError,
+                                ExceptionKind::NotImplementedError | ExceptionKind::RecursionError => ExceptionKind::RuntimeError,
+                                ExceptionKind::UnboundLocalError => ExceptionKind::NameError,
+                                ExceptionKind::IndentationError => ExceptionKind::SyntaxError,
+                                ExceptionKind::TabError => ExceptionKind::IndentationError,
+                                ExceptionKind::DeprecationWarning | ExceptionKind::RuntimeWarning |
+                                ExceptionKind::UserWarning | ExceptionKind::SyntaxWarning |
+                                ExceptionKind::FutureWarning | ExceptionKind::ImportWarning |
+                                ExceptionKind::UnicodeWarning | ExceptionKind::BytesWarning |
+                                ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning => ExceptionKind::Warning,
+                            };
+                            mro.push(PyObject::exception_type(parent.clone()));
+                            current = parent;
+                        }
+                        mro.push(PyObject::builtin_type(CompactString::from("object")));
+                        Some(PyObject::tuple(mro))
+                    }
                     _ => None,
                 }
             }
