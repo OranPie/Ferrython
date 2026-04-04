@@ -533,42 +533,70 @@ impl Compiler {
     }
 
     pub(super) fn compile_star_args(&mut self, args: &[Expression]) -> Result<()> {
-        // Build a tuple from positional args, merging starred elements
-        // Build individual segments and use BUILD_TUPLE_UNPACK_WITH_CALL
-        // For simplicity, build a list and convert
-        let mut segments = 0u32;
+        // Count segments: contiguous regular args form one tuple segment,
+        // each starred arg is its own segment.
+        let star_count = args.iter()
+            .filter(|a| matches!(a.node, ExpressionKind::Starred { .. }))
+            .count();
+
+        if star_count == 0 {
+            // No star args — simple tuple
+            for arg in args {
+                self.compile_expression(arg)?;
+            }
+            self.emit_arg(Opcode::BuildTuple, args.len() as u32);
+            return Ok(());
+        }
+
+        if star_count == 1 && !args.iter().any(|a| !matches!(a.node, ExpressionKind::Starred { .. })) {
+            // Single starred arg, no regular args: just compile the value
+            if let ExpressionKind::Starred { value, .. } = &args[0].node {
+                self.compile_expression(value)?;
+            }
+            return Ok(());
+        }
+
+        // Multiple segments: build a list incrementally, then use it directly.
+        // CallFunctionEx calls collect_iterable() which handles lists.
+        //
+        // Strategy: push an empty list, then for each segment:
+        //   - regular args: BuildTuple(n) + ListExtend(1)
+        //   - starred arg: compile value + ListExtend(1)
+        self.emit_arg(Opcode::BuildList, 0); // accumulator list
+
+        let mut regular_start = None;
         let mut n_regular = 0u32;
 
-        for arg in args {
+        for (i, arg) in args.iter().enumerate() {
             if let ExpressionKind::Starred { value, .. } = &arg.node {
+                // Flush pending regular args
                 if n_regular > 0 {
+                    // We already compiled the regular args but they're on top of the list.
+                    // BuildTuple collects from stack, then ListExtend merges into the list below.
                     self.emit_arg(Opcode::BuildTuple, n_regular);
-                    segments += 1;
+                    self.emit_arg(Opcode::ListExtend, 1);
                     n_regular = 0;
+                    regular_start = None;
                 }
                 self.compile_expression(value)?;
-                segments += 1;
+                self.emit_arg(Opcode::ListExtend, 1);
             } else {
+                if regular_start.is_none() {
+                    regular_start = Some(i);
+                }
                 self.compile_expression(arg)?;
                 n_regular += 1;
             }
         }
+
+        // Flush any remaining regular args
         if n_regular > 0 {
             self.emit_arg(Opcode::BuildTuple, n_regular);
-            segments += 1;
+            self.emit_arg(Opcode::ListExtend, 1);
         }
 
-        if segments == 0 {
-            self.emit_arg(Opcode::BuildTuple, 0);
-        } else if segments > 1 {
-            // Merge all into one tuple using BuildList + ListExtend
-            self.emit_arg(Opcode::BuildList, 0);
-            // Re-compile with extend pattern — for simplicity, we use a single approach:
-            // We already have `segments` items on the stack. We can build them into a list.
-            // Actually, let's simplify: just use BUILD_TUPLE for the regular case.
-            // The segments are already on the stack; we build a list and extend each.
-            // This is getting complex, so let's use a simpler approach for the common case.
-        }
+        // The accumulator list now contains all args merged.
+        // CallFunctionEx's collect_iterable handles lists.
         Ok(())
     }
 
