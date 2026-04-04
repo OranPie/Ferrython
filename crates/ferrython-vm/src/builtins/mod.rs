@@ -370,6 +370,10 @@ fn call_instance_method(inst: &ferrython_core::object::InstanceData, method: &st
     if matches!(class_name.as_str(), "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
         return call_hashlib_method(inst, method, args);
     }
+    // Builtin type subclass: delegate to the underlying value's method dispatch
+    if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
+        return call_method(&val, method, args);
+    }
     Err(PyException::attribute_error(format!(
         "'{}' object has no attribute '{}'", 
         if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.as_str() } else { "instance" },

@@ -10,6 +10,42 @@ use super::methods::PyObjectMethods;
 
 // ── Helpers ──
 
+/// Check if a class inherits from a builtin type (int, str, float, etc.)
+/// and return the builtin type name if so.
+pub fn get_builtin_base_type_name(class: &PyObjectRef) -> Option<CompactString> {
+    if let PyObjectPayload::Class(cd) = &class.payload {
+        for base in &cd.bases {
+            match &base.payload {
+                PyObjectPayload::BuiltinType(name) => {
+                    if matches!(name.as_str(), "int" | "str" | "float" | "list" | "tuple"
+                        | "set" | "frozenset" | "bytes" | "bytearray")
+                    {
+                        return Some(name.clone());
+                    }
+                }
+                PyObjectPayload::Class(_) => {
+                    if let Some(name) = get_builtin_base_type_name(base) {
+                        return Some(name);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// If obj is an Instance of a builtin subclass with __builtin_value__, return the value.
+/// Otherwise, return the original object unchanged.
+pub fn unwrap_builtin_subclass(obj: &PyObjectRef) -> PyObjectRef {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
+            return val;
+        }
+    }
+    obj.clone()
+}
+
 pub(super) fn coerce_to_f64(obj: &PyObjectRef) -> PyResult<f64> {
     match &obj.payload {
         PyObjectPayload::Float(f) => Ok(*f),

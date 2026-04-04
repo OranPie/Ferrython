@@ -12,6 +12,12 @@ use super::helpers::*;
 use super::methods::PyObjectMethods;
 
 pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
+        // Unwrap builtin subclass instances to their underlying values
+        let ua = unwrap_builtin_subclass(a);
+        let ub = unwrap_builtin_subclass(b);
+        if !Arc::ptr_eq(&ua, a) || !Arc::ptr_eq(&ub, b) {
+            return py_add(&ua, &ub);
+        }
         match (&a.payload, &b.payload) {
             // Bool → Int coercion for arithmetic
             (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => Ok(PyObject::int(*a as i64 + *b as i64)),
@@ -94,6 +100,11 @@ pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
 }
 
 pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
+        let ua = unwrap_builtin_subclass(a);
+        let ub = unwrap_builtin_subclass(b);
+        if !Arc::ptr_eq(&ua, a) || !Arc::ptr_eq(&ub, b) {
+            return py_sub(&ua, &ub);
+        }
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => Ok(PyObject::int(*a as i64 - *b as i64)),
             (PyObjectPayload::Bool(a), PyObjectPayload::Int(b)) => Ok(PyInt::sub_op(&PyInt::Small(*a as i64), b).to_object()),
@@ -172,6 +183,11 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
 }
 
 pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
+        let ua = unwrap_builtin_subclass(a);
+        let ub = unwrap_builtin_subclass(b);
+        if !Arc::ptr_eq(&ua, a) || !Arc::ptr_eq(&ub, b) {
+            return py_mul(&ua, &ub);
+        }
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => Ok(PyObject::int(*a as i64 * *b as i64)),
             (PyObjectPayload::Bool(a), PyObjectPayload::Int(b)) => Ok(PyInt::mul_op(&PyInt::Small(*a as i64), b).to_object()),
@@ -222,6 +238,11 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
 }
 
 pub(super) fn py_floor_div(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
+        let ua = unwrap_builtin_subclass(a);
+        let ub = unwrap_builtin_subclass(b);
+        if !Arc::ptr_eq(&ua, a) || !Arc::ptr_eq(&ub, b) {
+            return py_floor_div(&ua, &ub);
+        }
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => {
                 if b.is_zero() { return Err(PyException::zero_division_error("integer division or modulo by zero")); }
@@ -236,6 +257,11 @@ pub(super) fn py_floor_div(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjec
 }
 
 pub(super) fn py_true_div(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
+        let ua = unwrap_builtin_subclass(a);
+        let ub = unwrap_builtin_subclass(b);
+        if !Arc::ptr_eq(&ua, a) || !Arc::ptr_eq(&ub, b) {
+            return py_true_div(&ua, &ub);
+        }
         // Complex division
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Complex { real: ar, imag: ai }, PyObjectPayload::Complex { real: br, imag: bi }) => {
@@ -313,6 +339,11 @@ pub(super) fn py_true_div(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObject
 }
 
 pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
+        let ua = unwrap_builtin_subclass(a);
+        let ub = unwrap_builtin_subclass(b);
+        if !Arc::ptr_eq(&ua, a) || !Arc::ptr_eq(&ub, b) {
+            return py_modulo(&ua, &ub);
+        }
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => {
                 if b.is_zero() { return Err(PyException::zero_division_error("integer division or modulo by zero")); }
@@ -407,6 +438,11 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
 }
 
 pub(super) fn py_power(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
+        let ua = unwrap_builtin_subclass(a);
+        let ub = unwrap_builtin_subclass(b);
+        if !Arc::ptr_eq(&ua, a) || !Arc::ptr_eq(&ub, b) {
+            return py_power(&ua, &ub);
+        }
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Int(a), PyObjectPayload::Int(b)) => {
                 if let Some(exp) = b.to_i64() {
@@ -506,6 +542,8 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
 }
 
 pub(super) fn py_negate(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+        let u = unwrap_builtin_subclass(obj);
+        if !Arc::ptr_eq(&u, obj) { return py_negate(&u); }
         match &obj.payload {
             PyObjectPayload::Int(n) => Ok(n.negate().to_object()),
             PyObjectPayload::Float(f) => Ok(PyObject::float(-f)),
@@ -516,6 +554,8 @@ pub(super) fn py_negate(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn py_positive(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+        let u = unwrap_builtin_subclass(obj);
+        if !Arc::ptr_eq(&u, obj) { return py_positive(&u); }
         match &obj.payload {
             PyObjectPayload::Int(_) | PyObjectPayload::Float(_) | PyObjectPayload::Bool(_) |
             PyObjectPayload::Complex { .. } => Ok(obj.clone()),
@@ -524,6 +564,8 @@ pub(super) fn py_positive(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn py_invert(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+        let u = unwrap_builtin_subclass(obj);
+        if !Arc::ptr_eq(&u, obj) { return py_invert(&u); }
         match &obj.payload {
             PyObjectPayload::Int(n) => Ok(n.invert().to_object()),
             PyObjectPayload::Bool(b) => Ok(PyObject::int(!(*b as i64))),
@@ -532,6 +574,8 @@ pub(super) fn py_invert(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn py_abs(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+        let u = unwrap_builtin_subclass(obj);
+        if !Arc::ptr_eq(&u, obj) { return py_abs(&u); }
         match &obj.payload {
             PyObjectPayload::Int(n) => Ok(n.abs().to_object()),
             PyObjectPayload::Float(f) => Ok(PyObject::float(f.abs())),

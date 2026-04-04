@@ -9,6 +9,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     AsyncGenAction, CompareOp, IteratorData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, is_data_descriptor, lookup_in_class_mro,
+    get_builtin_base_type_name, unwrap_builtin_subclass,
 };
 use ferrython_core::types::{HashableKey, SharedGlobals};
 use indexmap::IndexMap;
@@ -374,7 +375,47 @@ impl VirtualMachine {
                     if matches!(&receiver.payload, PyObjectPayload::BuiltinType(_))
             );
             if is_builtin_new {
-                PyObject::instance(cls.clone())
+                let inst = PyObject::instance(cls.clone());
+                // For builtin type subclasses (int, str, float), store the constructor
+                // argument as __builtin_value__ so arithmetic/methods work correctly.
+                if !pos_args.is_empty() {
+                    if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                        if let Some(base_type) = get_builtin_base_type_name(cls) {
+                            let value = match base_type.as_str() {
+                                "int" => {
+                                    let arg = &pos_args[0];
+                                    match &arg.payload {
+                                        PyObjectPayload::Int(_) | PyObjectPayload::Bool(_) => Some(arg.clone()),
+                                        PyObjectPayload::Float(f) => Some(PyObject::int(*f as i64)),
+                                        PyObjectPayload::Str(s) => s.trim().parse::<i64>().ok().map(PyObject::int),
+                                        _ => None,
+                                    }
+                                }
+                                "float" => {
+                                    let arg = &pos_args[0];
+                                    match &arg.payload {
+                                        PyObjectPayload::Float(_) => Some(arg.clone()),
+                                        PyObjectPayload::Int(n) => Some(PyObject::float(n.to_f64())),
+                                        PyObjectPayload::Bool(b) => Some(PyObject::float(if *b { 1.0 } else { 0.0 })),
+                                        PyObjectPayload::Str(s) => s.trim().parse::<f64>().ok().map(PyObject::float),
+                                        _ => None,
+                                    }
+                                }
+                                "str" => {
+                                    let s = pos_args[0].py_to_string();
+                                    Some(PyObject::str_val(CompactString::from(s)))
+                                }
+                                _ => None,
+                            };
+                            if let Some(val) = value {
+                                inst_data.attrs.write().insert(
+                                    CompactString::from("__builtin_value__"), val,
+                                );
+                            }
+                        }
+                    }
+                }
+                inst
             } else {
                 let new_fn = match &new_method.payload {
                     PyObjectPayload::BoundMethod { method, .. } => method.clone(),
@@ -1326,7 +1367,13 @@ impl VirtualMachine {
                     }
                     "int" => {
                         if args.len() == 1 {
-                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                                // Check for __builtin_value__ first (int subclass)
+                                if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
+                                    if matches!(&val.payload, PyObjectPayload::Int(_)) {
+                                        return Ok(val);
+                                    }
+                                }
                                 if let Some(method) = args[0].get_attr("__int__") {
                                     let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] }; return self.call_object(method, ca);
                                 }
@@ -1335,7 +1382,17 @@ impl VirtualMachine {
                     }
                     "float" => {
                         if args.len() == 1 {
-                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                                // Check for __builtin_value__ first (float subclass)
+                                if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
+                                    if matches!(&val.payload, PyObjectPayload::Float(_)) {
+                                        return Ok(val);
+                                    }
+                                    // int subclass → convert to float
+                                    if let PyObjectPayload::Int(n) = &val.payload {
+                                        return Ok(PyObject::float(n.to_f64()));
+                                    }
+                                }
                                 if let Some(method) = args[0].get_attr("__float__") {
                                     let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] }; return self.call_object(method, ca);
                                 }

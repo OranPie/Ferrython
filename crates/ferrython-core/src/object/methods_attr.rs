@@ -305,6 +305,12 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if let Some(result) = instance_builtin_method(obj, inst, name) {
                     return Some(result);
                 }
+                // Builtin type subclass: delegate to the underlying value's get_attr
+                if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    if let Some(result) = py_get_attr(&val, name) {
+                        return Some(result);
+                    }
+                }
                 None
             }
             PyObjectPayload::Class(cd) => {
@@ -805,20 +811,163 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 })),
                 _ => None,
             },
-            // Built-in type methods — return bound method names
-            PyObjectPayload::Str(_) | PyObjectPayload::List(_) |
-            PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_) | PyObjectPayload::Tuple(_) |
-            PyObjectPayload::Set(_) | PyObjectPayload::FrozenSet(_) | PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => {
+            // Built-in type methods — return bound method for KNOWN methods only
+            PyObjectPayload::Str(_) => {
+                if name == "__class__" {
+                    return Some(PyObject::builtin_type(CompactString::from("str")));
+                }
+                if matches!(name,
+                    "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "split" | "rsplit"
+                    | "join" | "replace" | "find" | "rfind" | "index" | "rindex" | "count"
+                    | "startswith" | "endswith" | "isdigit" | "isalpha" | "isalnum" | "isspace"
+                    | "isupper" | "islower" | "istitle" | "isprintable" | "isidentifier"
+                    | "isascii" | "isdecimal" | "isnumeric" | "title" | "capitalize" | "swapcase"
+                    | "center" | "ljust" | "rjust" | "zfill" | "expandtabs" | "encode"
+                    | "partition" | "rpartition" | "casefold" | "removeprefix" | "removesuffix"
+                    | "splitlines" | "format" | "format_map" | "translate" | "maketrans"
+                    | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__hash__"
+                    | "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__"
+                    | "__repr__" | "__str__" | "__format__" | "__add__" | "__mul__" | "__rmul__"
+                    | "__mod__" | "__bool__"
+                ) {
+                    return Some(Arc::new(PyObject {
+                        payload: PyObjectPayload::BuiltinBoundMethod {
+                            receiver: obj.clone(),
+                            method_name: CompactString::from(name),
+                        }
+                    }));
+                }
+                None
+            }
+            PyObjectPayload::List(_) => {
+                if name == "__class__" {
+                    return Some(PyObject::builtin_type(CompactString::from("list")));
+                }
+                if matches!(name,
+                    "append" | "extend" | "insert" | "pop" | "remove" | "reverse" | "sort"
+                    | "clear" | "copy" | "count" | "index"
+                    | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__setitem__"
+                    | "__delitem__" | "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__"
+                    | "__repr__" | "__str__" | "__add__" | "__mul__" | "__iadd__" | "__imul__"
+                    | "__reversed__" | "__bool__" | "__hash__"
+                ) {
+                    return Some(Arc::new(PyObject {
+                        payload: PyObjectPayload::BuiltinBoundMethod {
+                            receiver: obj.clone(),
+                            method_name: CompactString::from(name),
+                        }
+                    }));
+                }
+                None
+            }
+            PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_) => {
                 if name == "__class__" {
                     let type_name = obj.type_name();
                     return Some(PyObject::builtin_type(CompactString::from(type_name)));
                 }
-                Some(Arc::new(PyObject {
-                    payload: PyObjectPayload::BuiltinBoundMethod {
-                        receiver: obj.clone(),
-                        method_name: CompactString::from(name),
-                    }
-                }))
+                if matches!(name,
+                    "keys" | "values" | "items" | "get" | "copy" | "update" | "subtract"
+                    | "pop" | "setdefault" | "clear" | "popitem" | "most_common" | "elements"
+                    | "move_to_end"
+                    | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__setitem__"
+                    | "__delitem__" | "__eq__" | "__ne__" | "__repr__" | "__str__"
+                    | "__or__" | "__ior__" | "__bool__" | "__hash__"
+                ) {
+                    return Some(Arc::new(PyObject {
+                        payload: PyObjectPayload::BuiltinBoundMethod {
+                            receiver: obj.clone(),
+                            method_name: CompactString::from(name),
+                        }
+                    }));
+                }
+                None
+            }
+            PyObjectPayload::Tuple(_) => {
+                if name == "__class__" {
+                    return Some(PyObject::builtin_type(CompactString::from("tuple")));
+                }
+                if matches!(name,
+                    "count" | "index"
+                    | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__hash__"
+                    | "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__"
+                    | "__repr__" | "__str__" | "__add__" | "__mul__" | "__bool__"
+                ) {
+                    return Some(Arc::new(PyObject {
+                        payload: PyObjectPayload::BuiltinBoundMethod {
+                            receiver: obj.clone(),
+                            method_name: CompactString::from(name),
+                        }
+                    }));
+                }
+                None
+            }
+            PyObjectPayload::Set(_) => {
+                if name == "__class__" {
+                    return Some(PyObject::builtin_type(CompactString::from("set")));
+                }
+                if matches!(name,
+                    "add" | "remove" | "discard" | "pop" | "clear" | "copy" | "update"
+                    | "union" | "intersection" | "difference" | "symmetric_difference"
+                    | "issubset" | "issuperset" | "isdisjoint"
+                    | "intersection_update" | "difference_update" | "symmetric_difference_update"
+                    | "__len__" | "__contains__" | "__iter__" | "__or__" | "__and__"
+                    | "__sub__" | "__xor__" | "__eq__" | "__ne__" | "__lt__" | "__le__"
+                    | "__gt__" | "__ge__" | "__repr__" | "__str__" | "__bool__" | "__hash__"
+                ) {
+                    return Some(Arc::new(PyObject {
+                        payload: PyObjectPayload::BuiltinBoundMethod {
+                            receiver: obj.clone(),
+                            method_name: CompactString::from(name),
+                        }
+                    }));
+                }
+                None
+            }
+            PyObjectPayload::FrozenSet(_) => {
+                if name == "__class__" {
+                    return Some(PyObject::builtin_type(CompactString::from("frozenset")));
+                }
+                if matches!(name,
+                    "copy" | "union" | "intersection" | "difference" | "symmetric_difference"
+                    | "issubset" | "issuperset" | "isdisjoint"
+                    | "__len__" | "__contains__" | "__iter__" | "__or__" | "__and__"
+                    | "__sub__" | "__xor__" | "__eq__" | "__ne__" | "__hash__"
+                    | "__repr__" | "__str__" | "__bool__"
+                ) {
+                    return Some(Arc::new(PyObject {
+                        payload: PyObjectPayload::BuiltinBoundMethod {
+                            receiver: obj.clone(),
+                            method_name: CompactString::from(name),
+                        }
+                    }));
+                }
+                None
+            }
+            PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => {
+                if name == "__class__" {
+                    let type_name = obj.type_name();
+                    return Some(PyObject::builtin_type(CompactString::from(type_name)));
+                }
+                if matches!(name,
+                    "decode" | "hex" | "count" | "find" | "rfind" | "index" | "rindex"
+                    | "startswith" | "endswith" | "upper" | "lower" | "strip" | "lstrip" | "rstrip"
+                    | "split" | "join" | "replace" | "isdigit" | "isalpha" | "isalnum" | "isspace"
+                    | "islower" | "isupper" | "istitle" | "swapcase" | "title" | "capitalize"
+                    | "center" | "ljust" | "rjust" | "zfill" | "expandtabs"
+                    | "partition" | "rpartition"
+                    | "append" | "extend" | "pop" | "insert" | "clear" | "reverse" | "copy"
+                    | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__setitem__"
+                    | "__eq__" | "__ne__" | "__repr__" | "__str__" | "__add__" | "__mul__"
+                    | "__bool__" | "__hash__"
+                ) {
+                    return Some(Arc::new(PyObject {
+                        payload: PyObjectPayload::BuiltinBoundMethod {
+                            receiver: obj.clone(),
+                            method_name: CompactString::from(name),
+                        }
+                    }));
+                }
+                None
             }
             PyObjectPayload::Generator(_) => {
                 match name {
