@@ -1989,11 +1989,41 @@ impl Parser {
     // ─── Block parsing ──────────────────────────────────────────────
 
     fn parse_block(&mut self) -> Result<Vec<Statement>, ParseError> {
-        // Check for inline body (e.g., `def f(): return 1`)
-        // If next token is NOT a newline, parse a single simple statement
+        // Check for inline body (e.g., `def f(): return 1` or `def f(): x = 1; y = 2`)
+        // If next token is NOT a newline, parse semicolon-separated simple statements.
+        // parse_statement's expect_newline() consumes both semicolons and newlines,
+        // so we track whether a newline was hit to know when to stop.
         if !self.check(TokenKind::Newline) && !self.is_at_end() {
-            let stmt = self.parse_statement()?;
-            return Ok(vec![stmt]);
+            let mut stmts = Vec::new();
+            loop {
+                let pos_before = self.pos;
+                stmts.push(self.parse_statement()?);
+                // parse_statement called expect_newline which consumed separators.
+                // Check if we hit the end of the inline body:
+                // If current pos is at end, or a Newline/Dedent was consumed (meaning
+                // we crossed a line boundary), stop.
+                if self.is_at_end() || self.check(TokenKind::Dedent) || self.check(TokenKind::Eof) {
+                    break;
+                }
+                // If we're now at a compound statement keyword, we've crossed a line
+                if matches!(self.peek().kind,
+                    TokenKind::Def | TokenKind::Class | TokenKind::If | TokenKind::While |
+                    TokenKind::For | TokenKind::Try | TokenKind::With | TokenKind::Async |
+                    TokenKind::At
+                ) {
+                    break;
+                }
+                // If the consumed separator was a newline (not semicolon), stop
+                // We detect this by checking: did we consume a newline token?
+                // The tokens between pos_before and current pos tell us
+                let consumed_newline = (pos_before..self.pos).any(|i| {
+                    i < self.tokens.len() && matches!(self.tokens[i].kind, TokenKind::Newline)
+                });
+                if consumed_newline {
+                    break;
+                }
+            }
+            return Ok(stmts);
         }
         self.expect_newline()?;
         self.expect(TokenKind::Indent)?;
