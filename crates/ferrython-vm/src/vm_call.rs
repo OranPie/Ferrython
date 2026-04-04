@@ -1245,13 +1245,11 @@ impl VirtualMachine {
                         }
                         let func_obj = args[0].clone();
                         if args.len() == 2 {
-                            // Create lazy map iterator
-                            let source = builtins::get_iter_from_obj_pub(&args[1])?;
+                            let source = self.resolve_iterable(&args[1])?;
                             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
                                 Arc::new(std::sync::Mutex::new(IteratorData::Map { func: func_obj, source }))
                             )));
                         } else {
-                            // Multi-arg map: collect eagerly (rare case)
                             let mut iters: Vec<Vec<PyObjectRef>> = Vec::new();
                             for a in &args[1..] { iters.push(self.collect_iterable(a)?); }
                             let min_len = iters.iter().map(|v| v.len()).min().unwrap_or(0);
@@ -1270,7 +1268,7 @@ impl VirtualMachine {
                             return Err(PyException::type_error("filter() requires at least 2 arguments"));
                         }
                         let func_obj = args[0].clone();
-                        let source = builtins::get_iter_from_obj_pub(&args[1])?;
+                        let source = self.resolve_iterable(&args[1])?;
                         return Ok(PyObject::wrap(PyObjectPayload::Iterator(
                             Arc::new(std::sync::Mutex::new(IteratorData::Filter { func: func_obj, source }))
                         )));
@@ -1480,10 +1478,16 @@ impl VirtualMachine {
                         }
                     }
                     "enumerate" => {
-                        return builtins::dispatch("enumerate", &args);
+                        let mut resolved = args.clone();
+                        if !resolved.is_empty() {
+                            resolved[0] = self.resolve_iterable(&resolved[0])?;
+                        }
+                        return builtins::dispatch("enumerate", &resolved);
                     }
                     "zip" => {
-                        return builtins::dispatch("zip", &args);
+                        // Pre-resolve custom __iter__ before dispatching to zip
+                        let resolved = self.resolve_iterables(&args)?;
+                        return builtins::dispatch("zip", &resolved);
                     }
                     "len" => {
                         if args.len() == 1 {

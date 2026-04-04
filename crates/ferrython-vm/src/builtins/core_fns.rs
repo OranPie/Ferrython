@@ -723,9 +723,13 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             )))
         }
         PyObjectPayload::Instance(_) => {
-            // Check for __iter__ method — return the object itself as it likely has __next__
-            if obj.get_attr("__iter__").is_some() || obj.get_attr("__next__").is_some() {
-                Ok(obj.clone())
+            // For builtins without VM access, check if it's already an iterator
+            if obj.get_attr("__next__").is_some() || obj.get_attr("__iter__").is_some() {
+                // Try core get_iter (handles dict_storage, namedtuple, etc.)
+                match obj.get_iter() {
+                    Ok(iter) => Ok(iter),
+                    Err(_) => Ok(obj.clone()),
+                }
             } else {
                 Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
             }

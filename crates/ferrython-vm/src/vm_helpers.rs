@@ -348,6 +348,35 @@ impl VirtualMachine {
         )))
     }
 
+    /// Resolve an iterable object to its iterator by calling __iter__ if needed.
+    /// For Instance objects with __iter__, calls __iter__() to get the real iterator.
+    /// For builtin types (list, tuple, etc.), delegates to get_iter_from_obj.
+    pub(crate) fn resolve_iterable(&mut self, obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            // dict subclass or namedtuple: use core get_iter
+            if inst.dict_storage.is_some() || inst.class.get_attr("__namedtuple__").is_some() {
+                return obj.get_iter();
+            }
+            // Custom __iter__: call it to get the actual iterator
+            if let Some(iter_method) = obj.get_attr("__iter__") {
+                return self.call_object(iter_method, vec![]);
+            }
+            // Has __getitem__: return obj itself for sequence protocol
+            if obj.get_attr("__getitem__").is_some() {
+                return Ok(obj.clone());
+            }
+            return Err(PyException::type_error(format!(
+                "'{}' object is not iterable", obj.type_name()
+            )));
+        }
+        builtins::get_iter_from_obj_pub(obj)
+    }
+
+    /// Resolve a slice of iterables, calling __iter__ on Instance objects.
+    pub(crate) fn resolve_iterables(&mut self, args: &[PyObjectRef]) -> PyResult<Vec<PyObjectRef>> {
+        args.iter().map(|a| self.resolve_iterable(a)).collect()
+    }
+
     /// Collect all items from any iterable (list, tuple, generator, instance with __iter__/__next__).
     pub(crate) fn collect_iterable(&mut self, obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
         match &obj.payload {
