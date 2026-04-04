@@ -11,13 +11,16 @@ mod serial_modules;
 mod fs_modules;
 mod time_modules;
 mod misc_modules;
+mod type_modules;
+mod introspection_modules;
+mod concurrency_modules;
 mod async_modules;
 mod import_modules;
 
 use ferrython_core::object::PyObjectRef;
 
 pub use sys_modules::get_recursion_limit;
-pub use misc_modules::drain_deferred_calls;
+pub use concurrency_modules::drain_deferred_calls;
 pub use async_modules::take_asyncio_run_coro;
 pub use import_modules::{take_import_module_request, take_reload_request, ImportModuleRequest, ReloadRequest};
 
@@ -64,30 +67,33 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // Time & datetime
         "time" => Some(time_modules::create_time_module()),
         "datetime" => Some(time_modules::create_datetime_module()),
+        // Type system
+        "typing" => Some(type_modules::create_typing_module()),
+        "abc" => Some(type_modules::create_abc_module()),
+        "enum" => Some(type_modules::create_enum_module()),
+        "types" => Some(type_modules::create_types_module()),
+        "collections.abc" => Some(type_modules::create_collections_abc_module()),
         // Misc
-        "typing" => Some(misc_modules::create_typing_module()),
-        "abc" => Some(misc_modules::create_abc_module()),
-        "enum" => Some(misc_modules::create_enum_module()),
         "contextlib" => Some(misc_modules::create_contextlib_module()),
         "dataclasses" => Some(misc_modules::create_dataclasses_module()),
         "copy" => Some(misc_modules::create_copy_module()),
         "operator" => Some(misc_modules::create_operator_module()),
         "hashlib" => Some(misc_modules::create_hashlib_module()),
         "logging" => Some(misc_modules::create_logging_module()),
-        "warnings" => Some(misc_modules::create_warnings_module()),
-        "traceback" => Some(misc_modules::create_traceback_module()),
-        "inspect" => Some(misc_modules::create_inspect_module()),
-        "dis" => Some(misc_modules::create_dis_module()),
-        "threading" => Some(misc_modules::create_threading_module()),
         "unittest" => Some(misc_modules::create_unittest_module()),
         "pprint" => Some(misc_modules::create_pprint_module()),
         "argparse" => Some(misc_modules::create_argparse_module()),
-        "weakref" => Some(misc_modules::create_weakref_module()),
-        "gc" => Some(misc_modules::create_gc_module()),
-        "types" => Some(misc_modules::create_types_module()),
-        "collections.abc" => Some(misc_modules::create_collections_abc_module()),
         "errno" => Some(misc_modules::create_errno_module()),
-        "_thread" => Some(misc_modules::create_thread_module()),
+        // Introspection
+        "warnings" => Some(introspection_modules::create_warnings_module()),
+        "traceback" => Some(introspection_modules::create_traceback_module()),
+        "inspect" => Some(introspection_modules::create_inspect_module()),
+        "dis" => Some(introspection_modules::create_dis_module()),
+        // Concurrency
+        "threading" => Some(concurrency_modules::create_threading_module()),
+        "weakref" => Some(concurrency_modules::create_weakref_module()),
+        "gc" => Some(concurrency_modules::create_gc_module()),
+        "_thread" => Some(concurrency_modules::create_thread_module()),
         // Async
         "asyncio" => Some(async_modules::create_asyncio_module()),
         // Import system
