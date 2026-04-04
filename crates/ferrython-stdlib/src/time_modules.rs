@@ -144,6 +144,8 @@ pub fn create_datetime_module() -> PyObjectRef {
     dt_ns.insert(CompactString::from("utcnow"), make_builtin(datetime_now));
     dt_ns.insert(CompactString::from("fromisoformat"), make_builtin(datetime_fromisoformat));
     dt_ns.insert(CompactString::from("strptime"), make_builtin(datetime_strptime));
+    dt_ns.insert(CompactString::from("__add__"), make_builtin(datetime_add_dunder));
+    dt_ns.insert(CompactString::from("__sub__"), make_builtin(datetime_sub_dunder));
     let datetime_cls = PyObject::class(CompactString::from("datetime"), vec![], dt_ns);
     // Store __init__ for constructor dispatch
     if let PyObjectPayload::Class(ref cd) = datetime_cls.payload {
@@ -413,7 +415,10 @@ fn days_to_ymd(days: i64) -> (i64, i64, i64) {
 }
 
 fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, microsecond: i64) -> PyObjectRef {
-    let class = PyObject::class(CompactString::from("datetime"), vec![], IndexMap::new());
+    let mut dt_ns = IndexMap::new();
+    dt_ns.insert(CompactString::from("__add__"), make_builtin(datetime_add_dunder));
+    dt_ns.insert(CompactString::from("__sub__"), make_builtin(datetime_sub_dunder));
+    let class = PyObject::class(CompactString::from("datetime"), vec![], dt_ns);
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
@@ -594,6 +599,14 @@ fn timedelta_add(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if b.get_attr("__date_only__").is_some() {
         return date_add(&[b.clone(), a.clone()]);
     }
+    // datetime + timedelta (via __radd__): a=timedelta, b=datetime
+    if b.get_attr("__datetime__").is_some() && b.get_attr("__date_only__").is_none() {
+        return datetime_add_timedelta(b, a);
+    }
+    // Also handle timedelta + datetime (direct __add__)
+    if a.get_attr("__datetime__").is_some() && a.get_attr("__date_only__").is_none() {
+        return datetime_add_timedelta(a, b);
+    }
     let a_days = a.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0);
     let a_secs = a.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0);
     let a_us = a.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
@@ -624,10 +637,92 @@ fn timedelta_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     make_timedelta_with_ops(days, secs, us, total)
 }
 
+/// datetime + timedelta → datetime
+fn datetime_add_timedelta(dt: &PyObjectRef, td: &PyObjectRef) -> PyResult<PyObjectRef> {
+    let year = dt.get_attr("year").and_then(|v| v.as_int()).unwrap_or(1970);
+    let month = dt.get_attr("month").and_then(|v| v.as_int()).unwrap_or(1);
+    let day = dt.get_attr("day").and_then(|v| v.as_int()).unwrap_or(1);
+    let hour = dt.get_attr("hour").and_then(|v| v.as_int()).unwrap_or(0);
+    let minute = dt.get_attr("minute").and_then(|v| v.as_int()).unwrap_or(0);
+    let second = dt.get_attr("second").and_then(|v| v.as_int()).unwrap_or(0);
+    let microsecond = dt.get_attr("microsecond").and_then(|v| v.as_int()).unwrap_or(0);
 
+    let td_days = td.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0);
+    let td_secs = td.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let td_us = td.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
 
+    // Add microseconds/seconds/days with carry
+    let total_us = microsecond + td_us;
+    let carry_s = total_us.div_euclid(1_000_000);
+    let new_us = total_us.rem_euclid(1_000_000);
 
+    let total_s = second + td_secs + carry_s;
+    let carry_m = total_s.div_euclid(60);
+    let new_s = total_s.rem_euclid(60);
 
+    let total_m = minute + carry_m;
+    let carry_h = total_m.div_euclid(60);
+    let new_m = total_m.rem_euclid(60);
+
+    let total_h = hour + carry_h;
+    let carry_d = total_h.div_euclid(24);
+    let new_h = total_h.rem_euclid(24);
+
+    let ord = ymd_to_ordinal(year, month, day) + td_days + carry_d;
+    let (ny, nm, nd) = ordinal_to_ymd(ord);
+
+    Ok(make_datetime_instance(ny, nm, nd, new_h, new_m, new_s, new_us))
+}
+
+/// datetime - timedelta → datetime; datetime - datetime → timedelta
+fn datetime_sub_dunder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("datetime.__sub__ requires 2 args")); }
+    let dt = &args[0];
+    let other = &args[1];
+    if other.get_attr("__timedelta__").is_some() {
+        // datetime - timedelta → datetime (negate and add)
+        let neg_days = -other.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0);
+        let neg_secs = -other.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0);
+        let neg_us = -other.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
+        let total = neg_days as f64 * 86400.0 + neg_secs as f64 + neg_us as f64 / 1_000_000.0;
+        let neg_td = make_timedelta_with_ops(neg_days, neg_secs, neg_us, total)?;
+        datetime_add_timedelta(dt, &neg_td)
+    } else if other.get_attr("__datetime__").is_some() {
+        // datetime - datetime → timedelta
+        let y1 = dt.get_attr("year").and_then(|v| v.as_int()).unwrap_or(1970);
+        let m1 = dt.get_attr("month").and_then(|v| v.as_int()).unwrap_or(1);
+        let d1 = dt.get_attr("day").and_then(|v| v.as_int()).unwrap_or(1);
+        let h1 = dt.get_attr("hour").and_then(|v| v.as_int()).unwrap_or(0);
+        let mi1 = dt.get_attr("minute").and_then(|v| v.as_int()).unwrap_or(0);
+        let s1 = dt.get_attr("second").and_then(|v| v.as_int()).unwrap_or(0);
+        let us1 = dt.get_attr("microsecond").and_then(|v| v.as_int()).unwrap_or(0);
+
+        let y2 = other.get_attr("year").and_then(|v| v.as_int()).unwrap_or(1970);
+        let m2 = other.get_attr("month").and_then(|v| v.as_int()).unwrap_or(1);
+        let d2 = other.get_attr("day").and_then(|v| v.as_int()).unwrap_or(1);
+        let h2 = other.get_attr("hour").and_then(|v| v.as_int()).unwrap_or(0);
+        let mi2 = other.get_attr("minute").and_then(|v| v.as_int()).unwrap_or(0);
+        let s2 = other.get_attr("second").and_then(|v| v.as_int()).unwrap_or(0);
+        let us2 = other.get_attr("microsecond").and_then(|v| v.as_int()).unwrap_or(0);
+
+        let total_secs1 = ymd_to_ordinal(y1, m1, d1) * 86400 + h1 * 3600 + mi1 * 60 + s1;
+        let total_secs2 = ymd_to_ordinal(y2, m2, d2) * 86400 + h2 * 3600 + mi2 * 60 + s2;
+        let diff_secs = total_secs1 - total_secs2;
+        let diff_us = us1 - us2;
+        let days = diff_secs / 86400;
+        let secs = diff_secs % 86400;
+        let total = diff_secs as f64 + diff_us as f64 / 1_000_000.0;
+        make_timedelta_with_ops(days, secs, diff_us, total)
+    } else {
+        Err(PyException::type_error("unsupported operand type(s) for -"))
+    }
+}
+
+/// datetime + timedelta → datetime (dunder)
+fn datetime_add_dunder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("datetime.__add__ requires 2 args")); }
+    datetime_add_timedelta(&args[0], &args[1])
+}
 
 
 
