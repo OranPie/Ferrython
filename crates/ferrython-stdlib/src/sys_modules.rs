@@ -332,6 +332,13 @@ pub fn create_os_module() -> PyObjectRef {
         ("cpu_count", make_builtin(os_cpu_count)),
         ("getpid", make_builtin(os_getpid)),
         ("fspath", PyObject::native_function("os.fspath", os_fspath)),
+        ("walk", make_builtin(os_walk)),
+        ("stat", make_builtin(os_stat)),
+        ("chmod", make_builtin(os_chmod)),
+        ("symlink", make_builtin(os_symlink)),
+        ("readlink", make_builtin(os_readlink)),
+        ("isatty", make_builtin(os_isatty)),
+        ("chdir", make_builtin(os_chdir)),
     ])
 }
 
@@ -427,6 +434,165 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
 }
 
+fn os_walk(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("os.walk() requires at least 1 argument"));
+    }
+    let path = args[0].py_to_string();
+    let topdown = if args.len() > 1 { args[1].is_truthy() } else { true };
+    let mut results = Vec::new();
+    walk_dir_recursive(&path, topdown, &mut results);
+    Ok(PyObject::list(results))
+}
+
+fn walk_dir_recursive(dir: &str, topdown: bool, results: &mut Vec<PyObjectRef>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut dirnames = Vec::new();
+    let mut filenames = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            dirnames.push(name);
+        } else {
+            filenames.push(name);
+        }
+    }
+    let tuple = PyObject::tuple(vec![
+        PyObject::str_val(CompactString::from(dir)),
+        PyObject::list(dirnames.iter().map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect()),
+        PyObject::list(filenames.iter().map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect()),
+    ]);
+    if topdown {
+        results.push(tuple);
+        for name in &dirnames {
+            let child = format!("{}/{}", dir.trim_end_matches('/'), name);
+            walk_dir_recursive(&child, topdown, results);
+        }
+    } else {
+        for name in &dirnames {
+            let child = format!("{}/{}", dir.trim_end_matches('/'), name);
+            walk_dir_recursive(&child, topdown, results);
+        }
+        results.push(tuple);
+    }
+}
+
+fn os_stat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.stat", args, 1)?;
+    let path = args[0].py_to_string();
+    let meta = std::fs::metadata(&path)
+        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+    let mut attrs = indexmap::IndexMap::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        attrs.insert(CompactString::from("st_mode"), PyObject::int(meta.mode() as i64));
+        attrs.insert(CompactString::from("st_ino"), PyObject::int(meta.ino() as i64));
+        attrs.insert(CompactString::from("st_dev"), PyObject::int(meta.dev() as i64));
+        attrs.insert(CompactString::from("st_nlink"), PyObject::int(meta.nlink() as i64));
+        attrs.insert(CompactString::from("st_uid"), PyObject::int(meta.uid() as i64));
+        attrs.insert(CompactString::from("st_gid"), PyObject::int(meta.gid() as i64));
+    }
+    #[cfg(not(unix))]
+    {
+        attrs.insert(CompactString::from("st_mode"), PyObject::int(0));
+        attrs.insert(CompactString::from("st_ino"), PyObject::int(0));
+        attrs.insert(CompactString::from("st_dev"), PyObject::int(0));
+        attrs.insert(CompactString::from("st_nlink"), PyObject::int(0));
+        attrs.insert(CompactString::from("st_uid"), PyObject::int(0));
+        attrs.insert(CompactString::from("st_gid"), PyObject::int(0));
+    }
+    attrs.insert(CompactString::from("st_size"), PyObject::int(meta.len() as i64));
+    let epoch = std::time::SystemTime::UNIX_EPOCH;
+    let mtime = meta.modified().ok()
+        .and_then(|t| t.duration_since(epoch).ok())
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let atime = meta.accessed().ok()
+        .and_then(|t| t.duration_since(epoch).ok())
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let ctime = meta.created().ok()
+        .and_then(|t| t.duration_since(epoch).ok())
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    attrs.insert(CompactString::from("st_mtime"), PyObject::float(mtime));
+    attrs.insert(CompactString::from("st_atime"), PyObject::float(atime));
+    attrs.insert(CompactString::from("st_ctime"), PyObject::float(ctime));
+    Ok(PyObject::module_with_attrs(CompactString::from("os.stat_result"), attrs))
+}
+
+fn os_chmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.chmod", args, 2)?;
+    #[cfg(unix)]
+    {
+        let path = args[0].py_to_string();
+        let mode = args[1].as_int()
+            .ok_or_else(|| PyException::type_error("an integer is required"))?;
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(mode as u32);
+        std::fs::set_permissions(&path, perms)
+            .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+    }
+    Ok(PyObject::none())
+}
+
+fn os_symlink(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.symlink", args, 2)?;
+    let src = args[0].py_to_string();
+    let dst = args[1].py_to_string();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&src, &dst)
+            .map_err(|e| PyException::os_error(format!("{}: '{}' -> '{}'", e, dst, src)))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (&src, &dst);
+        return Err(PyException::os_error("os.symlink() not available on this platform"));
+    }
+    Ok(PyObject::none())
+}
+
+fn os_readlink(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.readlink", args, 1)?;
+    let path = args[0].py_to_string();
+    let target = std::fs::read_link(&path)
+        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+    Ok(PyObject::str_val(CompactString::from(target.to_string_lossy().to_string())))
+}
+
+fn os_isatty(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.isatty", args, 1)?;
+    let fd = args[0].as_int()
+        .ok_or_else(|| PyException::type_error("an integer is required"))?;
+    Ok(PyObject::bool_val(is_fd_terminal(fd)))
+}
+
+#[cfg(unix)]
+fn is_fd_terminal(fd: i64) -> bool {
+    unsafe {
+        extern "C" { fn isatty(fd: i32) -> i32; }
+        isatty(fd as i32) != 0
+    }
+}
+
+#[cfg(not(unix))]
+fn is_fd_terminal(_fd: i64) -> bool {
+    false
+}
+
+fn os_chdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.chdir", args, 1)?;
+    let path = args[0].py_to_string();
+    std::env::set_current_dir(&path)
+        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+    Ok(PyObject::none())
+}
+
 // ── os.path module ──
 
 
@@ -446,6 +612,9 @@ pub fn create_os_path_module() -> PyObjectRef {
         ("expanduser", make_builtin(os_path_expanduser)),
         ("getsize", make_builtin(os_path_getsize)),
         ("sep", PyObject::str_val(CompactString::from(std::path::MAIN_SEPARATOR.to_string()))),
+        ("realpath", make_builtin(os_path_realpath)),
+        ("relpath", make_builtin(os_path_relpath)),
+        ("commonpath", make_builtin(os_path_commonpath)),
     ])
 }
 
@@ -579,6 +748,102 @@ fn os_path_getsize(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         Ok(m) => Ok(PyObject::int(m.len() as i64)),
         Err(_e) => Err(PyException::os_error(format!("No such file: '{}'", s))),
     }
+}
+
+fn os_path_realpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.realpath", args, 1)?;
+    let s = args[0].py_to_string();
+    let p = std::path::Path::new(&s);
+    let real = std::fs::canonicalize(p).unwrap_or_else(|_| {
+        let mut cwd = std::env::current_dir().unwrap_or_default();
+        cwd.push(&s);
+        cwd
+    });
+    Ok(PyObject::str_val(CompactString::from(real.to_string_lossy().to_string())))
+}
+
+fn os_path_relpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("os.path.relpath() requires at least 1 argument"));
+    }
+    let path_str = args[0].py_to_string();
+    let start_str = if args.len() > 1 {
+        args[1].py_to_string()
+    } else {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string())
+    };
+    let make_abs = |s: &str| -> std::path::PathBuf {
+        let p = std::path::Path::new(s);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            let mut cwd = std::env::current_dir().unwrap_or_default();
+            cwd.push(s);
+            cwd
+        }
+    };
+    let path_abs = make_abs(&path_str);
+    let start_abs = make_abs(&start_str);
+    let path_components: Vec<_> = path_abs.components().collect();
+    let start_components: Vec<_> = start_abs.components().collect();
+    let common_len = path_components.iter().zip(start_components.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut result = std::path::PathBuf::new();
+    for _ in common_len..start_components.len() {
+        result.push("..");
+    }
+    for component in &path_components[common_len..] {
+        result.push(component);
+    }
+    let result_str = if result.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        result.to_string_lossy().to_string()
+    };
+    Ok(PyObject::str_val(CompactString::from(result_str)))
+}
+
+fn os_path_commonpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.commonpath", args, 1)?;
+    let paths = args[0].to_list()?;
+    if paths.is_empty() {
+        return Err(PyException::value_error("commonpath() arg is an empty sequence"));
+    }
+    let path_strs: Vec<String> = paths.iter().map(|p| p.py_to_string()).collect();
+    let first_abs = path_strs[0].starts_with('/');
+    for p in &path_strs[1..] {
+        if p.starts_with('/') != first_abs {
+            return Err(PyException::value_error("Can't mix absolute and relative paths"));
+        }
+    }
+    let split: Vec<Vec<&str>> = path_strs.iter()
+        .map(|p| p.split('/').filter(|s| !s.is_empty()).collect())
+        .collect();
+    let min_len = split.iter().map(|p| p.len()).min().unwrap_or(0);
+    let mut common_len = 0;
+    for i in 0..min_len {
+        if split.iter().all(|p| p[i] == split[0][i]) {
+            common_len = i + 1;
+        } else {
+            break;
+        }
+    }
+    let common_parts: Vec<&str> = split[0][..common_len].to_vec();
+    let result = if first_abs {
+        if common_parts.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", common_parts.join("/"))
+        }
+    } else if common_parts.is_empty() {
+        ".".to_string()
+    } else {
+        common_parts.join("/")
+    };
+    Ok(PyObject::str_val(CompactString::from(result)))
 }
 
 // ── string module ──
