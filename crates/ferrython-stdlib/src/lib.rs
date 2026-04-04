@@ -12,12 +12,14 @@ mod fs_modules;
 mod time_modules;
 mod misc_modules;
 mod async_modules;
+mod import_modules;
 
 use ferrython_core::object::PyObjectRef;
 
 pub use sys_modules::get_recursion_limit;
 pub use misc_modules::drain_deferred_calls;
 pub use async_modules::take_asyncio_run_coro;
+pub use import_modules::{take_import_module_request, take_reload_request, ImportModuleRequest, ReloadRequest};
 
 /// Look up a built-in stdlib module by name.
 /// Returns `Some(module)` if found, `None` otherwise.
@@ -88,6 +90,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "_thread" => Some(misc_modules::create_thread_module()),
         // Async
         "asyncio" => Some(async_modules::create_asyncio_module()),
+        // Import system
+        "importlib" => Some(import_modules::create_importlib_module()),
         _ => None,
     }
 }

@@ -927,6 +927,31 @@ impl VirtualMachine {
         if let Some(req) = crate::builtins::take_import_request() {
             result = self.execute_import(&req.name, req.level)?;
         }
+        // importlib.import_module() intercept
+        if let Some(req) = ferrython_stdlib::take_import_module_request() {
+            let (name, level) = if req.name.starts_with('.') {
+                // Relative import: count leading dots, derive absolute name
+                let dots = req.name.chars().take_while(|c| *c == '.').count();
+                let rest = &req.name[dots..];
+                if let Some(ref pkg) = req.package {
+                    let abs_name = if rest.is_empty() {
+                        pkg.to_string()
+                    } else {
+                        format!("{}.{}", pkg, rest)
+                    };
+                    (abs_name, dots)
+                } else {
+                    (rest.to_string(), dots)
+                }
+            } else {
+                (req.name.to_string(), 0)
+            };
+            result = self.execute_import(&name, level)?;
+        }
+        // importlib.reload() intercept
+        if let Some(req) = ferrython_stdlib::take_reload_request() {
+            result = self.execute_reload(req.module)?;
+        }
         Ok(result)
     }
 
@@ -1011,6 +1036,52 @@ impl VirtualMachine {
 
         exec_result?;
         Ok(final_mod)
+    }
+
+    /// Re-execute a module's source, updating its attributes in-place.
+    fn execute_reload(&mut self, module: PyObjectRef) -> PyResult<PyObjectRef> {
+        let (mod_name, file_path) = if let PyObjectPayload::Module(ref md) = module.payload {
+            let attrs = md.attrs.read();
+            let name = attrs.get("__name__")
+                .map(|v| v.py_to_string())
+                .unwrap_or_else(|| md.name.to_string());
+            let file = attrs.get("__file__")
+                .map(|v| v.py_to_string());
+            (name, file)
+        } else {
+            return Err(PyException::type_error("reload() argument must be a module"));
+        };
+
+        // Try to find the source file
+        let file_str = file_path.unwrap_or_default();
+        if file_str.is_empty() {
+            // Builtin module — just reload from stdlib
+            if let Some(fresh) = ferrython_stdlib::load_module(&mod_name) {
+                self.cache_module(&mod_name, &fresh);
+                return Ok(fresh);
+            }
+            return Err(PyException::import_error(format!(
+                "module '{}' has no __file__ attribute (cannot reload)", mod_name
+            )));
+        }
+
+        // Re-read and re-execute the source
+        let importer_file = self.call_stack.last()
+            .map(|f| f.code.filename.as_str().to_string())
+            .unwrap_or_default();
+
+        let resolved = ferrython_import::resolve_module(&mod_name, &importer_file)?;
+        match resolved {
+            ferrython_import::ResolvedModule::Builtin(m) => {
+                self.cache_module(&mod_name, &m);
+                Ok(m)
+            }
+            ferrython_import::ResolvedModule::Source { code, name: rmod_name, file_path: rfp } => {
+                // Remove from cache first to force re-execution
+                self.modules.swap_remove(mod_name.as_str());
+                self.exec_module_from_source(&mod_name, code, rmod_name, rfp)
+            }
+        }
     }
 
     // ── Module cache management ─────────────────────────────────────────
