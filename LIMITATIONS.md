@@ -109,7 +109,7 @@
 **Compression**: `gzip`, `bz2`, `lzma`, `zlib`, `zipfile`, `tarfile`
 **Data**: `array`, `fractions`, `cmath`
 **Dev tools**: `pdb`, `doctest`, `pydoc`, `tracemalloc`, `faulthandler`
-**Unicode**: `unicodedata`, `codecs`
+**Unicode**: `unicodedata`
 **Introspection**: `symtable`, `token`, `tokenize`, `code`
 
 ## 5. Performance Limitations
@@ -121,19 +121,22 @@
 | Arc-based refcounting overhead | ⚠️ | Atomic ops on every clone/drop |
 | GC cycle detection | ⚠️ | Only covers `Instance` objects; `Dict`/`List` cycles not reclaimed |
 | String interning | ❌ | No interning; every string allocation is fresh |
-| Small-int caching | ❌ | No pre-allocated int pool for -5..256 |
+| Small-int caching | ✅ | Pre-allocated int pool for -5..=256 (matches CPython) |
+| Pre-boxed constant cache | ✅ | LOAD_CONST uses cached PyObjectRef (cheap Arc clone) |
+| Binary op fast paths | ✅ | int+int, float+float, str+str skip dunder dispatch |
 | Attribute lookup | ⚠️ | Linear MRO scan every time; no method cache |
 
 ## 6. Structural / Code Quality Issues
 
-| Issue | Location | Notes |
-|-------|----------|-------|
-| God files (>2,000 lines) | opcodes.rs, vm_call.rs, parser.rs | Hard to navigate and maintain |
-| Three incompatible error types | parser/compiler/VM | No `From` impls between them |
-| No `cargo test` for Python fixtures | tests/fixtures/ | 84 fixtures exist but not wired to test harness |
-| Empty test directories | benchmarks/, cpython_compat/, integration/ | Infrastructure exists but unused |
-| Import system scattered | opcodes.rs + vm_helpers.rs + vm_call.rs | Three code paths, partially duplicated |
-| Dead code | db_modules.rs, misc_modules.rs | `#[allow(dead_code)]` markers |
+| Issue | Location | Status | Notes |
+|-------|----------|--------|-------|
+| God files (>2,000 lines) | opcodes.rs, vm_call.rs, parser.rs | ⚠️ | opcodes.rs split into focused handlers; vm_call.rs helpers extracted |
+| Three incompatible error types | parser/compiler/VM | ❌ | No `From` impls between them |
+| `cargo test` for Python fixtures | tests/fixtures/ | ✅ | 84/84 wired via `cargo test -p ferrython-cli --test fixtures` |
+| Import system scattered | opcodes.rs + vm_helpers.rs + vm_call.rs | ✅ | Consolidated into `vm_import.rs` |
+| Dead code | db_modules.rs | ⚠️ | 2 `#[allow(dead_code)]` on incomplete sqlite3 structs |
+| misc_modules.rs catch-all | stdlib crate | ✅ | Split from 1717 → 801 lines; modules redistributed to category files |
+| Debug tooling | ferrython-debug crate | ✅ | Profiler, breakpoints, disassembler, bytecode stats |
 
 ## 7. Test Results Summary
 
@@ -148,4 +151,4 @@
 
 ---
 
-*Last updated after test batch 1350. See `ferrython-gaps.md` for the original feature-by-feature gap audit.*
+*Last updated after restructure session. See `ferrython-gaps.md` for the original feature-by-feature gap audit.*

@@ -127,3 +127,25 @@ fixture_test!(test_expand26, "test_expand26.py");
 fixture_test!(test_expand28, "test_expand28.py");
 fixture_test!(test_expand29, "test_expand29.py");
 fixture_test!(test_expand30, "test_expand30.py");
+
+// CPython compatibility tests
+fixture_test!(test_cpython_compat82, "test_cpython_compat82.py");
+fixture_test!(test_cpython_compat83, "test_cpython_compat83.py");
+fixture_test!(test_cpython_compat84, "test_cpython_compat84.py");
+fixture_test!(test_cpython_compat85, "test_cpython_compat85.py");
+fixture_test!(test_cpython_compat86, "test_cpython_compat86.py");
+fixture_test!(test_cpython_compat87, "test_cpython_compat87.py");
+fixture_test!(test_cpython_compat88, "test_cpython_compat88.py");
+fixture_test!(test_cpython_compat89, "test_cpython_compat89.py");
+fixture_test!(test_cpython_compat90, "test_cpython_compat90.py");
+fixture_test!(test_cpython_compat91, "test_cpython_compat91.py");
+fixture_test!(test_cpython_compat92, "test_cpython_compat92.py");
+fixture_test!(test_cpython_compat93, "test_cpython_compat93.py");
+fixture_test!(test_cpython_compat94, "test_cpython_compat94.py");
+fixture_test!(test_cpython_compat95, "test_cpython_compat95.py");
+fixture_test!(test_cpython_compat96, "test_cpython_compat96.py");
+fixture_test!(test_cpython_compat97, "test_cpython_compat97.py");
+fixture_test!(test_cpython_compat98, "test_cpython_compat98.py");
+fixture_test!(test_cpython_compat99, "test_cpython_compat99.py");
+fixture_test!(test_cpython_compat100, "test_cpython_compat100.py");
+fixture_test!(test_cpython_compat101, "test_cpython_compat101.py");
