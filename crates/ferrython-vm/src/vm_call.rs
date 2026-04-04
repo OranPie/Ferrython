@@ -17,6 +17,36 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 impl VirtualMachine {
+    /// Write text to a file-like object, handling both BoundMethod (e.g. StringIO)
+    /// and NativeFunction (e.g. default sys.stdout) cases.
+    fn write_to_file_object(&mut self, target: &PyObjectRef, text: &str) -> PyResult<()> {
+        if let Some(write_fn) = target.get_attr("write") {
+            let text_obj = PyObject::str_val(CompactString::from(text));
+            match &write_fn.payload {
+                // Bound methods already include self in dispatch
+                PyObjectPayload::BoundMethod { .. }
+                | PyObjectPayload::BuiltinBoundMethod { .. } => {
+                    self.call_object(write_fn, vec![text_obj])?;
+                }
+                // Raw NativeFunction (e.g. default stdio): prepend self
+                _ => {
+                    self.call_object(write_fn, vec![target.clone(), text_obj])?;
+                }
+            }
+            Ok(())
+        } else {
+            print!("{}", text);
+            Ok(())
+        }
+    }
+
+    /// Resolve the output target for print(): file= kwarg > sys.stdout > native stdout.
+    fn resolve_print_target(&self, explicit_file: Option<PyObjectRef>) -> Option<PyObjectRef> {
+        explicit_file.or_else(|| {
+            self.modules.get("sys").and_then(|s| s.get_attr("stdout"))
+        })
+    }
+
     pub(crate) fn call_function(
         &mut self,
         code: &CodeObject,
@@ -830,13 +860,8 @@ impl VirtualMachine {
                                 parts.push(self.vm_str(a)?);
                             }
                             let output = format!("{}{}", parts.join(&sep), end);
-                            if let Some(f) = file_obj {
-                                // Write to file-like object via .write() method
-                                if let Some(write_fn) = f.get_attr("write") {
-                                    self.call_object(write_fn, vec![PyObject::str_val(CompactString::from(&output))])?;
-                                } else {
-                                    print!("{}", output);
-                                }
+                            if let Some(f) = self.resolve_print_target(file_obj) {
+                                self.write_to_file_object(&f, &output)?;
                             } else {
                                 print!("{}", output);
                             }
@@ -1067,7 +1092,12 @@ impl VirtualMachine {
                         for a in &args {
                             parts.push(self.vm_str(a)?);
                         }
-                        println!("{}", parts.join(" "));
+                        let output = format!("{}\n", parts.join(" "));
+                        if let Some(f) = self.resolve_print_target(None) {
+                            self.write_to_file_object(&f, &output)?;
+                        } else {
+                            print!("{}", output);
+                        }
                         return Ok(PyObject::none());
                     }
                     "str" => {
