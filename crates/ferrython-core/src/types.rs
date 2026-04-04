@@ -338,24 +338,41 @@ impl PartialEq for HashableKey {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (HashableKey::None, HashableKey::None) => true,
+            // Bool/Bool
             (HashableKey::Bool(a), HashableKey::Bool(b)) => a == b,
+            // Int/Int
             (HashableKey::Int(a), HashableKey::Int(b)) => a == b,
+            // Float/Float
             (HashableKey::Float(a), HashableKey::Float(b)) => a == b,
+            // Str/Str
             (HashableKey::Str(a), HashableKey::Str(b)) => a == b,
+            // Bytes/Bytes
             (HashableKey::Bytes(a), HashableKey::Bytes(b)) => a == b,
+            // Tuple/Tuple
             (HashableKey::Tuple(a), HashableKey::Tuple(b)) => a == b,
+            // FrozenSet/FrozenSet
             (HashableKey::FrozenSet(a), HashableKey::FrozenSet(b)) => a == b,
+            // Bool/Int cross-comparison (True == 1, False == 0)
             (HashableKey::Bool(b), HashableKey::Int(n)) | (HashableKey::Int(n), HashableKey::Bool(b)) => {
                 *n == PyInt::Small(*b as i64)
             }
+            // Int/Float cross-comparison (0 == 0.0, 1 == 1.0, etc.)
+            (HashableKey::Int(n), HashableKey::Float(f)) | (HashableKey::Float(f), HashableKey::Int(n)) => {
+                let nv = n.to_i64().unwrap_or(i64::MIN);
+                f.0.is_finite() && f.0 == nv as f64 && (nv as f64) as i64 == nv
+            }
+            // Bool/Float cross-comparison (True == 1.0, False == 0.0)
+            (HashableKey::Bool(b), HashableKey::Float(f)) | (HashableKey::Float(f), HashableKey::Bool(b)) => {
+                f.0 == (*b as i64 as f64)
+            }
+            // Identity
             (HashableKey::Identity(a), HashableKey::Identity(b)) => a == b,
+            // Custom
             (HashableKey::Custom { hash_value: ha, object: oa }, HashableKey::Custom { hash_value: hb, object: ob }) => {
                 if ha != hb { return false; }
-                // Try thread-local VM dispatch for __eq__
                 if let Some(result) = call_eq_dispatch(oa, ob) {
                     return result;
                 }
-                // Fallback: identity
                 std::sync::Arc::ptr_eq(oa, ob)
             }
             _ => false,
@@ -365,18 +382,35 @@ impl PartialEq for HashableKey {
 
 impl Hash for HashableKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
+        // CPython hash consistency: hash(0) == hash(0.0) == hash(False)
+        // Numeric types must produce the same hash for equal values.
         match self {
-            HashableKey::None => {},
-            HashableKey::Bool(b) => b.hash(state),
-            HashableKey::Int(n) => n.hash(state),
-            HashableKey::Float(f) => f.hash(state),
-            HashableKey::Str(s) => s.hash(state),
-            HashableKey::Bytes(b) => b.hash(state),
-            HashableKey::Tuple(items) => items.hash(state),
-            HashableKey::FrozenSet(items) => items.hash(state),
-            HashableKey::Identity(ptr) => ptr.hash(state),
-            HashableKey::Custom { hash_value, .. } => hash_value.hash(state),
+            HashableKey::None => { 0u8.hash(state); 0i64.hash(state); },
+            HashableKey::Bool(b) => { 1u8.hash(state); (*b as i64).hash(state); },
+            HashableKey::Int(n) => {
+                let v = n.to_i64().unwrap_or(0);
+                // Check if this int is representable exactly as f64
+                // Use numeric tag so Int(n) and Float(n.0) produce same hash
+                1u8.hash(state);
+                v.hash(state);
+            },
+            HashableKey::Float(f) => {
+                let fv = f.0;
+                if fv.is_finite() && fv == fv.trunc() && fv.abs() < (i64::MAX as f64) {
+                    // Exact integer float: hash like the integer
+                    1u8.hash(state);
+                    (fv as i64).hash(state);
+                } else {
+                    2u8.hash(state);
+                    f.hash(state);
+                }
+            },
+            HashableKey::Str(s) => { 3u8.hash(state); s.hash(state); },
+            HashableKey::Bytes(b) => { 4u8.hash(state); b.hash(state); },
+            HashableKey::Tuple(items) => { 5u8.hash(state); items.hash(state); },
+            HashableKey::FrozenSet(items) => { 6u8.hash(state); items.hash(state); },
+            HashableKey::Identity(ptr) => { 7u8.hash(state); ptr.hash(state); },
+            HashableKey::Custom { hash_value, .. } => { 8u8.hash(state); hash_value.hash(state); },
         }
     }
 }
