@@ -984,3 +984,268 @@ pub(crate) fn constant_to_object(constant: &ConstantValue) -> PyObjectRef {
         }
     }
 }
+
+impl VirtualMachine {
+    // ── exec/eval/compile helpers (moved from vm_call.rs) ──
+
+    pub(crate) fn builtin_exec(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() || args.len() > 3 {
+            return Err(PyException::type_error("exec() takes 1 to 3 arguments"));
+        }
+        let code = if let PyObjectPayload::Code(co) = &args[0].payload {
+            (**co).clone()
+        } else {
+            let code_str = args[0].as_str().ok_or_else(||
+                PyException::type_error("exec() arg 1 must be a string or code object"))?;
+            let module = ferrython_parser::parse(code_str, "<string>")
+                .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?;
+            let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
+            compiler.compile_module(&module)
+                .map_err(|_| PyException::syntax_error("exec: compilation failed"))?
+        };
+        if args.len() >= 2 {
+            if let PyObjectPayload::Dict(ref map) = args[1].payload {
+                let mut new_globals = IndexMap::new();
+                let m = map.read();
+                for (k, v) in m.iter() {
+                    let key_str = match k {
+                        HashableKey::Str(s) => s.clone(),
+                        _ => CompactString::from(format!("{:?}", k)),
+                    };
+                    new_globals.insert(key_str, v.clone());
+                }
+                drop(m);
+                let shared = Arc::new(RwLock::new(new_globals));
+                self.execute_with_globals(code, shared.clone())?;
+                let results = shared.read();
+                let mut m = map.write();
+                for (k, v) in results.iter() {
+                    m.insert(HashableKey::Str(k.clone()), v.clone());
+                }
+            } else {
+                return Err(PyException::type_error("exec() globals must be a dict"));
+            }
+        } else {
+            let globals = self.call_stack.last().unwrap().globals.clone();
+            self.execute_with_globals(code, globals)?;
+        }
+        Ok(PyObject::none())
+    }
+
+    pub(crate) fn builtin_eval(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() || args.len() > 3 {
+            return Err(PyException::type_error("eval() takes 1 to 3 arguments"));
+        }
+        let code_str = args[0].as_str().ok_or_else(||
+            PyException::type_error("eval() arg 1 must be a string"))?;
+        let wrapped = format!("__eval_result__ = ({})", code_str);
+        let module = ferrython_parser::parse(&wrapped, "<string>")
+            .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?;
+        let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
+        let code = compiler.compile_module(&module)
+            .map_err(|_| PyException::syntax_error("eval: compilation failed"))?;
+        if args.len() >= 2 {
+            if let PyObjectPayload::Dict(ref map) = args[1].payload {
+                let mut new_globals = IndexMap::new();
+                let m = map.read();
+                for (k, v) in m.iter() {
+                    let key_str = match k {
+                        HashableKey::Str(s) => s.clone(),
+                        _ => CompactString::from(format!("{:?}", k)),
+                    };
+                    new_globals.insert(key_str, v.clone());
+                }
+                drop(m);
+                let shared = Arc::new(RwLock::new(new_globals));
+                self.execute_with_globals(code, shared.clone())?;
+                let result = shared.read().get("__eval_result__").cloned()
+                    .unwrap_or_else(PyObject::none);
+                let results = shared.read();
+                let mut m = map.write();
+                for (k, v) in results.iter() {
+                    m.insert(HashableKey::Str(k.clone()), v.clone());
+                }
+                Ok(result)
+            } else {
+                Err(PyException::type_error("eval() globals must be a dict"))
+            }
+        } else {
+            let globals = self.call_stack.last().unwrap().globals.clone();
+            self.execute_with_globals(code, globals.clone())?;
+            let result = globals.read().get("__eval_result__").cloned()
+                .unwrap_or_else(PyObject::none);
+            Ok(result)
+        }
+    }
+
+    pub(crate) fn builtin_compile(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 3 {
+            return Err(PyException::type_error("compile() requires at least 3 arguments"));
+        }
+        let source = args[0].as_str().ok_or_else(||
+            PyException::type_error("compile() arg 1 must be a string"))?;
+        let filename = args[1].py_to_string();
+        let _mode = args[2].py_to_string();
+        let module = ferrython_parser::parse(source, &filename)
+            .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+        let mut compiler = ferrython_compiler::Compiler::new(filename);
+        let code = compiler.compile_module(&module)
+            .map_err(|_| PyException::syntax_error("compile: compilation failed"))?;
+        Ok(PyObject::wrap(PyObjectPayload::Code(Box::new(code))))
+    }
+
+    // ── Regex helpers (moved from vm_call.rs) ──
+
+    /// Handle re.sub/re.subn when the replacement is a callable
+    pub(crate) fn re_sub_with_callable(&mut self, args: &[PyObjectRef], return_count: bool) -> PyResult<PyObjectRef> {
+        let pattern = args[0].py_to_string();
+        let repl_fn = args[1].clone();
+        let text = args[2].py_to_string();
+        let flags = if args.len() > 4 { args[4].to_int().unwrap_or(0) } else { 0 };
+
+        let mut re_pattern = pattern.clone();
+        re_pattern = re_pattern.replace("(?P<", "(?P<");
+        let re = if flags & 2 != 0 {
+            regex::RegexBuilder::new(&re_pattern).case_insensitive(true).build()
+        } else {
+            regex::Regex::new(&re_pattern)
+        }.map_err(|e| PyException::runtime_error(format!("regex error: {}", e)))?;
+
+        let mut result = String::new();
+        let mut last_end = 0;
+        let mut count = 0;
+        for m in re.find_iter(&text) {
+            result.push_str(&text[last_end..m.start()]);
+
+            let match_text = m.as_str().to_string();
+            let mut match_attrs = IndexMap::new();
+            match_attrs.insert(CompactString::from("_match_str"), PyObject::str_val(CompactString::from(match_text.clone())));
+            match_attrs.insert(CompactString::from("group"), PyObject::native_closure("group", {
+                let mt = match_text.clone();
+                move |args| {
+                    let idx = if args.is_empty() { 0 } else { args[0].to_int().unwrap_or(0) };
+                    if idx == 0 {
+                        Ok(PyObject::str_val(CompactString::from(mt.clone())))
+                    } else {
+                        Ok(PyObject::none())
+                    }
+                }
+            }));
+            match_attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
+            let match_obj = PyObject::module_with_attrs(CompactString::from("_match"), match_attrs);
+
+            let replacement = self.call_object(repl_fn.clone(), vec![match_obj])?;
+            result.push_str(&replacement.py_to_string());
+
+            last_end = m.end();
+            count += 1;
+        }
+        result.push_str(&text[last_end..]);
+
+        if return_count {
+            Ok(PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from(result)),
+                PyObject::int(count),
+            ]))
+        } else {
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
+    }
+
+    // ── Itertools helpers (moved from vm_call.rs) ──
+
+    pub(crate) fn vm_itertools_groupby(&mut self, args: &[PyObjectRef], key_fn: Option<PyObjectRef>) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Err(PyException::type_error("groupby requires iterable"));
+        }
+        let items = args[0].to_list()?;
+        if items.is_empty() {
+            return Ok(PyObject::list(vec![]));
+        }
+
+        let mut result = Vec::new();
+        let first_key = if let Some(ref kf) = key_fn {
+            self.call_object(kf.clone(), vec![items[0].clone()])?
+        } else {
+            items[0].clone()
+        };
+        let mut current_key = first_key;
+        let mut current_group = vec![items[0].clone()];
+
+        for item in &items[1..] {
+            let k = if let Some(ref kf) = key_fn {
+                self.call_object(kf.clone(), vec![item.clone()])?
+            } else {
+                item.clone()
+            };
+            if k.py_to_string() == current_key.py_to_string() {
+                current_group.push(item.clone());
+            } else {
+                result.push(PyObject::tuple(vec![
+                    current_key,
+                    PyObject::list(current_group),
+                ]));
+                current_key = k;
+                current_group = vec![item.clone()];
+            }
+        }
+        result.push(PyObject::tuple(vec![
+            current_key,
+            PyObject::list(current_group),
+        ]));
+        Ok(PyObject::list(result))
+    }
+
+    pub(crate) fn vm_itertools_filterfalse(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let pred = args[0].clone();
+        let items = self.collect_iterable(&args[1])?;
+        let mut result = Vec::new();
+        let is_none = matches!(&pred.payload, PyObjectPayload::None);
+        for item in &items {
+            let val = if is_none {
+                item.is_truthy()
+            } else {
+                let r = self.call_object(pred.clone(), vec![item.clone()])?;
+                r.is_truthy()
+            };
+            if !val {
+                result.push(item.clone());
+            }
+        }
+        Ok(PyObject::list(result))
+    }
+
+    pub(crate) fn vm_itertools_starmap(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let func = args[0].clone();
+        let items = self.collect_iterable(&args[1])?;
+        let mut result = Vec::new();
+        for item in &items {
+            let call_args = item.to_list().unwrap_or_else(|_| vec![item.clone()]);
+            let r = self.call_object(func.clone(), call_args)?;
+            result.push(r);
+        }
+        Ok(PyObject::list(result))
+    }
+
+    pub(crate) fn vm_itertools_accumulate(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let items = args[0].to_list()?;
+        if items.is_empty() { return Ok(PyObject::list(vec![])); }
+        let func = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None | PyObjectPayload::Dict(_)) {
+            Some(args[1].clone())
+        } else {
+            None
+        };
+        let mut result = Vec::new();
+        let mut acc = items[0].clone();
+        result.push(acc.clone());
+        for item in &items[1..] {
+            acc = if let Some(ref f) = func {
+                self.call_object(f.clone(), vec![acc, item.clone()])?
+            } else {
+                acc.add(item)?
+            };
+            result.push(acc.clone());
+        }
+        Ok(PyObject::list(result))
+    }
+}
