@@ -1386,20 +1386,16 @@ fn resolve_exception_type_method(name: &str, _instance: &PyObjectRef) -> Option<
     match name {
         "__init__" => {
             Some(PyObject::native_function("__init__", |args| {
-                // Exception.__init__(self, *args) — set self.args and self.message
+                // Exception.__init__(self, *args) — only set self.args (CPython behavior)
                 if args.is_empty() { return Ok(PyObject::none()); }
                 let target = &args[0];
                 if let PyObjectPayload::Instance(idata) = &target.payload {
-                    let mut attrs = idata.attrs.write();
                     let exc_args: Vec<PyObjectRef> = if args.len() > 1 {
                         args[1..].to_vec()
                     } else {
                         vec![]
                     };
-                    if !exc_args.is_empty() {
-                        attrs.insert(CompactString::from("message"), exc_args[0].clone());
-                    }
-                    attrs.insert(CompactString::from("args"), PyObject::tuple(exc_args));
+                    idata.attrs.write().insert(CompactString::from("args"), PyObject::tuple(exc_args));
                 }
                 Ok(PyObject::none())
             }))
@@ -1408,16 +1404,15 @@ fn resolve_exception_type_method(name: &str, _instance: &PyObjectRef) -> Option<
             Some(PyObject::native_function("__str__", |args| {
                 if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
                 let target = &args[0];
-                if let Some(msg) = target.get_attr("message") {
-                    return Ok(PyObject::str_val(CompactString::from(msg.py_to_string())));
-                }
                 if let Some(a) = target.get_attr("args") {
                     if let PyObjectPayload::Tuple(items) = &a.payload {
                         if items.len() == 1 {
                             return Ok(PyObject::str_val(CompactString::from(items[0].py_to_string())));
+                        } else if items.is_empty() {
+                            return Ok(PyObject::str_val(CompactString::from("")));
                         }
+                        return Ok(PyObject::str_val(CompactString::from(a.repr())));
                     }
-                    return Ok(PyObject::str_val(CompactString::from(a.py_to_string())));
                 }
                 Ok(PyObject::str_val(CompactString::from(String::new())))
             }))

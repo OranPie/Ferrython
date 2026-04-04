@@ -403,7 +403,9 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             PyObjectPayload::Set(m) => Ok(m.read().values().cloned().collect()),
             PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
-            PyObjectPayload::Dict(m) => Ok(m.read().keys().map(|k| k.to_object()).collect()),
+            PyObjectPayload::Dict(m) => Ok(m.read().keys()
+                .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                .map(|k| k.to_object()).collect()),
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
                 Ok(inst.dict_storage.as_ref().unwrap().read().keys().map(|k| k.to_object()).collect())
             }

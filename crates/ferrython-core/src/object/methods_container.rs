@@ -277,7 +277,9 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 }))))),
             PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
             PyObjectPayload::Dict(m) => {
-                let keys: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
+                let keys: Vec<PyObjectRef> = m.read().keys()
+                    .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .map(|k| k.to_object()).collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
             }
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {

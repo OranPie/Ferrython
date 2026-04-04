@@ -2311,8 +2311,19 @@ impl VirtualMachine {
                         }
                         PyObjectPayload::Instance(inst) => {
                             let kind = Self::find_exception_kind(&inst.class);
-                            let msg = if let Some(m) = exc.get_attr("message") {
-                                m.py_to_string()
+                            // Derive message from args (CPython: str(exc) uses args)
+                            let msg = if let Some(a) = exc.get_attr("args") {
+                                if let PyObjectPayload::Tuple(items) = &a.payload {
+                                    if items.len() == 1 {
+                                        items[0].py_to_string()
+                                    } else if items.is_empty() {
+                                        String::new()
+                                    } else {
+                                        a.repr()
+                                    }
+                                } else {
+                                    exc.py_to_string()
+                                }
                             } else {
                                 exc.py_to_string()
                             };

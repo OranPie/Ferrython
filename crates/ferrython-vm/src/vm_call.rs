@@ -662,9 +662,6 @@ impl VirtualMachine {
                 if !attrs.contains_key("args") {
                     attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args.clone()));
                 }
-                if !attrs.contains_key("message") && !pos_args.is_empty() {
-                    attrs.insert(CompactString::from("message"), pos_args[0].clone());
-                }
             }
         }
 
