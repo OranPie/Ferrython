@@ -19,12 +19,14 @@ pub fn resolve_lineno(code: &CodeObject, instruction_index: usize) -> u32 {
 
 /// Format a Python-style traceback string from a `PyException`.
 ///
-/// Example output:
+/// Shows source lines when files are readable. Example output:
 /// ```text
 /// Traceback (most recent call last):
 ///   File "test.py", line 5, in <module>
+///     x = foo()
 ///   File "test.py", line 2, in foo
-/// TypeError: unsupported operand
+///     return 1 / 0
+/// ZeroDivisionError: division by zero
 /// ```
 pub fn format_traceback(exc: &PyException) -> String {
     let mut out = String::new();
@@ -45,8 +47,23 @@ pub fn format_traceback(exc: &PyException) -> String {
                 "  File \"{}\", line {}, in {}\n",
                 entry.filename, entry.lineno, entry.function,
             ));
+            // Show the source line if available
+            if let Some(line) = read_source_line(&entry.filename, entry.lineno) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    out.push_str(&format!("    {}\n", trimmed));
+                }
+            }
         }
     }
     out.push_str(&format!("{}: {}", exc.kind, exc.message));
     out
+}
+
+/// Read a specific line from a source file. Returns None if the file can't be read.
+fn read_source_line(filename: &str, lineno: u32) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(filename).ok()?;
+    let reader = std::io::BufReader::new(file);
+    reader.lines().nth((lineno as usize).saturating_sub(1))?.ok()
 }
