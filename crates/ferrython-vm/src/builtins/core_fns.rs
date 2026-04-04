@@ -339,10 +339,39 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             for c in s.bytes() { h = h.wrapping_mul(33).wrapping_add(c as u64); }
             h as i64
         }
-        HashableKey::Float(f) => f.0.to_bits() as i64,
+        HashableKey::Float(f) => {
+            // Match hash consistency: integer-valued floats hash like their int
+            let fv = f.0;
+            if fv.is_finite() && fv == fv.trunc() && fv.abs() < (i64::MAX as f64) {
+                fv as i64
+            } else {
+                f.0.to_bits() as i64
+            }
+        }
         HashableKey::None => 0,
-        HashableKey::Tuple(_) => 0,
-        HashableKey::FrozenSet(_) => 0,
+        HashableKey::Tuple(items) => {
+            // CPython tuple hash: xxHash-based mixing
+            let mut h: u64 = 0x345678;
+            let mult: u64 = 1000003;
+            for item in items {
+                let item_hash = builtin_hash(&[item.to_object()])
+                    .map(|v| v.as_int().unwrap_or(0) as u64)
+                    .unwrap_or(0);
+                h = h.wrapping_mul(mult) ^ item_hash;
+            }
+            h as i64
+        }
+        HashableKey::FrozenSet(items) => {
+            // CPython frozenset hash: XOR of element hashes (order-independent)
+            let mut h: u64 = 0;
+            for item in items {
+                let item_hash = builtin_hash(&[item.to_object()])
+                    .map(|v| v.as_int().unwrap_or(0) as u64)
+                    .unwrap_or(0);
+                h ^= item_hash;
+            }
+            h as i64
+        }
         HashableKey::Bytes(b) => { let mut h: u64 = 5381; for x in b { h = h.wrapping_mul(33).wrapping_add(x as u64); } h as i64 }
         HashableKey::Identity(ptr) => ptr as i64,
         HashableKey::Custom { hash_value, .. } => hash_value,
