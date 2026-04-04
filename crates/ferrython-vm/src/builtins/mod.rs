@@ -88,6 +88,8 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         ("NameError", ExceptionKind::NameError),
         ("NotImplementedError", ExceptionKind::NotImplementedError),
         ("OSError", ExceptionKind::OSError),
+        ("IOError", ExceptionKind::OSError),           // alias
+        ("EnvironmentError", ExceptionKind::OSError),   // alias
         ("OverflowError", ExceptionKind::OverflowError),
         ("PermissionError", ExceptionKind::PermissionError),
         ("RecursionError", ExceptionKind::RecursionError),
