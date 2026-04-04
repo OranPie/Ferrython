@@ -1205,3 +1205,20 @@ pub fn create_unicodedata_module() -> PyObjectRef {
         ("unidata_version", PyObject::str_val(CompactString::from("15.0.0"))),
     ])
 }
+
+// ── pprint module ──
+
+pub fn create_pprint_module() -> PyObjectRef {
+    make_module("pprint", vec![
+        ("pprint", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            println!("{}", args[0].py_to_string());
+            Ok(PyObject::none())
+        })),
+        ("pformat", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
+        })),
+        ("PrettyPrinter", make_builtin(|_| Ok(PyObject::none()))),
+    ])
+}

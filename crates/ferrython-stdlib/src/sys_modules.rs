@@ -7,6 +7,8 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args,
 };
+use ferrython_core::types::{HashableKey, PyInt};
+use indexmap::IndexMap;
 
 static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(1000);
 
@@ -938,4 +940,119 @@ pub fn create_getpass_module() -> PyObjectRef {
     ])
 }
 
+// ── errno module ──
+
+pub fn create_errno_module() -> PyObjectRef {
+    make_module("errno", vec![
+        ("EPERM", PyObject::int(1)),
+        ("ENOENT", PyObject::int(2)),
+        ("ESRCH", PyObject::int(3)),
+        ("EINTR", PyObject::int(4)),
+        ("EIO", PyObject::int(5)),
+        ("ENXIO", PyObject::int(6)),
+        ("E2BIG", PyObject::int(7)),
+        ("ENOEXEC", PyObject::int(8)),
+        ("EBADF", PyObject::int(9)),
+        ("ECHILD", PyObject::int(10)),
+        ("EAGAIN", PyObject::int(11)),
+        ("ENOMEM", PyObject::int(12)),
+        ("EACCES", PyObject::int(13)),
+        ("EFAULT", PyObject::int(14)),
+        ("EBUSY", PyObject::int(16)),
+        ("EEXIST", PyObject::int(17)),
+        ("EXDEV", PyObject::int(18)),
+        ("ENODEV", PyObject::int(19)),
+        ("ENOTDIR", PyObject::int(20)),
+        ("EISDIR", PyObject::int(21)),
+        ("EINVAL", PyObject::int(22)),
+        ("ENFILE", PyObject::int(23)),
+        ("EMFILE", PyObject::int(24)),
+        ("ENOTTY", PyObject::int(25)),
+        ("EFBIG", PyObject::int(27)),
+        ("ENOSPC", PyObject::int(28)),
+        ("ESPIPE", PyObject::int(29)),
+        ("EROFS", PyObject::int(30)),
+        ("EMLINK", PyObject::int(31)),
+        ("EPIPE", PyObject::int(32)),
+        ("EDOM", PyObject::int(33)),
+        ("ERANGE", PyObject::int(34)),
+        ("EDEADLK", PyObject::int(35)),
+        ("ENAMETOOLONG", PyObject::int(36)),
+        ("ENOLCK", PyObject::int(37)),
+        ("ENOSYS", PyObject::int(38)),
+        ("ENOTEMPTY", PyObject::int(39)),
+        ("ECONNREFUSED", PyObject::int(111)),
+        ("ETIMEDOUT", PyObject::int(110)),
+        ("errorcode", make_builtin(|_| {
+            let mut map = IndexMap::new();
+            let codes: Vec<(i64, &str)> = vec![
+                (1, "EPERM"), (2, "ENOENT"), (13, "EACCES"), (17, "EEXIST"),
+                (22, "EINVAL"), (32, "EPIPE"), (110, "ETIMEDOUT"), (111, "ECONNREFUSED"),
+            ];
+            for (num, name) in codes {
+                map.insert(HashableKey::Int(PyInt::Small(num)), PyObject::str_val(CompactString::from(name)));
+            }
+            Ok(PyObject::dict(map))
+        })),
+    ])
+}
+
+// ── atexit module ──
+
+pub fn create_atexit_module() -> PyObjectRef {
+    use std::sync::{Arc, Mutex};
+    let callbacks: Arc<Mutex<Vec<PyObjectRef>>> = Arc::new(Mutex::new(Vec::new()));
+    let cb_reg = callbacks.clone();
+    let register_fn = PyObject::native_closure("atexit.register", move |args: &[PyObjectRef]| {
+        if args.is_empty() { return Err(PyException::type_error("atexit.register requires a callable")); }
+        cb_reg.lock().unwrap().push(args[0].clone());
+        Ok(args[0].clone())
+    });
+    let cb_unreg = callbacks.clone();
+    let unregister_fn = PyObject::native_closure("atexit.unregister", move |_args: &[PyObjectRef]| {
+        let _cbs = cb_unreg.lock().unwrap();
+        Ok(PyObject::none())
+    });
+    let _ncallbacks = PyObject::native_closure("atexit._ncallbacks", move |_args: &[PyObjectRef]| {
+        let cbs = callbacks.lock().unwrap();
+        Ok(PyObject::int(cbs.len() as i64))
+    });
+    make_module("atexit", vec![
+        ("register", register_fn),
+        ("unregister", unregister_fn),
+        ("_run_exitfuncs", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()))),
+        ("_ncallbacks", _ncallbacks),
+    ])
+}
+
+// ── site module ──
+
+pub fn create_site_module() -> PyObjectRef {
+    make_module("site", vec![
+        ("ENABLE_USER_SITE", PyObject::bool_val(false)),
+        ("USER_SITE", PyObject::none()),
+        ("USER_BASE", PyObject::none()),
+        ("PREFIXES", PyObject::list(vec![])),
+        ("getusersitepackages", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from(""))))),
+        ("getsitepackages", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::list(vec![])))),
+    ])
+}
+
+// ── sched module ──
+
+pub fn create_sched_module() -> PyObjectRef {
+    let scheduler_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("scheduler"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("enter"), make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("run"), make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("empty"), make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::bool_val(true))));
+            w.insert(CompactString::from("queue"), PyObject::list(vec![]));
+        }
+        Ok(inst)
+    });
+    make_module("sched", vec![("scheduler", scheduler_fn)])
+}
 

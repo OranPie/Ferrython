@@ -7,6 +7,8 @@ use ferrython_core::object::{
     make_module, make_builtin, check_args, check_args_min,
 };
 use ferrython_core::types::HashableKey;
+use indexmap::IndexMap;
+use parking_lot::RwLock;
 use std::sync::{Arc, Mutex};
 
 pub fn create_json_module() -> PyObjectRef {
@@ -1622,5 +1624,166 @@ pub fn create_binascii_module() -> PyObjectRef {
         ("crc32", crc32_fn),
         ("b2a_base64", b2a_base64_fn),
         ("a2b_base64", a2b_base64_fn),
+    ])
+}
+
+// ── codecs module ──────────────────────────────────────────────────
+pub fn create_codecs_module() -> PyObjectRef {
+    make_module("codecs", vec![
+        ("encode", make_builtin(codecs_encode)),
+        ("decode", make_builtin(codecs_decode)),
+        ("lookup", make_builtin(codecs_lookup)),
+        ("getencoder", make_builtin(codecs_getencoder)),
+        ("getdecoder", make_builtin(codecs_getdecoder)),
+        ("utf_8_encode", make_builtin(codecs_utf8_encode)),
+        ("utf_8_decode", make_builtin(codecs_utf8_decode)),
+    ])
+}
+
+fn codecs_encode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("codecs.encode", args, 1)?;
+    let s = args[0].py_to_string();
+    let encoding = if args.len() > 1 { args[1].py_to_string() } else { "utf-8".to_string() };
+    match encoding.to_lowercase().replace('-', "_").as_str() {
+        "utf_8" | "utf8" => Ok(PyObject::bytes(s.as_bytes().to_vec())),
+        "ascii" => {
+            let bytes: Vec<u8> = s.chars().filter_map(|c| if c.is_ascii() { Some(c as u8) } else { None }).collect();
+            Ok(PyObject::bytes(bytes))
+        }
+        "latin_1" | "latin1" | "iso_8859_1" => {
+            let bytes: Vec<u8> = s.chars().map(|c| c as u8).collect();
+            Ok(PyObject::bytes(bytes))
+        }
+        _ => Err(PyException::value_error(format!("unknown encoding: {}", encoding))),
+    }
+}
+
+fn codecs_decode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("codecs.decode", args, 1)?;
+    let bytes = extract_bytes(&args[0])?;
+    let encoding = if args.len() > 1 { args[1].py_to_string() } else { "utf-8".to_string() };
+    match encoding.to_lowercase().replace('-', "_").as_str() {
+        "utf_8" | "utf8" => {
+            let s = String::from_utf8(bytes).map_err(|_| PyException::value_error("invalid utf-8"))?;
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }
+        "ascii" => {
+            let s: String = bytes.iter().map(|&b| b as char).collect();
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }
+        "latin_1" | "latin1" | "iso_8859_1" => {
+            let s: String = bytes.iter().map(|&b| b as char).collect();
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }
+        _ => Err(PyException::value_error(format!("unknown encoding: {}", encoding))),
+    }
+}
+
+fn codecs_lookup(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("codecs.lookup", args, 1)?;
+    let encoding = args[0].py_to_string().to_lowercase().replace('-', "_");
+    match encoding.as_str() {
+        "utf_8" | "utf8" | "ascii" | "latin_1" | "latin1" | "iso_8859_1" => {
+            Ok(PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from(&encoding)),
+                PyObject::none(), // encode
+                PyObject::none(), // decode
+                PyObject::none(), // stream reader
+            ]))
+        }
+        _ => Err(PyException::value_error(format!("unknown encoding: {}", encoding))),
+    }
+}
+
+fn codecs_getencoder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("codecs.getencoder", args, 1)?;
+    Ok(make_builtin(codecs_encode))
+}
+
+fn codecs_getdecoder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("codecs.getdecoder", args, 1)?;
+    Ok(make_builtin(codecs_decode))
+}
+
+fn codecs_utf8_encode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("codecs.utf_8_encode", args, 1)?;
+    let s = args[0].py_to_string();
+    let b = s.as_bytes().to_vec();
+    let len = b.len() as i64;
+    Ok(PyObject::tuple(vec![PyObject::bytes(b), PyObject::int(len)]))
+}
+
+fn codecs_utf8_decode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("codecs.utf_8_decode", args, 1)?;
+    let bytes = extract_bytes(&args[0])?;
+    let s = String::from_utf8(bytes.clone()).map_err(|_| PyException::value_error("invalid utf-8"))?;
+    let len = bytes.len() as i64;
+    Ok(PyObject::tuple(vec![PyObject::str_val(CompactString::from(s)), PyObject::int(len)]))
+}
+
+// ── shelve module ──
+
+pub fn create_shelve_module() -> PyObjectRef {
+    let open_fn = make_builtin(|args: &[PyObjectRef]| {
+        let _filename = if !args.is_empty() { args[0].py_to_string() } else { "shelf.db".to_string() };
+        let cls = PyObject::class(CompactString::from("Shelf"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            let data: Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>> = Arc::new(RwLock::new(IndexMap::new()));
+
+            let d1 = data.clone();
+            w.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+                "Shelf.__getitem__", move |args: &[PyObjectRef]| {
+                    check_args_min("Shelf.__getitem__", args, 1)?;
+                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    d1.read().get(&key).cloned().ok_or_else(|| PyException::key_error(args[0].py_to_string()))
+                }
+            ));
+
+            let d2 = data.clone();
+            w.insert(CompactString::from("__setitem__"), PyObject::native_closure(
+                "Shelf.__setitem__", move |args: &[PyObjectRef]| {
+                    check_args_min("Shelf.__setitem__", args, 2)?;
+                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    d2.write().insert(key, args[1].clone());
+                    Ok(PyObject::none())
+                }
+            ));
+
+            let d3 = data.clone();
+            w.insert(CompactString::from("__contains__"), PyObject::native_closure(
+                "Shelf.__contains__", move |args: &[PyObjectRef]| {
+                    check_args_min("Shelf.__contains__", args, 1)?;
+                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    Ok(PyObject::bool_val(d3.read().contains_key(&key)))
+                }
+            ));
+
+            let d4 = data.clone();
+            w.insert(CompactString::from("keys"), PyObject::native_closure(
+                "Shelf.keys", move |_: &[PyObjectRef]| {
+                    let keys: Vec<PyObjectRef> = d4.read().keys().map(|k| match k {
+                        HashableKey::Str(s) => PyObject::str_val(s.clone()),
+                        _ => PyObject::none(),
+                    }).collect();
+                    Ok(PyObject::list(keys))
+                }
+            ));
+
+            w.insert(CompactString::from("close"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("sync"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+
+            let ir = inst.clone();
+            w.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "Shelf.__enter__", move |_: &[PyObjectRef]| Ok(ir.clone())
+            ));
+            w.insert(CompactString::from("__exit__"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
+        }
+        Ok(inst)
+    });
+
+    make_module("shelve", vec![
+        ("open", open_fn),
     ])
 }

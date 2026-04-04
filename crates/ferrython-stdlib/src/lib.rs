@@ -89,7 +89,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // Type system
         "typing" => Some(type_modules::create_typing_module()),
         "typing_extensions" => Some(type_modules::create_typing_module()),
-        "abc" => Some(misc_modules::create_abc_module()),
+        "abc" => Some(type_modules::create_abc_module()),
         "enum" => Some(type_modules::create_enum_module()),
         "types" => Some(type_modules::create_types_module()),
         "collections.abc" => Some(type_modules::create_collections_abc_module()),
@@ -97,15 +97,15 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "contextlib" => Some(misc_modules::create_contextlib_module()),
         "dataclasses" => Some(misc_modules::create_dataclasses_module()),
         "copy" => Some(misc_modules::create_copy_module()),
-        "operator" => Some(misc_modules::create_operator_module()),
+        "operator" => Some(collection_modules::create_operator_module()),
         "hashlib" => Some(crypto_modules::create_hashlib_module()),
         "logging" => Some(testing_modules::create_logging_module()),
         "unittest" => Some(testing_modules::create_unittest_module()),
-        "pprint" => Some(misc_modules::create_pprint_module()),
+        "pprint" => Some(text_modules::create_pprint_module()),
         "argparse" => Some(config_modules::create_argparse_module()),
-        "errno" => Some(misc_modules::create_errno_module()),
-        "uuid" => Some(misc_modules::create_uuid_module()),
-        "codecs" => Some(misc_modules::create_codecs_module()),
+        "errno" => Some(sys_modules::create_errno_module()),
+        "uuid" => Some(crypto_modules::create_uuid_module()),
+        "codecs" => Some(serial_modules::create_codecs_module()),
         "secrets" => Some(crypto_modules::create_secrets_module()),
         "hmac" => Some(crypto_modules::create_hmac_module()),
         "configparser" => Some(config_modules::create_configparser_module()),
@@ -155,7 +155,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // Internal C-extension aliases
         "_collections_abc" => Some(type_modules::create_collections_abc_module()),
         "_functools" => Some(collection_modules::create_functools_module()),
-        "_operator" => Some(misc_modules::create_operator_module()),
+        "_operator" => Some(collection_modules::create_operator_module()),
         "_csv" => Some(serial_modules::create_csv_module()),
         "_heapq" => Some(math_modules::create_heapq_module()),
         "_json" => Some(serial_modules::create_json_module()),
@@ -165,9 +165,9 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "__future__" => Some(misc_modules::create_future_module()),
         "builtins" => Some(misc_modules::create_builtins_module()),
         "_builtins" => Some(misc_modules::create_builtins_module()),
-        "atexit" => Some(misc_modules::create_atexit_module()),
-        "site" => Some(misc_modules::create_site_module()),
-        "sched" => Some(misc_modules::create_sched_module()),
+        "atexit" => Some(sys_modules::create_atexit_module()),
+        "site" => Some(sys_modules::create_site_module()),
+        "sched" => Some(sys_modules::create_sched_module()),
         // Binary & encoding
         "binascii" => Some(serial_modules::create_binascii_module()),
         // concurrent.futures
@@ -194,7 +194,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "profile" => Some(testing_modules::create_profile_module()),
         "cProfile" => Some(testing_modules::create_cprofile_module()),
         // Persistence
-        "shelve" => Some(misc_modules::create_shelve_module()),
+        "shelve" => Some(serial_modules::create_shelve_module()),
         _ => None,
     }
 }

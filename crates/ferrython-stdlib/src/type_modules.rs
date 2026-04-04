@@ -8,6 +8,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use parking_lot::RwLock;
 use std::sync::Arc;
 
 pub fn create_typing_module() -> PyObjectRef {
@@ -453,5 +454,106 @@ pub fn create_collections_abc_module() -> PyObjectRef {
         ("AsyncIterable", make_abc("AsyncIterable")),
         ("AsyncIterator", make_abc("AsyncIterator")),
         ("AsyncGenerator", make_abc("AsyncGenerator")),
+    ])
+}
+
+// ── abc module ──
+
+pub fn create_abc_module() -> PyObjectRef {
+    // ABC base class with __abstractmethods__ marker
+    let abc_class = PyObject::class(
+        CompactString::from("ABC"),
+        vec![],
+        IndexMap::new(),
+    );
+    if let PyObjectPayload::Class(ref cd) = abc_class.payload {
+        let mut ns = cd.namespace.write();
+        ns.insert(
+            CompactString::from("__abstractmethods__"),
+            PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(IndexMap::new())))),
+        );
+        // ABC.register(subclass) — registers subclass as a virtual subclass
+        let register_fn = make_builtin(|args: &[PyObjectRef]| {
+            // args[0] = cls (the ABC), args[1] = subclass
+            if args.len() < 2 {
+                return Err(PyException::type_error("register() requires a subclass argument"));
+            }
+            let cls = &args[0];
+            let subclass = &args[1];
+            // Store virtual subclass in __abc_registry__ on the ABC class
+            if let PyObjectPayload::Class(ref cd) = cls.payload {
+                let mut ns = cd.namespace.write();
+                let registry = ns.entry(CompactString::from("__abc_registry__"))
+                    .or_insert_with(|| PyObject::list(vec![]));
+                if let PyObjectPayload::List(ref list) = registry.payload {
+                    list.write().push(subclass.clone());
+                }
+            }
+            // Also mark the subclass with __abc_registered__ pointing to the ABC
+            if let PyObjectPayload::Class(ref cd) = subclass.payload {
+                cd.namespace.write().insert(
+                    CompactString::from("__abc_registered__"),
+                    cls.clone(),
+                );
+            }
+            Ok(subclass.clone())
+        });
+        ns.insert(CompactString::from("register"), register_fn);
+    }
+
+    let abstractmethod_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("abstractmethod requires 1 argument"));
+        }
+        let func = args[0].clone();
+        // Return a marker tuple: ("__abstract__", func)
+        let marker = PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("__abstract__")),
+            func,
+        ]);
+        Ok(marker)
+    });
+
+    let abcmeta_cls = PyObject::class(
+        CompactString::from("ABCMeta"), vec![], IndexMap::new(),
+    );
+
+    let abstractclassmethod_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("abstractclassmethod requires 1 argument"));
+        }
+        Ok(args[0].clone())
+    });
+
+    let abstractstaticmethod_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("abstractstaticmethod requires 1 argument"));
+        }
+        Ok(args[0].clone())
+    });
+
+    let abstractproperty_fn = make_builtin(|args: &[PyObjectRef]| {
+        if !args.is_empty() {
+            Ok(args[0].clone())
+        } else {
+            Ok(PyObject::none())
+        }
+    });
+
+    let cache_token: Arc<RwLock<i64>> = Arc::new(RwLock::new(0));
+    let get_cache_token_fn = PyObject::native_closure(
+        "abc.get_cache_token", move |_args: &[PyObjectRef]| {
+            Ok(PyObject::int(*cache_token.read()))
+        }
+    );
+
+    make_module("abc", vec![
+        ("ABC", abc_class),
+        ("ABCMeta", abcmeta_cls),
+        ("abstractmethod", abstractmethod_fn),
+        ("abstractclassmethod", abstractclassmethod_fn),
+        ("abstractstaticmethod", abstractstaticmethod_fn),
+        ("abstractproperty", abstractproperty_fn),
+        ("get_cache_token", get_cache_token_fn),
     ])
 }

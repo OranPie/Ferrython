@@ -354,3 +354,93 @@ pub fn create_hmac_module() -> PyObjectRef {
         ("HMAC", make_builtin(hmac_new)),
     ])
 }
+
+// ── uuid module ────────────────────────────────────────────────────
+pub fn create_uuid_module() -> PyObjectRef {
+    make_module("uuid", vec![
+        ("uuid4", make_builtin(uuid_uuid4)),
+        ("uuid1", make_builtin(uuid_uuid1)),
+        ("UUID", make_builtin(uuid_UUID)),
+        ("NAMESPACE_DNS", PyObject::str_val(CompactString::from("6ba7b810-9dad-11d1-80b4-00c04fd430c8"))),
+        ("NAMESPACE_URL", PyObject::str_val(CompactString::from("6ba7b811-9dad-11d1-80b4-00c04fd430c8"))),
+    ])
+}
+
+fn random_uuid_bytes() -> [u8; 16] {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+    // Simple xorshift-based PRNG for generating random bytes
+    let mut state = seed ^ 0x517cc1b727220a95;
+    let mut bytes = [0u8; 16];
+    for chunk in bytes.chunks_mut(8) {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        for (i, b) in chunk.iter_mut().enumerate() {
+            *b = ((state >> (i * 8)) & 0xFF) as u8;
+        }
+    }
+    bytes
+}
+
+fn format_uuid(bytes: &[u8; 16]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    )
+}
+
+fn uuid_uuid4(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let _ = args;
+    let mut bytes = random_uuid_bytes();
+    // Set version 4 bits
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    // Set variant bits
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    let hex_str = format_uuid(&bytes);
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("hex"), PyObject::str_val(CompactString::from(hex_str.replace('-', ""))));
+    attrs.insert(CompactString::from("version"), PyObject::int(4));
+    attrs.insert(CompactString::from("int"), PyObject::int(
+        u128::from_be_bytes(bytes.try_into().unwrap()) as i64
+    ));
+    attrs.insert(CompactString::from("__str_val__"), PyObject::str_val(CompactString::from(&hex_str)));
+    attrs.insert(CompactString::from("__uuid__"), PyObject::bool_val(true));
+    Ok(PyObject::instance_with_attrs(
+        PyObject::str_val(CompactString::from("UUID")),
+        attrs,
+    ))
+}
+
+fn uuid_uuid1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // uuid1 is time-based; use same approach as uuid4 for simplicity
+    uuid_uuid4(args)
+}
+
+#[allow(non_snake_case)]
+fn uuid_UUID(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("UUID", args, 1)?;
+    let s = args[0].py_to_string();
+    let hex_str = s.replace('-', "");
+    if hex_str.len() != 32 || !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(PyException::value_error(format!("badly formed hexadecimal UUID string: '{}'", s)));
+    }
+    // Parse the canonical form
+    let canonical = format!("{}-{}-{}-{}-{}",
+        &hex_str[0..8], &hex_str[8..12], &hex_str[12..16],
+        &hex_str[16..20], &hex_str[20..32]);
+    let version = u8::from_str_radix(&hex_str[12..13], 16).unwrap_or(0);
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("hex"), PyObject::str_val(CompactString::from(&hex_str)));
+    attrs.insert(CompactString::from("version"), PyObject::int(version as i64));
+    attrs.insert(CompactString::from("__str_val__"), PyObject::str_val(CompactString::from(&canonical)));
+    attrs.insert(CompactString::from("__uuid__"), PyObject::bool_val(true));
+    Ok(PyObject::instance_with_attrs(
+        PyObject::str_val(CompactString::from("UUID")),
+        attrs,
+    ))
+}
