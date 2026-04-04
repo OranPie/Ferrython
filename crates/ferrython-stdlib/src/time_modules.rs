@@ -737,6 +737,165 @@ fn datetime_add_dunder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 
 
+// ── calendar module ──────────────────────────────────────────────────
+pub fn create_calendar_module() -> PyObjectRef {
+    fn is_leap(year: i64) -> bool {
+        (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    }
+
+    fn days_in_month(year: i64, month: i64) -> i64 {
+        match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 => if is_leap(year) { 29 } else { 28 },
+            _ => 30,
+        }
+    }
+
+    // day_of_week: 0=Mon, 6=Sun (ISO standard, matches Python calendar)
+    fn weekday(year: i64, month: i64, day: i64) -> i64 {
+        // Tomohiko Sakamoto's algorithm
+        let t = [0i64, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+        let y = if month < 3 { year - 1 } else { year };
+        ((y + y / 4 - y / 100 + y / 400 + t[(month - 1) as usize] + day) % 7 + 6) % 7
+    }
+
+    fn cal_isleap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("isleap requires 1 argument")); }
+        let year = args[0].to_int()?;
+        Ok(PyObject::bool_val(is_leap(year)))
+    }
+
+    fn cal_leapdays(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("leapdays requires 2 arguments")); }
+        let y1 = args[0].to_int()?;
+        let y2 = args[1].to_int()?;
+        let count_leaps = |y: i64| -> i64 { (y - 1) / 4 - (y - 1) / 100 + (y - 1) / 400 };
+        Ok(PyObject::int(count_leaps(y2) - count_leaps(y1)))
+    }
+
+    fn cal_weekday(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 3 { return Err(PyException::type_error("weekday requires 3 arguments")); }
+        let y = args[0].to_int()?;
+        let m = args[1].to_int()?;
+        let d = args[2].to_int()?;
+        Ok(PyObject::int(weekday(y, m, d)))
+    }
+
+    fn cal_monthrange(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("monthrange requires 2 arguments")); }
+        let year = args[0].to_int()?;
+        let month = args[1].to_int()?;
+        let first_day = weekday(year, month, 1);
+        let num_days = days_in_month(year, month);
+        Ok(PyObject::tuple(vec![PyObject::int(first_day), PyObject::int(num_days)]))
+    }
+
+    fn cal_month(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("month requires 2 arguments")); }
+        let year = args[0].to_int()?;
+        let month = args[1].to_int()?;
+        let month_names = ["", "January", "February", "March", "April", "May", "June",
+                           "July", "August", "September", "October", "November", "December"];
+        let mname = month_names.get(month as usize).unwrap_or(&"");
+        let mut lines = vec![format!("   {:^20}", format!("{} {}", mname, year))];
+        lines.push("Mo Tu We Th Fr Sa Su".to_string());
+        let first_weekday = weekday(year, month, 1);
+        let ndays = days_in_month(year, month);
+        let mut line = "   ".repeat(first_weekday as usize);
+        for d in 1..=ndays {
+            line.push_str(&format!("{:2} ", d));
+            if (first_weekday + d) % 7 == 0 { lines.push(line.trim_end().to_string()); line = String::new(); }
+        }
+        if !line.trim().is_empty() { lines.push(line.trim_end().to_string()); }
+        lines.push(String::new());
+        Ok(PyObject::str_val(CompactString::from(lines.join("\n"))))
+    }
+
+    fn cal_monthcalendar(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("monthcalendar requires 2 arguments")); }
+        let year = args[0].to_int()?;
+        let month = args[1].to_int()?;
+        let first_weekday = weekday(year, month, 1) as usize;
+        let ndays = days_in_month(year, month);
+        let mut weeks = Vec::new();
+        let mut week: Vec<PyObjectRef> = vec![PyObject::int(0); first_weekday];
+        for d in 1..=ndays {
+            week.push(PyObject::int(d));
+            if week.len() == 7 { weeks.push(PyObject::list(week.clone())); week.clear(); }
+        }
+        if !week.is_empty() {
+            while week.len() < 7 { week.push(PyObject::int(0)); }
+            weeks.push(PyObject::list(week));
+        }
+        Ok(PyObject::list(weeks))
+    }
+
+    make_module("calendar", vec![
+        ("isleap", make_builtin(cal_isleap)),
+        ("leapdays", make_builtin(cal_leapdays)),
+        ("weekday", make_builtin(cal_weekday)),
+        ("monthrange", make_builtin(cal_monthrange)),
+        ("month", make_builtin(cal_month)),
+        ("monthcalendar", make_builtin(cal_monthcalendar)),
+        ("day_name", PyObject::list(vec![
+            PyObject::str_val(CompactString::from("Monday")),
+            PyObject::str_val(CompactString::from("Tuesday")),
+            PyObject::str_val(CompactString::from("Wednesday")),
+            PyObject::str_val(CompactString::from("Thursday")),
+            PyObject::str_val(CompactString::from("Friday")),
+            PyObject::str_val(CompactString::from("Saturday")),
+            PyObject::str_val(CompactString::from("Sunday")),
+        ])),
+        ("day_abbr", PyObject::list(vec![
+            PyObject::str_val(CompactString::from("Mon")),
+            PyObject::str_val(CompactString::from("Tue")),
+            PyObject::str_val(CompactString::from("Wed")),
+            PyObject::str_val(CompactString::from("Thu")),
+            PyObject::str_val(CompactString::from("Fri")),
+            PyObject::str_val(CompactString::from("Sat")),
+            PyObject::str_val(CompactString::from("Sun")),
+        ])),
+        ("month_name", PyObject::list(vec![
+            PyObject::str_val(CompactString::from("")),
+            PyObject::str_val(CompactString::from("January")),
+            PyObject::str_val(CompactString::from("February")),
+            PyObject::str_val(CompactString::from("March")),
+            PyObject::str_val(CompactString::from("April")),
+            PyObject::str_val(CompactString::from("May")),
+            PyObject::str_val(CompactString::from("June")),
+            PyObject::str_val(CompactString::from("July")),
+            PyObject::str_val(CompactString::from("August")),
+            PyObject::str_val(CompactString::from("September")),
+            PyObject::str_val(CompactString::from("October")),
+            PyObject::str_val(CompactString::from("November")),
+            PyObject::str_val(CompactString::from("December")),
+        ])),
+        ("month_abbr", PyObject::list(vec![
+            PyObject::str_val(CompactString::from("")),
+            PyObject::str_val(CompactString::from("Jan")),
+            PyObject::str_val(CompactString::from("Feb")),
+            PyObject::str_val(CompactString::from("Mar")),
+            PyObject::str_val(CompactString::from("Apr")),
+            PyObject::str_val(CompactString::from("May")),
+            PyObject::str_val(CompactString::from("Jun")),
+            PyObject::str_val(CompactString::from("Jul")),
+            PyObject::str_val(CompactString::from("Aug")),
+            PyObject::str_val(CompactString::from("Sep")),
+            PyObject::str_val(CompactString::from("Oct")),
+            PyObject::str_val(CompactString::from("Nov")),
+            PyObject::str_val(CompactString::from("Dec")),
+        ])),
+        ("MONDAY", PyObject::int(0)),
+        ("TUESDAY", PyObject::int(1)),
+        ("WEDNESDAY", PyObject::int(2)),
+        ("THURSDAY", PyObject::int(3)),
+        ("FRIDAY", PyObject::int(4)),
+        ("SATURDAY", PyObject::int(5)),
+        ("SUNDAY", PyObject::int(6)),
+    ])
+}
+
 // ── weakref module ──
 
 

@@ -779,4 +779,240 @@ pub fn create_fnmatch_module() -> PyObjectRef {
 
 // ── base64 module ──
 
+// ── html module ──────────────────────────────────────────────────────
+pub fn create_html_module() -> PyObjectRef {
+    fn html_escape(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("html.escape requires 1 argument")); }
+        let s = args[0].py_to_string();
+        let quote = if args.len() > 1 {
+            match &args[1].payload { PyObjectPayload::Bool(b) => *b, _ => true }
+        } else { true };
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' if quote => out.push_str("&quot;"),
+                '\'' if quote => out.push_str("&#x27;"),
+                _ => out.push(c),
+            }
+        }
+        Ok(PyObject::str_val(CompactString::from(out)))
+    }
+
+    fn html_unescape(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("html.unescape requires 1 argument")); }
+        let s = args[0].py_to_string();
+        let out = s
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#x27;", "'")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
+            .replace("&#x2F;", "/")
+            .replace("&#x3D;", "=");
+        // Handle numeric character references &#NNN; and &#xHHH;
+        let mut result = String::new();
+        let mut chars = out.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '&' && chars.peek() == Some(&'#') {
+                chars.next(); // consume '#'
+                let mut num_str = String::new();
+                let is_hex = chars.peek() == Some(&'x') || chars.peek() == Some(&'X');
+                if is_hex { chars.next(); }
+                for nc in chars.by_ref() {
+                    if nc == ';' { break; }
+                    num_str.push(nc);
+                }
+                let code = if is_hex {
+                    u32::from_str_radix(&num_str, 16).ok()
+                } else {
+                    num_str.parse::<u32>().ok()
+                };
+                if let Some(cp) = code.and_then(char::from_u32) {
+                    result.push(cp);
+                } else {
+                    result.push('&');
+                    result.push('#');
+                    if is_hex { result.push('x'); }
+                    result.push_str(&num_str);
+                    result.push(';');
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        Ok(PyObject::str_val(CompactString::from(result)))
+    }
+
+    make_module("html", vec![
+        ("escape", make_builtin(html_escape)),
+        ("unescape", make_builtin(html_unescape)),
+    ])
+}
+
+// ── shlex module ─────────────────────────────────────────────────────
+pub fn create_shlex_module() -> PyObjectRef {
+    fn shlex_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("shlex.split requires 1 argument")); }
+        let s = args[0].py_to_string();
+        let mut result = Vec::new();
+        let mut current = String::new();
+        let mut in_single = false;
+        let mut in_double = false;
+        let mut escape_next = false;
+        for c in s.chars() {
+            if escape_next {
+                current.push(c);
+                escape_next = false;
+                continue;
+            }
+            if c == '\\' && !in_single {
+                escape_next = true;
+                continue;
+            }
+            if c == '\'' && !in_double {
+                in_single = !in_single;
+                continue;
+            }
+            if c == '"' && !in_single {
+                in_double = !in_double;
+                continue;
+            }
+            if c.is_whitespace() && !in_single && !in_double {
+                if !current.is_empty() {
+                    result.push(PyObject::str_val(CompactString::from(&current)));
+                    current.clear();
+                }
+                continue;
+            }
+            current.push(c);
+        }
+        if !current.is_empty() {
+            result.push(PyObject::str_val(CompactString::from(&current)));
+        }
+        Ok(PyObject::list(result))
+    }
+
+    fn shlex_quote(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("shlex.quote requires 1 argument")); }
+        let s = args[0].py_to_string();
+        if s.is_empty() {
+            return Ok(PyObject::str_val(CompactString::from("''")));
+        }
+        // If safe chars only, return as-is
+        if s.chars().all(|c| c.is_alphanumeric() || matches!(c, '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-' | '_')) {
+            return Ok(PyObject::str_val(CompactString::from(&s)));
+        }
+        // Wrap in single quotes, escaping any single quotes
+        let escaped = s.replace('\'', "'\"'\"'");
+        Ok(PyObject::str_val(CompactString::from(format!("'{}'", escaped))))
+    }
+
+    fn shlex_join(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("shlex.join requires 1 argument")); }
+        let items = match &args[0].payload {
+            PyObjectPayload::List(items) => items.read().clone(),
+            PyObjectPayload::Tuple(items) => items.clone(),
+            _ => return Err(PyException::type_error("shlex.join expects an iterable")),
+        };
+        let parts: Vec<String> = items.iter().map(|item| {
+            let s = item.py_to_string();
+            if s.is_empty() || s.chars().any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\' | '|' | '&' | ';' | '(' | ')' | '<' | '>' | '!' | '`' | '$' | '{' | '}' | '[' | ']')) {
+                let escaped = s.replace('\'', "'\"'\"'");
+                format!("'{}'", escaped)
+            } else { s }
+        }).collect();
+        Ok(PyObject::str_val(CompactString::from(parts.join(" "))))
+    }
+
+    make_module("shlex", vec![
+        ("split", make_builtin(shlex_split)),
+        ("quote", make_builtin(shlex_quote)),
+        ("join", make_builtin(shlex_join)),
+    ])
+}
+
+// ── difflib module ───────────────────────────────────────────────────
+pub fn create_difflib_module() -> PyObjectRef {
+    fn unified_diff(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("unified_diff requires at least 2 arguments")); }
+        let a_lines: Vec<String> = match &args[0].payload {
+            PyObjectPayload::List(items) => items.read().iter().map(|i| i.py_to_string()).collect(),
+            _ => return Err(PyException::type_error("expected list")),
+        };
+        let b_lines: Vec<String> = match &args[1].payload {
+            PyObjectPayload::List(items) => items.read().iter().map(|i| i.py_to_string()).collect(),
+            _ => return Err(PyException::type_error("expected list")),
+        };
+        let from_file = if args.len() > 2 { args[2].py_to_string() } else { String::new() };
+        let to_file = if args.len() > 3 { args[3].py_to_string() } else { String::new() };
+
+        let mut result = Vec::new();
+        if !from_file.is_empty() || !to_file.is_empty() {
+            result.push(PyObject::str_val(CompactString::from(format!("--- {}\n", from_file))));
+            result.push(PyObject::str_val(CompactString::from(format!("+++ {}\n", to_file))));
+        }
+        // Simple diff: lines only in a are "-", only in b are "+", common are " "
+        let max_len = a_lines.len().max(b_lines.len());
+        if a_lines != b_lines {
+            result.push(PyObject::str_val(CompactString::from(
+                format!("@@ -1,{} +1,{} @@\n", a_lines.len(), b_lines.len())
+            )));
+            for line in &a_lines {
+                if !b_lines.contains(line) {
+                    result.push(PyObject::str_val(CompactString::from(format!("-{}", line))));
+                }
+            }
+            for line in &b_lines {
+                if !a_lines.contains(line) {
+                    result.push(PyObject::str_val(CompactString::from(format!("+{}", line))));
+                }
+            }
+            for line in &a_lines {
+                if b_lines.contains(line) {
+                    result.push(PyObject::str_val(CompactString::from(format!(" {}", line))));
+                }
+            }
+        }
+        let _ = max_len;
+        Ok(PyObject::list(result))
+    }
+
+    fn get_close_matches(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("get_close_matches requires at least 2 arguments")); }
+        let word = args[0].py_to_string();
+        let possibilities: Vec<String> = match &args[1].payload {
+            PyObjectPayload::List(items) => items.read().iter().map(|i| i.py_to_string()).collect(),
+            _ => return Err(PyException::type_error("expected list")),
+        };
+        let n = if args.len() > 2 { args[2].to_int().unwrap_or(3) as usize } else { 3 };
+        let cutoff = if args.len() > 3 {
+            match &args[3].payload { PyObjectPayload::Float(f) => *f, _ => 0.6 }
+        } else { 0.6 };
+
+        // Simple ratio: 2 * matching_chars / total_chars
+        let mut scored: Vec<(f64, &String)> = possibilities.iter().map(|p| {
+            let matching = word.chars().filter(|c| p.contains(*c)).count();
+            let ratio = if word.len() + p.len() > 0 {
+                2.0 * matching as f64 / (word.len() + p.len()) as f64
+            } else { 0.0 };
+            (ratio, p)
+        }).filter(|(r, _)| *r >= cutoff).collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(n);
+        Ok(PyObject::list(scored.iter().map(|(_, s)| PyObject::str_val(CompactString::from(s.as_str()))).collect()))
+    }
+
+    make_module("difflib", vec![
+        ("unified_diff", make_builtin(unified_diff)),
+        ("get_close_matches", make_builtin(get_close_matches)),
+        ("ndiff", make_builtin(|_| Ok(PyObject::list(vec![])))),
+        ("context_diff", make_builtin(|_| Ok(PyObject::list(vec![])))),
+    ])
+}
+
 

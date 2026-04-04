@@ -45,11 +45,15 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "os.path" => Some(sys_modules::create_os_path_module()),
         "platform" => Some(sys_modules::create_platform_module()),
         "locale" => Some(sys_modules::create_locale_module()),
+        "getpass" => Some(sys_modules::create_getpass_module()),
         // Text processing
         "string" => Some(text_modules::create_string_module()),
         "re" => Some(text_modules::create_re_module()),
         "textwrap" => Some(text_modules::create_textwrap_module()),
         "fnmatch" => Some(text_modules::create_fnmatch_module()),
+        "html" => Some(text_modules::create_html_module()),
+        "shlex" => Some(text_modules::create_shlex_module()),
+        "difflib" => Some(text_modules::create_difflib_module()),
         // Collections & functional
         "collections" => Some(collection_modules::create_collections_module()),
         "functools" => Some(collection_modules::create_functools_module()),
@@ -71,6 +75,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // Time & datetime
         "time" => Some(time_modules::create_time_module()),
         "datetime" => Some(time_modules::create_datetime_module()),
+        "calendar" => Some(time_modules::create_calendar_module()),
         // Type system
         "typing" => Some(type_modules::create_typing_module()),
         "abc" => Some(type_modules::create_abc_module()),
@@ -91,6 +96,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "uuid" => Some(misc_modules::create_uuid_module()),
         "codecs" => Some(misc_modules::create_codecs_module()),
         "secrets" => Some(misc_modules::create_secrets_module()),
+        "hmac" => Some(misc_modules::create_hmac_module()),
+        "configparser" => Some(misc_modules::create_configparser_module()),
         // Introspection
         "warnings" => Some(introspection_modules::create_warnings_module()),
         "traceback" => Some(introspection_modules::create_traceback_module()),
@@ -101,6 +108,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "weakref" => Some(concurrency_modules::create_weakref_module()),
         "gc" => Some(concurrency_modules::create_gc_module()),
         "_thread" => Some(concurrency_modules::create_thread_module()),
+        "signal" => Some(concurrency_modules::create_signal_module()),
         // Async
         "asyncio" => Some(async_modules::create_asyncio_module()),
         // Import system

@@ -1814,12 +1814,24 @@ pub fn create_hmac_module() -> PyObjectRef {
         attrs.insert(CompactString::from("_hexdigest"), PyObject::str_val(CompactString::from(&hex_str)));
         attrs.insert(CompactString::from("digest_size"), PyObject::int(result.len() as i64));
         attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(format!("hmac-{}", digestmod))));
+        attrs.insert(CompactString::from("_digest_bytes"), PyObject::bytes(result));
+        attrs.insert(CompactString::from("_hex_str"), PyObject::str_val(CompactString::from(&hex_str)));
 
         let mut ns = IndexMap::new();
-        let digest_bytes = result.clone();
-        let hex_str2 = hex_str.clone();
-        ns.insert(CompactString::from("digest"), make_builtin(move |_| Ok(PyObject::bytes(digest_bytes.clone()))));
-        ns.insert(CompactString::from("hexdigest"), make_builtin(move |_| Ok(PyObject::str_val(CompactString::from(&hex_str2)))));
+        ns.insert(CompactString::from("digest"), make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::bytes(vec![])); }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(v) = inst.attrs.read().get("_digest_bytes") { return Ok(v.clone()); }
+            }
+            Ok(PyObject::bytes(vec![]))
+        }));
+        ns.insert(CompactString::from("hexdigest"), make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(v) = inst.attrs.read().get("_hex_str") { return Ok(v.clone()); }
+            }
+            Ok(PyObject::str_val(CompactString::from("")))
+        }));
         let class = PyObject::class(CompactString::from("HMAC"), vec![], ns);
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,

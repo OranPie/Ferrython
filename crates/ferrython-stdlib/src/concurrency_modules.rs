@@ -325,3 +325,41 @@ pub fn create_thread_module() -> PyObjectRef {
         ("TIMEOUT_MAX", PyObject::float(f64::MAX)),
     ])
 }
+
+// ── signal module ────────────────────────────────────────────────────
+pub fn create_signal_module() -> PyObjectRef {
+    // Signal constants (POSIX values)
+    make_module("signal", vec![
+        ("SIGABRT", PyObject::int(6)),
+        ("SIGALRM", PyObject::int(14)),
+        ("SIGBUS", PyObject::int(7)),
+        ("SIGCHLD", PyObject::int(17)),
+        ("SIGCONT", PyObject::int(18)),
+        ("SIGFPE", PyObject::int(8)),
+        ("SIGHUP", PyObject::int(1)),
+        ("SIGILL", PyObject::int(4)),
+        ("SIGINT", PyObject::int(2)),
+        ("SIGKILL", PyObject::int(9)),
+        ("SIGPIPE", PyObject::int(13)),
+        ("SIGQUIT", PyObject::int(3)),
+        ("SIGSEGV", PyObject::int(11)),
+        ("SIGSTOP", PyObject::int(19)),
+        ("SIGTERM", PyObject::int(15)),
+        ("SIGUSR1", PyObject::int(10)),
+        ("SIGUSR2", PyObject::int(12)),
+        ("SIG_DFL", PyObject::int(0)),
+        ("SIG_IGN", PyObject::int(1)),
+        ("signal", make_builtin(|args| {
+            // signal.signal(signum, handler) — stub, returns SIG_DFL
+            if args.len() < 2 { return Err(PyException::type_error("signal() requires 2 arguments")); }
+            Ok(PyObject::int(0)) // SIG_DFL
+        })),
+        ("getsignal", make_builtin(|_| Ok(PyObject::none()))),
+        ("raise_signal", make_builtin(|_| Ok(PyObject::none()))),
+        ("alarm", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("pause", make_builtin(|_| Ok(PyObject::none()))),
+        ("set_wakeup_fd", make_builtin(|_| Ok(PyObject::int(-1)))),
+        ("Signals", PyObject::none()),
+        ("Handlers", PyObject::none()),
+    ])
+}

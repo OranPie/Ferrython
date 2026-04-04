@@ -299,6 +299,17 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             }
                         }));
                     }
+                    // NativeFunction from class namespace → wrap to pass self
+                    if matches!(&v.payload, PyObjectPayload::NativeFunction { .. }) {
+                        let receiver = obj.clone();
+                        let func = v.clone();
+                        return Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver,
+                                method: func,
+                            }
+                        }));
+                    }
                     return Some(v.clone());
                 }
                 // Check for built-in instance methods (namedtuple, deque, hashlib)

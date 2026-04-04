@@ -64,12 +64,20 @@ impl VirtualMachine {
         match &obj.payload {
             PyObjectPayload::Instance(_) => {
                 if let Some(str_method) = obj.get_attr("__str__") {
-                    let result = self.call_object(str_method, vec![])?;
+                    // NativeFunction from class namespace needs self as first arg
+                    let args = match &str_method.payload {
+                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
+                        _ => vec![],
+                    };
+                    let result = self.call_object(str_method, args)?;
                     return Ok(result.py_to_string());
                 }
-                // Fall back to __repr__ if no __str__
                 if let Some(repr_method) = obj.get_attr("__repr__") {
-                    let result = self.call_object(repr_method, vec![])?;
+                    let args = match &repr_method.payload {
+                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
+                        _ => vec![],
+                    };
+                    let result = self.call_object(repr_method, args)?;
                     return Ok(result.py_to_string());
                 }
                 // Exception instances: str(e) returns the message from args
@@ -80,13 +88,6 @@ impl VirtualMachine {
                             1 => Ok(items[0].py_to_string()),
                             _ => self.vm_repr(&args),
                         };
-                    }
-                }
-                // Fall back to vm_repr (handles namedtuple, dataclass, etc.)
-                // Decimal instances: str() returns the value
-                if let PyObjectPayload::Instance(inst) = &obj.payload {
-                    if inst.attrs.read().contains_key("__decimal__") {
-                        return Ok(inst.attrs.read().get("_value").map(|v| v.py_to_string()).unwrap_or_else(|| "0".to_string()));
                     }
                 }
                 self.vm_repr(obj)

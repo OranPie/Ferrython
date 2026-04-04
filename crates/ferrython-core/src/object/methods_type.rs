@@ -190,6 +190,12 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                     if attrs.contains_key("__decimal__") {
                         return attrs.get("_value").map(|v| v.py_to_string()).unwrap_or_else(|| "0".to_string());
                     }
+                    // Fraction → return n/d string
+                    if attrs.contains_key("__fraction__") {
+                        let n = attrs.get("numerator").and_then(|v| v.as_int()).unwrap_or(0);
+                        let d = attrs.get("denominator").and_then(|v| v.as_int()).unwrap_or(1);
+                        return if d == 1 { format!("{}", n) } else { format!("{}/{}", n, d) };
+                    }
                 }
                 // Check for __str__ method first
                 if let Some(str_fn) = obj.get_attr("__str__") {
