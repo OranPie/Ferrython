@@ -1841,6 +1841,65 @@ impl VirtualMachine {
                         }
                     }
                 }
+                // list.sort(key=, reverse=) needs VM for key function calls
+                if method_name.as_str() == "sort" {
+                    if let PyObjectPayload::List(items) = &receiver.payload {
+                        // Extract key and reverse from trailing kwargs dict
+                        let mut key_fn: Option<PyObjectRef> = None;
+                        let mut reverse = false;
+                        for arg in &args {
+                            if let PyObjectPayload::Dict(d) = &arg.payload {
+                                let rd = d.read();
+                                if let Some(v) = rd.get(&HashableKey::Str(CompactString::from("reverse"))) {
+                                    reverse = v.is_truthy();
+                                }
+                                if let Some(v) = rd.get(&HashableKey::Str(CompactString::from("key"))) {
+                                    if !matches!(v.payload, PyObjectPayload::None) {
+                                        key_fn = Some(v.clone());
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(key) = key_fn {
+                            // Decorate-sort-undecorate (Schwartzian transform)
+                            let mut w = items.write();
+                            let mut decorated: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
+                            for item in w.iter() {
+                                let k = self.call_object(key.clone(), vec![item.clone()])?;
+                                decorated.push((k, item.clone()));
+                            }
+                            let keys: Vec<PyObjectRef> = decorated.iter().map(|(k, _)| k.clone()).collect();
+                            let mut indices: Vec<usize> = (0..decorated.len()).collect();
+                            for i in 1..indices.len() {
+                                let mut j = i;
+                                while j > 0 {
+                                    if self.vm_lt(&keys[indices[j]], &keys[indices[j - 1]])? {
+                                        indices.swap(j, j - 1);
+                                        j -= 1;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                            w.clear();
+                            for i in indices {
+                                w.push(decorated[i].1.clone());
+                            }
+                            if reverse {
+                                w.reverse();
+                            }
+                            return Ok(PyObject::none());
+                        } else if reverse {
+                            let mut w = items.write();
+                            let mut v: Vec<_> = w.drain(..).collect();
+                            self.vm_sort(&mut v)?;
+                            v.reverse();
+                            w.extend(v);
+                            return Ok(PyObject::none());
+                        }
+                        // No key or reverse — fall through to basic sort
+                    }
+                }
                 // str.format_map with dict subclass: needs VM for __missing__ calls
                 if method_name.as_str() == "format_map" && !args.is_empty() {
                     if let PyObjectPayload::Str(s) = &receiver.payload {
