@@ -148,9 +148,14 @@ impl Compiler {
                 iter,
                 body,
                 orelse,
+                is_async,
                 ..
             } => {
-                self.compile_for(target, iter, body, orelse)?;
+                if *is_async {
+                    self.compile_async_for(target, iter, body, orelse)?;
+                } else {
+                    self.compile_for(target, iter, body, orelse)?;
+                }
             }
 
             StatementKind::FunctionDef {
@@ -215,8 +220,12 @@ impl Compiler {
                 self.compile_assert(test, msg.as_deref())?;
             }
 
-            StatementKind::With { items, body, .. } => {
-                self.compile_with(items, body)?;
+            StatementKind::With { items, body, is_async, .. } => {
+                if *is_async {
+                    self.compile_async_with(items, body)?;
+                } else {
+                    self.compile_with(items, body)?;
+                }
             }
         }
         Ok(())
@@ -938,6 +947,125 @@ impl Compiler {
         self.compile_with_item(items, idx + 1, body)?;
 
         // Normal exit
+        self.emit_op(Opcode::PopBlock);
+        self.emit_op(Opcode::BeginFinally);
+        self.patch_jump_here(cleanup_label);
+        self.emit_op(Opcode::WithCleanupStart);
+        self.emit_op(Opcode::WithCleanupFinish);
+        self.emit_op(Opcode::EndFinally);
+
+        Ok(())
+    }
+
+    // ── async for ───────────────────────────────────────────────────
+
+    pub(super) fn compile_async_for(
+        &mut self,
+        target: &Expression,
+        iter: &Expression,
+        body: &[Statement],
+        orelse: &[Statement],
+    ) -> Result<()> {
+        // Compile iterator expression and get async iterator
+        self.compile_expression(iter)?;
+        self.emit_op(Opcode::GetAiter);
+
+        let loop_start = self.current_offset();
+
+        // Setup except handler for StopAsyncIteration → EndAsyncFor
+        let except_label = self.emit_jump(Opcode::SetupExcept);
+
+        // GET_ANEXT → GET_AWAITABLE → LOAD_CONST None → YIELD_FROM
+        self.emit_op(Opcode::GetAnext);
+        self.emit_op(Opcode::GetAwaitable);
+        let none_idx = self.add_const(ConstantValue::None);
+        self.emit_arg(Opcode::LoadConst, none_idx);
+        self.emit_op(Opcode::YieldFrom);
+
+        // Store iteration value
+        self.compile_store_target(target)?;
+
+        // Pop exception handler before body
+        self.emit_op(Opcode::PopBlock);
+
+        self.current_unit_mut().loop_stack.push(LoopContext {
+            continue_target: loop_start,
+            break_labels: Vec::new(),
+            is_for_loop: true,
+        });
+
+        // Compile body
+        self.compile_body(body)?;
+
+        // Jump back to loop start
+        self.emit_arg(Opcode::JumpAbsolute, loop_start);
+
+        // Exception handler: END_ASYNC_FOR cleans up StopAsyncIteration
+        self.patch_jump_here(except_label);
+        self.emit_op(Opcode::EndAsyncFor);
+
+        let loop_ctx = self.current_unit_mut().loop_stack.pop().unwrap();
+
+        if !orelse.is_empty() {
+            self.compile_body(orelse)?;
+        }
+
+        let after = self.current_offset();
+        for label in loop_ctx.break_labels {
+            self.patch_jump(label, after);
+        }
+
+        Ok(())
+    }
+
+    // ── async with ──────────────────────────────────────────────────
+
+    pub(super) fn compile_async_with(
+        &mut self,
+        items: &[WithItem],
+        body: &[Statement],
+    ) -> Result<()> {
+        self.compile_async_with_item(items, 0, body)
+    }
+
+    pub(super) fn compile_async_with_item(
+        &mut self,
+        items: &[WithItem],
+        idx: usize,
+        body: &[Statement],
+    ) -> Result<()> {
+        if idx >= items.len() {
+            return self.compile_body(body);
+        }
+
+        let item = &items[idx];
+
+        // Evaluate context expression
+        self.compile_expression(&item.context_expr)?;
+
+        // BEFORE_ASYNC_WITH calls __aenter__, pushes awaitable
+        self.emit_op(Opcode::BeforeAsyncWith);
+
+        // Await the __aenter__ result
+        self.emit_op(Opcode::GetAwaitable);
+        let none_idx = self.add_const(ConstantValue::None);
+        self.emit_arg(Opcode::LoadConst, none_idx);
+        self.emit_op(Opcode::YieldFrom);
+
+        // SETUP_ASYNC_WITH sets up __aexit__ handler
+        let cleanup_label = self.emit_jump(Opcode::SetupAsyncWith);
+
+        // Store __aenter__ result if there's an `as` target
+        if let Some(ref vars) = item.optional_vars {
+            self.compile_store_target(vars)?;
+        } else {
+            self.emit_op(Opcode::PopTop);
+        }
+
+        // Compile inner withs or body
+        self.compile_async_with_item(items, idx + 1, body)?;
+
+        // Normal exit: pop block, then run cleanup
         self.emit_op(Opcode::PopBlock);
         self.emit_op(Opcode::BeginFinally);
         self.patch_jump_here(cleanup_label);

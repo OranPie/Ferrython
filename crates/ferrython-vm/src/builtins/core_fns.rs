@@ -658,7 +658,7 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// Get an iterator from any iterable object.
 pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     match &obj.payload {
-        PyObjectPayload::Iterator(_) | PyObjectPayload::Generator(_) => Ok(obj.clone()),
+        PyObjectPayload::Iterator(_) | PyObjectPayload::Generator(_) | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
         PyObjectPayload::Range { start, stop, step } => {
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
                 Arc::new(std::sync::Mutex::new(IteratorData::Range { current: *start, stop: *stop, step: *step }))

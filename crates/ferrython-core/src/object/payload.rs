@@ -58,6 +58,16 @@ pub enum PyObjectPayload {
     ExceptionInstance { kind: ExceptionKind, message: CompactString, args: Vec<PyObjectRef>, attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>> },
     /// Generator object (suspended coroutine with opaque frame storage)
     Generator(Arc<RwLock<GeneratorState>>),
+    /// Coroutine object (from async def — uses same frame machinery as Generator)
+    Coroutine(Arc<RwLock<GeneratorState>>),
+    /// Async generator object (from async def with yield)
+    AsyncGenerator(Arc<RwLock<GeneratorState>>),
+    /// Awaitable returned by async generator protocol methods (__anext__, asend, athrow, aclose).
+    /// When driven via send(None), resumes the underlying async generator with the specified action.
+    AsyncGenAwaitable {
+        gen: Arc<RwLock<GeneratorState>>,
+        action: AsyncGenAction,
+    },
     /// Native Rust function callable from Python (for module functions)
     NativeFunction {
         name: CompactString,
@@ -119,6 +129,9 @@ impl fmt::Debug for PyObjectPayload {
             Self::ExceptionType(k) => write!(f, "ExceptionType({k:?})"),
             Self::ExceptionInstance { kind, message, .. } => write!(f, "ExceptionInstance({kind:?}, {message:?})"),
             Self::Generator(_) => write!(f, "Generator(...)"),
+            Self::Coroutine(_) => write!(f, "Coroutine(...)"),
+            Self::AsyncGenerator(_) => write!(f, "AsyncGenerator(...)"),
+            Self::AsyncGenAwaitable { action, .. } => write!(f, "AsyncGenAwaitable({action:?})"),
             Self::NativeFunction { name, .. } => write!(f, "NativeFunction({name})"),
             Self::NativeClosure { name, .. } => write!(f, "NativeClosure({name})"),
             Self::InstanceDict(_) => write!(f, "InstanceDict(...)"),
@@ -156,6 +169,19 @@ impl Clone for GeneratorState {
         // Generators are not truly clonable; this is a placeholder for the derive requirement
         Self { name: self.name.clone(), frame: None, started: self.started, finished: self.finished }
     }
+}
+
+/// The operation an `AsyncGenAwaitable` should perform when driven.
+#[derive(Debug, Clone)]
+pub enum AsyncGenAction {
+    /// `__anext__()` — resume with None, raise StopAsyncIteration on exhaustion
+    Next,
+    /// `asend(val)` — resume with val
+    Send(PyObjectRef),
+    /// `athrow(exc_type, msg)` — throw exception into generator
+    Throw(ExceptionKind, CompactString),
+    /// `aclose()` — throw GeneratorExit, expect generator to finish
+    Close,
 }
 
 #[derive(Debug, Clone)]

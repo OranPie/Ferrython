@@ -6,7 +6,7 @@ use crate::VirtualMachine;
 use ferrython_bytecode::code::ConstantValue;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    GeneratorState, IteratorData, PyObject, PyObjectMethods,
+    AsyncGenAction, GeneratorState, IteratorData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
@@ -478,16 +478,19 @@ impl VirtualMachine {
             gen.frame = Some(Box::new(saved_frame));
             result // Ok(yielded_value)
         } else {
-            // Generator returned — mark finished, raise StopIteration with return value
+            // Generator finished (returned or raised)
             gen.finished = true;
             gen.frame = None;
-            // The return value from the generator function is carried in StopIteration
-            let return_val = result.ok();
-            let msg = return_val.as_ref().map(|v| v.py_to_string()).unwrap_or_default();
-            let mut exc = PyException::new(ExceptionKind::StopIteration, msg);
-            // Store return value in a special field for yield-from to capture
-            exc.value = return_val;
-            Err(exc)
+            match result {
+                Ok(return_val) => {
+                    // Normal return → StopIteration with return value
+                    let msg = return_val.py_to_string();
+                    let mut exc = PyException::new(ExceptionKind::StopIteration, msg);
+                    exc.value = Some(return_val);
+                    Err(exc)
+                }
+                Err(e) => Err(e), // Propagate the actual exception
+            }
         }
     }
 
@@ -552,6 +555,132 @@ impl VirtualMachine {
             gen.finished = true;
             gen.frame = None;
             exc_result
+        }
+    }
+
+    /// Parse the arguments to generator.throw() / coroutine.throw() into (ExceptionKind, message).
+    pub(crate) fn parse_throw_args(args: &[PyObjectRef]) -> (ExceptionKind, String) {
+        let msg = if args.len() >= 2 { args[1].py_to_string() } else { String::new() };
+        let kind = if !args.is_empty() {
+            match &args[0].payload {
+                PyObjectPayload::ExceptionType(k) => k.clone(),
+                PyObjectPayload::BuiltinType(name) => {
+                    ExceptionKind::from_name(name).unwrap_or(ExceptionKind::RuntimeError)
+                }
+                PyObjectPayload::ExceptionInstance { kind, .. } => kind.clone(),
+                _ => ExceptionKind::RuntimeError,
+            }
+        } else {
+            ExceptionKind::RuntimeError
+        };
+        (kind, msg)
+    }
+
+    /// Drive an AsyncGenAwaitable: execute the action on the underlying async generator.
+    ///
+    /// This implements the behavior of CPython's `async_generator_anext` / `async_generator_asend`
+    /// / `async_generator_athrow` objects. When `send(None)` is called:
+    ///   - Next/Send: resumes the async generator. Yielded value → StopIteration(value).
+    ///                On exhaustion → StopAsyncIteration.
+    ///   - Throw:     throws exception into generator frame.
+    ///   - Close:     throws GeneratorExit; expects generator to finish.
+    pub(crate) fn drive_async_gen_awaitable(
+        &mut self,
+        gen: &Arc<RwLock<GeneratorState>>,
+        action: &AsyncGenAction,
+        send_val: PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        match action {
+            AsyncGenAction::Next => {
+                // Resume with send_val (for first call it's None, for subsequent send() it's the arg)
+                match self.resume_generator(gen, send_val) {
+                    Ok(yielded) => {
+                        // Async generator yielded a value — propagate via StopIteration
+                        let msg = yielded.py_to_string();
+                        let mut exc = PyException::new(ExceptionKind::StopIteration, msg);
+                        exc.value = Some(yielded);
+                        Err(exc)
+                    }
+                    Err(e) if e.kind == ExceptionKind::StopIteration => {
+                        // Async generator returned (exhausted) — raise StopAsyncIteration
+                        Err(PyException::new(ExceptionKind::StopAsyncIteration, String::new()))
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            AsyncGenAction::Send(val) => {
+                // Like Next but with explicit value (ignore send_val from protocol, use stored val)
+                match self.resume_generator(gen, val.clone()) {
+                    Ok(yielded) => {
+                        let msg = yielded.py_to_string();
+                        let mut exc = PyException::new(ExceptionKind::StopIteration, msg);
+                        exc.value = Some(yielded);
+                        Err(exc)
+                    }
+                    Err(e) if e.kind == ExceptionKind::StopIteration => {
+                        Err(PyException::new(ExceptionKind::StopAsyncIteration, String::new()))
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            AsyncGenAction::Throw(exc_kind, msg) => {
+                self.gen_throw(gen, exc_kind.clone(), msg.to_string())
+            }
+            AsyncGenAction::Close => {
+                // Like generator.close(): throw GeneratorExit, expect finish
+                let g = gen.read();
+                if g.finished || g.frame.is_none() {
+                    drop(g);
+                    return Ok(PyObject::none());
+                }
+                drop(g);
+                match self.gen_throw(gen, ExceptionKind::GeneratorExit, String::new()) {
+                    Ok(_yielded) => {
+                        Err(PyException::runtime_error("async generator ignored GeneratorExit"))
+                    }
+                    Err(e) if e.kind == ExceptionKind::GeneratorExit
+                           || e.kind == ExceptionKind::StopIteration
+                           || e.kind == ExceptionKind::StopAsyncIteration => {
+                        let mut g = gen.write();
+                        g.finished = true;
+                        g.frame = None;
+                        Ok(PyObject::none())
+                    }
+                    Err(e) => {
+                        let mut g = gen.write();
+                        g.finished = true;
+                        g.frame = None;
+                        Err(e)
+                    }
+                }
+            }
+        }
+    }
+
+    /// If a value is a Coroutine, drive it to completion and return the final value.
+    /// This is used for async-with cleanup where `__aexit__` may return a coroutine.
+    /// For non-coroutine values, returns the value unchanged.
+    pub(crate) fn maybe_await_result(&mut self, result: PyObjectRef) -> PyResult<PyObjectRef> {
+        match &result.payload {
+            PyObjectPayload::Coroutine(gen_arc) => {
+                // Drive the coroutine to completion: send(None) until StopIteration
+                let gen_arc = gen_arc.clone();
+                let mut send_val = PyObject::none();
+                loop {
+                    match self.resume_generator(&gen_arc, send_val) {
+                        Ok(yielded) => {
+                            // Coroutine yielded — send None to continue
+                            send_val = PyObject::none();
+                            let _ = yielded; // discard intermediate yields
+                        }
+                        Err(e) if e.kind == ExceptionKind::StopIteration => {
+                            return Ok(e.value.unwrap_or_else(|| PyObject::none()));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+            _ => Ok(result),
         }
     }
 

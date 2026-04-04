@@ -821,7 +821,72 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             }
             PyObjectPayload::Generator(_) => {
                 match name {
+                    // Generator protocol: send, throw, close, __next__, __iter__
                     "send" | "throw" | "close" | "__next__" => {
+                        Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: obj.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }))
+                    }
+                    "__iter__" => Some(obj.clone()),
+                    "gi_frame" | "gi_code" => Some(PyObject::none()),
+                    "gi_running" => Some(PyObject::bool_val(false)),
+                    "gi_yieldfrom" => Some(PyObject::none()),
+                    _ => None,
+                }
+            }
+            PyObjectPayload::Coroutine(_) => {
+                match name {
+                    // Coroutine protocol: send, throw, close
+                    "send" | "throw" | "close" => {
+                        Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: obj.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }))
+                    }
+                    // __await__ on a coroutine returns self (the coroutine IS its own iterator for await)
+                    "__await__" => Some(obj.clone()),
+                    "cr_frame" | "cr_code" => Some(PyObject::none()),
+                    "cr_running" => Some(PyObject::bool_val(false)),
+                    "cr_await" | "cr_origin" => Some(PyObject::none()),
+                    _ => None,
+                }
+            }
+            PyObjectPayload::AsyncGenerator(_) => {
+                match name {
+                    // Sync methods that BuiltinBoundMethod dispatches in vm_call
+                    "send" | "throw" | "close" => {
+                        Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: obj.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }))
+                    }
+                    // Async iteration protocol — __aiter__ returns self when called
+                    "__aiter__" | "__anext__" | "asend" | "athrow" | "aclose" => {
+                        Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: obj.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }))
+                    }
+                    "ag_frame" | "ag_code" => Some(PyObject::none()),
+                    "ag_running" => Some(PyObject::bool_val(false)),
+                    "ag_await" => Some(PyObject::none()),
+                    _ => None,
+                }
+            }
+            // AsyncGenAwaitable is an awaitable: __await__ returns self, send/throw/close delegate
+            PyObjectPayload::AsyncGenAwaitable { .. } => {
+                match name {
+                    "__await__" => Some(obj.clone()),
+                    "send" | "throw" | "close" => {
                         Some(Arc::new(PyObject {
                             payload: PyObjectPayload::BuiltinBoundMethod {
                                 receiver: obj.clone(),

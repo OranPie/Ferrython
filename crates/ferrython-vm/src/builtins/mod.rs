@@ -92,6 +92,7 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         ("RecursionError", ExceptionKind::RecursionError),
         ("RuntimeError", ExceptionKind::RuntimeError),
         ("StopIteration", ExceptionKind::StopIteration),
+        ("StopAsyncIteration", ExceptionKind::StopAsyncIteration),
         ("SyntaxError", ExceptionKind::SyntaxError),
         ("SystemError", ExceptionKind::SystemError),
         ("SystemExit", ExceptionKind::SystemExit),

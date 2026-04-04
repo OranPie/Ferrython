@@ -287,7 +287,7 @@ impl VirtualMachine {
 
             Opcode::SetupFinally | Opcode::SetupExcept | Opcode::PopBlock
             | Opcode::PopExcept | Opcode::EndFinally | Opcode::BeginFinally
-            | Opcode::RaiseVarargs | Opcode::SetupWith
+            | Opcode::RaiseVarargs | Opcode::SetupWith | Opcode::SetupAsyncWith
             | Opcode::WithCleanupStart | Opcode::WithCleanupFinish
                 => self.exec_exception_ops(instr),
 

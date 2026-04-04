@@ -1470,9 +1470,12 @@ impl VirtualMachine {
                 }
             }
             Opcode::GetYieldFromIter => {
-                // Like GetIter but for yield from — if it's already a generator, leave it.
+                // Like GetIter but for yield from — if it's already a generator/coroutine, leave it.
                 let obj = self.vm_frame().peek().clone();
-                if matches!(&obj.payload, PyObjectPayload::Generator(_)) {
+                if matches!(&obj.payload,
+                    PyObjectPayload::Generator(_) | PyObjectPayload::Coroutine(_)
+                    | PyObjectPayload::AsyncGenerator(_) | PyObjectPayload::AsyncGenAwaitable { .. }
+                ) {
                     // Already a generator/coroutine, leave on stack
                 } else {
                     self.vm_pop();
@@ -2290,6 +2293,32 @@ impl VirtualMachine {
                     frame.push(enter_result);
                 }
             }
+
+            Opcode::SetupAsyncWith => {
+                // At this point, __aenter__() has already been called and awaited.
+                // TOS = result of __aenter__ (the value for `as` clause).
+                // Below TOS = the async context manager.
+                // We need to get __aexit__ and push it for cleanup, then set up With block.
+                let enter_result = self.vm_pop();
+                let ctx_mgr = self.vm_pop();
+                let exit_raw = ctx_mgr.get_attr("__aexit__").ok_or_else(||
+                    PyException::attribute_error("__aexit__"))?;
+                let exit_method = if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                    exit_raw
+                } else {
+                    Arc::new(PyObject {
+                        payload: PyObjectPayload::BoundMethod {
+                            receiver: ctx_mgr.clone(),
+                            method: exit_raw,
+                        }
+                    })
+                };
+                self.vm_push(exit_method);
+                let frame = self.vm_frame();
+                frame.push_block(BlockKind::With, instr.arg as usize);
+                frame.push(enter_result);
+            }
+
             Opcode::WithCleanupStart => {
                 let tos = self.vm_frame().peek().clone();
                 if matches!(tos.payload, PyObjectPayload::None) {
@@ -2309,6 +2338,8 @@ impl VirtualMachine {
                         let result = self.call_object(exit_fn, vec![
                             PyObject::none(), PyObject::none(), PyObject::none()
                         ])?;
+                        // If __aexit__ returns a coroutine, drive it to completion
+                        let result = self.maybe_await_result(result)?;
                         let f = self.vm_frame();
                         f.push(PyObject::none());
                         f.push(result);
@@ -2354,6 +2385,8 @@ impl VirtualMachine {
                         let result = self.call_object(exit_fn, vec![
                             exc_type.clone(), exc_val.clone(), exc_tb.clone()
                         ])?;
+                        // If __aexit__ returns a coroutine, drive it to completion
+                        let result = self.maybe_await_result(result)?;
                         let f = self.vm_frame();
                         // Preserve exception info for EndFinally re-raise
                         f.push(exc_tb);
@@ -2377,6 +2410,7 @@ impl VirtualMachine {
                         let result = self.call_object(exit_fn, vec![
                             PyObject::none(), PyObject::none(), PyObject::none()
                         ])?;
+                        let result = self.maybe_await_result(result)?;
                         let f = self.vm_frame();
                         f.push(PyObject::none());
                         f.push(result);
@@ -2519,8 +2553,15 @@ impl VirtualMachine {
                 let send_val = self.vm_pop();
                 let sub_iter = self.vm_frame().peek().clone();
 
-                if let PyObjectPayload::Generator(ref gen_arc) = sub_iter.payload {
-                    let gen_arc = gen_arc.clone();
+                // Handle Generator, Coroutine, and AsyncGenerator using same resume mechanism
+                let gen_arc_opt = match &sub_iter.payload {
+                    PyObjectPayload::Generator(ref g) => Some(g.clone()),
+                    PyObjectPayload::Coroutine(ref g) => Some(g.clone()),
+                    PyObjectPayload::AsyncGenerator(ref g) => Some(g.clone()),
+                    _ => None,
+                };
+
+                if let Some(gen_arc) = gen_arc_opt {
                     match self.resume_generator(&gen_arc, send_val) {
                         Ok(yielded) => {
                             let frame = self.vm_frame();
@@ -2532,6 +2573,25 @@ impl VirtualMachine {
                             let frame = self.vm_frame();
                             frame.pop();
                             // yield from captures StopIteration.value as the result
+                            let return_val = e.value.unwrap_or_else(|| PyObject::none());
+                            frame.push(return_val);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                } else if let PyObjectPayload::AsyncGenAwaitable { gen, action } = &sub_iter.payload {
+                    // Drive the async generator awaitable — this is what happens when
+                    // `await ag.__anext__()` is compiled as GetAwaitable + YieldFrom.
+                    match self.drive_async_gen_awaitable(gen, action, send_val) {
+                        Ok(yielded) => {
+                            // Intermediate yield — propagate up to the driving coroutine
+                            let frame = self.vm_frame();
+                            frame.yielded = true;
+                            frame.ip -= 1;
+                            return Ok(Some(yielded));
+                        }
+                        Err(e) if e.kind == ExceptionKind::StopIteration => {
+                            let frame = self.vm_frame();
+                            frame.pop();
                             let return_val = e.value.unwrap_or_else(|| PyObject::none());
                             frame.push(return_val);
                         }
@@ -2575,12 +2635,114 @@ impl VirtualMachine {
                     }
                 }
             }
-            // Async opcodes — not yet implemented
-            Opcode::GetAwaitable | Opcode::GetAiter | Opcode::GetAnext |
-            Opcode::BeforeAsyncWith | Opcode::EndAsyncFor => {
-                return Err(PyException::runtime_error(
-                    "async/await is not yet supported"
-                ));
+            // ── Async opcodes ──
+
+            Opcode::GetAwaitable => {
+                // TOS is a coroutine or object with __await__. Push the awaitable iterator.
+                let obj = self.vm_pop();
+                match &obj.payload {
+                    // Coroutine is already awaitable — push it directly
+                    PyObjectPayload::Coroutine(_) => {
+                        self.vm_push(obj);
+                    }
+                    // AsyncGenAwaitable (from __anext__, asend, athrow, aclose) is awaitable
+                    PyObjectPayload::AsyncGenAwaitable { .. } => {
+                        self.vm_push(obj);
+                    }
+                    // Generator marked as iterable_coroutine (types.coroutine)
+                    PyObjectPayload::Generator(_) => {
+                        self.vm_push(obj);
+                    }
+                    _ => {
+                        // Try __await__() protocol — returns an iterator
+                        if let Some(await_method) = obj.get_attr("__await__") {
+                            let iter = self.call_object(await_method, vec![])?;
+                            self.vm_push(iter);
+                        } else {
+                            return Err(PyException::type_error(format!(
+                                "object {} can't be used in 'await' expression",
+                                obj.type_name()
+                            )));
+                        }
+                    }
+                }
+            }
+
+            Opcode::GetAiter => {
+                // TOS = async iterable. Call __aiter__() and push result.
+                let obj = self.vm_pop();
+                if let Some(aiter_method) = obj.get_attr("__aiter__") {
+                    let aiter = self.call_object(aiter_method, vec![])?;
+                    self.vm_push(aiter);
+                } else {
+                    return Err(PyException::type_error(format!(
+                        "'{}' object is not an async iterable",
+                        obj.type_name()
+                    )));
+                }
+            }
+
+            Opcode::GetAnext => {
+                // TOS = async iterator. Call __anext__() which returns an awaitable.
+                let aiter = self.vm_frame().peek().clone();
+                if let Some(anext_method) = aiter.get_attr("__anext__") {
+                    let awaitable = self.call_object(anext_method, vec![])?;
+                    self.vm_push(awaitable);
+                } else {
+                    return Err(PyException::type_error(format!(
+                        "'{}' object is not an async iterator",
+                        aiter.type_name()
+                    )));
+                }
+            }
+
+            Opcode::BeforeAsyncWith => {
+                // TOS = async context manager. Call __aenter__() → push awaitable result.
+                // Keep ctx_mgr on stack (peek) — SetupAsyncWith will pop it later.
+                let ctx_mgr = self.vm_frame().peek().clone();
+                let aenter_raw = ctx_mgr.get_attr("__aenter__").ok_or_else(||
+                    PyException::type_error(format!(
+                        "'{}' object does not support the async context manager protocol",
+                        ctx_mgr.type_name()
+                    )))?;
+                let (aenter_method, aenter_args) = if matches!(&aenter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                    (aenter_raw, vec![])
+                } else {
+                    let bound = Arc::new(PyObject {
+                        payload: PyObjectPayload::BoundMethod {
+                            receiver: ctx_mgr.clone(),
+                            method: aenter_raw,
+                        }
+                    });
+                    (bound, vec![])
+                };
+                let result = self.call_object(aenter_method, aenter_args)?;
+                self.vm_push(result);
+            }
+
+            Opcode::EndAsyncFor => {
+                // End of async for — check if exception is StopAsyncIteration.
+                // Stack: [... aiter, exception] → [...]
+                let exc = self.vm_pop();
+                let _aiter = self.vm_pop();
+                // If it's StopAsyncIteration, the loop ends normally.
+                // Otherwise, re-raise the exception.
+                let is_stop_async = match &exc.payload {
+                    PyObjectPayload::ExceptionType(k) => *k == ExceptionKind::StopAsyncIteration,
+                    PyObjectPayload::ExceptionInstance { kind, .. } => *kind == ExceptionKind::StopAsyncIteration,
+                    _ => false,
+                };
+                if !is_stop_async {
+                    // Check if the active exception is StopAsyncIteration
+                    if let Some(ref active) = self.active_exception {
+                        if active.kind != ExceptionKind::StopAsyncIteration {
+                            let e = active.clone();
+                            self.active_exception = None;
+                            return Err(e);
+                        }
+                    }
+                }
+                self.active_exception = None;
             }
             _ => unreachable!(),
         }

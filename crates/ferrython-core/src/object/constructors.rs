@@ -271,5 +271,23 @@ impl PyObject {
             finished: false,
         }))))
     }
+
+    pub fn coroutine(name: CompactString, frame: Box<dyn Any + Send + Sync>) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::Coroutine(Arc::new(RwLock::new(GeneratorState {
+            name,
+            frame: Some(frame),
+            started: false,
+            finished: false,
+        }))))
+    }
+
+    pub fn async_generator(name: CompactString, frame: Box<dyn Any + Send + Sync>) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::AsyncGenerator(Arc::new(RwLock::new(GeneratorState {
+            name,
+            frame: Some(frame),
+            started: false,
+            finished: false,
+        }))))
+    }
 }
 

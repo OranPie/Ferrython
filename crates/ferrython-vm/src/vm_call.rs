@@ -7,7 +7,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeFlags, CodeObject};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    CompareOp, IteratorData, PyObject, PyObjectMethods,
+    AsyncGenAction, CompareOp, IteratorData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, is_data_descriptor, lookup_in_class_mro,
 };
 use ferrython_core::types::{HashableKey, SharedGlobals};
@@ -125,7 +125,15 @@ impl VirtualMachine {
         }
         frame.scope_kind = ScopeKind::Function;
 
-        // If the function is a generator, return a Generator object without executing
+        // If the function is a generator/coroutine, return suspended object without executing
+        if code.flags.contains(CodeFlags::GENERATOR) && code.flags.contains(CodeFlags::COROUTINE) {
+            let name = CompactString::from(code.name.as_str());
+            return Ok(PyObject::async_generator(name, Box::new(frame)));
+        }
+        if code.flags.contains(CodeFlags::COROUTINE) {
+            let name = CompactString::from(code.name.as_str());
+            return Ok(PyObject::coroutine(name, Box::new(frame)));
+        }
         if code.flags.contains(CodeFlags::GENERATOR) {
             let name = CompactString::from(code.name.as_str());
             return Ok(PyObject::generator(name, Box::new(frame)));
@@ -259,7 +267,15 @@ impl VirtualMachine {
         }
         frame.scope_kind = ScopeKind::Function;
 
-        // If the function is a generator, return a Generator object without executing
+        // If the function is a generator/coroutine, return suspended object without executing
+        if code.flags.contains(CodeFlags::GENERATOR) && code.flags.contains(CodeFlags::COROUTINE) {
+            let name = CompactString::from(code.name.as_str());
+            return Ok(PyObject::async_generator(name, Box::new(frame)));
+        }
+        if code.flags.contains(CodeFlags::COROUTINE) {
+            let name = CompactString::from(code.name.as_str());
+            return Ok(PyObject::coroutine(name, Box::new(frame)));
+        }
         if code.flags.contains(CodeFlags::GENERATOR) {
             let name = CompactString::from(code.name.as_str());
             return Ok(PyObject::generator(name, Box::new(frame)));
@@ -1605,37 +1621,118 @@ impl VirtualMachine {
                 self.call_object(method.clone(), bound_args)
             }
             PyObjectPayload::BuiltinBoundMethod { receiver, method_name } => {
-                // Generator methods need VM access
-                if let PyObjectPayload::Generator(gen_arc) = &receiver.payload {
+                // ── Generator / Coroutine / AsyncGenerator dispatch ──
+                // Extract gen_arc and discriminate the receiver kind for proper protocol.
+                let gen_kind = match &receiver.payload {
+                    PyObjectPayload::Generator(g) => Some(("generator", g.clone())),
+                    PyObjectPayload::Coroutine(g) => Some(("coroutine", g.clone())),
+                    PyObjectPayload::AsyncGenerator(g) => Some(("async_generator", g.clone())),
+                    _ => None,
+                };
+                if let Some((kind, ref gen_arc)) = gen_kind {
                     match method_name.as_str() {
                         "send" => {
                             let val = if args.is_empty() { PyObject::none() } else { args[0].clone() };
                             return self.resume_generator(gen_arc, val);
                         }
                         "throw" => {
-                            // throw(type, value=None) — inject exception into generator
-                            let msg = if args.len() >= 2 { args[1].py_to_string() } else { String::new() };
-                            let kind = if !args.is_empty() {
-                                if let PyObjectPayload::ExceptionType(k) = &args[0].payload {
-                                    k.clone()
-                                } else if let PyObjectPayload::BuiltinType(name) = &args[0].payload {
-                                    ExceptionKind::from_name(name).unwrap_or(ExceptionKind::RuntimeError)
-                                } else {
-                                    ExceptionKind::RuntimeError
-                                }
-                            } else {
-                                ExceptionKind::RuntimeError
-                            };
-                            return self.gen_throw(gen_arc, kind, msg);
+                            let (exc_kind, msg) = Self::parse_throw_args(&args);
+                            return self.gen_throw(gen_arc, exc_kind, msg);
                         }
                         "close" => {
-                            let mut gen = gen_arc.write();
-                            gen.finished = true;
-                            gen.frame = None;
-                            return Ok(PyObject::none());
+                            // CPython: throw GeneratorExit into the frame so finally blocks run.
+                            // If generator yields during cleanup → RuntimeError.
+                            let gen = gen_arc.read();
+                            if gen.finished || gen.frame.is_none() {
+                                // Already finished — nothing to clean up
+                                drop(gen);
+                                return Ok(PyObject::none());
+                            }
+                            drop(gen);
+                            match self.gen_throw(gen_arc, ExceptionKind::GeneratorExit, String::new()) {
+                                Ok(_yielded) => {
+                                    // Generator yielded during close → RuntimeError
+                                    return Err(PyException::runtime_error(
+                                        "generator ignored GeneratorExit"
+                                    ));
+                                }
+                                Err(e) if e.kind == ExceptionKind::GeneratorExit
+                                       || e.kind == ExceptionKind::StopIteration => {
+                                    // Expected: GeneratorExit propagated out or StopIteration
+                                    let mut gen = gen_arc.write();
+                                    gen.finished = true;
+                                    gen.frame = None;
+                                    return Ok(PyObject::none());
+                                }
+                                Err(e) => {
+                                    // Other exception from finally block — propagate
+                                    let mut gen = gen_arc.write();
+                                    gen.finished = true;
+                                    gen.frame = None;
+                                    return Err(e);
+                                }
+                            }
                         }
-                        "__next__" => {
+                        "__next__" if kind != "async_generator" => {
                             return self.resume_generator(gen_arc, PyObject::none());
+                        }
+                        // ── Async generator protocol methods ──
+                        // __aiter__ returns self (async generator is its own async iterator)
+                        "__aiter__" if kind == "async_generator" => {
+                            return Ok(receiver.clone());
+                        }
+                        // These return AsyncGenAwaitable objects, not direct results.
+                        "__anext__" if kind == "async_generator" => {
+                            return Ok(Arc::new(PyObject {
+                                payload: PyObjectPayload::AsyncGenAwaitable {
+                                    gen: gen_arc.clone(),
+                                    action: AsyncGenAction::Next,
+                                }
+                            }));
+                        }
+                        "asend" if kind == "async_generator" => {
+                            let val = if args.is_empty() { PyObject::none() } else { args[0].clone() };
+                            return Ok(Arc::new(PyObject {
+                                payload: PyObjectPayload::AsyncGenAwaitable {
+                                    gen: gen_arc.clone(),
+                                    action: AsyncGenAction::Send(val),
+                                }
+                            }));
+                        }
+                        "athrow" if kind == "async_generator" => {
+                            let (exc_kind, msg) = Self::parse_throw_args(&args);
+                            return Ok(Arc::new(PyObject {
+                                payload: PyObjectPayload::AsyncGenAwaitable {
+                                    gen: gen_arc.clone(),
+                                    action: AsyncGenAction::Throw(exc_kind, CompactString::from(msg)),
+                                }
+                            }));
+                        }
+                        "aclose" if kind == "async_generator" => {
+                            return Ok(Arc::new(PyObject {
+                                payload: PyObjectPayload::AsyncGenAwaitable {
+                                    gen: gen_arc.clone(),
+                                    action: AsyncGenAction::Close,
+                                }
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+
+                // ── AsyncGenAwaitable dispatch (driving the awaitable) ──
+                if let PyObjectPayload::AsyncGenAwaitable { gen, action } = &receiver.payload {
+                    match method_name.as_str() {
+                        "send" => {
+                            let send_val = if args.is_empty() { PyObject::none() } else { args[0].clone() };
+                            return self.drive_async_gen_awaitable(gen, action, send_val);
+                        }
+                        "throw" => {
+                            let (exc_kind, msg) = Self::parse_throw_args(&args);
+                            return self.gen_throw(gen, exc_kind, msg);
+                        }
+                        "close" => {
+                            return Ok(PyObject::none());
                         }
                         _ => {}
                     }
