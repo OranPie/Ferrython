@@ -47,6 +47,49 @@ impl VirtualMachine {
         })
     }
 
+    /// str.format_map() with dict subclass mapping, supporting __missing__ via VM call dispatch.
+    fn vm_format_map(
+        &mut self,
+        template: &str,
+        mapping: &PyObjectRef,
+        dict_storage: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>,
+        mapping_class: &PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        let mut result = String::new();
+        let mut chars = template.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '{' {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    result.push('{');
+                } else {
+                    let mut field = String::new();
+                    for c in chars.by_ref() {
+                        if c == '}' { break; }
+                        field.push(c);
+                    }
+                    let key = HashableKey::Str(CompactString::from(&field));
+                    if let Some(val) = dict_storage.read().get(&key) {
+                        result.push_str(&val.py_to_string());
+                    } else if let Some(missing_fn) = lookup_in_class_mro(mapping_class, "__missing__") {
+                        // Call __missing__(self, key) via VM dispatch
+                        let key_obj = PyObject::str_val(CompactString::from(&field));
+                        let val = self.call_object(missing_fn, vec![mapping.clone(), key_obj])?;
+                        result.push_str(&val.py_to_string());
+                    } else {
+                        return Err(PyException::key_error(field));
+                    }
+                }
+            } else if c == '}' && chars.peek() == Some(&'}') {
+                chars.next();
+                result.push('}');
+            } else {
+                result.push(c);
+            }
+        }
+        Ok(PyObject::str_val(CompactString::from(result)))
+    }
+
     pub(crate) fn call_function(
         &mut self,
         code: &CodeObject,
@@ -1795,6 +1838,16 @@ impl VirtualMachine {
                         {
                             let items = self.collect_iterable(&args[0])?;
                             return builtins::call_method(receiver, "extend", &[PyObject::list(items)]);
+                        }
+                    }
+                }
+                // str.format_map with dict subclass: needs VM for __missing__ calls
+                if method_name.as_str() == "format_map" && !args.is_empty() {
+                    if let PyObjectPayload::Str(s) = &receiver.payload {
+                        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                            if let Some(ref ds) = inst.dict_storage {
+                                return self.vm_format_map(s, &args[0], ds, &inst.class);
+                            }
                         }
                     }
                 }

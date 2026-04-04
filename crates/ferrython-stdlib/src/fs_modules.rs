@@ -10,71 +10,102 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
 pub fn create_pathlib_module() -> PyObjectRef {
+    // Build Path as a proper class with class methods (home, cwd) + constructor
+    let mut path_ns = IndexMap::new();
+    path_ns.insert(CompactString::from("home"), make_builtin(pathlib_home));
+    path_ns.insert(CompactString::from("cwd"), make_builtin(pathlib_cwd));
+    let path_cls = PyObject::class(CompactString::from("Path"), vec![], path_ns);
+    // Add __init__ for constructor dispatch: Path("/some/path")
+    if let PyObjectPayload::Class(ref cd) = path_cls.payload {
+        cd.namespace.write().insert(
+            CompactString::from("__init__"),
+            make_builtin(|args| {
+                // args[0] = self (instance), args[1..] = path components
+                if args.is_empty() { return Ok(PyObject::none()); }
+                let path_str = if args.len() < 2 { ".".to_string() } else { args[1].py_to_string() };
+                populate_path_instance(&args[0], &path_str)?;
+                Ok(PyObject::none())
+            }),
+        );
+    }
     make_module("pathlib", vec![
-        ("Path", make_builtin(pathlib_path)),
-        ("PurePath", make_builtin(pathlib_path)),
-        ("PurePosixPath", make_builtin(pathlib_path)),
-        ("PureWindowsPath", make_builtin(pathlib_path)),
+        ("Path", path_cls.clone()),
+        ("PurePath", path_cls.clone()),
+        ("PurePosixPath", path_cls.clone()),
+        ("PureWindowsPath", path_cls),
     ])
 }
 
-fn pathlib_path(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let path_str = if args.is_empty() { ".".to_string() } else { args[0].py_to_string() };
-    let path = std::path::Path::new(&path_str);
-    let mut ns = IndexMap::new();
-    ns.insert(CompactString::from("_path"), PyObject::str_val(CompactString::from(path_str.as_str())));
-    ns.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(
-        path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
-    )));
-    // Python's Path.stem — everything before the last suffix (e.g. "test.tar" for "test.tar.gz")
+fn pathlib_home(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    make_path_instance(&home)
+}
+
+fn pathlib_cwd(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+    make_path_instance(&cwd)
+}
+
+/// Create a standalone Path instance (for class methods like home/cwd and internal use)
+fn make_path_instance(path_str: &str) -> PyResult<PyObjectRef> {
+    let cls = PyObject::class(CompactString::from("Path"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    populate_path_instance(&inst, path_str)?;
+    Ok(inst)
+}
+
+/// Populate an existing instance with all Path attributes
+fn populate_path_instance(inst: &PyObjectRef, path_str: &str) -> PyResult<()> {
+    let path = std::path::Path::new(path_str);
     let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let (stem_val, suffixes_vec) = if file_name.starts_with('.') && !file_name[1..].contains('.') {
-        // Dotfile like ".gitignore" — stem is the whole name, no suffix
-        (file_name.clone(), vec![])
+    let (stem_val, suffixes_vec) = compute_stem_suffixes(&file_name);
+    let parent_str = path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    let parts: Vec<PyObjectRef> = path.components()
+        .map(|c| PyObject::str_val(CompactString::from(c.as_os_str().to_string_lossy().to_string())))
+        .collect();
+
+    if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("_path"), PyObject::str_val(CompactString::from(path_str)));
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&file_name)));
+        attrs.insert(CompactString::from("stem"), PyObject::str_val(CompactString::from(&stem_val)));
+        attrs.insert(CompactString::from("suffix"), PyObject::str_val(CompactString::from(
+            suffixes_vec.last().cloned().unwrap_or_default()
+        )));
+        attrs.insert(CompactString::from("suffixes"), PyObject::list(
+            suffixes_vec.iter().map(|s| PyObject::str_val(CompactString::from(s.as_str()))).collect()
+        ));
+        if parent_str.is_empty() || parent_str == path_str {
+            attrs.insert(CompactString::from("parent"), PyObject::str_val(CompactString::from(&parent_str)));
+        } else {
+            let parent_path = make_path_instance(&parent_str)?;
+            attrs.insert(CompactString::from("parent"), parent_path);
+        }
+        attrs.insert(CompactString::from("parts"), PyObject::tuple(parts));
+        attrs.insert(CompactString::from("__pathlib_path__"), PyObject::bool_val(true));
+    }
+    Ok(())
+}
+
+fn compute_stem_suffixes(file_name: &str) -> (String, Vec<String>) {
+    if file_name.starts_with('.') && !file_name[1..].contains('.') {
+        (file_name.to_string(), vec![])
     } else {
         let parts: Vec<&str> = file_name.splitn(2, '.').collect();
         if parts.len() > 1 {
-            let _stem = parts[0].to_string();
             let suffixes: Vec<String> = parts[1].split('.').map(|s| format!(".{}", s)).collect();
-            // Python stem = everything before the LAST dot suffix
             let last_dot = file_name.rfind('.').unwrap_or(file_name.len());
             let py_stem = file_name[..last_dot].to_string();
             (py_stem, suffixes)
         } else {
-            (file_name.clone(), vec![])
+            (file_name.to_string(), vec![])
         }
-    };
-    ns.insert(CompactString::from("stem"), PyObject::str_val(CompactString::from(&stem_val)));
-    ns.insert(CompactString::from("suffix"), PyObject::str_val(CompactString::from(
-        suffixes_vec.last().cloned().unwrap_or_default()
-    )));
-    ns.insert(CompactString::from("suffixes"), PyObject::list(
-        suffixes_vec.iter().map(|s| PyObject::str_val(CompactString::from(s.as_str()))).collect()
-    ));
-    let parent_str = path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-    // Create parent as a Path object (avoid infinite recursion for root)
-    if parent_str.is_empty() || parent_str == path_str {
-        ns.insert(CompactString::from("parent"), PyObject::str_val(CompactString::from(&parent_str)));
-    } else {
-        let parent_path = pathlib_path(&[PyObject::str_val(CompactString::from(&parent_str))])?;
-        ns.insert(CompactString::from("parent"), parent_path);
     }
-    // parts — tuple of path components
-    let parts: Vec<PyObjectRef> = path.components()
-        .map(|c| PyObject::str_val(CompactString::from(c.as_os_str().to_string_lossy().to_string())))
-        .collect();
-    ns.insert(CompactString::from("parts"), PyObject::tuple(parts));
-    // Methods that need the path are implemented via BuiltinBoundMethod in the VM
-    ns.insert(CompactString::from("__pathlib_path__"), PyObject::bool_val(true));
-
-    let cls = PyObject::class(CompactString::from("Path"), vec![], IndexMap::new());
-    let inst = PyObject::instance(cls);
-    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
-        let mut attrs = inst_data.attrs.write();
-        for (k, v) in ns { attrs.insert(k, v); }
-    }
-    Ok(inst)
 }
+
+
 
 // ── unittest module (basic) ──
 
