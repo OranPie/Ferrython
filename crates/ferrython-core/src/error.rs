@@ -273,6 +273,11 @@ impl PyException {
     pub fn recursion_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::RecursionError, msg) }
     pub fn unbound_local_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::UnboundLocalError, msg) }
     pub fn syntax_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::SyntaxError, msg) }
+    pub fn system_exit(code: PyObjectRef) -> Self {
+        let mut exc = Self::new(ExceptionKind::SystemExit, "");
+        exc.value = Some(code);
+        exc
+    }
 }
 
 /// Convenience result type used throughout the VM.

@@ -4,6 +4,8 @@ use std::env;
 use std::fs;
 use std::process;
 
+use ferrython_core::object::PyObjectMethods;
+
 /// Unified error for the parse → compile → execute pipeline.
 enum PipelineError {
     Parse(ferrython_parser::ParseError),
@@ -112,6 +114,15 @@ fn execute_pipeline(source: &str, filename: &str) -> Result<(), PipelineError> {
 
 fn run_string(source: &str, filename: &str) {
     if let Err(e) = execute_pipeline(source, filename) {
+        // Handle SystemExit specially — exit with the code, don't print traceback
+        if let PipelineError::Runtime(ref exc) = e {
+            if exc.kind == ferrython_core::error::ExceptionKind::SystemExit {
+                let code = exc.value.as_ref()
+                    .map(|v| v.to_int().unwrap_or(1) as i32)
+                    .unwrap_or(0);
+                process::exit(code);
+            }
+        }
         e.report(filename);
         process::exit(1);
     }

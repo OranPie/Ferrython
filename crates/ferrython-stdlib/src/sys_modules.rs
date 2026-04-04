@@ -173,8 +173,12 @@ fn sys_setrecursionlimit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::none())
 }
 fn sys_exit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let code = if args.is_empty() { 0 } else { args[0].to_int().unwrap_or(1) };
-    std::process::exit(code as i32);
+    let code = if args.is_empty() {
+        PyObject::int(0)
+    } else {
+        args[0].clone()
+    };
+    Err(PyException::system_exit(code))
 }
 fn sys_getsizeof(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("sys.getsizeof", args, 1)?;

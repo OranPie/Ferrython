@@ -101,8 +101,13 @@ impl VirtualMachine {
                             };
                             (orig.clone(), cls)
                         } else {
+                            let inst = if let Some(val) = &exc.value {
+                                PyObject::exception_instance_with_args(exc.kind.clone(), exc.message.clone(), vec![val.clone()])
+                            } else {
+                                PyObject::exception_instance(exc.kind.clone(), exc.message.clone())
+                            };
                             (
-                                PyObject::exception_instance(exc.kind.clone(), exc.message.clone()),
+                                inst,
                                 PyObject::exception_type(exc.kind.clone()),
                             )
                         };
