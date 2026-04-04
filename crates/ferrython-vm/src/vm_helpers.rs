@@ -3,13 +3,14 @@
 use crate::builtins;
 use crate::frame::Frame;
 use crate::VirtualMachine;
+use compact_str::CompactString;
 use ferrython_bytecode::code::ConstantValue;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     AsyncGenAction, GeneratorState, IteratorData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, SharedGlobals};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -910,6 +911,152 @@ impl VirtualMachine {
             }
         }
         Ok(builtins::partial_cmp_for_sort(a, b) == Some(std::cmp::Ordering::Less))
+    }
+
+    // ── Post-call intercept for VM-aware builtins ────────────────────────
+
+    /// After every function call, check for deferred VM-aware operations.
+    /// This handles builtins that need VM access but are called through the
+    /// generic NativeFunction path (which doesn't pass &mut self).
+    pub(crate) fn post_call_intercept(&mut self, mut result: PyObjectRef) -> PyResult<PyObjectRef> {
+        // asyncio.run() intercept: drive coroutine to completion
+        if let Some(coro) = ferrython_stdlib::take_asyncio_run_coro() {
+            result = self.maybe_await_result(coro)?;
+        }
+        // __import__() intercept: resolve and load module
+        if let Some(req) = crate::builtins::take_import_request() {
+            result = self.execute_import(&req.name, req.level)?;
+        }
+        Ok(result)
+    }
+
+    /// Execute an import by name and level, used by __import__ intercept.
+    fn execute_import(&mut self, name: &str, level: usize) -> PyResult<PyObjectRef> {
+        self.ensure_sys_modules();
+
+        // Check cache first
+        let top_name = name.split('.').next().unwrap_or(name);
+        if let Some(module) = self.modules.get(top_name) {
+            return Ok(module.clone());
+        }
+
+        // Try stdlib
+        if let Some(module) = ferrython_stdlib::load_module(top_name) {
+            self.cache_module(top_name, &module);
+            return Ok(module);
+        }
+
+        // Determine importer filename from current frame
+        let importer_file = self.call_stack.last()
+            .map(|f| f.code.filename.as_str().to_string())
+            .unwrap_or_default();
+
+        // Try filesystem import
+        let resolved = if level > 0 {
+            ferrython_import::resolve_relative_import(name, &importer_file, level)?
+        } else {
+            ferrython_import::resolve_module(name, &importer_file)?
+        };
+
+        match resolved {
+            ferrython_import::ResolvedModule::Builtin(m) => {
+                self.cache_module(name, &m);
+                Ok(m)
+            }
+            ferrython_import::ResolvedModule::Source { code, name: mod_name, file_path } => {
+                self.exec_module_from_source(name, code, mod_name, file_path)
+            }
+        }
+    }
+
+    /// Create a module from compiled source, execute it, and cache it.
+    fn exec_module_from_source(
+        &mut self,
+        cache_name: &str,
+        code: ferrython_bytecode::CodeObject,
+        mod_name: CompactString,
+        file_path: Option<CompactString>,
+    ) -> PyResult<PyObjectRef> {
+        use crate::frame::Frame;
+
+        // Create shared globals for the module
+        let globals: SharedGlobals = Arc::new(RwLock::new(IndexMap::new()));
+        {
+            let mut g = globals.write();
+            g.insert(CompactString::from("__name__"), PyObject::str_val(mod_name.clone()));
+            if let Some(ref fp) = file_path {
+                g.insert(CompactString::from("__file__"), PyObject::str_val(fp.clone()));
+            }
+            let pkg = if let Some(pos) = cache_name.rfind('.') {
+                &cache_name[..pos]
+            } else {
+                ""
+            };
+            g.insert(CompactString::from("__package__"), PyObject::str_val(CompactString::from(pkg)));
+        }
+
+        // Pre-cache a partial module (circular import protection)
+        let partial_mod = PyObject::module_with_attrs(mod_name.clone(), globals.read().clone());
+        self.cache_module(cache_name, &partial_mod);
+
+        // Execute the module body
+        let frame = Frame::new(code, globals.clone(), self.builtins.clone());
+        self.call_stack.push(frame);
+        let exec_result = self.run_frame();
+        self.call_stack.pop();
+
+        // Build the final module from the globals after execution
+        let final_mod = PyObject::module_with_attrs(mod_name, globals.read().clone());
+        self.cache_module(cache_name, &final_mod);
+
+        exec_result?;
+        Ok(final_mod)
+    }
+
+    // ── Module cache management ─────────────────────────────────────────
+
+    /// Cache a module in both VM.modules and sys.modules dict.
+    pub(crate) fn cache_module(&mut self, name: &str, module: &PyObjectRef) {
+        self.modules.insert(CompactString::from(name), module.clone());
+        // Sync with sys.modules dict if available
+        if let Some(ref sys_mod_dict) = self.sys_modules_dict {
+            if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
+                d.write().insert(
+                    HashableKey::Str(CompactString::from(name)),
+                    module.clone(),
+                );
+            }
+        }
+    }
+
+    /// Initialize sys.modules reference from the sys module.
+    /// Called lazily on first import to avoid circular initialization.
+    pub(crate) fn ensure_sys_modules(&mut self) {
+        if self.sys_modules_dict.is_some() { return; }
+        // Look up the sys module from our cache or create it
+        let sys_mod = if let Some(m) = self.modules.get("sys") {
+            m.clone()
+        } else if let Some(m) = ferrython_stdlib::load_module("sys") {
+            self.modules.insert(CompactString::from("sys"), m.clone());
+            m
+        } else {
+            return;
+        };
+        // Extract sys.modules dict
+        if let Some(modules_dict) = sys_mod.get_attr("modules") {
+            if matches!(&modules_dict.payload, PyObjectPayload::Dict(_)) {
+                self.sys_modules_dict = Some(modules_dict.clone());
+                // Populate it with all currently cached modules
+                if let PyObjectPayload::Dict(ref d) = modules_dict.payload {
+                    for (name, module) in &self.modules {
+                        d.write().insert(
+                            HashableKey::Str(name.clone()),
+                            module.clone(),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 

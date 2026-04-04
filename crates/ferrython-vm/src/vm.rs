@@ -20,6 +20,8 @@ pub struct VirtualMachine {
     pub(crate) modules: IndexMap<CompactString, PyObjectRef>,
     /// Currently active exception being handled (for bare `raise` re-raise).
     pub(crate) active_exception: Option<PyException>,
+    /// Reference to the sys.modules dict for synchronization.
+    pub(crate) sys_modules_dict: Option<PyObjectRef>,
 }
 
 impl VirtualMachine {
@@ -29,6 +31,7 @@ impl VirtualMachine {
             builtins: builtins::init_builtins(),
             modules: IndexMap::new(),
             active_exception: None,
+            sys_modules_dict: None,
         }
     }
 

@@ -25,6 +25,8 @@ pub enum ResolvedModule {
     Source {
         code: CodeObject,
         name: CompactString,
+        /// Filesystem path of the source file (for __file__ metadata).
+        file_path: Option<CompactString>,
     },
 }
 
@@ -187,5 +189,6 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
     Ok(ResolvedModule::Source {
         code,
         name: CompactString::from(module_name),
+        file_path: Some(CompactString::from(path_str)),
     })
 }

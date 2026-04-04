@@ -935,17 +935,22 @@ impl VirtualMachine {
                         return nf(&pos_args);
                     }
                     PyObjectPayload::NativeClosure { func, .. } => {
-                        // Pass kwargs as trailing dict if present (same as NativeFunction)
-                        if !kwargs.is_empty() {
+                        let result = if !kwargs.is_empty() {
                             let mut all_args = pos_args;
                             let mut kw_map = IndexMap::new();
                             for (k, v) in kwargs {
                                 kw_map.insert(HashableKey::Str(k), v);
                             }
                             all_args.push(PyObject::dict(kw_map));
-                            return func(&all_args);
+                            func(&all_args)?
+                        } else {
+                            func(&pos_args)?
+                        };
+                        // Check if asyncio.run() was invoked
+                        if let Some(coro) = ferrython_stdlib::take_asyncio_run_coro() {
+                            return self.maybe_await_result(coro);
                         }
-                        return func(&pos_args);
+                        return Ok(result);
                     }
                     PyObjectPayload::Partial { func: partial_func, args: partial_args, kwargs: partial_kwargs } => {
                         let partial_func = partial_func.clone();
@@ -1498,8 +1503,15 @@ impl VirtualMachine {
                         let resolved = ferrython_import::resolve_module(&name, &filename)?;
                         let module = match resolved {
                             ferrython_import::ResolvedModule::Builtin(m) => m,
-                            ferrython_import::ResolvedModule::Source { code, name: mod_name } => {
-                                let mod_globals = Arc::new(RwLock::new(IndexMap::new()));
+                            ferrython_import::ResolvedModule::Source { code, name: mod_name, file_path } => {
+                                let mod_globals: SharedGlobals = Arc::new(RwLock::new(IndexMap::new()));
+                                {
+                                    let mut g = mod_globals.write();
+                                    g.insert(CompactString::from("__name__"), PyObject::str_val(mod_name.clone()));
+                                    if let Some(ref fp) = file_path {
+                                        g.insert(CompactString::from("__file__"), PyObject::str_val(fp.clone()));
+                                    }
+                                }
                                 let frame = crate::frame::Frame::new(code, mod_globals.clone(), self.builtins.clone());
                                 self.call_stack.push(frame);
                                 let _ = self.run_frame();
@@ -1913,6 +1925,10 @@ impl VirtualMachine {
                 let deferred = ferrython_stdlib::drain_deferred_calls();
                 for (dfunc, dargs) in deferred {
                     self.call_object(dfunc, dargs)?;
+                }
+                // Check if asyncio.run() was invoked — drive the coroutine to completion
+                if let Some(coro) = ferrython_stdlib::take_asyncio_run_coro() {
+                    return self.maybe_await_result(coro);
                 }
                 Ok(result)
             }

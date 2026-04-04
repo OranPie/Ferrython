@@ -1801,7 +1801,9 @@ impl VirtualMachine {
                 for _ in 0..arg_count { args.push(frame.pop()); }
                 args.reverse();
                 let func = frame.pop();
-                let result = self.call_object(func, args)?;
+                let mut result = self.call_object(func, args)?;
+                // Post-call intercepts for VM-aware builtins
+                result = self.post_call_intercept(result)?;
                 self.vm_push(result);
             }
             Opcode::CallFunctionKw => {
@@ -1830,7 +1832,8 @@ impl VirtualMachine {
                 for (i, name) in kw_names.iter().enumerate() {
                     kwargs.push((name.clone(), args[n_pos + i].clone()));
                 }
-                let result = self.call_object_kw(func, pos_args, kwargs)?;
+                let mut result = self.call_object_kw(func, pos_args, kwargs)?;
+                result = self.post_call_intercept(result)?;
                 self.vm_push(result);
             }
             Opcode::CallMethod => {
@@ -1840,7 +1843,8 @@ impl VirtualMachine {
                 for _ in 0..arg_count { args.push(frame.pop()); }
                 args.reverse();
                 let method = frame.pop();
-                let result = self.call_object(method, args)?;
+                let mut result = self.call_object(method, args)?;
+                result = self.post_call_intercept(result)?;
                 self.vm_push(result);
             }
             Opcode::CallFunctionEx => {
@@ -1992,10 +1996,12 @@ impl VirtualMachine {
 
                 let has_fromlist = !matches!(&fromlist.payload, PyObjectPayload::None);
 
+                // Ensure sys.modules is synced (lazy init on first import)
+                self.ensure_sys_modules();
+
                 // Handle dotted imports: `import a.b.c` or `from a.b import c`
                 let parts: Vec<&str> = name.split('.').collect();
 
-                // Import (or fetch cached) each component in the chain
                 let mut current_name = String::new();
                 let mut parent: Option<PyObjectRef> = None;
                 let mut top_level: Option<PyObjectRef> = None;
@@ -2014,8 +2020,36 @@ impl VirtualMachine {
                         };
                         let module = match resolved {
                             ferrython_import::ResolvedModule::Builtin(m) => m,
-                            ferrython_import::ResolvedModule::Source { code, name: mod_name } => {
+                            ferrython_import::ResolvedModule::Source { code, name: mod_name, file_path } => {
+                                // Set up module metadata before executing
                                 let mod_globals = Arc::new(RwLock::new(IndexMap::new()));
+                                mod_globals.write().insert(
+                                    CompactString::from("__name__"),
+                                    PyObject::str_val(mod_name.clone()),
+                                );
+                                if let Some(ref fp) = file_path {
+                                    mod_globals.write().insert(
+                                        CompactString::from("__file__"),
+                                        PyObject::str_val(CompactString::from(fp.as_str())),
+                                    );
+                                }
+                                // Compute __package__: parent package name
+                                let pkg = if let Some(pos) = current_name.rfind('.') {
+                                    &current_name[..pos]
+                                } else {
+                                    ""
+                                };
+                                mod_globals.write().insert(
+                                    CompactString::from("__package__"),
+                                    PyObject::str_val(CompactString::from(pkg)),
+                                );
+                                // Circular import protection: insert partial module before executing
+                                let partial_mod = PyObject::module_with_attrs(
+                                    mod_name.clone(),
+                                    mod_globals.read().clone(),
+                                );
+                                self.cache_module(&current_name, &partial_mod);
+
                                 let frame = Frame::new(code, mod_globals.clone(), self.builtins.clone());
                                 self.call_stack.push(frame);
                                 let _ = self.run_frame();
@@ -2024,7 +2058,7 @@ impl VirtualMachine {
                                 PyObject::module_with_attrs(mod_name, attrs)
                             }
                         };
-                        self.modules.insert(CompactString::from(current_name.as_str()), module.clone());
+                        self.cache_module(&current_name, &module);
                         module
                     };
 

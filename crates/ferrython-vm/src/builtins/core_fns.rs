@@ -1322,10 +1322,36 @@ pub(super) fn builtin___import__(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
     if args.is_empty() {
         return Err(PyException::type_error("__import__() requires at least 1 argument"));
     }
-    Err(PyException::import_error(format!(
-        "__import__('{}') not supported as a direct function call; use the import statement instead",
-        args[0].py_to_string()
-    )))
+    let name = args[0].py_to_string();
+    // Store the import request for the VM to process
+    // __import__(name, globals=None, locals=None, fromlist=(), level=0)
+    let level = if args.len() >= 5 {
+        args[4].as_int().unwrap_or(0) as usize
+    } else {
+        0
+    };
+    IMPORT_REQUEST.with(|r| {
+        *r.borrow_mut() = Some(ImportRequest {
+            name: CompactString::from(name),
+            level,
+        });
+    });
+    // Return a placeholder — the VM will replace this with the actual module
+    Ok(PyObject::none())
+}
+
+/// Import request stored by __import__ for the VM to process.
+pub(crate) struct ImportRequest {
+    pub name: CompactString,
+    pub level: usize,
+}
+
+thread_local! {
+    pub(crate) static IMPORT_REQUEST: std::cell::RefCell<Option<ImportRequest>> = std::cell::RefCell::new(None);
+}
+
+pub(crate) fn take_import_request() -> Option<ImportRequest> {
+    IMPORT_REQUEST.with(|r| r.borrow_mut().take())
 }
 
 pub(super) fn builtin_memoryview(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

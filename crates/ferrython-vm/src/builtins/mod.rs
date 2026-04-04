@@ -19,6 +19,7 @@ use type_methods::*;
 use file_io::*;
 
 pub(crate) use core_fns::{builtin_abs, builtin_dir};
+pub(crate) use core_fns::{take_import_request, ImportRequest};
 pub(crate) use type_methods::partial_cmp_for_sort;
 
 // ── Builtin registry ──
