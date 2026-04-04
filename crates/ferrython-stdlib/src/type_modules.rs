@@ -40,8 +40,28 @@ pub fn create_typing_module() -> PyObjectRef {
     // These support subscript notation: List[int] → _GenericAlias("List", (int,))
     let make_typing_alias = |display_name: &str| -> PyObjectRef {
         let name = CompactString::from(display_name);
+        let display = name.clone();
         let mut ns = IndexMap::new();
         ns.insert(CompactString::from("__typing_name__"), PyObject::str_val(name));
+        // __class_getitem__ to support List[int] etc.
+        ns.insert(CompactString::from("__class_getitem__"), PyObject::native_closure(
+            "__class_getitem__",
+            {
+                let display = display.clone();
+                move |args: &[PyObjectRef]| -> Result<PyObjectRef, PyException> {
+                    // args[0] = cls, args[1] = params
+                    let params_str = if args.len() >= 2 {
+                        args[1].py_to_string()
+                    } else if args.len() == 1 {
+                        args[0].py_to_string()
+                    } else {
+                        "?".to_string()
+                    };
+                    let repr = format!("typing.{}[{}]", display, params_str);
+                    Ok(PyObject::str_val(CompactString::from(repr)))
+                }
+            },
+        ));
         PyObject::class(CompactString::from(display_name), vec![], ns)
     };
 

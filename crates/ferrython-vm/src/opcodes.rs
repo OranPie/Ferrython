@@ -1333,6 +1333,25 @@ impl VirtualMachine {
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
+                // Fallback: iterate via __iter__ (CPython behavior)
+                if let Some(iter_method) = b.get_attr("__iter__") {
+                    let iterator = self.call_object(iter_method, vec![])?;
+                    let mut found = false;
+                    loop {
+                        match crate::builtins::iter_advance(&iterator)? {
+                            Some((_iter, item)) => {
+                                if item.compare(&a, CompareOp::Eq)?.is_truthy() {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    let val = if instr.arg == 6 { found } else { !found };
+                    self.vm_push(PyObject::bool_val(val));
+                    return Ok(None);
+                }
             }
         }
         let result = match instr.arg {

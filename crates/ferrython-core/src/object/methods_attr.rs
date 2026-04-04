@@ -1326,6 +1326,12 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 Ok(PyObject::instance(args[0].clone()))
                             }));
                         }
+                        // Builtin __init__: object.__init__() is a no-op
+                        if name == "__init__" {
+                            return Some(PyObject::native_function("__init__", |_args| {
+                                Ok(PyObject::none())
+                            }));
+                        }
                         // Builtin __init_subclass__: object.__init_subclass__() is a no-op
                         if name == "__init_subclass__" {
                             return Some(PyObject::native_function("__init_subclass__", |_args| {

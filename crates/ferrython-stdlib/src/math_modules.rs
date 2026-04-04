@@ -65,6 +65,8 @@ pub fn create_math_module() -> PyObjectRef {
         ("erfc", make_builtin(math_erfc)),
         ("gamma", make_builtin(math_gamma)),
         ("lgamma", make_builtin(math_lgamma)),
+        ("fsum", make_builtin(math_fsum)),
+        ("dist", make_builtin(math_dist)),
     ])
 }
 
@@ -390,6 +392,48 @@ fn math_lgamma(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::value_error("math domain error"));
     }
     Ok(PyObject::float(lanczos_gamma(x).abs().ln()))
+}
+
+fn math_fsum(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.fsum", args, 1)?;
+    let items = args[0].to_list()?;
+    // Shewchuk algorithm for accurate floating-point summation
+    let mut partials: Vec<f64> = Vec::new();
+    for item in &items {
+        let mut x = item.to_float()?;
+        let mut j = 0;
+        for i in 0..partials.len() {
+            let mut y = partials[i];
+            if x.abs() < y.abs() {
+                std::mem::swap(&mut x, &mut y);
+            }
+            let hi = x + y;
+            let lo = y - (hi - x);
+            if lo != 0.0 {
+                partials[j] = lo;
+                j += 1;
+            }
+            x = hi;
+        }
+        partials.truncate(j);
+        partials.push(x);
+    }
+    Ok(PyObject::float(partials.iter().sum::<f64>()))
+}
+
+fn math_dist(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("math.dist", args, 2)?;
+    let p = args[0].to_list()?;
+    let q = args[1].to_list()?;
+    if p.len() != q.len() {
+        return Err(PyException::value_error("both points must have the same number of dimensions"));
+    }
+    let mut sum = 0.0f64;
+    for (a, b) in p.iter().zip(q.iter()) {
+        let diff = a.to_float()? - b.to_float()?;
+        sum += diff * diff;
+    }
+    Ok(PyObject::float(sum.sqrt()))
 }
 
 fn lanczos_gamma(x: f64) -> f64 {
