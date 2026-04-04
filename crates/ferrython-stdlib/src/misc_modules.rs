@@ -181,16 +181,103 @@ pub fn create_contextlib_module() -> PyObjectRef {
         Ok(inst)
     });
 
+    // nullcontext(enter_result=None) — no-op context manager
+    let nullcontext_fn = make_builtin(|args: &[PyObjectRef]| {
+        let enter_result = if !args.is_empty() {
+            args[0].clone()
+        } else {
+            PyObject::none()
+        };
+        let cls = PyObject::class(CompactString::from("nullcontext"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        let enter_val = enter_result.clone();
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
+            "nullcontext.__enter__", move |_args: &[PyObjectRef]| {
+                Ok(enter_val.clone())
+            }
+        ));
+        attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
+            "nullcontext.__exit__", |_args: &[PyObjectRef]| {
+                Ok(PyObject::bool_val(false))
+            }
+        ));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
+    // closing(thing) — context manager that calls thing.close() on exit
+    let closing_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Err(PyException::type_error("closing requires 1 argument")); }
+        let thing = args[0].clone();
+        let cls = PyObject::class(CompactString::from("closing"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        let thing_enter = thing.clone();
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
+            "closing.__enter__", move |_args: &[PyObjectRef]| {
+                Ok(thing_enter.clone())
+            }
+        ));
+        let thing_exit = thing.clone();
+        attrs.insert(CompactString::from("__exit__"), PyObject::native_closure(
+            "closing.__exit__", move |_args: &[PyObjectRef]| {
+                if let Some(close_fn) = thing_exit.get_attr("close") {
+                    match &close_fn.payload {
+                        PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&[thing_exit.clone()]); }
+                        PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[thing_exit.clone()]); }
+                        _ => {}
+                    }
+                }
+                Ok(PyObject::bool_val(false))
+            }
+        ));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
+    // redirect_stdout(new_target) — context manager stub
+    let redirect_stdout_fn = make_builtin(|args: &[PyObjectRef]| {
+        let target = if !args.is_empty() { args[0].clone() } else { PyObject::none() };
+        let cls = PyObject::class(CompactString::from("redirect_stdout"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        let t = target.clone();
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
+            "redirect_stdout.__enter__", move |_args: &[PyObjectRef]| {
+                Ok(t.clone())
+            }
+        ));
+        attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
+            "redirect_stdout.__exit__", |_args: &[PyObjectRef]| {
+                Ok(PyObject::bool_val(false))
+            }
+        ));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
+    // redirect_stderr(new_target) — context manager stub
+    let redirect_stderr_fn = make_builtin(|args: &[PyObjectRef]| {
+        let target = if !args.is_empty() { args[0].clone() } else { PyObject::none() };
+        let cls = PyObject::class(CompactString::from("redirect_stderr"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        let t = target.clone();
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
+            "redirect_stderr.__enter__", move |_args: &[PyObjectRef]| {
+                Ok(t.clone())
+            }
+        ));
+        attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
+            "redirect_stderr.__exit__", |_args: &[PyObjectRef]| {
+                Ok(PyObject::bool_val(false))
+            }
+        ));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
     make_module("contextlib", vec![
         ("contextmanager", make_builtin(contextlib_contextmanager)),
         ("suppress", suppress_fn),
-        ("closing", make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Err(PyException::type_error("closing requires 1 argument")); }
-            Ok(args[0].clone())
-        })),
+        ("closing", closing_fn),
         ("ExitStack", exit_stack_fn),
-        ("redirect_stdout", make_builtin(|_| Ok(PyObject::none()))),
-        ("redirect_stderr", make_builtin(|_| Ok(PyObject::none()))),
+        ("nullcontext", nullcontext_fn),
+        ("redirect_stdout", redirect_stdout_fn),
+        ("redirect_stderr", redirect_stderr_fn),
     ])
 }
 

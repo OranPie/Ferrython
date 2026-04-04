@@ -365,6 +365,38 @@ pub fn create_functools_module() -> PyObjectRef {
             }))
         })),
         ("total_ordering", make_builtin(functools_total_ordering)),
+        ("singledispatch", make_builtin(|args| {
+            // Stub — return the function unchanged to enable imports
+            if args.is_empty() { return Err(PyException::type_error("singledispatch requires 1 argument")); }
+            Ok(args[0].clone())
+        })),
+        ("update_wrapper", PyObject::native_function("functools.update_wrapper", |args| {
+            // update_wrapper(wrapper, wrapped) — copy attrs from wrapped to wrapper
+            if args.len() < 2 { return Err(PyException::type_error("update_wrapper requires at least 2 arguments")); }
+            let wrapper = &args[0];
+            let wrapped = &args[1];
+            let copy_attr = |attr_name: &str| {
+                if let Some(val) = wrapped.get_attr(attr_name) {
+                    if let PyObjectPayload::Instance(ref d) = wrapper.payload {
+                        d.attrs.write().insert(CompactString::from(attr_name), val);
+                    } else if let PyObjectPayload::Function(ref fd) = wrapper.payload {
+                        fd.attrs.write().insert(CompactString::from(attr_name), val);
+                    }
+                }
+            };
+            copy_attr("__name__");
+            copy_attr("__doc__");
+            copy_attr("__module__");
+            copy_attr("__qualname__");
+            copy_attr("__dict__");
+            // Store __wrapped__ reference
+            if let PyObjectPayload::Instance(ref d) = wrapper.payload {
+                d.attrs.write().insert(CompactString::from("__wrapped__"), wrapped.clone());
+            } else if let PyObjectPayload::Function(ref fd) = wrapper.payload {
+                fd.attrs.write().insert(CompactString::from("__wrapped__"), wrapped.clone());
+            }
+            Ok(wrapper.clone())
+        })),
     ])
 }
 
