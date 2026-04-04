@@ -17,6 +17,8 @@ mod concurrency_modules;
 mod async_modules;
 mod import_modules;
 mod network_modules;
+pub mod xml_modules;
+pub mod db_modules;
 
 use ferrython_core::object::PyObjectRef;
 
@@ -75,6 +77,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "io" => Some(fs_modules::create_io_module()),
         "subprocess" => Some(fs_modules::create_subprocess_module()),
         "gzip" => Some(fs_modules::create_gzip_module()),
+        "zlib" => Some(fs_modules::create_zlib_module()),
         // Time & datetime
         "time" => Some(time_modules::create_time_module()),
         "datetime" => Some(time_modules::create_datetime_module()),
@@ -106,6 +109,9 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "traceback" => Some(introspection_modules::create_traceback_module()),
         "inspect" => Some(introspection_modules::create_inspect_module()),
         "dis" => Some(introspection_modules::create_dis_module()),
+        "ast" => Some(introspection_modules::create_ast_module()),
+        "linecache" => Some(introspection_modules::create_linecache_module()),
+        "token" => Some(introspection_modules::create_token_module()),
         // Concurrency
         "threading" => Some(concurrency_modules::create_threading_module()),
         "weakref" => Some(concurrency_modules::create_weakref_module()),
@@ -125,18 +131,12 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "urllib.parse" => Some(network_modules::create_urllib_parse_module()),
         "http" => Some(network_modules::create_http_module()),
         "http.client" => Some(network_modules::create_http_module()),
-        // Binary & encoding
-        "binascii" => Some(serial_modules::create_binascii_module()),
-        // Compatibility & internal
-        "__future__" => Some(misc_modules::create_future_module()),
-        "builtins" => Some(misc_modules::create_builtins_module()),
-        "_builtins" => Some(misc_modules::create_builtins_module()),
-        "atexit" => Some(misc_modules::create_atexit_module()),
-        "_collections_abc" => Some(misc_modules::create_collections_abc_internal_module()),
-        "_functools" => Some(misc_modules::create_functools_internal_module()),
-        "_operator" => Some(misc_modules::create_operator_internal_module()),
-        "site" => Some(misc_modules::create_site_module()),
-        "sched" => Some(misc_modules::create_sched_module()),
+        // XML
+        "xml" => Some(xml_modules::create_xml_module()),
+        "xml.etree" => Some(xml_modules::create_xml_etree_module()),
+        "xml.etree.ElementTree" => Some(xml_modules::create_xml_etree_elementtree_module()),
+        // Database
+        "sqlite3" => Some(db_modules::create_sqlite3_module()),
         _ => None,
     }
 }
