@@ -27,6 +27,13 @@ pub fn clear_exc_info() {
     ACTIVE_EXC_INFO.with(|c| *c.borrow_mut() = None);
 }
 
+/// Read active exception info for traceback.format_exc() etc.
+pub fn get_exc_info() -> Option<(ExceptionKind, String)> {
+    ACTIVE_EXC_INFO.with(|c| {
+        c.borrow().as_ref().map(|(k, m, _)| (k.clone(), m.clone()))
+    })
+}
+
 /// Get the current recursion limit (for VM stack depth checking).
 pub fn get_recursion_limit() -> i64 {
     RECURSION_LIMIT.load(Ordering::Relaxed)

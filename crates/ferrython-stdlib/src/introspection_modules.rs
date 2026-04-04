@@ -92,9 +92,17 @@ pub fn create_warnings_module() -> PyObjectRef {
 
 
 pub fn create_traceback_module() -> PyObjectRef {
-    // format_exc() — return formatted exception string (empty when no active exception)
+    // format_exc() — return formatted exception string using active exception info
     let format_exc_fn = make_builtin(|_args: &[PyObjectRef]| {
-        Ok(PyObject::str_val(CompactString::from("")))
+        if let Some((kind, msg)) = crate::sys_modules::get_exc_info() {
+            let type_name = format!("{:?}", kind);
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "Traceback (most recent call last):\n  File \"<stdin>\", line 1, in <module>\n{}: {}\n",
+                type_name, msg
+            ))))
+        } else {
+            Ok(PyObject::str_val(CompactString::from("NoneType: None\n")))
+        }
     });
 
     // format_exception(etype, value, tb) — format exception into list of strings

@@ -570,6 +570,7 @@ fn make_timedelta_with_ops(days: i64, seconds: i64, microseconds: i64, total_sec
     td_ns.insert(CompactString::from("__add__"), make_builtin(timedelta_add));
     td_ns.insert(CompactString::from("__sub__"), make_builtin(timedelta_sub));
     td_ns.insert(CompactString::from("__radd__"), make_builtin(timedelta_add));
+    td_ns.insert(CompactString::from("__mul__"), make_builtin(timedelta_mul));
     let class = PyObject::class(CompactString::from("timedelta"), vec![], td_ns);
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
@@ -635,6 +636,22 @@ fn timedelta_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let us = a_us - b_us;
     let total = days as f64 * 86400.0 + secs as f64 + us as f64 / 1_000_000.0;
     make_timedelta_with_ops(days, secs, us, total)
+}
+
+fn timedelta_mul(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("timedelta.__mul__ requires 2 args")); }
+    let td = &args[0];
+    let factor = args[1].to_int().map_err(|_| PyException::type_error("unsupported operand type(s) for *"))?;
+    let td_days = td.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0);
+    let td_secs = td.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let td_us = td.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
+    let total_us = (td_days * 86_400_000_000 + td_secs * 1_000_000 + td_us) * factor;
+    let days = total_us / 86_400_000_000;
+    let rem = total_us % 86_400_000_000;
+    let seconds = rem / 1_000_000;
+    let microseconds = rem % 1_000_000;
+    let total = total_us as f64 / 1_000_000.0;
+    make_timedelta_with_ops(days, seconds, microseconds, total)
 }
 
 /// datetime + timedelta → datetime

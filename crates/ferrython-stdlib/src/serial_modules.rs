@@ -13,7 +13,44 @@ pub fn create_json_module() -> PyObjectRef {
     make_module("json", vec![
         ("dumps", make_builtin(json_dumps)),
         ("loads", make_builtin(json_loads)),
+        ("JSONEncoder", make_builtin(json_encoder_ctor)),
+        ("JSONDecoder", make_builtin(json_decoder_ctor)),
     ])
+}
+
+fn json_encoder_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let cls = PyObject::class(CompactString::from("JSONEncoder"), vec![], indexmap::IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("encode"), PyObject::native_closure("encode", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("JSONEncoder.encode() missing argument"));
+            }
+            let s = py_to_json(&args[0])?;
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }));
+    }
+    Ok(inst)
+}
+
+fn json_decoder_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let cls = PyObject::class(CompactString::from("JSONDecoder"), vec![], indexmap::IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("decode"), PyObject::native_closure("decode", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("JSONDecoder.decode() missing argument"));
+            }
+            let s = match &args[0].payload {
+                PyObjectPayload::Str(s) => s.to_string(),
+                _ => return Err(PyException::type_error("JSONDecoder.decode requires a string")),
+            };
+            parse_json_value(&s, &mut 0)
+        }));
+    }
+    Ok(inst)
 }
 
 fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -58,13 +95,54 @@ fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }
     }
-    let _ = sort_keys; // TODO: implement sort_keys
-    let s = if let Some(indent_size) = indent {
-        py_to_json_pretty(&args[0], 0, indent_size, default_fn.as_ref())?
+    let obj = if sort_keys {
+        sort_dict_keys_recursive(&args[0])
     } else {
-        py_to_json_sep(&args[0], &item_sep, &kv_sep, default_fn.as_ref())?
+        args[0].clone()
+    };
+    let s = if let Some(indent_size) = indent {
+        py_to_json_pretty(&obj, 0, indent_size, default_fn.as_ref())?
+    } else {
+        py_to_json_sep(&obj, &item_sep, &kv_sep, default_fn.as_ref())?
     };
     Ok(PyObject::str_val(CompactString::from(s)))
+}
+
+/// Recursively sort dictionary keys for sort_keys=True in json.dumps
+fn sort_dict_keys_recursive(obj: &PyObjectRef) -> PyObjectRef {
+    match &obj.payload {
+        PyObjectPayload::Dict(map) => {
+            let r = map.read();
+            let mut entries: Vec<_> = r.iter()
+                .map(|(k, v)| (k.clone(), sort_dict_keys_recursive(v)))
+                .collect();
+            entries.sort_by(|(a, _), (b, _)| {
+                let a_str = match a { HashableKey::Str(s) => s.to_string(), HashableKey::Int(n) => n.to_string(), _ => format!("{:?}", a) };
+                let b_str = match b { HashableKey::Str(s) => s.to_string(), HashableKey::Int(n) => n.to_string(), _ => format!("{:?}", b) };
+                a_str.cmp(&b_str)
+            });
+            drop(r);
+            let new_dict = PyObject::dict_from_pairs(vec![]);
+            if let PyObjectPayload::Dict(new_map) = &new_dict.payload {
+                let mut w = new_map.write();
+                for (k, v) in entries {
+                    w.insert(k, v);
+                }
+            }
+            new_dict
+        }
+        PyObjectPayload::List(items) => {
+            let r = items.read();
+            let sorted: Vec<_> = r.iter().map(|i| sort_dict_keys_recursive(i)).collect();
+            drop(r);
+            PyObject::list(sorted)
+        }
+        PyObjectPayload::Tuple(items) => {
+            let sorted: Vec<_> = items.iter().map(|i| sort_dict_keys_recursive(i)).collect();
+            PyObject::tuple(sorted)
+        }
+        _ => obj.clone(),
+    }
 }
 
 fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize, default: Option<&PyObjectRef>) -> PyResult<String> {
@@ -706,7 +784,38 @@ pub fn create_struct_module() -> PyObjectRef {
         ("pack", make_builtin(struct_pack)),
         ("unpack", make_builtin(struct_unpack)),
         ("calcsize", make_builtin(struct_calcsize)),
+        ("Struct", make_builtin(struct_struct_ctor)),
     ])
+}
+
+fn struct_struct_ctor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("Struct() requires a format string"));
+    }
+    let fmt_str = args[0].py_to_string();
+    let cls = PyObject::class(CompactString::from("Struct"), vec![], indexmap::IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("format"), PyObject::str_val(CompactString::from(&fmt_str)));
+        // Compute size
+        let size_obj = struct_calcsize(&[PyObject::str_val(CompactString::from(&fmt_str))])?;
+        w.insert(CompactString::from("size"), size_obj);
+        let fmt_for_pack = fmt_str.clone();
+        w.insert(CompactString::from("pack"), PyObject::native_closure("pack", move |args| {
+            let mut full_args = vec![PyObject::str_val(CompactString::from(&fmt_for_pack))];
+            full_args.extend_from_slice(args);
+            struct_pack(&full_args)
+        }));
+        let fmt_for_unpack = fmt_str;
+        w.insert(CompactString::from("unpack"), PyObject::native_closure("unpack", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("Struct.unpack() requires a buffer"));
+            }
+            struct_unpack(&[PyObject::str_val(CompactString::from(&fmt_for_unpack)), args[0].clone()])
+        }));
+    }
+    Ok(inst)
 }
 
 fn struct_calcsize(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

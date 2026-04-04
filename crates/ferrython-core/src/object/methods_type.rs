@@ -196,6 +196,12 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                         let d = attrs.get("denominator").and_then(|v| v.as_int()).unwrap_or(1);
                         return if d == 1 { format!("{}", n) } else { format!("{}/{}", n, d) };
                     }
+                    // UUID → return formatted UUID string
+                    if attrs.contains_key("__uuid__") {
+                        if let Some(v) = attrs.get("__str_val__") {
+                            return v.py_to_string();
+                        }
+                    }
                 }
                 // Check for __str__ method first
                 if let Some(str_fn) = obj.get_attr("__str__") {

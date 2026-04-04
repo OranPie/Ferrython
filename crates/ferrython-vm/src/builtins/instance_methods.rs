@@ -1525,6 +1525,31 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             let days = ymd_to_days(year, month, day);
             Ok(PyObject::int((days + 2) % 7)) // Monday=0
         }
+        "isoweekday" => {
+            let days = ymd_to_days(year, month, day);
+            let wd = (days + 2) % 7; // Monday=0
+            Ok(PyObject::int(wd + 1)) // Monday=1, Sunday=7
+        }
+        "toordinal" => {
+            // Proleptic Gregorian ordinal: Jan 1 of year 1 = ordinal 1
+            let days = ymd_to_days(year, month, day);
+            // ymd_to_days returns civil days from epoch; year 1, Jan 1 ordinal = 1
+            // Offset: ymd_to_days(1,1,1) gives the civil day number for year 1 Jan 1
+            let epoch = ymd_to_days(1, 1, 1);
+            Ok(PyObject::int(days - epoch + 1))
+        }
+        "ctime" => {
+            let weekday_short = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+            let month_short = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            let days = ymd_to_days(year, month, day);
+            let wday = ((days + 2) % 7) as usize;
+            let s = format!("{} {} {:2} {:02}:{:02}:{:02} {:04}",
+                weekday_short.get(wday).unwrap_or(&""),
+                month_short.get(month as usize).unwrap_or(&""),
+                day, hour, minute, second, year);
+            Ok(PyObject::str_val(CompactString::from(&s)))
+        }
         "timetuple" => {
             let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
             let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];

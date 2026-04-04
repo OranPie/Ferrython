@@ -20,7 +20,7 @@ mod import_modules;
 use ferrython_core::object::PyObjectRef;
 
 pub use sys_modules::get_recursion_limit;
-pub use sys_modules::{set_exc_info, clear_exc_info};
+pub use sys_modules::{set_exc_info, clear_exc_info, get_exc_info};
 pub use concurrency_modules::drain_deferred_calls;
 pub use async_modules::take_asyncio_run_coro;
 pub use import_modules::{take_import_module_request, take_reload_request, ImportModuleRequest, ReloadRequest};
