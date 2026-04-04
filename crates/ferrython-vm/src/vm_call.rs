@@ -505,10 +505,20 @@ impl VirtualMachine {
         // Check markers in class namespace directly, not via get_attr,
         // because BuiltinType get_attr can return false positives.
         let class_has_key = |obj: &PyObjectRef, key: &str| -> bool {
-            match &obj.payload {
-                PyObjectPayload::Class(cd) => cd.namespace.read().contains_key(key),
-                _ => false,
+            // Check the class itself and its MRO (base classes)
+            if let PyObjectPayload::Class(cd) = &obj.payload {
+                if cd.namespace.read().contains_key(key) {
+                    return true;
+                }
+                for base in &cd.bases {
+                    if let PyObjectPayload::Class(bcd) = &base.payload {
+                        if bcd.namespace.read().contains_key(key) {
+                            return true;
+                        }
+                    }
+                }
             }
+            false
         };
         let is_dataclass = class_has_key(cls, "__dataclass__");
         let has_user_init = cls.get_attr("__init__").is_some();
