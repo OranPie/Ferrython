@@ -9,7 +9,7 @@ use crate::vm::exception_kind_matches;
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
-use ferrython_bytecode::Instruction;
+use ferrython_bytecode::{CodeObject, Instruction};
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
     has_descriptor_get, is_data_descriptor, lookup_in_class_mro, CompareOp, IteratorData,
@@ -2189,18 +2189,20 @@ impl VirtualMachine {
                     let default_tuple = frame.pop();
                     defaults = default_tuple.to_list().unwrap_or_default();
                 }
-                let code = match &code_obj.payload {
-                    PyObjectPayload::Code(c) => *c.clone(),
+                let code: Arc<CodeObject> = match &code_obj.payload {
+                    PyObjectPayload::Code(c) => Arc::new(*c.clone()),
                     _ => return Err(PyException::type_error(
                         "expected code object for MAKE_FUNCTION",
                     )),
                 };
                 let qualname_str = qualname.as_str().map(CompactString::from)
                     .unwrap_or_else(|| code.name.clone());
+                let constant_cache = Arc::new(PyFunction::build_constant_cache(&code));
                 let func = PyFunction {
                     name: code.name.clone(),
                     qualname: qualname_str,
                     code,
+                    constant_cache,
                     defaults,
                     kw_defaults,
                     globals: frame.globals.clone(),

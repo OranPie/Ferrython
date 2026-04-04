@@ -2,14 +2,17 @@
 
 use compact_str::CompactString;
 use ferrython_bytecode::CodeObject;
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectRef};
-use ferrython_core::types::SharedGlobals;
+use ferrython_core::object::PyObjectRef;
+use ferrython_core::types::{SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
 /// A shared cell for closure variables.
 pub type CellRef = Arc<RwLock<Option<PyObjectRef>>>;
+
+/// Shared builtins map — built once, shared across all frames.
+pub type SharedBuiltins = Arc<IndexMap<CompactString, PyObjectRef>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind { Loop, Except, Finally, With, ExceptHandler }
@@ -25,14 +28,14 @@ pub struct Block {
 }
 
 pub struct Frame {
-    pub code: CodeObject,
+    pub code: Arc<CodeObject>,
     pub ip: usize,
     pub stack: Vec<PyObjectRef>,
     pub block_stack: Vec<Block>,
     pub locals: Vec<Option<PyObjectRef>>,
     pub local_names: IndexMap<CompactString, PyObjectRef>,
     pub globals: SharedGlobals,
-    pub builtins: IndexMap<CompactString, PyObjectRef>,
+    pub builtins: SharedBuiltins,
     /// Cell and free variables. Indices 0..cellvars.len() are cell vars,
     /// cellvars.len()..cellvars.len()+freevars.len() are free vars.
     pub cells: Vec<CellRef>,
@@ -41,20 +44,21 @@ pub struct Frame {
     pub yielded: bool,
     /// Pending return value when unwinding through finally blocks.
     pub pending_return: Option<PyObjectRef>,
-    /// Pre-boxed constants — avoids re-creating PyObject on every LOAD_CONST.
-    pub constant_cache: Vec<PyObjectRef>,
+    /// Pre-boxed constants — shared from PyFunction or built for module-level code.
+    pub constant_cache: SharedConstantCache,
 }
 
 impl Frame {
-    pub fn new(
-        code: CodeObject,
+    /// Create a frame for a function call with a pre-built shared constant cache.
+    pub fn new_with_cache(
+        code: Arc<CodeObject>,
         globals: SharedGlobals,
-        builtins: IndexMap<CompactString, PyObjectRef>,
+        builtins: SharedBuiltins,
+        constant_cache: SharedConstantCache,
     ) -> Self {
         let nl = code.varnames.len();
         let nc = code.cellvars.len() + code.freevars.len();
         let cells: Vec<CellRef> = (0..nc).map(|_| Arc::new(RwLock::new(None))).collect();
-        let constant_cache = Self::build_constant_cache(&code);
         Self {
             code, ip: 0,
             stack: Vec::with_capacity(32),
@@ -71,39 +75,17 @@ impl Frame {
         }
     }
 
-    /// Pre-convert all constants to PyObjectRef once, so LOAD_CONST
-    /// only needs a cheap Arc::clone instead of rebuilding the object.
-    fn build_constant_cache(code: &CodeObject) -> Vec<PyObjectRef> {
-        use ferrython_bytecode::code::ConstantValue;
-        fn convert(c: &ConstantValue) -> PyObjectRef {
-            match c {
-                ConstantValue::None => PyObject::none(),
-                ConstantValue::Bool(b) => PyObject::bool_val(*b),
-                ConstantValue::Integer(n) => PyObject::int(*n),
-                ConstantValue::BigInteger(n) => PyObject::big_int(n.as_ref().clone()),
-                ConstantValue::Float(f) => PyObject::float(*f),
-                ConstantValue::Complex { real, imag } => PyObject::complex(*real, *imag),
-                ConstantValue::Str(s) => PyObject::str_val(s.clone()),
-                ConstantValue::Bytes(b) => PyObject::bytes(b.clone()),
-                ConstantValue::Ellipsis => PyObject::ellipsis(),
-                ConstantValue::Code(co) => PyObject::code(*co.clone()),
-                ConstantValue::Tuple(items) => {
-                    PyObject::tuple(items.iter().map(|i| convert(i)).collect())
-                }
-                ConstantValue::FrozenSet(items) => {
-                    let mut set = indexmap::IndexMap::new();
-                    for item in items {
-                        let obj = convert(item);
-                        if let Ok(key) = obj.to_hashable_key() {
-                            set.insert(key, obj);
-                        }
-                    }
-                    PyObject::set(set)
-                }
-            }
-        }
-        code.constants.iter().map(|c| convert(c)).collect()
+    /// Create a frame for module-level code (builds its own constant cache).
+    pub fn new(
+        code: Arc<CodeObject>,
+        globals: SharedGlobals,
+        builtins: SharedBuiltins,
+    ) -> Self {
+        use ferrython_core::types::PyFunction;
+        let constant_cache = Arc::new(PyFunction::build_constant_cache(&code));
+        Self::new_with_cache(code, globals, builtins, constant_cache)
     }
+
     #[inline] pub fn push(&mut self, v: PyObjectRef) { self.stack.push(v); }
     #[inline] pub fn pop(&mut self) -> PyObjectRef { self.stack.pop().expect("stack underflow") }
     #[inline] pub fn peek(&self) -> &PyObjectRef { self.stack.last().expect("stack underflow") }

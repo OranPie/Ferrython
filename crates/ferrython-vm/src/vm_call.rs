@@ -11,7 +11,7 @@ use ferrython_core::object::{
     PyObjectPayload, PyObjectRef, is_data_descriptor, lookup_in_class_mro,
     get_builtin_base_type_name,
 };
-use ferrython_core::types::{HashableKey, SharedGlobals};
+use ferrython_core::types::{HashableKey, SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -92,14 +92,15 @@ impl VirtualMachine {
 
     pub(crate) fn call_function(
         &mut self,
-        code: &CodeObject,
+        code: &Arc<CodeObject>,
         args: Vec<PyObjectRef>,
         defaults: &[PyObjectRef],
         kw_defaults: &IndexMap<CompactString, PyObjectRef>,
         globals: SharedGlobals,
         closure: &[Arc<RwLock<Option<PyObjectRef>>>],
+        constant_cache: &SharedConstantCache,
     ) -> PyResult<PyObjectRef> {
-        let mut frame = Frame::new(code.clone(), globals, self.builtins.clone());
+        let mut frame = Frame::new_with_cache(Arc::clone(code), globals, Arc::clone(&self.builtins), Arc::clone(constant_cache));
         let nparams = code.arg_count as usize;
         let nkwonly = code.kwonlyarg_count as usize;
         let has_varargs = code.flags.contains(CodeFlags::VARARGS);
@@ -184,15 +185,16 @@ impl VirtualMachine {
 
     pub(crate) fn call_function_kw(
         &mut self,
-        code: &CodeObject,
+        code: &Arc<CodeObject>,
         pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
         defaults: &[PyObjectRef],
         kw_defaults: &IndexMap<CompactString, PyObjectRef>,
         globals: SharedGlobals,
         closure: &[Arc<RwLock<Option<PyObjectRef>>>],
+        constant_cache: &SharedConstantCache,
     ) -> PyResult<PyObjectRef> {
-        let mut frame = Frame::new(code.clone(), globals, self.builtins.clone());
+        let mut frame = Frame::new_with_cache(Arc::clone(code), globals, Arc::clone(&self.builtins), Arc::clone(constant_cache));
         let nparams = code.arg_count as usize;
         let nkwonly = code.kwonlyarg_count as usize;
         let has_varargs = code.flags.contains(CodeFlags::VARARGS);
@@ -675,7 +677,8 @@ impl VirtualMachine {
                 let defaults = pyfunc.defaults.clone();
                 let kw_defaults = pyfunc.kw_defaults.clone();
                 let closure = pyfunc.closure.clone();
-                self.call_function_kw(&code, pos_args, kwargs, &defaults, &kw_defaults, globals, &closure)
+                let constant_cache = pyfunc.constant_cache.clone();
+                self.call_function_kw(&code, pos_args, kwargs, &defaults, &kw_defaults, globals, &closure, &constant_cache)
             }
             PyObjectPayload::BoundMethod { receiver, method } => {
                 let mut bound_args = vec![receiver.clone()];
@@ -1062,7 +1065,8 @@ impl VirtualMachine {
                 let defaults = pyfunc.defaults.clone();
                 let kw_defaults = pyfunc.kw_defaults.clone();
                 let closure = pyfunc.closure.clone();
-                self.call_function(&code, args, &defaults, &kw_defaults, globals, &closure)
+                let constant_cache = pyfunc.constant_cache.clone();
+                self.call_function(&code, args, &defaults, &kw_defaults, globals, &closure, &constant_cache)
             }
             PyObjectPayload::BuiltinFunction(name) | PyObjectPayload::BuiltinType(name) => {
                 if name.as_str() == "__build_class__" {

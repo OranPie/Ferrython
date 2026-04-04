@@ -214,11 +214,16 @@ impl Hash for PyInt {
 
 // ── PyFunction ──
 
-#[derive(Debug, Clone)]
+/// Pre-built constant cache shared across all frames using the same code object.
+pub type SharedConstantCache = Arc<Vec<PyObjectRef>>;
+
+#[derive(Clone)]
 pub struct PyFunction {
     pub name: CompactString,
     pub qualname: CompactString,
-    pub code: CodeObject,
+    pub code: Arc<CodeObject>,
+    /// Pre-built constant cache — built once at function creation, shared with all frames.
+    pub constant_cache: SharedConstantCache,
     pub defaults: Vec<PyObjectRef>,
     pub kw_defaults: IndexMap<CompactString, PyObjectRef>,
     pub globals: SharedGlobals,
@@ -231,13 +236,60 @@ pub struct PyFunction {
 
 impl PyFunction {
     pub fn new(name: CompactString, code: CodeObject) -> Self {
+        let code = Arc::new(code);
+        let constant_cache = Arc::new(Self::build_constant_cache(&code));
         Self {
-            qualname: name.clone(), name, code,
+            qualname: name.clone(), name, code, constant_cache,
             defaults: Vec::new(), kw_defaults: IndexMap::new(),
             globals: Arc::new(RwLock::new(IndexMap::new())),
             closure: Vec::new(), annotations: IndexMap::new(),
             attrs: Arc::new(RwLock::new(IndexMap::new())),
         }
+    }
+
+    /// Build from a pre-existing Arc<CodeObject> (avoids double-wrapping).
+    pub fn with_arc_code(name: CompactString, code: Arc<CodeObject>) -> Self {
+        let constant_cache = Arc::new(Self::build_constant_cache(&code));
+        Self {
+            qualname: name.clone(), name, code, constant_cache,
+            defaults: Vec::new(), kw_defaults: IndexMap::new(),
+            globals: Arc::new(RwLock::new(IndexMap::new())),
+            closure: Vec::new(), annotations: IndexMap::new(),
+            attrs: Arc::new(RwLock::new(IndexMap::new())),
+        }
+    }
+
+    /// Pre-convert all constants to PyObjectRef once.
+    pub fn build_constant_cache(code: &CodeObject) -> Vec<PyObjectRef> {
+        use ferrython_bytecode::code::ConstantValue;
+        fn convert(c: &ConstantValue) -> PyObjectRef {
+            match c {
+                ConstantValue::None => PyObject::none(),
+                ConstantValue::Bool(b) => PyObject::bool_val(*b),
+                ConstantValue::Integer(n) => PyObject::int(*n),
+                ConstantValue::BigInteger(n) => PyObject::big_int(n.as_ref().clone()),
+                ConstantValue::Float(f) => PyObject::float(*f),
+                ConstantValue::Complex { real, imag } => PyObject::complex(*real, *imag),
+                ConstantValue::Str(s) => PyObject::str_val(s.clone()),
+                ConstantValue::Bytes(b) => PyObject::bytes(b.clone()),
+                ConstantValue::Ellipsis => PyObject::ellipsis(),
+                ConstantValue::Code(co) => PyObject::code(*co.clone()),
+                ConstantValue::Tuple(items) => {
+                    PyObject::tuple(items.iter().map(|i| convert(i)).collect())
+                }
+                ConstantValue::FrozenSet(items) => {
+                    let mut set = indexmap::IndexMap::new();
+                    for item in items {
+                        let obj = convert(item);
+                        if let Ok(key) = obj.to_hashable_key() {
+                            set.insert(key, obj);
+                        }
+                    }
+                    PyObject::set(set)
+                }
+            }
+        }
+        code.constants.iter().map(|c| convert(c)).collect()
     }
 }
 

@@ -220,7 +220,7 @@ impl VirtualMachine {
         self.cache_module(cache_name, &partial_mod);
 
         // Execute module body
-        let frame = Frame::new(code, globals.clone(), self.builtins.clone());
+        let frame = Frame::new(Arc::new(code), globals.clone(), Arc::clone(&self.builtins));
         self.call_stack.push(frame);
         let exec_result = self.run_frame();
         self.call_stack.pop();

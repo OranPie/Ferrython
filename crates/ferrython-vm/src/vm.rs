@@ -1,7 +1,7 @@
 //! The main virtual machine — executes bytecode instructions.
 
 use crate::builtins;
-use crate::frame::{BlockKind, Frame};
+use crate::frame::{BlockKind, Frame, SharedBuiltins};
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeObject;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// The Ferrython virtual machine.
 pub struct VirtualMachine {
     pub(crate) call_stack: Vec<Frame>,
-    pub(crate) builtins: IndexMap<CompactString, PyObjectRef>,
+    pub(crate) builtins: SharedBuiltins,
     pub(crate) modules: IndexMap<CompactString, PyObjectRef>,
     /// Currently active exception being handled (for bare `raise` re-raise).
     pub(crate) active_exception: Option<PyException>,
@@ -33,7 +33,7 @@ impl VirtualMachine {
     pub fn new() -> Self {
         Self {
             call_stack: Vec::new(),
-            builtins: builtins::init_builtins(),
+            builtins: Arc::new(builtins::init_builtins()),
             modules: IndexMap::new(),
             active_exception: None,
             sys_modules_dict: None,
@@ -62,7 +62,7 @@ impl VirtualMachine {
     /// Execute a code object with shared globals (for REPL).
     pub fn execute_with_globals(&mut self, code: CodeObject, globals: SharedGlobals) -> PyResult<PyObjectRef> {
         self.install_hash_eq_dispatch();
-        let frame = Frame::new(code, globals, self.builtins.clone());
+        let frame = Frame::new(Arc::new(code), globals, Arc::clone(&self.builtins));
         self.call_stack.push(frame);
         let result = self.run_frame();
         self.call_stack.pop();

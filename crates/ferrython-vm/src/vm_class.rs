@@ -29,7 +29,8 @@ impl VirtualMachine {
             PyObjectPayload::Function(pyfunc) => {
                 let code = pyfunc.code.clone();
                 let globals = pyfunc.globals.clone();
-                let mut frame = Frame::new(code, globals, self.builtins.clone());
+                let cc = pyfunc.constant_cache.clone();
+                let mut frame = Frame::new_with_cache(code, globals, Arc::clone(&self.builtins), cc);
                 frame.scope_kind = ScopeKind::Class;
                 // Wire up closure cells from the captured function
                 let n_cell = frame.code.cellvars.len();
@@ -359,7 +360,8 @@ impl VirtualMachine {
             PyObjectPayload::Function(pyfunc) => {
                 let code = pyfunc.code.clone();
                 let globals = pyfunc.globals.clone();
-                let mut frame = Frame::new(code, globals, self.builtins.clone());
+                let cc = pyfunc.constant_cache.clone();
+                let mut frame = Frame::new_with_cache(code, globals, Arc::clone(&self.builtins), cc);
                 frame.scope_kind = ScopeKind::Class;
                 // Seed with __prepare__ namespace if any
                 for (k, v) in &prepared_ns {
