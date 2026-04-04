@@ -19,6 +19,7 @@ mod import_modules;
 mod network_modules;
 pub mod xml_modules;
 pub mod db_modules;
+mod email_modules;
 
 use ferrython_core::object::PyObjectRef;
 
@@ -84,6 +85,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "calendar" => Some(time_modules::create_calendar_module()),
         // Type system
         "typing" => Some(type_modules::create_typing_module()),
+        "typing_extensions" => Some(type_modules::create_typing_module()),
         "abc" => Some(type_modules::create_abc_module()),
         "enum" => Some(type_modules::create_enum_module()),
         "types" => Some(type_modules::create_types_module()),
@@ -137,6 +139,34 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "xml.etree.ElementTree" => Some(xml_modules::create_xml_etree_elementtree_module()),
         // Database
         "sqlite3" => Some(db_modules::create_sqlite3_module()),
+        // Email
+        "email" => Some(email_modules::create_email_module()),
+        "email.message" => Some(email_modules::create_email_message_module()),
+        "email.mime" => Some(email_modules::create_email_mime_module()),
+        "email.mime.text" => Some(email_modules::create_email_mime_text_module()),
+        "email.mime.multipart" => Some(email_modules::create_email_mime_multipart_module()),
+        "email.mime.base" => Some(email_modules::create_email_mime_base_module()),
+        "email.utils" => Some(email_modules::create_email_utils_module()),
+        // Zip
+        "zipfile" => Some(fs_modules::create_zipfile_module()),
+        // Internal C-extension aliases
+        "_collections_abc" => Some(type_modules::create_collections_abc_module()),
+        "_functools" => Some(collection_modules::create_functools_module()),
+        "_operator" => Some(misc_modules::create_operator_module()),
+        "_csv" => Some(serial_modules::create_csv_module()),
+        "_heapq" => Some(math_modules::create_heapq_module()),
+        "_json" => Some(serial_modules::create_json_module()),
+        "_io" => Some(fs_modules::create_io_module()),
+        "_collections" => Some(collection_modules::create_collections_module()),
+        // Compatibility
+        "__future__" => Some(misc_modules::create_future_module()),
+        "builtins" => Some(misc_modules::create_builtins_module()),
+        "_builtins" => Some(misc_modules::create_builtins_module()),
+        "atexit" => Some(misc_modules::create_atexit_module()),
+        "site" => Some(misc_modules::create_site_module()),
+        "sched" => Some(misc_modules::create_sched_module()),
+        // Binary & encoding
+        "binascii" => Some(serial_modules::create_binascii_module()),
         _ => None,
     }
 }

@@ -2117,3 +2117,173 @@ pub fn create_configparser_module() -> PyObjectRef {
         ("SafeConfigParser", make_builtin(configparser_new)),
     ])
 }
+
+// ── __future__ module ──
+
+pub fn create_future_module() -> PyObjectRef {
+    make_module("__future__", vec![
+        ("division", PyObject::bool_val(true)),
+        ("absolute_import", PyObject::bool_val(true)),
+        ("print_function", PyObject::bool_val(true)),
+        ("unicode_literals", PyObject::bool_val(true)),
+        ("generator_stop", PyObject::bool_val(true)),
+        ("annotations", PyObject::bool_val(true)),
+        ("CO_FUTURE_DIVISION", PyObject::int(0x20000)),
+        ("CO_FUTURE_ABSOLUTE_IMPORT", PyObject::int(0x40000)),
+        ("CO_FUTURE_PRINT_FUNCTION", PyObject::int(0x10000)),
+        ("CO_FUTURE_UNICODE_LITERALS", PyObject::int(0x20000)),
+        ("CO_FUTURE_GENERATOR_STOP", PyObject::int(0x80000)),
+        ("CO_FUTURE_ANNOTATIONS", PyObject::int(0x100000)),
+    ])
+}
+
+// ── builtins module ──
+
+pub fn create_builtins_module() -> PyObjectRef {
+    make_module("builtins", vec![
+        ("__name__", PyObject::str_val(CompactString::from("builtins"))),
+        ("__doc__", PyObject::str_val(CompactString::from("Built-in functions, exceptions, and other objects."))),
+        ("print", PyObject::builtin_function(CompactString::from("print"))),
+        ("len", PyObject::builtin_function(CompactString::from("len"))),
+        ("range", PyObject::builtin_function(CompactString::from("range"))),
+        ("int", PyObject::builtin_type(CompactString::from("int"))),
+        ("float", PyObject::builtin_type(CompactString::from("float"))),
+        ("str", PyObject::builtin_type(CompactString::from("str"))),
+        ("bool", PyObject::builtin_type(CompactString::from("bool"))),
+        ("list", PyObject::builtin_type(CompactString::from("list"))),
+        ("tuple", PyObject::builtin_type(CompactString::from("tuple"))),
+        ("dict", PyObject::builtin_type(CompactString::from("dict"))),
+        ("set", PyObject::builtin_type(CompactString::from("set"))),
+        ("frozenset", PyObject::builtin_type(CompactString::from("frozenset"))),
+        ("bytes", PyObject::builtin_type(CompactString::from("bytes"))),
+        ("bytearray", PyObject::builtin_type(CompactString::from("bytearray"))),
+        ("type", PyObject::builtin_type(CompactString::from("type"))),
+        ("object", PyObject::builtin_type(CompactString::from("object"))),
+        ("complex", PyObject::builtin_type(CompactString::from("complex"))),
+        ("super", PyObject::builtin_type(CompactString::from("super"))),
+        ("property", PyObject::builtin_type(CompactString::from("property"))),
+        ("classmethod", PyObject::builtin_type(CompactString::from("classmethod"))),
+        ("staticmethod", PyObject::builtin_type(CompactString::from("staticmethod"))),
+        ("abs", PyObject::builtin_function(CompactString::from("abs"))),
+        ("all", PyObject::builtin_function(CompactString::from("all"))),
+        ("any", PyObject::builtin_function(CompactString::from("any"))),
+        ("ascii", PyObject::builtin_function(CompactString::from("ascii"))),
+        ("bin", PyObject::builtin_function(CompactString::from("bin"))),
+        ("callable", PyObject::builtin_function(CompactString::from("callable"))),
+        ("chr", PyObject::builtin_function(CompactString::from("chr"))),
+        ("dir", PyObject::builtin_function(CompactString::from("dir"))),
+        ("divmod", PyObject::builtin_function(CompactString::from("divmod"))),
+        ("enumerate", PyObject::builtin_function(CompactString::from("enumerate"))),
+        ("eval", PyObject::builtin_function(CompactString::from("eval"))),
+        ("exec", PyObject::builtin_function(CompactString::from("exec"))),
+        ("filter", PyObject::builtin_function(CompactString::from("filter"))),
+        ("format", PyObject::builtin_function(CompactString::from("format"))),
+        ("getattr", PyObject::builtin_function(CompactString::from("getattr"))),
+        ("globals", PyObject::builtin_function(CompactString::from("globals"))),
+        ("hasattr", PyObject::builtin_function(CompactString::from("hasattr"))),
+        ("hash", PyObject::builtin_function(CompactString::from("hash"))),
+        ("hex", PyObject::builtin_function(CompactString::from("hex"))),
+        ("id", PyObject::builtin_function(CompactString::from("id"))),
+        ("input", PyObject::builtin_function(CompactString::from("input"))),
+        ("isinstance", PyObject::builtin_function(CompactString::from("isinstance"))),
+        ("issubclass", PyObject::builtin_function(CompactString::from("issubclass"))),
+        ("iter", PyObject::builtin_function(CompactString::from("iter"))),
+        ("locals", PyObject::builtin_function(CompactString::from("locals"))),
+        ("map", PyObject::builtin_function(CompactString::from("map"))),
+        ("max", PyObject::builtin_function(CompactString::from("max"))),
+        ("min", PyObject::builtin_function(CompactString::from("min"))),
+        ("next", PyObject::builtin_function(CompactString::from("next"))),
+        ("oct", PyObject::builtin_function(CompactString::from("oct"))),
+        ("open", PyObject::builtin_function(CompactString::from("open"))),
+        ("ord", PyObject::builtin_function(CompactString::from("ord"))),
+        ("pow", PyObject::builtin_function(CompactString::from("pow"))),
+        ("repr", PyObject::builtin_function(CompactString::from("repr"))),
+        ("reversed", PyObject::builtin_function(CompactString::from("reversed"))),
+        ("round", PyObject::builtin_function(CompactString::from("round"))),
+        ("setattr", PyObject::builtin_function(CompactString::from("setattr"))),
+        ("sorted", PyObject::builtin_function(CompactString::from("sorted"))),
+        ("sum", PyObject::builtin_function(CompactString::from("sum"))),
+        ("vars", PyObject::builtin_function(CompactString::from("vars"))),
+        ("zip", PyObject::builtin_function(CompactString::from("zip"))),
+        ("__import__", PyObject::builtin_function(CompactString::from("__import__"))),
+        ("__build_class__", PyObject::builtin_function(CompactString::from("__build_class__"))),
+        // Exception types
+        ("Exception", PyObject::exception_type(ferrython_core::error::ExceptionKind::Exception)),
+        ("ValueError", PyObject::exception_type(ferrython_core::error::ExceptionKind::ValueError)),
+        ("TypeError", PyObject::exception_type(ferrython_core::error::ExceptionKind::TypeError)),
+        ("KeyError", PyObject::exception_type(ferrython_core::error::ExceptionKind::KeyError)),
+        ("IndexError", PyObject::exception_type(ferrython_core::error::ExceptionKind::IndexError)),
+        ("AttributeError", PyObject::exception_type(ferrython_core::error::ExceptionKind::AttributeError)),
+        ("NameError", PyObject::exception_type(ferrython_core::error::ExceptionKind::NameError)),
+        ("RuntimeError", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
+        ("StopIteration", PyObject::exception_type(ferrython_core::error::ExceptionKind::StopIteration)),
+        ("OSError", PyObject::exception_type(ferrython_core::error::ExceptionKind::OSError)),
+        ("IOError", PyObject::exception_type(ferrython_core::error::ExceptionKind::OSError)),
+        ("FileNotFoundError", PyObject::exception_type(ferrython_core::error::ExceptionKind::FileNotFoundError)),
+        ("ImportError", PyObject::exception_type(ferrython_core::error::ExceptionKind::ImportError)),
+        ("NotImplementedError", PyObject::exception_type(ferrython_core::error::ExceptionKind::NotImplementedError)),
+        ("ZeroDivisionError", PyObject::exception_type(ferrython_core::error::ExceptionKind::ZeroDivisionError)),
+        ("OverflowError", PyObject::exception_type(ferrython_core::error::ExceptionKind::OverflowError)),
+        ("AssertionError", PyObject::exception_type(ferrython_core::error::ExceptionKind::AssertionError)),
+        ("SyntaxError", PyObject::exception_type(ferrython_core::error::ExceptionKind::SyntaxError)),
+    ])
+}
+
+// ── atexit module ──
+
+pub fn create_atexit_module() -> PyObjectRef {
+    use std::sync::Mutex;
+    let callbacks: Arc<Mutex<Vec<PyObjectRef>>> = Arc::new(Mutex::new(Vec::new()));
+    let cb_reg = callbacks.clone();
+    let register_fn = PyObject::native_closure("atexit.register", move |args: &[PyObjectRef]| {
+        if args.is_empty() { return Err(PyException::type_error("atexit.register requires a callable")); }
+        cb_reg.lock().unwrap().push(args[0].clone());
+        Ok(args[0].clone())
+    });
+    let cb_unreg = callbacks.clone();
+    let unregister_fn = PyObject::native_closure("atexit.unregister", move |_args: &[PyObjectRef]| {
+        let _cbs = cb_unreg.lock().unwrap();
+        Ok(PyObject::none())
+    });
+    let _ncallbacks = PyObject::native_closure("atexit._ncallbacks", move |_args: &[PyObjectRef]| {
+        let cbs = callbacks.lock().unwrap();
+        Ok(PyObject::int(cbs.len() as i64))
+    });
+    make_module("atexit", vec![
+        ("register", register_fn),
+        ("unregister", unregister_fn),
+        ("_run_exitfuncs", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()))),
+        ("_ncallbacks", _ncallbacks),
+    ])
+}
+
+// ── site module ──
+
+pub fn create_site_module() -> PyObjectRef {
+    make_module("site", vec![
+        ("ENABLE_USER_SITE", PyObject::bool_val(false)),
+        ("PREFIXES", PyObject::list(vec![])),
+        ("USER_SITE", PyObject::none()),
+        ("USER_BASE", PyObject::none()),
+        ("getusersitepackages", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from(""))))),
+        ("getsitepackages", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::list(vec![])))),
+    ])
+}
+
+// ── sched module ──
+
+pub fn create_sched_module() -> PyObjectRef {
+    let scheduler_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("scheduler"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("enter"), make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("run"), make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("empty"), make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::bool_val(true))));
+            w.insert(CompactString::from("queue"), PyObject::list(vec![]));
+        }
+        Ok(inst)
+    });
+    make_module("sched", vec![("scheduler", scheduler_fn)])
+}

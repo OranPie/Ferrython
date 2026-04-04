@@ -508,6 +508,14 @@ fn build_element_object(inner: Arc<Mutex<XmlElement>>) -> PyObjectRef {
         Ok(xml_element_to_pyobject(&guard.children[actual as usize]))
     }));
 
+    // __toxml__ — serialize using inner state (used by tostring)
+    let st = inner.clone();
+    attrs.insert(CompactString::from("__toxml__"), PyObject::native_closure("__toxml__", move |_args| {
+        let guard = st.lock().unwrap();
+        let s = element_to_string(&guard);
+        Ok(PyObject::str_val(CompactString::from(s)))
+    }));
+
     let cls = PyObject::class(CompactString::from("Element"), vec![], IndexMap::new());
     PyObject::instance_with_attrs(cls, attrs)
 }
@@ -694,6 +702,16 @@ fn etree_tostring(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("tostring() requires 1 argument"));
     }
+    // Use __toxml__ method which has access to the inner state including children
+    if let PyObjectPayload::Instance(ref d) = args[0].payload {
+        let r = d.attrs.read();
+        if let Some(toxml_fn) = r.get(&CompactString::from("__toxml__")) {
+            if let PyObjectPayload::NativeClosure { func, .. } = &toxml_fn.payload {
+                return func(&[]);
+            }
+        }
+    }
+    // Fallback: reconstruct from attrs
     let elem = pyobject_to_xml_element(&args[0])?;
     let s = element_to_string(&elem);
     Ok(PyObject::str_val(CompactString::from(s)))

@@ -683,7 +683,7 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
             // Extract byteorder and signed from positional or kwargs dict
             let mut byteorder = "big".to_string();
             let mut signed = false;
-            let mut kwarg_start = 1;
+            let mut _kwarg_start = 1;
             // Check if last arg is a kwargs dict
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(map) = &last.payload {
@@ -694,7 +694,7 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
                     if let Some(s) = map_r.get(&HashableKey::Str(CompactString::from("signed"))) {
                         signed = s.is_truthy();
                     }
-                    kwarg_start = args.len(); // skip kwargs dict for positional scan
+                    _kwarg_start = args.len(); // skip kwargs dict for positional scan
                 }
             }
             if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::Dict(_)) {

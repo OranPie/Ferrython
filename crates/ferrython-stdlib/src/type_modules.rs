@@ -99,6 +99,49 @@ pub fn create_typing_module() -> PyObjectRef {
         })),
     ];
     attrs.push(("TYPE_CHECKING", PyObject::bool_val(false)));
+    // Additional typing constructs
+    attrs.push(("Deque", make_typing_alias("Deque")));
+    attrs.push(("DefaultDict", make_typing_alias("DefaultDict")));
+    attrs.push(("OrderedDict", make_typing_alias("OrderedDict")));
+    attrs.push(("Counter", make_typing_alias("Counter")));
+    attrs.push(("ChainMap", make_typing_alias("ChainMap")));
+    attrs.push(("Awaitable", make_typing_alias("Awaitable")));
+    attrs.push(("Coroutine", make_typing_alias("Coroutine")));
+    attrs.push(("AsyncIterator", make_typing_alias("AsyncIterator")));
+    attrs.push(("AsyncGenerator", make_typing_alias("AsyncGenerator")));
+    attrs.push(("AsyncIterable", make_typing_alias("AsyncIterable")));
+    attrs.push(("ContextManager", make_typing_alias("ContextManager")));
+    attrs.push(("AsyncContextManager", make_typing_alias("AsyncContextManager")));
+    attrs.push(("Pattern", make_typing_alias("Pattern")));
+    attrs.push(("Match", make_typing_alias("Match")));
+    attrs.push(("IO", make_typing_alias("IO")));
+    attrs.push(("TextIO", make_typing_alias("TextIO")));
+    attrs.push(("BinaryIO", make_typing_alias("BinaryIO")));
+    attrs.push(("SupportsInt", make_typing_alias("SupportsInt")));
+    attrs.push(("SupportsFloat", make_typing_alias("SupportsFloat")));
+    attrs.push(("SupportsComplex", make_typing_alias("SupportsComplex")));
+    attrs.push(("SupportsBytes", make_typing_alias("SupportsBytes")));
+    attrs.push(("SupportsAbs", make_typing_alias("SupportsAbs")));
+    attrs.push(("SupportsRound", make_typing_alias("SupportsRound")));
+    attrs.push(("Reversible", make_typing_alias("Reversible")));
+    attrs.push(("Container", make_typing_alias("Container")));
+    attrs.push(("Collection", make_typing_alias("Collection")));
+    attrs.push(("Hashable", make_typing_alias("Hashable")));
+    attrs.push(("Sized", make_typing_alias("Sized")));
+    attrs.push(("MutableSequence", make_typing_alias("MutableSequence")));
+    attrs.push(("MutableSet", make_typing_alias("MutableSet")));
+    attrs.push(("MappingView", make_typing_alias("MappingView")));
+    attrs.push(("KeysView", make_typing_alias("KeysView")));
+    attrs.push(("ItemsView", make_typing_alias("ItemsView")));
+    attrs.push(("ValuesView", make_typing_alias("ValuesView")));
+    attrs.push(("AbstractSet", make_typing_alias("AbstractSet")));
+    // Type guard utilities
+    attrs.push(("NewType", make_builtin(|args: &[PyObjectRef]| {
+        check_args("NewType", args, 2)?;
+        Ok(args[1].clone()) // NewType(name, tp) returns tp
+    })));
+    attrs.push(("TypedDict", make_typing_alias("TypedDict")));
+    attrs.push(("ForwardRef", make_typing_alias("ForwardRef")));
     make_module("typing", attrs)
 }
 

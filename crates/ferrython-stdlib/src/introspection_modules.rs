@@ -1,7 +1,7 @@
 //! Introspection stdlib modules (warnings, traceback, inspect, dis)
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::PyException;
 use ferrython_core::object::{
     PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods,
     make_module, make_builtin, check_args,

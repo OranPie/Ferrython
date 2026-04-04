@@ -8,6 +8,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use std::sync::{Arc, Mutex};
 
 pub fn create_pathlib_module() -> PyObjectRef {
     // Build Path as a proper class with class methods (home, cwd) + constructor
@@ -223,7 +224,7 @@ pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
 
 // ── tempfile module (basic) ──
 
-use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 static TMPFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -808,4 +809,380 @@ fn deflate_decompress_stored(data: &[u8]) -> PyResult<Vec<u8>> {
         if bfinal != 0 { break; }
     }
     Ok(result)
+}
+
+// ── zipfile module ─────────────────────────────────────────────────────
+
+/// Internal state for a zip archive being built or read.
+struct ZipInner {
+    mode: String,          // "r" or "w"
+    filepath: String,
+    entries: IndexMap<String, Vec<u8>>,
+    closed: bool,
+}
+
+/// Build a ZipInfo-like instance for a file entry.
+fn build_zipinfo(filename: &str, size: usize) -> PyObjectRef {
+    let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+    attrs.insert(CompactString::from("__zipinfo__"), PyObject::bool_val(true));
+    attrs.insert(CompactString::from("filename"), PyObject::str_val(CompactString::from(filename)));
+    attrs.insert(CompactString::from("file_size"), PyObject::int(size as i64));
+    attrs.insert(CompactString::from("compress_size"), PyObject::int(size as i64));
+    attrs.insert(CompactString::from("compress_type"), PyObject::int(0));
+    let cls = PyObject::class(CompactString::from("ZipInfo"), vec![], IndexMap::new());
+    PyObject::instance_with_attrs(cls, attrs)
+}
+
+/// Build a ZipFile instance object with methods.
+fn build_zipfile_object(inner: Arc<Mutex<ZipInner>>) -> PyObjectRef {
+    let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+    attrs.insert(CompactString::from("__zipfile__"), PyObject::bool_val(true));
+
+    // write(filename) — add a file from disk
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("write"),
+            PyObject::native_closure("write", move |args| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("write() requires a filename argument"));
+                }
+                let filename = args[0].py_to_string();
+                let arcname = if args.len() > 1 {
+                    args[1].py_to_string()
+                } else {
+                    filename.clone()
+                };
+                let data = std::fs::read(&filename).map_err(|e| {
+                    PyException::runtime_error(&format!("zipfile.write: {}", e))
+                })?;
+                let mut guard = st.lock().unwrap();
+                if guard.closed {
+                    return Err(PyException::runtime_error("zipfile: I/O operation on closed file"));
+                }
+                guard.entries.insert(arcname, data);
+                Ok(PyObject::none())
+            }));
+    }
+
+    // writestr(arcname, data)
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("writestr"),
+            PyObject::native_closure("writestr", move |args| {
+                if args.len() < 2 {
+                    return Err(PyException::type_error("writestr() requires arcname and data"));
+                }
+                let arcname = args[0].py_to_string();
+                let data = match &args[1].payload {
+                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                    PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                    _ => args[1].py_to_string().into_bytes(),
+                };
+                let mut guard = st.lock().unwrap();
+                if guard.closed {
+                    return Err(PyException::runtime_error("zipfile: I/O operation on closed file"));
+                }
+                guard.entries.insert(arcname, data);
+                Ok(PyObject::none())
+            }));
+    }
+
+    // namelist()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("namelist"),
+            PyObject::native_closure("namelist", move |_args| {
+                let guard = st.lock().unwrap();
+                let names: Vec<PyObjectRef> = guard.entries
+                    .keys()
+                    .map(|k| PyObject::str_val(CompactString::from(k.as_str())))
+                    .collect();
+                Ok(PyObject::list(names))
+            }));
+    }
+
+    // read(name)
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("read"),
+            PyObject::native_closure("read", move |args| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("read() requires a name argument"));
+                }
+                let name = args[0].py_to_string();
+                let guard = st.lock().unwrap();
+                match guard.entries.get(&name) {
+                    Some(data) => Ok(PyObject::bytes(data.clone())),
+                    None => Err(PyException::key_error(&format!(
+                        "There is no item named '{}' in the archive", name
+                    ))),
+                }
+            }));
+    }
+
+    // infolist()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("infolist"),
+            PyObject::native_closure("infolist", move |_args| {
+                let guard = st.lock().unwrap();
+                let infos: Vec<PyObjectRef> = guard.entries
+                    .iter()
+                    .map(|(name, data)| build_zipinfo(name, data.len()))
+                    .collect();
+                Ok(PyObject::list(infos))
+            }));
+    }
+
+    // extractall(path='.')
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("extractall"),
+            PyObject::native_closure("extractall", move |args| {
+                let dest = if !args.is_empty() {
+                    args[0].py_to_string()
+                } else {
+                    ".".to_string()
+                };
+                let guard = st.lock().unwrap();
+                for (name, data) in guard.entries.iter() {
+                    let path = std::path::Path::new(&dest).join(name);
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    std::fs::write(&path, data).map_err(|e| {
+                        PyException::runtime_error(&format!("extractall: {}", e))
+                    })?;
+                }
+                Ok(PyObject::none())
+            }));
+    }
+
+    // close()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("close"),
+            PyObject::native_closure("close", move |_args| {
+                let mut guard = st.lock().unwrap();
+                if guard.closed {
+                    return Ok(PyObject::none());
+                }
+                guard.closed = true;
+                if guard.mode == "w" {
+                    let zip_data = zip_build_archive(&guard.entries);
+                    std::fs::write(&guard.filepath, &zip_data).map_err(|e| {
+                        PyException::runtime_error(&format!("zipfile.close: {}", e))
+                    })?;
+                }
+                Ok(PyObject::none())
+            }));
+    }
+
+    // __enter__ / __exit__ for context manager
+    {
+        attrs.insert(CompactString::from("__enter__"),
+            PyObject::native_closure("__enter__", {
+                let st = inner.clone();
+                move |_args| {
+                    Ok(build_zipfile_object(st.clone()))
+                }
+            }));
+    }
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("__exit__"),
+            PyObject::native_closure("__exit__", move |_args| {
+                let mut guard = st.lock().unwrap();
+                if !guard.closed {
+                    guard.closed = true;
+                    if guard.mode == "w" {
+                        let zip_data = zip_build_archive(&guard.entries);
+                        let _ = std::fs::write(&guard.filepath, &zip_data);
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+    }
+
+    let cls = PyObject::class(CompactString::from("ZipFile"), vec![], IndexMap::new());
+    PyObject::instance_with_attrs(cls, attrs)
+}
+
+/// Build a complete ZIP archive from an ordered map of name→data entries.
+/// Uses stored (uncompressed) format.
+fn zip_build_archive(entries: &IndexMap<String, Vec<u8>>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut central_directory = Vec::new();
+    let mut offsets = Vec::new();
+
+    for (name, data) in entries.iter() {
+        let offset = out.len() as u32;
+        offsets.push(offset);
+        let name_bytes = name.as_bytes();
+        let crc = zip_crc32(data);
+        let size = data.len() as u32;
+
+        // Local file header: PK\x03\x04
+        out.extend_from_slice(&[0x50, 0x4b, 0x03, 0x04]);
+        out.extend_from_slice(&20u16.to_le_bytes());   // version needed
+        out.extend_from_slice(&0u16.to_le_bytes());     // general purpose flags
+        out.extend_from_slice(&0u16.to_le_bytes());     // compression method (stored)
+        out.extend_from_slice(&0u16.to_le_bytes());     // last mod time
+        out.extend_from_slice(&0u16.to_le_bytes());     // last mod date
+        out.extend_from_slice(&crc.to_le_bytes());      // crc-32
+        out.extend_from_slice(&size.to_le_bytes());     // compressed size
+        out.extend_from_slice(&size.to_le_bytes());     // uncompressed size
+        out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes()); // filename length
+        out.extend_from_slice(&0u16.to_le_bytes());     // extra field length
+        out.extend_from_slice(name_bytes);
+        out.extend_from_slice(data);
+
+        // Central directory entry: PK\x01\x02
+        central_directory.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02]);
+        central_directory.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        central_directory.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        central_directory.extend_from_slice(&0u16.to_le_bytes());  // flags
+        central_directory.extend_from_slice(&0u16.to_le_bytes());  // compression
+        central_directory.extend_from_slice(&0u16.to_le_bytes());  // mod time
+        central_directory.extend_from_slice(&0u16.to_le_bytes());  // mod date
+        central_directory.extend_from_slice(&crc.to_le_bytes());
+        central_directory.extend_from_slice(&size.to_le_bytes());  // compressed
+        central_directory.extend_from_slice(&size.to_le_bytes());  // uncompressed
+        central_directory.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        central_directory.extend_from_slice(&0u16.to_le_bytes()); // extra len
+        central_directory.extend_from_slice(&0u16.to_le_bytes()); // comment len
+        central_directory.extend_from_slice(&0u16.to_le_bytes()); // disk start
+        central_directory.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+        central_directory.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+        central_directory.extend_from_slice(&offset.to_le_bytes());
+        central_directory.extend_from_slice(name_bytes);
+    }
+
+    let cd_offset = out.len() as u32;
+    let cd_size = central_directory.len() as u32;
+    out.extend_from_slice(&central_directory);
+
+    // End of central directory record: PK\x05\x06
+    let entry_count = entries.len() as u16;
+    out.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06]);
+    out.extend_from_slice(&0u16.to_le_bytes());       // disk number
+    out.extend_from_slice(&0u16.to_le_bytes());       // disk with CD
+    out.extend_from_slice(&entry_count.to_le_bytes()); // entries on disk
+    out.extend_from_slice(&entry_count.to_le_bytes()); // total entries
+    out.extend_from_slice(&cd_size.to_le_bytes());     // CD size
+    out.extend_from_slice(&cd_offset.to_le_bytes());   // CD offset
+    out.extend_from_slice(&0u16.to_le_bytes());        // comment length
+
+    out
+}
+
+/// Parse a ZIP archive and return the entries as a map of name→data.
+fn zip_parse_archive(data: &[u8]) -> PyResult<IndexMap<String, Vec<u8>>> {
+    let mut entries = IndexMap::new();
+    let mut pos = 0;
+
+    while pos + 4 <= data.len() {
+        // Look for local file header signature
+        if data[pos] == 0x50 && data[pos+1] == 0x4b && data[pos+2] == 0x03 && data[pos+3] == 0x04 {
+            if pos + 30 > data.len() {
+                break;
+            }
+            // let version = u16::from_le_bytes([data[pos+4], data[pos+5]]);
+            // compression method
+            let compression = u16::from_le_bytes([data[pos+8], data[pos+9]]);
+            let compressed_size = u32::from_le_bytes([data[pos+18], data[pos+19], data[pos+20], data[pos+21]]) as usize;
+            let _uncompressed_size = u32::from_le_bytes([data[pos+22], data[pos+23], data[pos+24], data[pos+25]]) as usize;
+            let name_len = u16::from_le_bytes([data[pos+26], data[pos+27]]) as usize;
+            let extra_len = u16::from_le_bytes([data[pos+28], data[pos+29]]) as usize;
+
+            let name_start = pos + 30;
+            if name_start + name_len > data.len() { break; }
+            let name = String::from_utf8_lossy(&data[name_start..name_start + name_len]).to_string();
+
+            let data_start = name_start + name_len + extra_len;
+            if data_start + compressed_size > data.len() { break; }
+            let file_data = data[data_start..data_start + compressed_size].to_vec();
+
+            if compression != 0 {
+                return Err(PyException::runtime_error(
+                    "zipfile: only stored (uncompressed) entries are supported",
+                ));
+            }
+
+            entries.insert(name, file_data);
+            pos = data_start + compressed_size;
+        } else if data[pos] == 0x50 && data[pos+1] == 0x4b {
+            // Central directory or EOCD — stop parsing local headers
+            break;
+        } else {
+            pos += 1;
+        }
+    }
+    Ok(entries)
+}
+
+/// CRC-32 for ZIP (same polynomial as gzip).
+fn zip_crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
+}
+
+fn zipfile_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "ZipFile() missing required argument: 'file'",
+        ));
+    }
+    let filepath = args[0].py_to_string();
+    let mode = if args.len() > 1 {
+        args[1].py_to_string()
+    } else {
+        "r".to_string()
+    };
+
+    let entries = if mode == "r" {
+        let data = std::fs::read(&filepath).map_err(|e| {
+            PyException::runtime_error(&format!("zipfile: {}", e))
+        })?;
+        zip_parse_archive(&data)?
+    } else {
+        IndexMap::new()
+    };
+
+    let inner = Arc::new(Mutex::new(ZipInner {
+        mode,
+        filepath,
+        entries,
+        closed: false,
+    }));
+
+    Ok(build_zipfile_object(inner))
+}
+
+fn zipinfo_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let filename = if !args.is_empty() {
+        args[0].py_to_string()
+    } else {
+        String::new()
+    };
+    Ok(build_zipinfo(&filename, 0))
+}
+
+pub fn create_zipfile_module() -> PyObjectRef {
+    make_module("zipfile", vec![
+        ("ZipFile", make_builtin(zipfile_constructor)),
+        ("ZipInfo", make_builtin(zipinfo_constructor)),
+        ("ZIP_STORED", PyObject::int(0)),
+        ("ZIP_DEFLATED", PyObject::int(8)),
+    ])
 }

@@ -9,7 +9,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     AsyncGenAction, CompareOp, IteratorData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, is_data_descriptor, lookup_in_class_mro,
-    get_builtin_base_type_name, unwrap_builtin_subclass,
+    get_builtin_base_type_name,
 };
 use ferrython_core::types::{HashableKey, SharedGlobals};
 use indexmap::IndexMap;
