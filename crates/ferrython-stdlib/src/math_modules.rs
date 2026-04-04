@@ -646,6 +646,13 @@ pub fn create_decimal_module() -> PyObjectRef {
         dec_ns.insert(CompactString::from("__int__"), make_builtin(decimal_int));
         dec_ns.insert(CompactString::from("__neg__"), make_builtin(decimal_neg));
         dec_ns.insert(CompactString::from("__abs__"), make_builtin(decimal_abs));
+        dec_ns.insert(CompactString::from("__le__"), make_builtin(decimal_le));
+        dec_ns.insert(CompactString::from("__gt__"), make_builtin(decimal_gt));
+        dec_ns.insert(CompactString::from("__ge__"), make_builtin(decimal_ge));
+        dec_ns.insert(CompactString::from("__str__"), make_builtin(decimal_str));
+        dec_ns.insert(CompactString::from("__repr__"), make_builtin(decimal_str));
+        dec_ns.insert(CompactString::from("__hash__"), make_builtin(decimal_hash));
+        dec_ns.insert(CompactString::from("quantize"), make_builtin(decimal_quantize));
         let class = PyObject::class(CompactString::from("Decimal"), vec![], dec_ns);
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
@@ -830,6 +837,123 @@ pub fn create_decimal_module() -> PyObjectRef {
         Ok(make_decimal(&decimal_format(false, digits, scale)))
     }
 
+    fn decimal_le(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let (a, b) = (get_decimal_str(&args[0]), get_decimal_str(&args[1]));
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                let (ap, bp) = align_scales(decimal_parse(&a), decimal_parse(&b));
+                let a_val = if ap.0 { -(ap.1) } else { ap.1 };
+                let b_val = if bp.0 { -(bp.1) } else { bp.1 };
+                Ok(PyObject::bool_val(a_val <= b_val))
+            }
+            _ => Ok(PyObject::bool_val(false)),
+        }
+    }
+
+    fn decimal_gt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let (a, b) = (get_decimal_str(&args[0]), get_decimal_str(&args[1]));
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                let (ap, bp) = align_scales(decimal_parse(&a), decimal_parse(&b));
+                let a_val = if ap.0 { -(ap.1) } else { ap.1 };
+                let b_val = if bp.0 { -(bp.1) } else { bp.1 };
+                Ok(PyObject::bool_val(a_val > b_val))
+            }
+            _ => Ok(PyObject::bool_val(false)),
+        }
+    }
+
+    fn decimal_ge(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let (a, b) = (get_decimal_str(&args[0]), get_decimal_str(&args[1]));
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                let (ap, bp) = align_scales(decimal_parse(&a), decimal_parse(&b));
+                let a_val = if ap.0 { -(ap.1) } else { ap.1 };
+                let b_val = if bp.0 { -(bp.1) } else { bp.1 };
+                Ok(PyObject::bool_val(a_val >= b_val))
+            }
+            _ => Ok(PyObject::bool_val(false)),
+        }
+    }
+
+    fn decimal_str(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        Ok(PyObject::str_val(CompactString::from(s)))
+    }
+
+    fn decimal_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let f: f64 = s.parse().unwrap_or(0.0);
+        Ok(PyObject::int(f.to_bits() as i64))
+    }
+
+    /// quantize(self, exp, rounding=None) — round to the scale of exp
+    fn decimal_quantize(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("quantize requires 2 args")); }
+        let a_str = get_decimal_str(&args[0]).ok_or_else(|| PyException::type_error("not a Decimal"))?;
+        let exp_str = get_decimal_str(&args[1]).ok_or_else(|| PyException::type_error("quantize exp must be Decimal"))?;
+        let (neg, digits, scale) = decimal_parse(&a_str);
+        let (_, _, target_scale) = decimal_parse(&exp_str);
+
+        // Extract rounding mode from kwargs
+        let rounding = if args.len() > 2 {
+            if let Some(s) = args[2].as_str() { s.to_string() }
+            else if let PyObjectPayload::Dict(d) = &args[args.len() - 1].payload {
+                d.read().get(&HashableKey::Str(CompactString::from("rounding")))
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .unwrap_or_default()
+            } else { String::new() }
+        } else { String::new() };
+
+        let val = if neg { -(digits as i128) } else { digits as i128 };
+        let result = if target_scale < scale {
+            // Reduce scale — need rounding
+            let factor = 10i128.pow(scale - target_scale);
+            let truncated = val / factor;
+            let remainder = (val % factor).unsigned_abs();
+            let half = factor.unsigned_abs() / 2;
+            let rounded = match rounding.as_str() {
+                "ROUND_HALF_UP" => {
+                    if remainder >= half { if val >= 0 { truncated + 1 } else { truncated - 1 } }
+                    else { truncated }
+                }
+                "ROUND_CEILING" => {
+                    if remainder > 0 && val > 0 { truncated + 1 } else { truncated }
+                }
+                "ROUND_FLOOR" => {
+                    if remainder > 0 && val < 0 { truncated - 1 } else { truncated }
+                }
+                _ => {
+                    // ROUND_HALF_EVEN (default banker's rounding)
+                    if remainder > half { if val >= 0 { truncated + 1 } else { truncated - 1 } }
+                    else if remainder == half {
+                        if truncated % 2 != 0 { if val >= 0 { truncated + 1 } else { truncated - 1 } }
+                        else { truncated }
+                    } else { truncated }
+                }
+            };
+            rounded
+        } else {
+            // Increase scale — multiply
+            val * 10i128.pow(target_scale - scale)
+        };
+        let r_neg = result < 0;
+        let r_digits = result.unsigned_abs();
+        // Preserve exact target scale (don't trim trailing zeros)
+        if target_scale == 0 {
+            let s = if r_neg { format!("-{}", r_digits) } else { format!("{}", r_digits) };
+            Ok(make_decimal(&s))
+        } else {
+            let s = format!("{:0>width$}", r_digits, width = target_scale as usize + 1);
+            let (int_part, frac_part) = s.split_at(s.len() - target_scale as usize);
+            let formatted = if r_neg { format!("-{}.{}", int_part, frac_part) } else { format!("{}.{}", int_part, frac_part) };
+            Ok(make_decimal(&formatted))
+        }
+    }
+
     make_module("decimal", vec![
         ("Decimal", make_builtin(|args| {
             if args.is_empty() { return Ok(make_decimal("0")); }
@@ -858,9 +982,14 @@ pub fn create_decimal_module() -> PyObjectRef {
         })),
         ("ROUND_HALF_UP", PyObject::str_val(CompactString::from("ROUND_HALF_UP"))),
         ("ROUND_HALF_DOWN", PyObject::str_val(CompactString::from("ROUND_HALF_DOWN"))),
+        ("ROUND_HALF_EVEN", PyObject::str_val(CompactString::from("ROUND_HALF_EVEN"))),
         ("ROUND_CEILING", PyObject::str_val(CompactString::from("ROUND_CEILING"))),
         ("ROUND_FLOOR", PyObject::str_val(CompactString::from("ROUND_FLOOR"))),
+        ("ROUND_DOWN", PyObject::str_val(CompactString::from("ROUND_DOWN"))),
+        ("ROUND_UP", PyObject::str_val(CompactString::from("ROUND_UP"))),
+        ("ROUND_05UP", PyObject::str_val(CompactString::from("ROUND_05UP"))),
         ("getcontext", make_builtin(|_| Ok(PyObject::none()))),
+        ("InvalidOperation", PyObject::str_val(CompactString::from("InvalidOperation"))),
     ])
 }
 
@@ -1223,61 +1352,255 @@ fn insort_right(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 // ── fractions module ─────────────────────────────────────────────────
 pub fn create_fractions_module() -> PyObjectRef {
-    make_module("fractions", vec![
-        ("Fraction", make_builtin(fraction_new)),
-        ("gcd", make_builtin(fraction_gcd)),
-    ])
-}
+    use ferrython_core::object::InstanceData;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
 
-fn fraction_gcd_val(mut a: i64, mut b: i64) -> i64 {
-    a = a.abs(); b = b.abs();
-    while b != 0 { let t = b; b = a % b; a = t; }
-    a
-}
+    fn frac_gcd(mut a: i64, mut b: i64) -> i64 {
+        a = a.abs(); b = b.abs();
+        while b != 0 { let t = b; b = a % b; a = t; }
+        a
+    }
 
-fn fraction_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let (num, den) = if args.is_empty() {
-        (0i64, 1i64)
-    } else if args.len() == 1 {
-        match &args[0].payload {
-            PyObjectPayload::Int(n) => (n.to_i64().unwrap_or(0), 1),
-            PyObjectPayload::Float(f) => {
-                // Convert float to fraction via limiting denominator
-                let (n, d) = float_to_fraction(*f);
-                (n, d)
+    fn get_frac_parts(obj: &PyObjectRef) -> Option<(i64, i64)> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            let attrs = inst.attrs.read();
+            if attrs.contains_key("__fraction__") {
+                let n = attrs.get("numerator").and_then(|v| v.to_int().ok()).unwrap_or(0);
+                let d = attrs.get("denominator").and_then(|v| v.to_int().ok()).unwrap_or(1);
+                return Some((n, d));
             }
-            PyObjectPayload::Str(s) => {
-                if let Some((n_str, d_str)) = s.split_once('/') {
-                    let n: i64 = n_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
-                    let d: i64 = d_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
-                    if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
-                    (n, d)
-                } else {
-                    let n: i64 = s.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
-                    (n, 1)
+        }
+        if let PyObjectPayload::Int(n) = &obj.payload {
+            return Some((n.to_i64().unwrap_or(0), 1));
+        }
+        None
+    }
+
+    fn make_frac_instance(num: i64, den: i64) -> PyObjectRef {
+        let g = frac_gcd(num.abs(), den.abs());
+        let (num, den) = if den < 0 { (-num / g, -den / g) } else { (num / g, den / g) };
+        let mut frac_ns = IndexMap::new();
+        frac_ns.insert(CompactString::from("__add__"), make_builtin(frac_add));
+        frac_ns.insert(CompactString::from("__radd__"), make_builtin(frac_add));
+        frac_ns.insert(CompactString::from("__sub__"), make_builtin(frac_sub));
+        frac_ns.insert(CompactString::from("__rsub__"), make_builtin(frac_rsub));
+        frac_ns.insert(CompactString::from("__mul__"), make_builtin(frac_mul));
+        frac_ns.insert(CompactString::from("__rmul__"), make_builtin(frac_mul));
+        frac_ns.insert(CompactString::from("__truediv__"), make_builtin(frac_div));
+        frac_ns.insert(CompactString::from("__floordiv__"), make_builtin(frac_floordiv));
+        frac_ns.insert(CompactString::from("__neg__"), make_builtin(frac_neg));
+        frac_ns.insert(CompactString::from("__abs__"), make_builtin(frac_abs));
+        frac_ns.insert(CompactString::from("__eq__"), make_builtin(frac_eq));
+        frac_ns.insert(CompactString::from("__lt__"), make_builtin(frac_lt));
+        frac_ns.insert(CompactString::from("__le__"), make_builtin(frac_le));
+        frac_ns.insert(CompactString::from("__gt__"), make_builtin(frac_gt));
+        frac_ns.insert(CompactString::from("__ge__"), make_builtin(frac_ge));
+        frac_ns.insert(CompactString::from("__hash__"), make_builtin(frac_hash));
+        frac_ns.insert(CompactString::from("__str__"), make_builtin(frac_str));
+        frac_ns.insert(CompactString::from("__repr__"), make_builtin(frac_repr));
+        frac_ns.insert(CompactString::from("__float__"), make_builtin(frac_float));
+        frac_ns.insert(CompactString::from("__int__"), make_builtin(frac_int));
+        frac_ns.insert(CompactString::from("__bool__"), make_builtin(frac_bool));
+        frac_ns.insert(CompactString::from("limit_denominator"), make_builtin(frac_limit_denominator));
+        let class = PyObject::class(CompactString::from("Fraction"), vec![], frac_ns);
+        let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+            class,
+            attrs: Arc::new(RwLock::new(IndexMap::new())),
+            dict_storage: None,
+        }));
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut w = inst_data.attrs.write();
+            w.insert(CompactString::from("__fraction__"), PyObject::bool_val(true));
+            w.insert(CompactString::from("numerator"), PyObject::int(num));
+            w.insert(CompactString::from("denominator"), PyObject::int(den));
+        }
+        inst
+    }
+
+    fn frac_add(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("Fraction.__add__ requires 2 args")); }
+        let (an, ad) = get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_instance(an * bd + bn * ad, ad * bd))
+    }
+
+    fn frac_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("Fraction.__sub__ requires 2 args")); }
+        let (an, ad) = get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_instance(an * bd - bn * ad, ad * bd))
+    }
+
+    fn frac_rsub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("requires 2 args")); }
+        let (an, ad) = get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_instance(bn * ad - an * bd, ad * bd))
+    }
+
+    fn frac_mul(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("Fraction.__mul__ requires 2 args")); }
+        let (an, ad) = get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_instance(an * bn, ad * bd))
+    }
+
+    fn frac_div(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("Fraction.__truediv__ requires 2 args")); }
+        let (an, ad) = get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        if bn == 0 { return Err(PyException::zero_division_error("Fraction division by zero")); }
+        Ok(make_frac_instance(an * bd, ad * bn))
+    }
+
+    fn frac_floordiv(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("requires 2 args")); }
+        let (an, ad) = get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        let (bn, bd) = get_frac_parts(&args[1]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        if bn == 0 { return Err(PyException::zero_division_error("Fraction division by zero")); }
+        let result = (an * bd).div_euclid(ad * bn);
+        Ok(PyObject::int(result))
+    }
+
+    fn frac_neg(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (n, d) = get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_instance(-n, d))
+    }
+
+    fn frac_abs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (n, d) = get_frac_parts(&args[0]).ok_or_else(|| PyException::type_error("not a Fraction"))?;
+        Ok(make_frac_instance(n.abs(), d))
+    }
+
+    fn frac_eq(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a = get_frac_parts(&args[0]);
+        let b = get_frac_parts(&args[1]);
+        match (a, b) {
+            (Some((an, ad)), Some((bn, bd))) => Ok(PyObject::bool_val(an * bd == bn * ad)),
+            _ => Ok(PyObject::bool_val(false)),
+        }
+    }
+
+    fn frac_lt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((0, 1));
+        Ok(PyObject::bool_val(an * bd < bn * ad))
+    }
+
+    fn frac_le(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((0, 1));
+        Ok(PyObject::bool_val(an * bd <= bn * ad))
+    }
+
+    fn frac_gt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((0, 1));
+        Ok(PyObject::bool_val(an * bd > bn * ad))
+    }
+
+    fn frac_ge(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((0, 1));
+        Ok(PyObject::bool_val(an * bd >= bn * ad))
+    }
+
+    fn frac_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        Ok(PyObject::int(n.wrapping_mul(31).wrapping_add(d)))
+    }
+
+    fn frac_str(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        let s = if d == 1 { format!("{}", n) } else { format!("{}/{}", n, d) };
+        Ok(PyObject::str_val(CompactString::from(s)))
+    }
+
+    fn frac_repr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        Ok(PyObject::str_val(CompactString::from(format!("Fraction({}, {})", n, d))))
+    }
+
+    fn frac_float(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        Ok(PyObject::float(n as f64 / d as f64))
+    }
+
+    fn frac_int(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        Ok(PyObject::int(n / d))
+    }
+
+    fn frac_bool(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (n, _) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        Ok(PyObject::bool_val(n != 0))
+    }
+
+    fn frac_limit_denominator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        let max_den = if args.len() > 1 { args[1].to_int().unwrap_or(1_000_000) } else { 1_000_000 };
+        if d <= max_den { return Ok(make_frac_instance(n, d)); }
+        // Stern-Brocot tree convergent search
+        let f = n as f64 / d as f64;
+        let mut p0: i64 = 0; let mut q0: i64 = 1;
+        let mut p1: i64 = 1; let mut q1: i64 = 0;
+        loop {
+            let a = ((f * q0 as f64 - p0 as f64) / (p1 as f64 - f * q1 as f64)) as i64;
+            let p2 = p0 + a * p1;
+            let q2 = q0 + a * q1;
+            if q2 > max_den { break; }
+            p0 = p1; q0 = q1; p1 = p2; q1 = q2;
+        }
+        // Choose closest between p0/q0 and p1/q1
+        let err0 = (f - p0 as f64 / q0 as f64).abs();
+        let err1 = (f - p1 as f64 / q1 as f64).abs();
+        if err0 <= err1 { Ok(make_frac_instance(p0, q0)) }
+        else { Ok(make_frac_instance(p1, q1)) }
+    }
+
+    make_module("fractions", vec![
+        ("Fraction", make_builtin(|args| {
+            if args.is_empty() { return Ok(make_frac_instance(0, 1)); }
+            if args.len() == 1 {
+                match &args[0].payload {
+                    PyObjectPayload::Int(n) => return Ok(make_frac_instance(n.to_i64().unwrap_or(0), 1)),
+                    PyObjectPayload::Float(f) => {
+                        let (n, d) = float_to_fraction(*f);
+                        return Ok(make_frac_instance(n, d));
+                    }
+                    PyObjectPayload::Str(s) => {
+                        if let Some((n_str, d_str)) = s.split_once('/') {
+                            let n: i64 = n_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
+                            let d: i64 = d_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
+                            if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
+                            return Ok(make_frac_instance(n, d));
+                        } else {
+                            let n: i64 = s.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
+                            return Ok(make_frac_instance(n, 1));
+                        }
+                    }
+                    _ => {
+                        // Check if it's already a Fraction
+                        if let Some((n, d)) = get_frac_parts(&args[0]) {
+                            return Ok(make_frac_instance(n, d));
+                        }
+                        return Err(PyException::type_error("Fraction() argument must be int, float, or str"));
+                    }
                 }
             }
-            _ => return Err(PyException::type_error("Fraction() argument must be int, float, or str")),
-        }
-    } else {
-        let n = args[0].to_int()?;
-        let d = args[1].to_int()?;
-        if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
-        (n, d)
-    };
-    // Normalize
-    let g = fraction_gcd_val(num, den);
-    let (n, d) = if den < 0 { (-num / g, -den / g) } else { (num / g, den / g) };
-    // Create instance with numerator/denominator attributes
-    let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("numerator"), PyObject::int(n));
-    attrs.insert(CompactString::from("denominator"), PyObject::int(d));
-    attrs.insert(CompactString::from("__fraction__"), PyObject::bool_val(true));
-    // Store as a tuple for easy access
-    Ok(PyObject::instance_with_attrs(
-        PyObject::str_val(CompactString::from("Fraction")),
-        attrs,
-    ))
+            let n = args[0].to_int()?;
+            let d = args[1].to_int()?;
+            if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
+            Ok(make_frac_instance(n, d))
+        })),
+        ("gcd", make_builtin(fraction_gcd)),
+    ])
 }
 
 fn float_to_fraction(f: f64) -> (i64, i64) {
@@ -1303,7 +1626,147 @@ fn float_to_fraction(f: f64) -> (i64, i64) {
 
 fn fraction_gcd(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("gcd", args, 2)?;
-    let a = args[0].to_int()?;
-    let b = args[1].to_int()?;
-    Ok(PyObject::int(fraction_gcd_val(a, b)))
+    let mut a = args[0].to_int()?.abs();
+    let mut b = args[1].to_int()?.abs();
+    while b != 0 { let t = b; b = a % b; a = t; }
+    Ok(PyObject::int(a))
+}
+
+// ── cmath module ─────────────────────────────────────────────────────
+
+fn to_complex(obj: &PyObjectRef) -> (f64, f64) {
+    match &obj.payload {
+        PyObjectPayload::Complex { real, imag } => (*real, *imag),
+        PyObjectPayload::Float(f) => (*f, 0.0),
+        PyObjectPayload::Int(n) => (n.to_i64().unwrap_or(0) as f64, 0.0),
+        _ => (0.0, 0.0),
+    }
+}
+
+pub fn create_cmath_module() -> PyObjectRef {
+    make_module("cmath", vec![
+        ("pi", PyObject::float(std::f64::consts::PI)),
+        ("e", PyObject::float(std::f64::consts::E)),
+        ("inf", PyObject::float(f64::INFINITY)),
+        ("nan", PyObject::float(f64::NAN)),
+        ("infj", PyObject::complex(0.0, f64::INFINITY)),
+        ("nanj", PyObject::complex(0.0, f64::NAN)),
+        ("sqrt", make_builtin(cmath_sqrt)),
+        ("exp", make_builtin(cmath_exp)),
+        ("log", make_builtin(cmath_log)),
+        ("sin", make_builtin(cmath_sin)),
+        ("cos", make_builtin(cmath_cos)),
+        ("tan", make_builtin(cmath_tan)),
+        ("phase", make_builtin(cmath_phase)),
+        ("polar", make_builtin(cmath_polar)),
+        ("rect", make_builtin(cmath_rect)),
+        ("isnan", make_builtin(cmath_isnan)),
+        ("isinf", make_builtin(cmath_isinf)),
+        ("isfinite", make_builtin(cmath_isfinite)),
+    ])
+}
+
+fn cmath_sqrt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.sqrt", args, 1)?;
+    let (re, im) = to_complex(&args[0]);
+    if im == 0.0 && re < 0.0 {
+        return Ok(PyObject::complex(0.0, (-re).sqrt()));
+    }
+    let r = (re * re + im * im).sqrt();
+    let out_re = ((r + re) / 2.0).sqrt();
+    let out_im = if im < 0.0 { -((r - re) / 2.0).sqrt() } else { ((r - re) / 2.0).sqrt() };
+    Ok(PyObject::complex(out_re, out_im))
+}
+
+fn cmath_exp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.exp", args, 1)?;
+    let (re, im) = to_complex(&args[0]);
+    let e_re = re.exp();
+    Ok(PyObject::complex(e_re * im.cos(), e_re * im.sin()))
+}
+
+fn cmath_log(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("cmath.log requires at least 1 argument"));
+    }
+    let (re, im) = to_complex(&args[0]);
+    let r = (re * re + im * im).sqrt();
+    let theta = im.atan2(re);
+    let ln_re = r.ln();
+    let ln_im = theta;
+    if args.len() > 1 {
+        let (bre, bim) = to_complex(&args[1]);
+        let br = (bre * bre + bim * bim).sqrt();
+        let btheta = bim.atan2(bre);
+        let bln_re = br.ln();
+        let bln_im = btheta;
+        // log_base(z) = ln(z) / ln(base), complex division
+        let denom = bln_re * bln_re + bln_im * bln_im;
+        let out_re = (ln_re * bln_re + ln_im * bln_im) / denom;
+        let out_im = (ln_im * bln_re - ln_re * bln_im) / denom;
+        Ok(PyObject::complex(out_re, out_im))
+    } else {
+        Ok(PyObject::complex(ln_re, ln_im))
+    }
+}
+
+fn cmath_sin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.sin", args, 1)?;
+    let (re, im) = to_complex(&args[0]);
+    Ok(PyObject::complex(re.sin() * im.cosh(), re.cos() * im.sinh()))
+}
+
+fn cmath_cos(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.cos", args, 1)?;
+    let (re, im) = to_complex(&args[0]);
+    Ok(PyObject::complex(re.cos() * im.cosh(), -(re.sin() * im.sinh())))
+}
+
+fn cmath_tan(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.tan", args, 1)?;
+    let (re, im) = to_complex(&args[0]);
+    let denom = (2.0 * re).cos() + (2.0 * im).cosh();
+    if denom == 0.0 {
+        return Err(PyException::value_error("math domain error"));
+    }
+    Ok(PyObject::complex((2.0 * re).sin() / denom, (2.0 * im).sinh() / denom))
+}
+
+fn cmath_phase(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.phase", args, 1)?;
+    let (re, im) = to_complex(&args[0]);
+    Ok(PyObject::float(im.atan2(re)))
+}
+
+fn cmath_polar(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.polar", args, 1)?;
+    let (re, im) = to_complex(&args[0]);
+    let r = (re * re + im * im).sqrt();
+    let phi = im.atan2(re);
+    Ok(PyObject::tuple(vec![PyObject::float(r), PyObject::float(phi)]))
+}
+
+fn cmath_rect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.rect", args, 2)?;
+    let r = args[0].to_float()?;
+    let phi = args[1].to_float()?;
+    Ok(PyObject::complex(r * phi.cos(), r * phi.sin()))
+}
+
+fn cmath_isnan(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.isnan", args, 1)?;
+    let (re, im) = to_complex(&args[0]);
+    Ok(PyObject::bool_val(re.is_nan() || im.is_nan()))
+}
+
+fn cmath_isinf(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.isinf", args, 1)?;
+    let (re, im) = to_complex(&args[0]);
+    Ok(PyObject::bool_val(re.is_infinite() || im.is_infinite()))
+}
+
+fn cmath_isfinite(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("cmath.isfinite", args, 1)?;
+    let (re, im) = to_complex(&args[0]);
+    Ok(PyObject::bool_val(re.is_finite() && im.is_finite()))
 }

@@ -38,6 +38,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "heapq" => Some(math_modules::create_heapq_module()),
         "bisect" => Some(math_modules::create_bisect_module()),
         "fractions" => Some(math_modules::create_fractions_module()),
+        "cmath" => Some(math_modules::create_cmath_module()),
         // System & OS
         "sys" => Some(sys_modules::create_sys_module()),
         "os" => Some(sys_modules::create_os_module()),
@@ -89,6 +90,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "errno" => Some(misc_modules::create_errno_module()),
         "uuid" => Some(misc_modules::create_uuid_module()),
         "codecs" => Some(misc_modules::create_codecs_module()),
+        "secrets" => Some(misc_modules::create_secrets_module()),
         // Introspection
         "warnings" => Some(introspection_modules::create_warnings_module()),
         "traceback" => Some(introspection_modules::create_traceback_module()),

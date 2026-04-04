@@ -1657,3 +1657,451 @@ fn codecs_utf8_decode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 // ── _thread module ──
 
+// ── secrets module ──────────────────────────────────────────────────
+
+pub fn create_secrets_module() -> PyObjectRef {
+    make_module("secrets", vec![
+        ("token_bytes", make_builtin(secrets_token_bytes)),
+        ("token_hex", make_builtin(secrets_token_hex)),
+        ("token_urlsafe", make_builtin(secrets_token_urlsafe)),
+        ("randbelow", make_builtin(secrets_randbelow)),
+        ("choice", make_builtin(secrets_choice)),
+        ("compare_digest", make_builtin(secrets_compare_digest)),
+    ])
+}
+
+fn secrets_random_bytes(n: usize) -> Vec<u8> {
+    use std::time::SystemTime;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut result = Vec::with_capacity(n);
+    for _ in 0..n {
+        let cnt = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos() as u64;
+        let seed = nanos
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(cnt.wrapping_mul(1442695040888963407));
+        result.push((seed >> 16) as u8);
+    }
+    result
+}
+
+fn secrets_random_f64() -> f64 {
+    use std::time::SystemTime;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let cnt = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos() as u64;
+    let seed = nanos
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(cnt.wrapping_mul(1442695040888963407));
+    (seed >> 11) as f64 / (1u64 << 53) as f64
+}
+
+fn secrets_token_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    Ok(PyObject::bytes(secrets_random_bytes(nbytes)))
+}
+
+fn secrets_token_hex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    let bytes = secrets_random_bytes(nbytes);
+    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    Ok(PyObject::str_val(CompactString::from(hex)))
+}
+
+fn secrets_token_urlsafe(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    let bytes = secrets_random_bytes(nbytes);
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut result = String::with_capacity((nbytes * 4 + 2) / 3);
+    let mut i = 0;
+    while i < bytes.len() {
+        let b0 = bytes[i] as u32;
+        let b1 = if i + 1 < bytes.len() { bytes[i + 1] as u32 } else { 0 };
+        let b2 = if i + 2 < bytes.len() { bytes[i + 2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if i + 1 < bytes.len() {
+            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        }
+        if i + 2 < bytes.len() {
+            result.push(CHARS[(triple & 0x3F) as usize] as char);
+        }
+        i += 3;
+    }
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn secrets_randbelow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("secrets.randbelow", args, 1)?;
+    let n = args[0].to_int()?;
+    if n <= 0 {
+        return Err(PyException::value_error("upper bound must be positive"));
+    }
+    let val = (secrets_random_f64() * n as f64) as i64;
+    Ok(PyObject::int(val.min(n - 1)))
+}
+
+fn secrets_choice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("secrets.choice", args, 1)?;
+    let items = args[0].to_list()?;
+    if items.is_empty() {
+        return Err(PyException::index_error("cannot choose from an empty sequence"));
+    }
+    let idx = (secrets_random_f64() * items.len() as f64) as usize;
+    Ok(items[idx.min(items.len() - 1)].clone())
+}
+
+fn secrets_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("secrets.compare_digest", args, 2)?;
+    let a = args[0].py_to_string();
+    let b = args[1].py_to_string();
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let mut result: u8 = if a_bytes.len() != b_bytes.len() { 1 } else { 0 };
+    let len = std::cmp::min(a_bytes.len(), b_bytes.len());
+    for i in 0..len {
+        result |= a_bytes[i] ^ b_bytes[i];
+    }
+    Ok(PyObject::bool_val(result == 0))
+}
+
+
+// ── hmac module ──────────────────────────────────────────────────────
+pub fn create_hmac_module() -> PyObjectRef {
+    use std::sync::Arc;
+    use parking_lot::RwLock;
+
+    fn hmac_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("hmac.new requires key and msg")); }
+        let key = match &args[0].payload {
+            PyObjectPayload::Bytes(b) => b.clone(),
+            PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+            _ => return Err(PyException::type_error("key must be bytes")),
+        };
+        let msg = match &args[1].payload {
+            PyObjectPayload::Bytes(b) => b.clone(),
+            PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+            _ => vec![],
+        };
+        let digestmod = if args.len() > 2 { args[2].py_to_string() } else { "sha256".to_string() };
+
+        // HMAC computation: H((K ^ opad) || H((K ^ ipad) || message))
+        let block_size = 64usize;
+        let mut k = key;
+        if k.len() > block_size {
+            k = simple_hash(&k, &digestmod);
+        }
+        while k.len() < block_size { k.push(0); }
+        let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+        let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+        let mut inner = ipad;
+        inner.extend_from_slice(&msg);
+        let inner_hash = simple_hash(&inner, &digestmod);
+        let mut outer = opad;
+        outer.extend_from_slice(&inner_hash);
+        let result = simple_hash(&outer, &digestmod);
+
+        let hex_str = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("_digest"), PyObject::bytes(result.clone()));
+        attrs.insert(CompactString::from("_hexdigest"), PyObject::str_val(CompactString::from(&hex_str)));
+        attrs.insert(CompactString::from("digest_size"), PyObject::int(result.len() as i64));
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(format!("hmac-{}", digestmod))));
+
+        let mut ns = IndexMap::new();
+        let digest_bytes = result.clone();
+        let hex_str2 = hex_str.clone();
+        ns.insert(CompactString::from("digest"), make_builtin(move |_| Ok(PyObject::bytes(digest_bytes.clone()))));
+        ns.insert(CompactString::from("hexdigest"), make_builtin(move |_| Ok(PyObject::str_val(CompactString::from(&hex_str2)))));
+        let class = PyObject::class(CompactString::from("HMAC"), vec![], ns);
+        let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+            class,
+            attrs: Arc::new(RwLock::new(attrs)),
+            dict_storage: None,
+        }));
+        Ok(inst)
+    }
+
+    fn simple_hash(data: &[u8], algo: &str) -> Vec<u8> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        // Use Rust's built-in hasher as a simplified substitute
+        // (Real HMAC would need proper SHA implementation)
+        let mut hasher = DefaultHasher::new();
+        data.hash(&mut hasher);
+        algo.hash(&mut hasher);
+        let h = hasher.finish();
+        let mut result = Vec::new();
+        for i in 0..4 {
+            let mut hasher2 = DefaultHasher::new();
+            data.hash(&mut hasher2);
+            (h.wrapping_add(i as u64)).hash(&mut hasher2);
+            let v = hasher2.finish();
+            result.extend_from_slice(&v.to_be_bytes());
+        }
+        result
+    }
+
+    fn hmac_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("compare_digest requires 2 arguments")); }
+        let a = args[0].py_to_string();
+        let b = args[1].py_to_string();
+        let a_bytes = a.as_bytes();
+        let b_bytes = b.as_bytes();
+        if a_bytes.len() != b_bytes.len() { return Ok(PyObject::bool_val(false)); }
+        let mut result = 0u8;
+        for i in 0..a_bytes.len() { result |= a_bytes[i] ^ b_bytes[i]; }
+        Ok(PyObject::bool_val(result == 0))
+    }
+
+    make_module("hmac", vec![
+        ("new", make_builtin(hmac_new)),
+        ("compare_digest", make_builtin(hmac_compare_digest)),
+        ("digest", make_builtin(|args| hmac_new(args).and_then(|h| {
+            h.get_attr("_digest").ok_or_else(|| PyException::runtime_error("no digest"))
+        }))),
+        ("HMAC", make_builtin(hmac_new)),
+    ])
+}
+
+// ── configparser module ──────────────────────────────────────────────
+pub fn create_configparser_module() -> PyObjectRef {
+    use std::sync::Arc;
+    use parking_lot::RwLock;
+
+    fn configparser_new(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("read"), make_builtin(cp_read));
+        ns.insert(CompactString::from("read_string"), make_builtin(cp_read_string));
+        ns.insert(CompactString::from("get"), make_builtin(cp_get));
+        ns.insert(CompactString::from("getint"), make_builtin(cp_getint));
+        ns.insert(CompactString::from("getfloat"), make_builtin(cp_getfloat));
+        ns.insert(CompactString::from("getboolean"), make_builtin(cp_getboolean));
+        ns.insert(CompactString::from("sections"), make_builtin(cp_sections));
+        ns.insert(CompactString::from("has_section"), make_builtin(cp_has_section));
+        ns.insert(CompactString::from("has_option"), make_builtin(cp_has_option));
+        ns.insert(CompactString::from("options"), make_builtin(cp_options));
+        ns.insert(CompactString::from("items"), make_builtin(cp_items));
+        ns.insert(CompactString::from("set"), make_builtin(cp_set));
+        let class = PyObject::class(CompactString::from("ConfigParser"), vec![], ns);
+        let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+            class,
+            attrs: Arc::new(RwLock::new(IndexMap::new())),
+            dict_storage: None,
+        }));
+        // Store sections as a dict of dicts
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("__configparser__"), PyObject::bool_val(true));
+            w.insert(CompactString::from("_sections"), PyObject::dict(IndexMap::new()));
+        }
+        Ok(inst)
+    }
+
+    fn get_sections(obj: &PyObjectRef) -> Option<Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if let Some(sec) = inst.attrs.read().get("_sections") {
+                if let PyObjectPayload::Dict(d) = &sec.payload {
+                    return Some(d.clone());
+                }
+            }
+        }
+        None
+    }
+
+    fn parse_ini(content: &str) -> IndexMap<HashableKey, PyObjectRef> {
+        let mut sections: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+        let mut current_section = CompactString::from("DEFAULT");
+        let mut current_items: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') { continue; }
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                if !current_items.is_empty() {
+                    sections.insert(HashableKey::Str(current_section.clone()), PyObject::dict(current_items.clone()));
+                    current_items.clear();
+                }
+                current_section = CompactString::from(&trimmed[1..trimmed.len()-1]);
+            } else if let Some(eq_pos) = trimmed.find('=') {
+                let key = trimmed[..eq_pos].trim();
+                let val = trimmed[eq_pos+1..].trim();
+                current_items.insert(HashableKey::Str(CompactString::from(key)), PyObject::str_val(CompactString::from(val)));
+            } else if let Some(eq_pos) = trimmed.find(':') {
+                let key = trimmed[..eq_pos].trim();
+                let val = trimmed[eq_pos+1..].trim();
+                current_items.insert(HashableKey::Str(CompactString::from(key)), PyObject::str_val(CompactString::from(val)));
+            }
+        }
+        if !current_items.is_empty() {
+            sections.insert(HashableKey::Str(current_section), PyObject::dict(current_items));
+        }
+        sections
+    }
+
+    fn cp_read(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("read requires filename")); }
+        let path = args[1].py_to_string();
+        let content = std::fs::read_to_string(&path).map_err(|e|
+            PyException::runtime_error(format!("Cannot read {}: {}", path, e)))?;
+        if let Some(secs) = get_sections(&args[0]) {
+            let parsed = parse_ini(&content);
+            let mut w = secs.write();
+            for (k, v) in parsed { w.insert(k, v); }
+        }
+        Ok(PyObject::none())
+    }
+
+    fn cp_read_string(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("read_string requires string")); }
+        let content = args[1].py_to_string();
+        if let Some(secs) = get_sections(&args[0]) {
+            let parsed = parse_ini(&content);
+            let mut w = secs.write();
+            for (k, v) in parsed { w.insert(k, v); }
+        }
+        Ok(PyObject::none())
+    }
+
+    fn cp_get(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 3 { return Err(PyException::type_error("get requires section and option")); }
+        let section = CompactString::from(args[1].py_to_string());
+        let option = CompactString::from(args[2].py_to_string());
+        if let Some(secs) = get_sections(&args[0]) {
+            let r = secs.read();
+            if let Some(sec_dict) = r.get(&HashableKey::Str(section.clone())) {
+                if let PyObjectPayload::Dict(d) = &sec_dict.payload {
+                    if let Some(val) = d.read().get(&HashableKey::Str(option.clone())) {
+                        return Ok(val.clone());
+                    }
+                }
+            }
+        }
+        if args.len() > 3 { return Ok(args[3].clone()); } // fallback
+        Err(PyException::key_error(format!("No option '{}' in section", option)))
+    }
+
+    fn cp_getint(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let val = cp_get(args)?;
+        let s = val.py_to_string();
+        let n: i64 = s.parse().map_err(|_| PyException::value_error(format!("invalid int: {}", s)))?;
+        Ok(PyObject::int(n))
+    }
+
+    fn cp_getfloat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let val = cp_get(args)?;
+        let s = val.py_to_string();
+        let f: f64 = s.parse().map_err(|_| PyException::value_error(format!("invalid float: {}", s)))?;
+        Ok(PyObject::float(f))
+    }
+
+    fn cp_getboolean(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let val = cp_get(args)?;
+        let s = val.py_to_string().to_lowercase();
+        Ok(PyObject::bool_val(matches!(s.as_str(), "1" | "yes" | "true" | "on")))
+    }
+
+    fn cp_sections(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Ok(PyObject::list(vec![])); }
+        if let Some(secs) = get_sections(&args[0]) {
+            let keys: Vec<PyObjectRef> = secs.read().keys()
+                .filter_map(|k| if let HashableKey::Str(s) = k { Some(PyObject::str_val(s.clone())) } else { None })
+                .collect();
+            return Ok(PyObject::list(keys));
+        }
+        Ok(PyObject::list(vec![]))
+    }
+
+    fn cp_has_section(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let section = CompactString::from(args[1].py_to_string());
+        if let Some(secs) = get_sections(&args[0]) {
+            return Ok(PyObject::bool_val(secs.read().contains_key(&HashableKey::Str(section))));
+        }
+        Ok(PyObject::bool_val(false))
+    }
+
+    fn cp_has_option(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 3 { return Ok(PyObject::bool_val(false)); }
+        let section = CompactString::from(args[1].py_to_string());
+        let option = CompactString::from(args[2].py_to_string());
+        if let Some(secs) = get_sections(&args[0]) {
+            let r = secs.read();
+            if let Some(sec_dict) = r.get(&HashableKey::Str(section)) {
+                if let PyObjectPayload::Dict(d) = &sec_dict.payload {
+                    return Ok(PyObject::bool_val(d.read().contains_key(&HashableKey::Str(option))));
+                }
+            }
+        }
+        Ok(PyObject::bool_val(false))
+    }
+
+    fn cp_options(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::list(vec![])); }
+        let section = CompactString::from(args[1].py_to_string());
+        if let Some(secs) = get_sections(&args[0]) {
+            let r = secs.read();
+            if let Some(sec_dict) = r.get(&HashableKey::Str(section)) {
+                if let PyObjectPayload::Dict(d) = &sec_dict.payload {
+                    let keys: Vec<PyObjectRef> = d.read().keys()
+                        .filter_map(|k| if let HashableKey::Str(s) = k { Some(PyObject::str_val(s.clone())) } else { None })
+                        .collect();
+                    return Ok(PyObject::list(keys));
+                }
+            }
+        }
+        Ok(PyObject::list(vec![]))
+    }
+
+    fn cp_items(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Ok(PyObject::list(vec![])); }
+        let section = CompactString::from(args[1].py_to_string());
+        if let Some(secs) = get_sections(&args[0]) {
+            let r = secs.read();
+            if let Some(sec_dict) = r.get(&HashableKey::Str(section)) {
+                if let PyObjectPayload::Dict(d) = &sec_dict.payload {
+                    let items: Vec<PyObjectRef> = d.read().iter()
+                        .map(|(k, v)| {
+                            let key = if let HashableKey::Str(s) = k { PyObject::str_val(s.clone()) } else { PyObject::none() };
+                            PyObject::tuple(vec![key, v.clone()])
+                        }).collect();
+                    return Ok(PyObject::list(items));
+                }
+            }
+        }
+        Ok(PyObject::list(vec![]))
+    }
+
+    fn cp_set(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 4 { return Err(PyException::type_error("set requires section, option, value")); }
+        let section = CompactString::from(args[1].py_to_string());
+        let option = CompactString::from(args[2].py_to_string());
+        let value = args[3].clone();
+        if let Some(secs) = get_sections(&args[0]) {
+            let mut w = secs.write();
+            let sec_key = HashableKey::Str(section.clone());
+            if !w.contains_key(&sec_key) {
+                w.insert(sec_key.clone(), PyObject::dict(IndexMap::new()));
+            }
+            if let Some(sec_dict) = w.get(&sec_key) {
+                if let PyObjectPayload::Dict(d) = &sec_dict.payload {
+                    d.write().insert(HashableKey::Str(option), value);
+                }
+            }
+        }
+        Ok(PyObject::none())
+    }
+
+    make_module("configparser", vec![
+        ("ConfigParser", make_builtin(configparser_new)),
+        ("RawConfigParser", make_builtin(configparser_new)),
+        ("SafeConfigParser", make_builtin(configparser_new)),
+    ])
+}
