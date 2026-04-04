@@ -7,6 +7,7 @@ pub mod vm;
 mod vm_call;
 mod vm_class;
 mod vm_helpers;
+mod vm_import;
 
 pub use frame::Frame;
 pub use vm::VirtualMachine;

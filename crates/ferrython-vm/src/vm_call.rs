@@ -1492,36 +1492,12 @@ impl VirtualMachine {
                             return Err(PyException::type_error("__import__() requires at least 1 argument"));
                         }
                         let name = args[0].py_to_string();
-                        let filename = self.call_stack.last()
-                            .map(|f| f.code.filename.clone())
-                            .unwrap_or_default();
-                        // Check cached modules first
-                        if let Some(cached) = self.modules.get(name.as_str()) {
-                            return Ok(cached.clone());
-                        }
-                        // Resolve and execute the module
-                        let resolved = ferrython_import::resolve_module(&name, &filename)?;
-                        let module = match resolved {
-                            ferrython_import::ResolvedModule::Builtin(m) => m,
-                            ferrython_import::ResolvedModule::Source { code, name: mod_name, file_path } => {
-                                let mod_globals: SharedGlobals = Arc::new(RwLock::new(IndexMap::new()));
-                                {
-                                    let mut g = mod_globals.write();
-                                    g.insert(CompactString::from("__name__"), PyObject::str_val(mod_name.clone()));
-                                    if let Some(ref fp) = file_path {
-                                        g.insert(CompactString::from("__file__"), PyObject::str_val(fp.clone()));
-                                    }
-                                }
-                                let frame = crate::frame::Frame::new(code, mod_globals.clone(), self.builtins.clone());
-                                self.call_stack.push(frame);
-                                let _ = self.run_frame();
-                                self.call_stack.pop();
-                                let attrs = mod_globals.read().clone();
-                                PyObject::module_with_attrs(mod_name, attrs)
-                            }
+                        let level = if args.len() >= 5 {
+                            args[4].as_int().unwrap_or(0) as usize
+                        } else {
+                            0
                         };
-                        self.modules.insert(CompactString::from(name.as_str()), module.clone());
-                        return Ok(module);
+                        return self.import_module_simple(&name, level);
                     }
                     "globals" => {
                         let frame = self.call_stack.last().unwrap();
