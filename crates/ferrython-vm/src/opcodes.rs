@@ -1045,7 +1045,7 @@ impl VirtualMachine {
                     }
                     PyObjectPayload::Dict(map) => {
                         let hk = self.vm_to_hashable_key(&key)?;
-                        if map.write().swap_remove(&hk).is_none() {
+                        if map.write().shift_remove(&hk).is_none() {
                             return Err(PyException::key_error(key.repr()));
                         }
                     }
@@ -1056,7 +1056,7 @@ impl VirtualMachine {
                         }
                         if let Some(ref ds) = inst.dict_storage {
                             let hk = self.vm_to_hashable_key(&key)?;
-                            if ds.write().swap_remove(&hk).is_none() {
+                            if ds.write().shift_remove(&hk).is_none() {
                                 return Err(PyException::key_error(key.repr()));
                             }
                             return Ok(None);

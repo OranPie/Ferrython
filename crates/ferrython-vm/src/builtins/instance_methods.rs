@@ -403,7 +403,7 @@ pub(super) fn call_instance_dict_method(
             check_args_min("pop", args, 1)?;
             let key_str = CompactString::from(args[0].py_to_string());
             let default = if args.len() >= 2 { Some(args[1].clone()) } else { None };
-            match attrs.write().swap_remove(&key_str) {
+            match attrs.write().shift_remove(&key_str) {
                 Some(v) => Ok(v),
                 None => match default {
                     Some(d) => Ok(d),

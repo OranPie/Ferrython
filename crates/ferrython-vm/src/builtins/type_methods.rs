@@ -268,7 +268,7 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
             check_args_min("pop", args, 1)?;
             let key = args[0].to_hashable_key()?;
             let default = if args.len() >= 2 { Some(args[1].clone()) } else { None };
-            match map.write().swap_remove(&key) {
+            match map.write().shift_remove(&key) {
                 Some(v) => Ok(v),
                 None => match default {
                     Some(d) => Ok(d),
