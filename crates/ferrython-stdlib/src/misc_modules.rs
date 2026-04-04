@@ -1016,10 +1016,14 @@ pub fn create_operator_module() -> PyObjectRef {
                     .ok_or_else(|| PyException::attribute_error(format!(
                         "'{}' object has no attribute '{}'", obj.type_name(), method_name
                     )))?;
-                // We can't call through VM from native closure, so just return the method bound
                 match &method.payload {
                     PyObjectPayload::NativeFunction { func, .. } => func(&extra_args),
                     PyObjectPayload::NativeClosure { func, .. } => func(&extra_args),
+                    PyObjectPayload::BuiltinBoundMethod { .. } => {
+                        // BuiltinBoundMethod needs VM to dispatch; return as-is
+                        // Caller should dispatch through VM
+                        Ok(method)
+                    }
                     _ => Ok(method),
                 }
             }))

@@ -304,10 +304,14 @@ impl HashableKey {
                 let ptr = std::sync::Arc::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr))
             }
-            // Class objects are hashable by identity
-            PyObjectPayload::Class(_) | PyObjectPayload::BuiltinType(_) => {
+            // Class objects: hash by identity (each class definition is unique)
+            PyObjectPayload::Class(_) => {
                 let ptr = std::sync::Arc::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr))
+            }
+            // BuiltinType: hash by type name so type(42) matches int as dict key
+            PyObjectPayload::BuiltinType(name) => {
+                Ok(HashableKey::Str(CompactString::from(format!("<type:{}>", name))))
             }
             _ => Err(PyException::type_error(format!("unhashable type: '{}'", obj.type_name()))),
         }
