@@ -179,44 +179,7 @@ impl VirtualMachine {
             }
         }
 
-        // Install closure cells as free vars in this frame.
-        let n_cell = code.cellvars.len();
-        for (i, cell) in closure.iter().enumerate() {
-            if n_cell + i < frame.cells.len() {
-                frame.cells[n_cell + i] = cell.clone();
-            }
-        }
-        // For cell vars that are also parameters, copy the parameter value into the cell
-        for (cell_idx, cell_name) in code.cellvars.iter().enumerate() {
-            for (var_idx, var_name) in code.varnames.iter().enumerate() {
-                if cell_name == var_name {
-                    if let Some(val) = frame.locals[var_idx].take() {
-                        *frame.cells[cell_idx].write() = Some(val);
-                    }
-                    break;
-                }
-            }
-        }
-        frame.scope_kind = ScopeKind::Function;
-
-        // If the function is a generator/coroutine, return suspended object without executing
-        if code.flags.contains(CodeFlags::GENERATOR) && code.flags.contains(CodeFlags::COROUTINE) {
-            let name = CompactString::from(code.name.as_str());
-            return Ok(PyObject::async_generator(name, Box::new(frame)));
-        }
-        if code.flags.contains(CodeFlags::COROUTINE) {
-            let name = CompactString::from(code.name.as_str());
-            return Ok(PyObject::coroutine(name, Box::new(frame)));
-        }
-        if code.flags.contains(CodeFlags::GENERATOR) {
-            let name = CompactString::from(code.name.as_str());
-            return Ok(PyObject::generator(name, Box::new(frame)));
-        }
-
-        self.call_stack.push(frame);
-        let result = self.run_frame();
-        self.call_stack.pop();
-        result
+        self.install_closure_and_run(frame, code, closure)
     }
 
     pub(crate) fn call_function_kw(
@@ -322,43 +285,7 @@ impl VirtualMachine {
             frame.set_local(kwargs_idx, PyObject::dict(extra_kwargs));
         }
 
-        // Install closure cells
-        let n_cell = code.cellvars.len();
-        for (i, cell) in closure.iter().enumerate() {
-            if n_cell + i < frame.cells.len() {
-                frame.cells[n_cell + i] = cell.clone();
-            }
-        }
-        for (cell_idx, cell_name) in code.cellvars.iter().enumerate() {
-            for (var_idx, var_name) in code.varnames.iter().enumerate() {
-                if cell_name == var_name {
-                    if let Some(val) = frame.locals[var_idx].take() {
-                        *frame.cells[cell_idx].write() = Some(val);
-                    }
-                    break;
-                }
-            }
-        }
-        frame.scope_kind = ScopeKind::Function;
-
-        // If the function is a generator/coroutine, return suspended object without executing
-        if code.flags.contains(CodeFlags::GENERATOR) && code.flags.contains(CodeFlags::COROUTINE) {
-            let name = CompactString::from(code.name.as_str());
-            return Ok(PyObject::async_generator(name, Box::new(frame)));
-        }
-        if code.flags.contains(CodeFlags::COROUTINE) {
-            let name = CompactString::from(code.name.as_str());
-            return Ok(PyObject::coroutine(name, Box::new(frame)));
-        }
-        if code.flags.contains(CodeFlags::GENERATOR) {
-            let name = CompactString::from(code.name.as_str());
-            return Ok(PyObject::generator(name, Box::new(frame)));
-        }
-
-        self.call_stack.push(frame);
-        let result = self.run_frame();
-        self.call_stack.pop();
-        result
+        self.install_closure_and_run(frame, code, closure)
     }
 
     /// Unified class instantiation: __new__, dataclass/namedtuple auto-init, __init__, exception attrs.
@@ -780,32 +707,7 @@ impl VirtualMachine {
                             let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
                             let reverse = kwargs.iter().find(|(k, _)| k.as_str() == "reverse")
                                 .map(|(_, v)| v.is_truthy()).unwrap_or(false);
-                            if let Some(key) = key_fn {
-                                let mut decorated: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
-                                for item in &items_vec {
-                                    let k = self.call_object(key.clone(), vec![item.clone()])?;
-                                    decorated.push((k, item.clone()));
-                                }
-                                let mut indices: Vec<usize> = (0..decorated.len()).collect();
-                                for i in 1..indices.len() {
-                                    let mut j = i;
-                                    while j > 0 {
-                                        let should_swap = if reverse {
-                                            self.vm_lt(&decorated[indices[j - 1]].0, &decorated[indices[j]].0)?
-                                        } else {
-                                            self.vm_lt(&decorated[indices[j]].0, &decorated[indices[j - 1]].0)?
-                                        };
-                                        if should_swap {
-                                            indices.swap(j, j - 1);
-                                            j -= 1;
-                                        } else { break; }
-                                    }
-                                }
-                                items_vec = indices.into_iter().map(|i| decorated[i].1.clone()).collect();
-                            } else {
-                                self.vm_sort(&mut items_vec)?;
-                                if reverse { items_vec.reverse(); }
-                            }
+                            self.sort_with_key(&mut items_vec, key_fn, reverse)?;
                             *items_arc.write() = items_vec;
                             return Ok(PyObject::none());
                         }
@@ -925,38 +827,7 @@ impl VirtualMachine {
                                 let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
                                 let reverse = kwargs.iter().find(|(k, _)| k.as_str() == "reverse")
                                     .map(|(_, v)| v.is_truthy()).unwrap_or(false);
-                                if let Some(key) = key_fn {
-                                    // Decorate-sort-undecorate (Schwartzian transform)
-                                    let mut decorated: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
-                                    for item in &items_vec {
-                                        let k = self.call_object(key.clone(), vec![item.clone()])?;
-                                        decorated.push((k, item.clone()));
-                                    }
-                                    // Sort ascending by key, then reverse if needed (matches CPython)
-                                    let keys: Vec<PyObjectRef> = decorated.iter().map(|(k, _)| k.clone()).collect();
-                                    let mut indices: Vec<usize> = (0..decorated.len()).collect();
-                                    // Insertion sort on indices by key (stable, ascending)
-                                    for i in 1..indices.len() {
-                                        let mut j = i;
-                                        while j > 0 {
-                                            if self.vm_lt(&keys[indices[j]], &keys[indices[j - 1]])? {
-                                                indices.swap(j, j - 1);
-                                                j -= 1;
-                                            } else {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    items_vec = indices.into_iter().map(|i| decorated[i].1.clone()).collect();
-                                    if reverse {
-                                        items_vec.reverse();
-                                    }
-                                } else {
-                                    self.vm_sort(&mut items_vec)?;
-                                    if reverse {
-                                        items_vec.reverse();
-                                    }
-                                }
+                                self.sort_with_key(&mut items_vec, key_fn, reverse)?;
                                 return Ok(PyObject::list(items_vec));
                             }
                         }
@@ -989,32 +860,7 @@ impl VirtualMachine {
                             } else {
                                 pos_args.clone()
                             };
-                            if items.is_empty() {
-                                return if let Some(d) = default {
-                                    Ok(d)
-                                } else {
-                                    Err(PyException::value_error(format!("{}() arg is an empty sequence", name)))
-                                };
-                            }
-                            let mut best = items[0].clone();
-                            let mut best_key = if let Some(ref kf) = key_fn {
-                                self.call_object(kf.clone(), vec![best.clone()])?
-                            } else { best.clone() };
-                            for item in &items[1..] {
-                                let item_key = if let Some(ref kf) = key_fn {
-                                    self.call_object(kf.clone(), vec![item.clone()])?
-                                } else { item.clone() };
-                                let better = if is_max {
-                                    self.vm_lt(&best_key, &item_key)?
-                                } else {
-                                    self.vm_lt(&item_key, &best_key)?
-                                };
-                                if better {
-                                    best = item.clone();
-                                    best_key = item_key;
-                                }
-                            }
-                            return Ok(best);
+                            return self.compute_min_max(items, is_max, key_fn, default, name.as_str());
                         }
                         "super" => {
                             return self.make_super(&pos_args);
@@ -1448,31 +1294,13 @@ impl VirtualMachine {
                     "min" => {
                         if args.len() == 1 {
                             let items = self.collect_iterable(&args[0])?;
-                            if items.is_empty() {
-                                return Err(PyException::value_error("min() arg is an empty sequence"));
-                            }
-                            let mut best = items[0].clone();
-                            for item in &items[1..] {
-                                if self.vm_lt(item, &best)? {
-                                    best = item.clone();
-                                }
-                            }
-                            return Ok(best);
+                            return self.compute_min_max(items, false, None, None, "min");
                         }
                     }
                     "max" => {
                         if args.len() == 1 {
                             let items = self.collect_iterable(&args[0])?;
-                            if items.is_empty() {
-                                return Err(PyException::value_error("max() arg is an empty sequence"));
-                            }
-                            let mut best = items[0].clone();
-                            for item in &items[1..] {
-                                if self.vm_lt(&best, item)? {
-                                    best = item.clone();
-                                }
-                            }
-                            return Ok(best);
+                            return self.compute_min_max(items, true, None, None, "max");
                         }
                     }
                     "reversed" => {
@@ -2205,5 +2033,122 @@ impl VirtualMachine {
                 "'{}' object is not callable", func.type_name()
             ))),
         }
+    }
+
+    /// Install closure cells, set scope, and either return generator/coroutine or execute frame.
+    fn install_closure_and_run(
+        &mut self,
+        mut frame: Frame,
+        code: &CodeObject,
+        closure: &[Arc<RwLock<Option<PyObjectRef>>>],
+    ) -> PyResult<PyObjectRef> {
+        let n_cell = code.cellvars.len();
+        for (i, cell) in closure.iter().enumerate() {
+            if n_cell + i < frame.cells.len() {
+                frame.cells[n_cell + i] = cell.clone();
+            }
+        }
+        for (cell_idx, cell_name) in code.cellvars.iter().enumerate() {
+            for (var_idx, var_name) in code.varnames.iter().enumerate() {
+                if cell_name == var_name {
+                    if let Some(val) = frame.locals[var_idx].take() {
+                        *frame.cells[cell_idx].write() = Some(val);
+                    }
+                    break;
+                }
+            }
+        }
+        frame.scope_kind = ScopeKind::Function;
+
+        if code.flags.contains(CodeFlags::GENERATOR) && code.flags.contains(CodeFlags::COROUTINE) {
+            return Ok(PyObject::async_generator(CompactString::from(code.name.as_str()), Box::new(frame)));
+        }
+        if code.flags.contains(CodeFlags::COROUTINE) {
+            return Ok(PyObject::coroutine(CompactString::from(code.name.as_str()), Box::new(frame)));
+        }
+        if code.flags.contains(CodeFlags::GENERATOR) {
+            return Ok(PyObject::generator(CompactString::from(code.name.as_str()), Box::new(frame)));
+        }
+
+        self.call_stack.push(frame);
+        let result = self.run_frame();
+        self.call_stack.pop();
+        result
+    }
+
+    /// Schwartzian transform: sort items by key function, optionally reversed.
+    fn sort_with_key(
+        &mut self,
+        items: &mut Vec<PyObjectRef>,
+        key_fn: Option<PyObjectRef>,
+        reverse: bool,
+    ) -> PyResult<()> {
+        if let Some(key) = key_fn {
+            let mut decorated: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
+            for item in items.iter() {
+                let k = self.call_object(key.clone(), vec![item.clone()])?;
+                decorated.push((k, item.clone()));
+            }
+            let mut indices: Vec<usize> = (0..decorated.len()).collect();
+            for i in 1..indices.len() {
+                let mut j = i;
+                while j > 0 {
+                    if self.vm_lt(&decorated[indices[j]].0, &decorated[indices[j - 1]].0)? {
+                        indices.swap(j, j - 1);
+                        j -= 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            *items = indices.into_iter().map(|i| decorated[i].1.clone()).collect();
+        } else {
+            self.vm_sort(items)?;
+        }
+        if reverse {
+            items.reverse();
+        }
+        Ok(())
+    }
+
+    /// Compute min or max from a collection, with optional key function and default value.
+    fn compute_min_max(
+        &mut self,
+        items: Vec<PyObjectRef>,
+        is_max: bool,
+        key_fn: Option<PyObjectRef>,
+        default: Option<PyObjectRef>,
+        func_name: &str,
+    ) -> PyResult<PyObjectRef> {
+        if items.is_empty() {
+            return if let Some(d) = default {
+                Ok(d)
+            } else {
+                Err(PyException::value_error(format!("{}() arg is an empty sequence", func_name)))
+            };
+        }
+        let mut best = items[0].clone();
+        let mut best_key = if let Some(ref kf) = key_fn {
+            self.call_object(kf.clone(), vec![best.clone()])?
+        } else {
+            best.clone()
+        };
+        for item in &items[1..] {
+            let item_key = if let Some(ref kf) = key_fn {
+                self.call_object(kf.clone(), vec![item.clone()])?
+            } else {
+                item.clone()
+            };
+            let better = if is_max {
+                self.vm_lt(&best_key, &item_key)?
+            } else {
+                self.vm_lt(&item_key, &best_key)?
+            };
+            if better {
+                best = item.clone();
+                best_key = item_key;
+            }
+        }
+        Ok(best)
     }
 }
