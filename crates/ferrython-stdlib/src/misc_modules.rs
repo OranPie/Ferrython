@@ -1989,6 +1989,12 @@ pub fn create_configparser_module() -> PyObjectRef {
         ns.insert(CompactString::from("options"), make_builtin(cp_options));
         ns.insert(CompactString::from("items"), make_builtin(cp_items));
         ns.insert(CompactString::from("set"), make_builtin(cp_set));
+        ns.insert(CompactString::from("remove_section"), make_builtin(cp_remove_section));
+        ns.insert(CompactString::from("remove_option"), make_builtin(cp_remove_option));
+        ns.insert(CompactString::from("write"), make_builtin(cp_write));
+        ns.insert(CompactString::from("__getitem__"), make_builtin(cp_getitem));
+        ns.insert(CompactString::from("__setitem__"), make_builtin(cp_setitem));
+        ns.insert(CompactString::from("__contains__"), make_builtin(cp_contains));
         let class = PyObject::class(CompactString::from("ConfigParser"), vec![], ns);
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
@@ -2000,6 +2006,7 @@ pub fn create_configparser_module() -> PyObjectRef {
             let mut w = d.attrs.write();
             w.insert(CompactString::from("__configparser__"), PyObject::bool_val(true));
             w.insert(CompactString::from("_sections"), PyObject::dict(IndexMap::new()));
+            w.insert(CompactString::from("_defaults"), PyObject::dict(IndexMap::new()));
         }
         Ok(inst)
     }
@@ -2072,13 +2079,38 @@ pub fn create_configparser_module() -> PyObjectRef {
     fn cp_get(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 3 { return Err(PyException::type_error("get requires section and option")); }
         let section = CompactString::from(args[1].py_to_string());
-        let option = CompactString::from(args[2].py_to_string());
+        let option = args[2].py_to_string().to_lowercase();
+        let option_key = HashableKey::Str(CompactString::from(&option));
+        // Check section first
         if let Some(secs) = get_sections(&args[0]) {
             let r = secs.read();
             if let Some(sec_dict) = r.get(&HashableKey::Str(section.clone())) {
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
-                    if let Some(val) = d.read().get(&HashableKey::Str(option.clone())) {
+                    let dr = d.read();
+                    if let Some(val) = dr.get(&option_key) {
                         return Ok(val.clone());
+                    }
+                    // Try case-insensitive fallback
+                    for (k, v) in dr.iter() {
+                        if k.to_object().py_to_string().to_lowercase() == option {
+                            return Ok(v.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // Check DEFAULT
+        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+            if let Some(defaults) = inst.attrs.read().get("_defaults") {
+                if let PyObjectPayload::Dict(d) = &defaults.payload {
+                    let dr = d.read();
+                    if let Some(val) = dr.get(&option_key) {
+                        return Ok(val.clone());
+                    }
+                    for (k, v) in dr.iter() {
+                        if k.to_object().py_to_string().to_lowercase() == option {
+                            return Ok(v.clone());
+                        }
                     }
                 }
             }
@@ -2181,7 +2213,7 @@ pub fn create_configparser_module() -> PyObjectRef {
     fn cp_set(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 4 { return Err(PyException::type_error("set requires section, option, value")); }
         let section = CompactString::from(args[1].py_to_string());
-        let option = CompactString::from(args[2].py_to_string());
+        let option = CompactString::from(args[2].py_to_string().to_lowercase());
         let value = args[3].clone();
         if let Some(secs) = get_sections(&args[0]) {
             let mut w = secs.write();
@@ -2196,6 +2228,159 @@ pub fn create_configparser_module() -> PyObjectRef {
             }
         }
         Ok(PyObject::none())
+    }
+
+    // __getitem__: config["section"] returns a section proxy dict
+    fn cp_getitem(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        check_args_min("ConfigParser.__getitem__", args, 2)?;
+        let section = args[1].py_to_string();
+        if section == "DEFAULT" {
+            // Return defaults dict
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(d) = inst.attrs.read().get("_defaults") {
+                    return Ok(d.clone());
+                }
+            }
+            return Ok(PyObject::dict(IndexMap::new()));
+        }
+        if let Some(secs) = get_sections(&args[0]) {
+            let r = secs.read();
+            let key = HashableKey::Str(CompactString::from(&section));
+            if let Some(sec_dict) = r.get(&key) {
+                return Ok(sec_dict.clone());
+            }
+        }
+        Err(PyException::key_error(format!("'{}'", section)))
+    }
+
+    // __setitem__: config["section"] = {"key": "val", ...}
+    fn cp_setitem(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        check_args_min("ConfigParser.__setitem__", args, 3)?;
+        let section = args[1].py_to_string();
+        let value = &args[2];
+        if section == "DEFAULT" {
+            // Set defaults
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                let mut w = inst.attrs.write();
+                // Copy keys from value dict
+                if let PyObjectPayload::Dict(d) = &value.payload {
+                    let defaults = PyObject::dict(IndexMap::new());
+                    if let PyObjectPayload::Dict(dd) = &defaults.payload {
+                        let src = d.read();
+                        let mut dst = dd.write();
+                        for (k, v) in src.iter() {
+                            let lk = HashableKey::Str(CompactString::from(k.to_object().py_to_string().to_lowercase()));
+                            dst.insert(lk, PyObject::str_val(CompactString::from(v.py_to_string())));
+                        }
+                    }
+                    w.insert(CompactString::from("_defaults"), defaults);
+                }
+            }
+            return Ok(PyObject::none());
+        }
+        if let Some(secs) = get_sections(&args[0]) {
+            let sec_key = HashableKey::Str(CompactString::from(&section));
+            let sec_dict = PyObject::dict(IndexMap::new());
+            // Copy keys from value dict
+            if let PyObjectPayload::Dict(src_map) = &value.payload {
+                if let PyObjectPayload::Dict(dst_map) = &sec_dict.payload {
+                    let src = src_map.read();
+                    let mut dst = dst_map.write();
+                    for (k, v) in src.iter() {
+                        let lk = HashableKey::Str(CompactString::from(k.to_object().py_to_string().to_lowercase()));
+                        dst.insert(lk, PyObject::str_val(CompactString::from(v.py_to_string())));
+                    }
+                }
+            }
+            secs.write().insert(sec_key, sec_dict);
+        }
+        Ok(PyObject::none())
+    }
+
+    // __contains__: "section" in config
+    fn cp_contains(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        check_args_min("ConfigParser.__contains__", args, 2)?;
+        let section = args[1].py_to_string();
+        if section == "DEFAULT" {
+            return Ok(PyObject::bool_val(true));
+        }
+        if let Some(secs) = get_sections(&args[0]) {
+            let r = secs.read();
+            let key = HashableKey::Str(CompactString::from(&section));
+            return Ok(PyObject::bool_val(r.contains_key(&key)));
+        }
+        Ok(PyObject::bool_val(false))
+    }
+
+    // remove_section
+    fn cp_remove_section(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        check_args_min("remove_section", args, 2)?;
+        let section = args[1].py_to_string();
+        if let Some(secs) = get_sections(&args[0]) {
+            let key = HashableKey::Str(CompactString::from(&section));
+            let existed = secs.write().swap_remove(&key).is_some();
+            return Ok(PyObject::bool_val(existed));
+        }
+        Ok(PyObject::bool_val(false))
+    }
+
+    // remove_option
+    fn cp_remove_option(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        check_args_min("remove_option", args, 3)?;
+        let section = args[1].py_to_string();
+        let option = args[2].py_to_string();
+        if let Some(secs) = get_sections(&args[0]) {
+            let r = secs.read();
+            let key = HashableKey::Str(CompactString::from(&section));
+            if let Some(sec_dict) = r.get(&key) {
+                if let PyObjectPayload::Dict(d) = &sec_dict.payload {
+                    let opt_key = HashableKey::Str(CompactString::from(&option));
+                    let existed = d.write().swap_remove(&opt_key).is_some();
+                    return Ok(PyObject::bool_val(existed));
+                }
+            }
+        }
+        Ok(PyObject::bool_val(false))
+    }
+
+    // write: write config to a file-like object (simplified: just returns string)
+    fn cp_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        check_args_min("write", args, 2)?;
+        // For now, just build the string and try to write to the file-like arg
+        let mut output = String::new();
+        // Write defaults
+        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+            if let Some(defaults) = inst.attrs.read().get("_defaults") {
+                if let PyObjectPayload::Dict(d) = &defaults.payload {
+                    let r = d.read();
+                    if !r.is_empty() {
+                        output.push_str("[DEFAULT]\n");
+                        for (k, v) in r.iter() {
+                            output.push_str(&format!("{} = {}\n", k.to_object().py_to_string(), v.py_to_string()));
+                        }
+                        output.push('\n');
+                    }
+                }
+            }
+        }
+        if let Some(secs) = get_sections(&args[0]) {
+            let r = secs.read();
+            for (sec_key, sec_val) in r.iter() {
+                output.push_str(&format!("[{}]\n", sec_key.to_object().py_to_string()));
+                if let PyObjectPayload::Dict(d) = &sec_val.payload {
+                    for (k, v) in d.read().iter() {
+                        output.push_str(&format!("{} = {}\n", k.to_object().py_to_string(), v.py_to_string()));
+                    }
+                }
+                output.push('\n');
+            }
+        }
+        // Try to call write on the file-like object
+        if let Some(write_fn) = args[1].get_attr("write") {
+            // Just store output — we can't call from stdlib
+            // Instead, write directly if it's a StringIO
+        }
+        Ok(PyObject::str_val(CompactString::from(output)))
     }
 
     make_module("configparser", vec![
