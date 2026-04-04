@@ -15,8 +15,11 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
         let spec_bytes = spec.as_bytes();
         let len = spec_bytes.len();
 
-        // Handle comma grouping: {:,} or {:,d}
-        if spec.contains(',') {
+        // Handle comma grouping: {:,} or {:,d} — only for simple specs without type specifier
+        // Type-specific handlers (d, f, etc.) handle commas themselves
+        let last_char = spec.as_bytes().last().copied().unwrap_or(0) as char;
+        let has_type_char = matches!(last_char, 'd' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'n' | 'b' | 'o' | 'x' | 'X');
+        if spec.contains(',') && !has_type_char {
             let without_comma = spec.replace(',', "");
             let base_str = if without_comma.is_empty() {
                 // Just {:,} — format as integer with commas
@@ -28,8 +31,8 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
             // Apply comma grouping to the numeric part
             return Ok(add_thousands_separator(&base_str, ','));
         }
-        // Handle underscore grouping: {:_} or {:_d}
-        if spec.contains('_') && !spec.contains("__") {
+        // Handle underscore grouping: {:_} — only for simple specs without type specifier
+        if spec.contains('_') && !spec.contains("__") && !has_type_char {
             let without_underscore = spec.replace('_', "");
             let base_str = if without_underscore.is_empty() {
                 let n = obj.to_int()?;
