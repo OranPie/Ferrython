@@ -20,8 +20,8 @@
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Constant folding | ❌ | `1 + 2` emits LOAD+LOAD+ADD, not LOAD 3 |
-| Peephole optimization | ❌ | No jump-chain collapse, no dead-store removal |
+| Constant folding | ✅ | Multi-pass: `2*3+4` → `10`, string concat+repeat |
+| Peephole optimization | ✅ | Jump chain collapse, dead store elimination, NOP removal |
 | Dead code elimination | ❌ | Code after unconditional `return` still emitted |
 | `SETUP_ASYNC_WITH` opcode | ❌ | Missing; `async with` partially supported via fallback |
 | Exception tables (3.11+) | ❌ | Uses legacy jump-opcode exception style |
@@ -37,15 +37,15 @@
 ### 3.2 Exception Handling
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `sys.exc_info()` | ❌ | Returns `(None, None, None)` even inside `except` blocks |
+| `sys.exc_info()` | ✅ | Thread-local tracking, set on handler entry, cleared on PopExcept |
 | `__traceback__` attribute | ❌ | Exception objects lack `.tb_lineno`, `.tb_frame` etc. |
 | `finally` return override | ⚠️ | `return` in `try` not always overridden by `return` in `finally` |
 
 ### 3.3 I/O Redirection
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `print(..., file=buf)` | ❌ | `file` kwarg silently ignored; always writes to stdout |
-| `sys.stdout = buf` | ❌ | Assignment works but VM ignores replacement |
+| `print(..., file=buf)` | ✅ | Dispatches to file object's `.write()` method |
+| `sys.stdout = buf` | ✅ | VM resolves `sys.stdout` for each print call |
 
 ### 3.4 Introspection
 | Feature | Status | Notes |
@@ -116,14 +116,16 @@
 
 | Area | Status | Notes |
 |------|--------|-------|
-| Recursive fibonacci ~50× slower than CPython | ❌ | No constant folding, no JIT, no inline caching |
+| Recursive fibonacci ~7× slower than CPython | ⚠️ | Arc<CodeObject> + shared caches; fib(20) at 48 ops/s |
+| Function call overhead | ✅ | 1.2M calls/s (was 220K — Arc<CodeObject> + shared constant cache) |
 | No bytecode caching (`.pyc`) | ❌ | Every import re-parses and re-compiles |
 | Arc-based refcounting overhead | ⚠️ | Atomic ops on every clone/drop |
 | GC cycle detection | ⚠️ | Only covers `Instance` objects; `Dict`/`List` cycles not reclaimed |
 | String interning | ❌ | No interning; every string allocation is fresh |
 | Small-int caching | ✅ | Pre-allocated int pool for -5..=256 (matches CPython) |
-| Pre-boxed constant cache | ✅ | LOAD_CONST uses cached PyObjectRef (cheap Arc clone) |
+| Pre-boxed constant cache | ✅ | Built once per function, shared across all frames via Arc |
 | Binary op fast paths | ✅ | int+int, float+float, str+str skip dunder dispatch |
+| Shared builtins | ✅ | Arc<IndexMap> — zero clone overhead per frame |
 | Attribute lookup | ⚠️ | Linear MRO scan every time; no method cache |
 
 ## 6. Structural / Code Quality Issues

@@ -24,6 +24,7 @@ pub fn optimize(code: &mut CodeObject) {
         changed = false;
         changed |= fold_constants(code);
         changed |= eliminate_dead_stores(code);
+        changed |= eliminate_dead_code(code);
         changed |= collapse_jump_chains(code);
     }
 
@@ -124,6 +125,46 @@ fn eliminate_dead_stores(code: &mut CodeObject) -> bool {
             continue;
         }
         i += 1;
+    }
+    changed
+}
+
+/// Dead code elimination: NOP-out instructions after unconditional jumps/returns/raises
+/// until the next jump target or exception handler.
+fn eliminate_dead_code(code: &mut CodeObject) -> bool {
+    let n = code.instructions.len();
+    if n < 2 { return false; }
+
+    // Collect all possible jump targets (any instruction that could be branched to)
+    let mut live_targets = std::collections::HashSet::new();
+    for instr in &code.instructions {
+        if is_jump(instr.op) {
+            live_targets.insert(instr.arg as usize);
+        }
+    }
+
+    let mut changed = false;
+    let mut dead = false;
+    for i in 0..n {
+        if dead {
+            // This instruction is unreachable — but stop if it's a jump target
+            if live_targets.contains(&i) {
+                dead = false;
+            } else if code.instructions[i].op != Opcode::Nop {
+                code.instructions[i] = Instruction::new(Opcode::Nop, 0);
+                changed = true;
+            }
+        }
+
+        if !dead {
+            match code.instructions[i].op {
+                Opcode::ReturnValue | Opcode::JumpAbsolute
+                | Opcode::RaiseVarargs | Opcode::JumpForward => {
+                    dead = true;
+                }
+                _ => {}
+            }
+        }
     }
     changed
 }
