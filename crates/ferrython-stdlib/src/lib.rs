@@ -112,6 +112,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "gc" => Some(concurrency_modules::create_gc_module()),
         "_thread" => Some(concurrency_modules::create_thread_module()),
         "signal" => Some(concurrency_modules::create_signal_module()),
+        "multiprocessing" => Some(concurrency_modules::create_multiprocessing_module()),
+        "selectors" => Some(concurrency_modules::create_selectors_module()),
         // Async
         "asyncio" => Some(async_modules::create_asyncio_module()),
         // Import system
@@ -123,6 +125,18 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "urllib.parse" => Some(network_modules::create_urllib_parse_module()),
         "http" => Some(network_modules::create_http_module()),
         "http.client" => Some(network_modules::create_http_module()),
+        // Binary & encoding
+        "binascii" => Some(serial_modules::create_binascii_module()),
+        // Compatibility & internal
+        "__future__" => Some(misc_modules::create_future_module()),
+        "builtins" => Some(misc_modules::create_builtins_module()),
+        "_builtins" => Some(misc_modules::create_builtins_module()),
+        "atexit" => Some(misc_modules::create_atexit_module()),
+        "_collections_abc" => Some(misc_modules::create_collections_abc_internal_module()),
+        "_functools" => Some(misc_modules::create_functools_internal_module()),
+        "_operator" => Some(misc_modules::create_operator_internal_module()),
+        "site" => Some(misc_modules::create_site_module()),
+        "sched" => Some(misc_modules::create_sched_module()),
         _ => None,
     }
 }

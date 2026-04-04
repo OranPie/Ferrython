@@ -960,24 +960,168 @@ fn create_cached_function(func: PyObjectRef) -> PyObjectRef {
 // ── queue module ──
 
 pub fn create_queue_module() -> PyObjectRef {
+    // Queue constructor
+    let queue_fn = PyObject::native_closure("Queue", move |args: &[PyObjectRef]| {
+        create_queue_instance_full("Queue", args)
+    });
+    // LifoQueue constructor
+    let lifo_fn = PyObject::native_closure("LifoQueue", move |args: &[PyObjectRef]| {
+        create_queue_instance_full("LifoQueue", args)
+    });
+    // PriorityQueue constructor
+    let prio_fn = PyObject::native_closure("PriorityQueue", move |args: &[PyObjectRef]| {
+        create_queue_instance_full("PriorityQueue", args)
+    });
+
     make_module("queue", vec![
-        ("Queue", PyObject::native_function("Queue", |args| create_queue_instance("Queue", args))),
-        ("LifoQueue", PyObject::native_function("LifoQueue", |args| create_queue_instance("LifoQueue", args))),
-        ("PriorityQueue", PyObject::native_function("PriorityQueue", |args| create_queue_instance("PriorityQueue", args))),
+        ("Queue", queue_fn),
+        ("LifoQueue", lifo_fn),
+        ("PriorityQueue", prio_fn),
         ("Empty", PyObject::class(CompactString::from("Empty"), vec![], IndexMap::new())),
         ("Full", PyObject::class(CompactString::from("Full"), vec![], IndexMap::new())),
     ])
 }
 
-fn create_queue_instance(kind: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let maxsize = if !args.is_empty() { args[0].to_int().unwrap_or(0) } else { 0 };
     let class = PyObject::class(CompactString::from(kind), vec![], IndexMap::new());
     let inst = PyObject::instance(class);
+    let items: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(Vec::new()));
+    let unfinished = Arc::new(Mutex::new(0i64));
+    let is_lifo = kind == "LifoQueue";
+    let is_priority = kind == "PriorityQueue";
+
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
         w.insert(CompactString::from("__queue__"), PyObject::str_val(CompactString::from(kind)));
-        w.insert(CompactString::from("_items"), PyObject::list(vec![]));
         w.insert(CompactString::from("maxsize"), PyObject::int(maxsize));
+
+        // put(item)
+        let it1 = items.clone();
+        let uf1 = unfinished.clone();
+        let ms1 = maxsize;
+        w.insert(CompactString::from("put"), PyObject::native_closure(
+            "put", move |a: &[PyObjectRef]| {
+                if a.is_empty() { return Err(PyException::type_error("put() requires 1 argument")); }
+                let mut v = it1.write();
+                if ms1 > 0 && v.len() as i64 >= ms1 {
+                    return Err(PyException::runtime_error("queue is full"));
+                }
+                if is_priority {
+                    // Insert in sorted order (min-heap via sorted Vec)
+                    let item = a[0].clone();
+                    let pos = v.iter().position(|x| {
+                        // Compare: try numeric first, then string
+                        if let (Ok(a_val), Ok(b_val)) = (item.to_float(), x.to_float()) {
+                            a_val < b_val
+                        } else {
+                            item.py_to_string() < x.py_to_string()
+                        }
+                    }).unwrap_or(v.len());
+                    v.insert(pos, item);
+                } else {
+                    v.push(a[0].clone());
+                }
+                *uf1.lock().unwrap() += 1;
+                Ok(PyObject::none())
+            }));
+
+        // put_nowait(item) — same as put for single-threaded
+        let it1b = items.clone();
+        let uf1b = unfinished.clone();
+        let ms1b = maxsize;
+        w.insert(CompactString::from("put_nowait"), PyObject::native_closure(
+            "put_nowait", move |a: &[PyObjectRef]| {
+                if a.is_empty() { return Err(PyException::type_error("put_nowait() requires 1 argument")); }
+                let mut v = it1b.write();
+                if ms1b > 0 && v.len() as i64 >= ms1b {
+                    return Err(PyException::runtime_error("queue is full"));
+                }
+                v.push(a[0].clone());
+                *uf1b.lock().unwrap() += 1;
+                Ok(PyObject::none())
+            }));
+
+        // get()
+        let it2 = items.clone();
+        w.insert(CompactString::from("get"), PyObject::native_closure(
+            "get", move |_: &[PyObjectRef]| {
+                let mut v = it2.write();
+                if v.is_empty() {
+                    return Err(PyException::runtime_error("queue is empty"));
+                }
+                if is_lifo {
+                    Ok(v.pop().unwrap())
+                } else {
+                    Ok(v.remove(0))
+                }
+            }));
+
+        // get_nowait() — same as get for single-threaded
+        let it2b = items.clone();
+        w.insert(CompactString::from("get_nowait"), PyObject::native_closure(
+            "get_nowait", move |_: &[PyObjectRef]| {
+                let mut v = it2b.write();
+                if v.is_empty() {
+                    return Err(PyException::runtime_error("queue is empty"));
+                }
+                if is_lifo {
+                    Ok(v.pop().unwrap())
+                } else {
+                    Ok(v.remove(0))
+                }
+            }));
+
+        // qsize()
+        let it3 = items.clone();
+        w.insert(CompactString::from("qsize"), PyObject::native_closure(
+            "qsize", move |_: &[PyObjectRef]| {
+                Ok(PyObject::int(it3.read().len() as i64))
+            }));
+
+        // empty()
+        let it4 = items.clone();
+        w.insert(CompactString::from("empty"), PyObject::native_closure(
+            "empty", move |_: &[PyObjectRef]| {
+                Ok(PyObject::bool_val(it4.read().is_empty()))
+            }));
+
+        // full()
+        let it5 = items.clone();
+        let ms2 = maxsize;
+        w.insert(CompactString::from("full"), PyObject::native_closure(
+            "full", move |_: &[PyObjectRef]| {
+                if ms2 <= 0 { return Ok(PyObject::bool_val(false)); }
+                Ok(PyObject::bool_val(it5.read().len() as i64 >= ms2))
+            }));
+
+        // task_done()
+        let uf2 = unfinished.clone();
+        w.insert(CompactString::from("task_done"), PyObject::native_closure(
+            "task_done", move |_: &[PyObjectRef]| {
+                let mut u = uf2.lock().unwrap();
+                if *u <= 0 {
+                    return Err(PyException::value_error("task_done() called too many times"));
+                }
+                *u -= 1;
+                Ok(PyObject::none())
+            }));
+
+        // join() — blocks until all tasks done; stub returns immediately
+        let uf3 = unfinished.clone();
+        w.insert(CompactString::from("join"), PyObject::native_closure(
+            "join", move |_: &[PyObjectRef]| {
+                // In single-threaded context, just return
+                drop(uf3.lock().unwrap());
+                Ok(PyObject::none())
+            }));
+
+        // _items for backwards compat
+        let it6 = items.clone();
+        w.insert(CompactString::from("_items"), PyObject::native_closure(
+            "_items", move |_: &[PyObjectRef]| {
+                Ok(PyObject::list(it6.read().clone()))
+            }));
     }
     Ok(inst)
 }
