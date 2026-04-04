@@ -173,21 +173,38 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         );
     }
 
-    // _make classmethod: create instance from iterable
-    namespace.insert(CompactString::from("_make"), PyObject::native_function(
-        "namedtuple._make",
-        |_args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
-            // _make is dispatched via BuiltinBoundMethod; handled in builtins
-            Ok(PyObject::none())
-        }
-    ));
-    
     let cls = PyObject::class(
         CompactString::from(typename.as_str()),
         vec![PyObject::builtin_type(CompactString::from("tuple"))],
         namespace,
     );
-    
+
+    // _make classmethod: create instance from iterable (needs cls reference)
+    let cls_ref = cls.clone();
+    let field_names_clone = field_names.clone();
+    let make_fn = PyObject::native_closure(
+        "namedtuple._make",
+        move |args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+            if args.is_empty() {
+                return Err(PyException::type_error("_make() requires an iterable argument"));
+            }
+            let items = args[0].to_list()?;
+            let inst = PyObject::instance(cls_ref.clone());
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                for (i, name) in field_names_clone.iter().enumerate() {
+                    let val = items.get(i).cloned().unwrap_or_else(PyObject::none);
+                    attrs.insert(name.clone(), val);
+                }
+                attrs.insert(CompactString::from("_tuple"), PyObject::tuple(items));
+            }
+            Ok(inst)
+        }
+    );
+    if let PyObjectPayload::Class(ref cd) = cls.payload {
+        cd.namespace.write().insert(CompactString::from("_make"), make_fn);
+    }
+
     Ok(cls)
 }
 

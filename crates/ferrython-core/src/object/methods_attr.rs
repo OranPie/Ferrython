@@ -346,6 +346,13 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             }
             PyObjectPayload::Class(cd) => {
                 // Special class attributes
+                if name == "__class__" {
+                    // In CPython, a class's __class__ is its metaclass (usually 'type')
+                    if let Some(meta) = &cd.metaclass {
+                        return Some(meta.clone());
+                    }
+                    return Some(PyObject::builtin_type(CompactString::from("type")));
+                }
                 if name == "__name__" {
                     return Some(PyObject::str_val(cd.name.clone()));
                 }

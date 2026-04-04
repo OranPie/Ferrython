@@ -1089,12 +1089,37 @@ impl VirtualMachine {
                     new_globals.insert(key_str, v.clone());
                 }
                 drop(m);
+                // Merge locals dict into globals for execution scope
+                if args.len() >= 3 {
+                    if let PyObjectPayload::Dict(ref lmap) = args[2].payload {
+                        let lm = lmap.read();
+                        for (k, v) in lm.iter() {
+                            let key_str = match k {
+                                HashableKey::Str(s) => s.clone(),
+                                _ => CompactString::from(format!("{:?}", k)),
+                            };
+                            new_globals.insert(key_str, v.clone());
+                        }
+                        drop(lm);
+                    }
+                }
                 let shared = Arc::new(RwLock::new(new_globals));
                 self.execute_with_globals(code, shared.clone())?;
+                // Write back results to globals dict
                 let results = shared.read();
                 let mut m = map.write();
                 for (k, v) in results.iter() {
                     m.insert(HashableKey::Str(k.clone()), v.clone());
+                }
+                drop(m);
+                // Write back results to locals dict too
+                if args.len() >= 3 {
+                    if let PyObjectPayload::Dict(ref lmap) = args[2].payload {
+                        let mut lm = lmap.write();
+                        for (k, v) in results.iter() {
+                            lm.insert(HashableKey::Str(k.clone()), v.clone());
+                        }
+                    }
                 }
             } else {
                 return Err(PyException::type_error("exec() globals must be a dict"));
