@@ -2124,11 +2124,11 @@ impl VirtualMachine {
                         "expected code object for MAKE_FUNCTION",
                     )),
                 };
-                let name_str = qualname.as_str().map(CompactString::from)
+                let qualname_str = qualname.as_str().map(CompactString::from)
                     .unwrap_or_else(|| code.name.clone());
                 let func = PyFunction {
-                    name: name_str.clone(),
-                    qualname: name_str,
+                    name: code.name.clone(),
+                    qualname: qualname_str,
                     code,
                     defaults,
                     kw_defaults,
