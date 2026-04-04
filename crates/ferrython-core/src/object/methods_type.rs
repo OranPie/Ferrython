@@ -57,6 +57,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
             PyObjectPayload::Super { .. } => "super",
             PyObjectPayload::Partial { .. } => "functools.partial",
             PyObjectPayload::InstanceDict(_) => "dict",
+            PyObjectPayload::BuiltinAwaitable(_) => "coroutine",
         }
 }
 

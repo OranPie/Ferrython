@@ -138,16 +138,15 @@ fn asyncio_sleep(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if secs > 0.0 {
         std::thread::sleep(std::time::Duration::from_secs_f64(secs));
     }
-    Ok(PyObject::none())
+    // Return a BuiltinAwaitable so `await asyncio.sleep()` works correctly
+    Ok(PyObject::builtin_awaitable(PyObject::none()))
 }
 
 fn asyncio_gather(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // asyncio.gather(*coros) — in our single-threaded impl, we just
-    // collect the coroutines. The VM will drive them when it processes
-    // the asyncio.run() that wraps this.
-    // For direct calls, we return a list of the args (they'll be driven later).
+    // asyncio.gather(*coros) — wrap in BuiltinAwaitable with list of coroutines.
+    // The VM's YieldFrom handler will drive each coroutine and collect results.
     let items: Vec<PyObjectRef> = args.to_vec();
-    Ok(PyObject::list(items))
+    Ok(PyObject::builtin_awaitable(PyObject::list(items)))
 }
 
 fn asyncio_create_task(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

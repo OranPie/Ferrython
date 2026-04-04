@@ -24,6 +24,23 @@ pub enum ConstantValue {
     FrozenSet(Vec<ConstantValue>),
 }
 
+impl ConstantValue {
+    /// Bit-exact equality that distinguishes 0.0 from -0.0 and NaN values.
+    /// Used for constant pool deduplication where IEEE 754 semantics of == are wrong.
+    pub fn bit_exact_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
+            (Self::Complex { real: r1, imag: i1 }, Self::Complex { real: r2, imag: i2 }) => {
+                r1.to_bits() == r2.to_bits() && i1.to_bits() == i2.to_bits()
+            }
+            (Self::Tuple(a), Self::Tuple(b)) | (Self::FrozenSet(a), Self::FrozenSet(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.bit_exact_eq(y))
+            }
+            _ => self == other,
+        }
+    }
+}
+
 bitflags! {
     /// Code object flags (matches CPython's co_flags).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,9 +124,10 @@ impl CodeObject {
 
     /// Add a constant and return its index.
     pub fn add_const(&mut self, value: ConstantValue) -> u32 {
-        // Check if constant already exists
+        // Check if constant already exists (use bit-exact comparison for floats
+        // to distinguish 0.0 from -0.0, which are == in IEEE 754 but semantically distinct)
         for (i, c) in self.constants.iter().enumerate() {
-            if c == &value {
+            if c.bit_exact_eq(&value) {
                 return i as u32;
             }
         }

@@ -2576,6 +2576,30 @@ impl VirtualMachine {
                         }
                         Err(e) => return Err(e),
                     }
+                } else if let PyObjectPayload::BuiltinAwaitable(inner_val) = &sub_iter.payload {
+                    // BuiltinAwaitable: immediately resolve with the stored value.
+                    // If the value is a list of coroutines (from asyncio.gather),
+                    // drive each one and collect results.
+                    let result = if let PyObjectPayload::List(items) = &inner_val.payload {
+                        let items = items.read().clone();
+                        let has_coro = items.iter().any(|item| matches!(&item.payload, PyObjectPayload::Coroutine(_)));
+                        if has_coro {
+                            // asyncio.gather pattern: drive each coroutine
+                            let mut results = Vec::with_capacity(items.len());
+                            for item in &items {
+                                let r = self.maybe_await_result(item.clone())?;
+                                results.push(r);
+                            }
+                            PyObject::list(results)
+                        } else {
+                            inner_val.clone()
+                        }
+                    } else {
+                        inner_val.clone()
+                    };
+                    let frame = self.vm_frame();
+                    frame.pop();
+                    frame.push(result);
                 } else if matches!(&sub_iter.payload, PyObjectPayload::Instance(_)) {
                     if let Some(next_method) = sub_iter.get_attr("__next__") {
                         match self.call_object(next_method, vec![]) {
@@ -2630,6 +2654,10 @@ impl VirtualMachine {
                     }
                     // Generator marked as iterable_coroutine (types.coroutine)
                     PyObjectPayload::Generator(_) => {
+                        self.vm_push(obj);
+                    }
+                    // BuiltinAwaitable — native awaitable from asyncio.sleep(), gather(), etc.
+                    PyObjectPayload::BuiltinAwaitable(_) => {
                         self.vm_push(obj);
                     }
                     _ => {

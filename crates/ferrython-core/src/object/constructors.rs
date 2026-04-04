@@ -289,5 +289,10 @@ impl PyObject {
             finished: false,
         }))))
     }
+
+    /// Create a builtin awaitable that immediately resolves to the given value when awaited.
+    pub fn builtin_awaitable(value: PyObjectRef) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::BuiltinAwaitable(value))
+    }
 }
 

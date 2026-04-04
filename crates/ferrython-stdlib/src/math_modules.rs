@@ -899,7 +899,21 @@ pub fn create_random_module() -> PyObjectRef {
         ("choices", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("random.choices requires at least 1 argument")); }
             let items = args[0].to_list()?;
-            let k = if args.len() > 1 { args[1].to_int()? as usize } else { 1 };
+            // Extract k from kwargs dict (last arg if it's a Dict) or positional
+            let mut k = 1usize;
+            for arg in args.iter().skip(1) {
+                if let PyObjectPayload::Dict(d) = &arg.payload {
+                    let d = d.read();
+                    if let Some(kv) = d.get(&HashableKey::Str(CompactString::from("k"))) {
+                        k = kv.to_int()? as usize;
+                    }
+                } else {
+                    // weights positional arg — ignore for now (CPython: population, weights, *, cum_weights, k)
+                }
+            }
+            if items.is_empty() {
+                return Err(PyException::value_error("Cannot choose from an empty population"));
+            }
             let mut result = Vec::with_capacity(k);
             for _ in 0..k {
                 let idx = (simple_random() * items.len() as f64) as usize;
