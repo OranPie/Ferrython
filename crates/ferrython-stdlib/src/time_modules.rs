@@ -144,6 +144,9 @@ pub fn create_datetime_module() -> PyObjectRef {
     dt_ns.insert(CompactString::from("utcnow"), make_builtin(datetime_now));
     dt_ns.insert(CompactString::from("fromisoformat"), make_builtin(datetime_fromisoformat));
     dt_ns.insert(CompactString::from("strptime"), make_builtin(datetime_strptime));
+    dt_ns.insert(CompactString::from("fromtimestamp"), make_builtin(datetime_fromtimestamp));
+    dt_ns.insert(CompactString::from("combine"), make_builtin(datetime_combine));
+    dt_ns.insert(CompactString::from("fromordinal"), make_builtin(datetime_fromordinal));
     dt_ns.insert(CompactString::from("__add__"), make_builtin(datetime_add_dunder));
     dt_ns.insert(CompactString::from("__sub__"), make_builtin(datetime_sub_dunder));
     let datetime_cls = PyObject::class(CompactString::from("datetime"), vec![], dt_ns);
@@ -181,6 +184,7 @@ pub fn create_datetime_module() -> PyObjectRef {
     let mut date_ns = IndexMap::new();
     date_ns.insert(CompactString::from("today"), make_builtin(date_today));
     date_ns.insert(CompactString::from("fromisoformat"), make_builtin(datetime_fromisoformat));
+    date_ns.insert(CompactString::from("fromordinal"), make_builtin(date_fromordinal));
     date_ns.insert(CompactString::from("__add__"), make_builtin(date_add));
     date_ns.insert(CompactString::from("__sub__"), make_builtin(date_sub));
     let date_cls = PyObject::class(CompactString::from("date"), vec![], date_ns);
@@ -206,14 +210,62 @@ pub fn create_datetime_module() -> PyObjectRef {
         );
     }
 
+    // Build timezone class
+    let mut tz_ns = IndexMap::new();
+    tz_ns.insert(CompactString::from("utc"), make_timezone_utc());
+    let tz_cls = PyObject::class(CompactString::from("timezone"), vec![], tz_ns);
+    if let PyObjectPayload::Class(ref cd) = tz_cls.payload {
+        cd.namespace.write().insert(
+            CompactString::from("__init__"),
+            make_builtin(|args| {
+                // timezone(offset) where offset is a timedelta
+                if args.len() < 2 {
+                    return Err(PyException::type_error("timezone() requires an offset argument"));
+                }
+                let offset = &args[1];
+                let offset_secs = offset.get_attr("_total_seconds")
+                    .and_then(|v| Some(v.to_float().unwrap_or(0.0)))
+                    .unwrap_or(0.0);
+                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    let mut w = inst.attrs.write();
+                    w.insert(CompactString::from("__timezone__"), PyObject::bool_val(true));
+                    w.insert(CompactString::from("_offset_seconds"), PyObject::float(offset_secs));
+                    let total_mins = (offset_secs / 60.0) as i64;
+                    let sign = if total_mins >= 0 { "+" } else { "-" };
+                    let abs_mins = total_mins.abs();
+                    let name = format!("UTC{}{:02}:{:02}", sign, abs_mins / 60, abs_mins % 60);
+                    w.insert(CompactString::from("_name"), PyObject::str_val(CompactString::from(&name)));
+                }
+                Ok(PyObject::none())
+            }),
+        );
+    }
+
     make_module("datetime", vec![
         ("datetime", datetime_cls),
         ("date", date_cls),
         ("time", make_builtin(datetime_time_obj)),
         ("timedelta", make_builtin(datetime_timedelta)),
+        ("timezone", tz_cls),
         ("MINYEAR", PyObject::int(1)),
         ("MAXYEAR", PyObject::int(9999)),
     ])
+}
+
+fn make_timezone_utc() -> PyObjectRef {
+    let class = PyObject::class(CompactString::from("timezone"), vec![], IndexMap::new());
+    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class,
+        attrs: Arc::new(RwLock::new(IndexMap::new())),
+        dict_storage: None,
+    }));
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("__timezone__"), PyObject::bool_val(true));
+        w.insert(CompactString::from("_offset_seconds"), PyObject::float(0.0));
+        w.insert(CompactString::from("_name"), PyObject::str_val(CompactString::from("UTC")));
+    }
+    inst
 }
 
 fn datetime_now(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -238,10 +290,49 @@ fn date_today(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(make_date_instance(year, month, day))
 }
 
+fn datetime_fromtimestamp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("fromtimestamp", args, 1)?;
+    let ts = args[0].to_float()?;
+    let secs = ts as u64;
+    let micros = ((ts - secs as f64) * 1_000_000.0) as i64;
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hour = (time_of_day / 3600) as i64;
+    let minute = ((time_of_day % 3600) / 60) as i64;
+    let second = (time_of_day % 60) as i64;
+    let (year, month, day) = days_to_ymd(days as i64 + 719468);
+    Ok(make_datetime_instance(year, month, day, hour, minute, second, micros))
+}
 
+fn datetime_combine(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("combine() requires date and time arguments"));
+    }
+    let date_obj = &args[0];
+    let time_obj = &args[1];
+    let year = date_obj.get_attr("year").and_then(|v| v.as_int()).unwrap_or(1970);
+    let month = date_obj.get_attr("month").and_then(|v| v.as_int()).unwrap_or(1);
+    let day = date_obj.get_attr("day").and_then(|v| v.as_int()).unwrap_or(1);
+    let hour = time_obj.get_attr("hour").and_then(|v| v.as_int()).unwrap_or(0);
+    let minute = time_obj.get_attr("minute").and_then(|v| v.as_int()).unwrap_or(0);
+    let second = time_obj.get_attr("second").and_then(|v| v.as_int()).unwrap_or(0);
+    let microsecond = time_obj.get_attr("microsecond").and_then(|v| v.as_int()).unwrap_or(0);
+    Ok(make_datetime_instance(year, month, day, hour, minute, second, microsecond))
+}
 
+fn datetime_fromordinal(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("fromordinal", args, 1)?;
+    let ordinal = args[0].to_int()?;
+    let (year, month, day) = ordinal_to_ymd(ordinal);
+    Ok(make_datetime_instance(year, month, day, 0, 0, 0, 0))
+}
 
-
+fn date_fromordinal(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("fromordinal", args, 1)?;
+    let ordinal = args[0].to_int()?;
+    let (year, month, day) = ordinal_to_ymd(ordinal);
+    Ok(make_date_instance(year, month, day))
+}
 
 
 
@@ -357,6 +448,49 @@ fn datetime_strptime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     if !found {
                         return Err(PyException::value_error(format!(
                             "time data '{}' does not match format '{}'", date_str, fmt)));
+                    }
+                }
+                'a' | 'A' => {
+                    // Day names (abbreviated or full) — consume but don't use (weekday is derived)
+                    let day_abbrs = ["mon","tue","wed","thu","fri","sat","sun"];
+                    let day_fulls = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
+                    let rest = date_str[si..].to_lowercase();
+                    let mut found = false;
+                    for i in 0..7 {
+                        if code == 'A' && rest.starts_with(day_fulls[i]) {
+                            si += day_fulls[i].len();
+                            found = true;
+                            break;
+                        } else if code == 'a' && rest.starts_with(day_abbrs[i]) {
+                            si += 3;
+                            found = true;
+                            break;
+                        } else if code == 'A' && rest.starts_with(day_abbrs[i]) {
+                            si += 3;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return Err(PyException::value_error(format!(
+                            "time data '{}' does not match format '{}'", date_str, fmt)));
+                    }
+                }
+                'z' => {
+                    // Timezone offset: +HHMM or -HHMM or +HH:MM
+                    let rest = &date_str[si..];
+                    if rest.starts_with('+') || rest.starts_with('-') {
+                        let sign = if rest.starts_with('+') { 1 } else { -1 };
+                        si += 1;
+                        let (hh, new_si) = parse_int(&date_str, si, 2)?;
+                        si = new_si;
+                        // Skip optional colon
+                        if si < str_bytes.len() && str_bytes[si] == b':' {
+                            si += 1;
+                        }
+                        let (mm, new_si) = parse_int(&date_str, si, 2)?;
+                        si = new_si;
+                        let _ = sign * (hh * 3600 + mm * 60); // parsed but not stored
                     }
                 }
                 '%' => {

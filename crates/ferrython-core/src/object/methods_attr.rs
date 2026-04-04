@@ -144,7 +144,8 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
             | "with_suffix" | "with_name"
             | "read_text" | "read_bytes" | "write_text" | "write_bytes"
             | "mkdir" | "rmdir" | "unlink" | "iterdir" | "glob" | "stat"
-            | "joinpath" | "__truediv__")
+            | "joinpath" | "__truediv__"
+            | "touch" | "rglob" | "chmod" | "match" | "samefile" | "rename" | "replace" | "open")
         {
             return Some(make_bound(name));
         }
@@ -179,7 +180,8 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
     // datetime instances
     if inst.attrs.read().contains_key("__datetime__") {
         if matches!(name, "strftime" | "isoformat" | "timestamp" | "replace" | "date" | "time"
-            | "timetuple" | "weekday" | "isoweekday" | "toordinal" | "ctime" | "__str__" | "__repr__")
+            | "timetuple" | "weekday" | "isoweekday" | "toordinal" | "ctime" | "__str__" | "__repr__"
+            | "astimezone" | "utcoffset" | "tzname")
         {
             return Some(make_bound(name));
         }
@@ -191,6 +193,11 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
         if matches!(name, "total_seconds" | "__str__" | "__repr__") {
             return Some(make_bound(name));
         }
+        return inst.attrs.read().get(name).cloned();
+    }
+
+    // timezone instances
+    if inst.attrs.read().contains_key("__timezone__") {
         return inst.attrs.read().get(name).cloned();
     }
 
