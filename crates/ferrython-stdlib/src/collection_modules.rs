@@ -1206,15 +1206,247 @@ fn array_array(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         vec![]
     };
-    // Store as list with typecode metadata
-    let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("typecode"), PyObject::str_val(CompactString::from(&typecode)));
-    attrs.insert(CompactString::from("_data"), PyObject::list(items));
-    attrs.insert(CompactString::from("__array__"), PyObject::bool_val(true));
-    Ok(PyObject::instance_with_attrs(
-        PyObject::str_val(CompactString::from("array")),
-        attrs,
-    ))
+
+    let cls = PyObject::class(CompactString::from("array"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("typecode"), PyObject::str_val(CompactString::from(&typecode)));
+        attrs.insert(CompactString::from("_data"), PyObject::list(items));
+        attrs.insert(CompactString::from("__array__"), PyObject::bool_val(true));
+        attrs.insert(CompactString::from("itemsize"), PyObject::int(match typecode.as_str() {
+            "b" | "B" => 1, "u" | "h" | "H" => 2, "i" | "I" | "l" | "L" | "f" => 4,
+            "q" | "Q" | "d" => 8, _ => 1,
+        }));
+
+        let self_ref = inst.clone();
+
+        attrs.insert(CompactString::from("append"), PyObject::native_closure(
+            "array.append", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                check_args_min("array.append", args, 1)?;
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        items.write().push(args[0].clone());
+                    }
+                }
+                Ok(PyObject::none())
+            }}
+        ));
+
+        attrs.insert(CompactString::from("extend"), PyObject::native_closure(
+            "array.extend", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                check_args_min("array.extend", args, 1)?;
+                let new_items = args[0].to_list()?;
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let mut w = items.write();
+                        for item in new_items { w.push(item); }
+                    }
+                }
+                Ok(PyObject::none())
+            }}
+        ));
+
+        attrs.insert(CompactString::from("pop"), PyObject::native_closure(
+            "array.pop", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let mut w = items.write();
+                        if w.is_empty() {
+                            return Err(PyException::index_error("pop from empty array"));
+                        }
+                        let idx = if !args.is_empty() {
+                            let i = args[0].to_int()? as isize;
+                            if i < 0 { (w.len() as isize + i) as usize } else { i as usize }
+                        } else {
+                            w.len() - 1
+                        };
+                        if idx >= w.len() {
+                            return Err(PyException::index_error("pop index out of range"));
+                        }
+                        return Ok(w.remove(idx));
+                    }
+                }
+                Err(PyException::type_error("corrupted array"))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("insert"), PyObject::native_closure(
+            "array.insert", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                check_args_min("array.insert", args, 2)?;
+                let idx = args[0].to_int()? as usize;
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let mut w = items.write();
+                        let pos = idx.min(w.len());
+                        w.insert(pos, args[1].clone());
+                    }
+                }
+                Ok(PyObject::none())
+            }}
+        ));
+
+        attrs.insert(CompactString::from("remove"), PyObject::native_closure(
+            "array.remove", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                check_args_min("array.remove", args, 1)?;
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let mut w = items.write();
+                        let target = &args[0];
+                        if let Some(pos) = w.iter().position(|x| x.py_to_string() == target.py_to_string()) {
+                            w.remove(pos);
+                            return Ok(PyObject::none());
+                        }
+                        return Err(PyException::value_error("array.remove(x): x not in array"));
+                    }
+                }
+                Err(PyException::type_error("corrupted array"))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("index"), PyObject::native_closure(
+            "array.index", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                check_args_min("array.index", args, 1)?;
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let r = items.read();
+                        let target = &args[0];
+                        if let Some(pos) = r.iter().position(|x| x.py_to_string() == target.py_to_string()) {
+                            return Ok(PyObject::int(pos as i64));
+                        }
+                        return Err(PyException::value_error("array.index(x): x not in array"));
+                    }
+                }
+                Err(PyException::type_error("corrupted array"))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("count"), PyObject::native_closure(
+            "array.count", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                check_args_min("array.count", args, 1)?;
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let r = items.read();
+                        let target = &args[0];
+                        let n = r.iter().filter(|x| x.py_to_string() == target.py_to_string()).count();
+                        return Ok(PyObject::int(n as i64));
+                    }
+                }
+                Ok(PyObject::int(0))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("reverse"), PyObject::native_closure(
+            "array.reverse", { let s = self_ref.clone(); move |_args: &[PyObjectRef]| {
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        items.write().reverse();
+                    }
+                }
+                Ok(PyObject::none())
+            }}
+        ));
+
+        attrs.insert(CompactString::from("tolist"), PyObject::native_closure(
+            "array.tolist", { let s = self_ref.clone(); move |_args: &[PyObjectRef]| {
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        return Ok(PyObject::list(items.read().clone()));
+                    }
+                }
+                Ok(PyObject::list(vec![]))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("tobytes"), PyObject::native_closure(
+            "array.tobytes", { let s = self_ref.clone(); move |_args: &[PyObjectRef]| {
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let r = items.read();
+                        let bytes: Vec<u8> = r.iter().filter_map(|x| {
+                            x.to_int().ok().map(|v| v as u8)
+                        }).collect();
+                        return Ok(PyObject::bytes(bytes));
+                    }
+                }
+                Ok(PyObject::bytes(vec![]))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("__len__"), PyObject::native_closure(
+            "array.__len__", { let s = self_ref.clone(); move |_args: &[PyObjectRef]| {
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        return Ok(PyObject::int(items.read().len() as i64));
+                    }
+                }
+                Ok(PyObject::int(0))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+            "array.__getitem__", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                check_args_min("array.__getitem__", args, 1)?;
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let r = items.read();
+                        let i = args[0].to_int()? as isize;
+                        let idx = if i < 0 { (r.len() as isize + i) as usize } else { i as usize };
+                        if idx >= r.len() {
+                            return Err(PyException::index_error("array index out of range"));
+                        }
+                        return Ok(r[idx].clone());
+                    }
+                }
+                Err(PyException::type_error("corrupted array"))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("__setitem__"), PyObject::native_closure(
+            "array.__setitem__", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                check_args_min("array.__setitem__", args, 2)?;
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let mut w = items.write();
+                        let i = args[0].to_int()? as isize;
+                        let idx = if i < 0 { (w.len() as isize + i) as usize } else { i as usize };
+                        if idx >= w.len() {
+                            return Err(PyException::index_error("array assignment index out of range"));
+                        }
+                        w[idx] = args[1].clone();
+                        return Ok(PyObject::none());
+                    }
+                }
+                Err(PyException::type_error("corrupted array"))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("__contains__"), PyObject::native_closure(
+            "array.__contains__", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                check_args_min("array.__contains__", args, 1)?;
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let r = items.read();
+                        let target = &args[0];
+                        return Ok(PyObject::bool_val(
+                            r.iter().any(|x| x.py_to_string() == target.py_to_string())
+                        ));
+                    }
+                }
+                Ok(PyObject::bool_val(false))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("__iter__"), PyObject::native_closure(
+            "array.__iter__", { let s = self_ref.clone(); move |_args: &[PyObjectRef]| {
+                if let Some(data) = s.get_attr("_data") {
+                    return data.get_iter();
+                }
+                Err(PyException::type_error("corrupted array"))
+            }}
+        ));
+    }
+    Ok(inst)
 }
 
 // ── operator module ──

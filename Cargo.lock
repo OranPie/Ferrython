@@ -247,6 +247,7 @@ version = "0.1.0"
 dependencies = [
  "compact_str",
  "digest",
+ "ferrython-bytecode",
  "ferrython-core",
  "ferrython-gc",
  "indexmap",

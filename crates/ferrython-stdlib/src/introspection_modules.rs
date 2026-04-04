@@ -4,8 +4,9 @@ use compact_str::CompactString;
 use ferrython_core::error::PyException;
 use ferrython_core::object::{
     PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods,
-    make_module, make_builtin, check_args,
+    make_module, make_builtin, check_args, check_args_min,
 };
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 
 // ── subprocess module (basic) ──
@@ -197,24 +198,133 @@ pub fn create_inspect_module() -> PyObjectRef {
         })),
         ("isbuiltin", make_builtin(|args| {
             check_args("inspect.isbuiltin", args, 1)?;
-            Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::NativeFunction { .. } | PyObjectPayload::BuiltinFunction(_) | PyObjectPayload::BuiltinType(_))))
+            Ok(PyObject::bool_val(matches!(&args[0].payload,
+                PyObjectPayload::NativeFunction { .. } | PyObjectPayload::BuiltinFunction(_) | PyObjectPayload::BuiltinType(_))))
+        })),
+        ("isgenerator", make_builtin(|args| {
+            check_args("inspect.isgenerator", args, 1)?;
+            Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::Generator(_))))
+        })),
+        ("isgeneratorfunction", make_builtin(|args| {
+            check_args("inspect.isgeneratorfunction", args, 1)?;
+            if let PyObjectPayload::Function(f) = &args[0].payload {
+                Ok(PyObject::bool_val(f.code.flags.contains(ferrython_bytecode::code::CodeFlags::GENERATOR)))
+            } else {
+                Ok(PyObject::bool_val(false))
+            }
+        })),
+        ("iscoroutine", make_builtin(|args| {
+            check_args("inspect.iscoroutine", args, 1)?;
+            Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::Coroutine(_))))
+        })),
+        ("iscoroutinefunction", make_builtin(|args| {
+            check_args("inspect.iscoroutinefunction", args, 1)?;
+            if let PyObjectPayload::Function(f) = &args[0].payload {
+                Ok(PyObject::bool_val(f.code.flags.contains(ferrython_bytecode::code::CodeFlags::COROUTINE)))
+            } else {
+                Ok(PyObject::bool_val(false))
+            }
+        })),
+        ("isroutine", make_builtin(|args| {
+            check_args("inspect.isroutine", args, 1)?;
+            Ok(PyObject::bool_val(matches!(&args[0].payload,
+                PyObjectPayload::Function(_) | PyObjectPayload::BoundMethod { .. } |
+                PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } |
+                PyObjectPayload::BuiltinBoundMethod { .. })))
+        })),
+        ("isabstract", make_builtin(|args| {
+            check_args("inspect.isabstract", args, 1)?;
+            Ok(PyObject::bool_val(args[0].get_attr("__abstractmethods__").is_some()))
         })),
         ("getmembers", make_builtin(|args| {
-            check_args("inspect.getmembers", args, 1)?;
+            check_args_min("inspect.getmembers", args, 1)?;
             let dir_names = args[0].dir();
-            let dir_list: Vec<PyObjectRef> = dir_names.into_iter().map(|n| PyObject::str_val(n)).collect();
-            let names = PyObject::list(dir_list);
             let mut result = Vec::new();
-            if let PyObjectPayload::List(items) = &names.payload {
-                for item in items.read().iter() {
-                    let name_str = item.py_to_string();
-                    if let Some(val) = args[0].get_attr(&name_str) {
-                        result.push(PyObject::tuple(vec![item.clone(), val]));
+            for n in &dir_names {
+                if let Some(val) = args[0].get_attr(n.as_str()) {
+                    // If predicate provided (args[1]), filter
+                    if args.len() > 1 {
+                        // Can't call VM functions from native — skip predicate filter
                     }
+                    result.push(PyObject::tuple(vec![PyObject::str_val(n.clone()), val]));
                 }
             }
             Ok(PyObject::list(result))
         })),
+        ("getdoc", make_builtin(|args| {
+            check_args("inspect.getdoc", args, 1)?;
+            Ok(args[0].get_attr("__doc__").unwrap_or_else(PyObject::none))
+        })),
+        ("getfile", make_builtin(|args| {
+            check_args("inspect.getfile", args, 1)?;
+            if let PyObjectPayload::Function(f) = &args[0].payload {
+                return Ok(PyObject::str_val(f.code.filename.clone()));
+            }
+            if let PyObjectPayload::Module(m) = &args[0].payload {
+                if let Some(file) = m.attrs.read().get("__file__").cloned() {
+                    return Ok(file);
+                }
+            }
+            Err(PyException::type_error("could not get file for object"))
+        })),
+        ("getmodule", make_builtin(|args| {
+            check_args("inspect.getmodule", args, 1)?;
+            Ok(args[0].get_attr("__module__").unwrap_or_else(PyObject::none))
+        })),
+        ("signature", make_builtin(|args| {
+            check_args("inspect.signature", args, 1)?;
+            if let PyObjectPayload::Function(f) = &args[0].payload {
+                let total = (f.code.arg_count + f.code.kwonlyarg_count) as usize;
+                let params: Vec<String> = f.code.varnames.iter()
+                    .take(total)
+                    .map(|v| v.to_string())
+                    .collect();
+                let sig_str = format!("({})", params.join(", "));
+                Ok(PyObject::str_val(CompactString::from(sig_str)))
+            } else {
+                Ok(PyObject::str_val(CompactString::from("(*args, **kwargs)")))
+            }
+        })),
+        ("getfullargspec", make_builtin(|args| {
+            check_args("inspect.getfullargspec", args, 1)?;
+            if let PyObjectPayload::Function(f) = &args[0].payload {
+                let ac = f.code.arg_count as usize;
+                let kwc = f.code.kwonlyarg_count as usize;
+                let arg_names: Vec<PyObjectRef> = f.code.varnames.iter()
+                    .take(ac)
+                    .map(|v| PyObject::str_val(v.clone()))
+                    .collect();
+                let kwonly_names: Vec<PyObjectRef> = f.code.varnames.iter()
+                    .skip(ac)
+                    .take(kwc)
+                    .map(|v| PyObject::str_val(v.clone()))
+                    .collect();
+                // Return a FullArgSpec-like namedtuple as dict for simplicity
+                let mut map = IndexMap::new();
+                map.insert(HashableKey::Str(CompactString::from("args")), PyObject::list(arg_names));
+                map.insert(HashableKey::Str(CompactString::from("varargs")), PyObject::none());
+                map.insert(HashableKey::Str(CompactString::from("varkw")), PyObject::none());
+                map.insert(HashableKey::Str(CompactString::from("defaults")),
+                    if f.defaults.is_empty() { PyObject::none() } else { PyObject::tuple(f.defaults.clone()) });
+                map.insert(HashableKey::Str(CompactString::from("kwonlyargs")), PyObject::list(kwonly_names));
+                map.insert(HashableKey::Str(CompactString::from("kwonlydefaults")),
+                    if f.kw_defaults.is_empty() { PyObject::none() }
+                    else {
+                        let mut kw_map = IndexMap::new();
+                        for (k, v) in &f.kw_defaults {
+                            kw_map.insert(HashableKey::Str(k.clone()), v.clone());
+                        }
+                        PyObject::dict(kw_map)
+                    });
+                map.insert(HashableKey::Str(CompactString::from("annotations")), PyObject::dict(IndexMap::new()));
+                Ok(PyObject::dict(map))
+            } else {
+                Err(PyException::type_error("unsupported callable"))
+            }
+        })),
+        // Parameter and Signature classes (simplified placeholders for compatibility)
+        ("Parameter", PyObject::class(CompactString::from("Parameter"), vec![], IndexMap::new())),
+        ("Signature", PyObject::class(CompactString::from("Signature"), vec![], IndexMap::new())),
     ])
 }
 

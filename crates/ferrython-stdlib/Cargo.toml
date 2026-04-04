@@ -7,6 +7,7 @@ description = "Standard library modules for Ferrython"
 
 [dependencies]
 ferrython-core = { workspace = true }
+ferrython-bytecode = { workspace = true }
 ferrython-gc = { workspace = true }
 compact_str = { workspace = true }
 indexmap = { workspace = true }
