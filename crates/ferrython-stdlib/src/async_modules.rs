@@ -237,18 +237,17 @@ fn make_asyncio_queue_class() -> PyObjectRef {
             if let PyObjectPayload::List(items) = &items_ref.payload {
                 items.write().push(put_args[0].clone());
             }
-            Ok(PyObject::none())
+            Ok(PyObject::builtin_awaitable(PyObject::none()))
         });
         let get_fn = PyObject::native_closure("Queue.get", move |_args: &[PyObjectRef]| {
             if let PyObjectPayload::List(items) = &items_ref2.payload {
                 let mut w = items.write();
                 if w.is_empty() {
-                    // In real asyncio this would block; we raise Empty for sync usage
                     return Err(PyException::new(ExceptionKind::RuntimeError, "Queue is empty"));
                 }
-                return Ok(w.remove(0));
+                return Ok(PyObject::builtin_awaitable(w.remove(0)));
             }
-            Ok(PyObject::none())
+            Ok(PyObject::builtin_awaitable(PyObject::none()))
         });
         let qsize_fn = PyObject::native_closure("Queue.qsize", move |_args: &[PyObjectRef]| {
             if let PyObjectPayload::List(items) = &items_ref3.payload {
