@@ -143,6 +143,7 @@ pub fn create_datetime_module() -> PyObjectRef {
     dt_ns.insert(CompactString::from("today"), make_builtin(datetime_now));
     dt_ns.insert(CompactString::from("utcnow"), make_builtin(datetime_now));
     dt_ns.insert(CompactString::from("fromisoformat"), make_builtin(datetime_fromisoformat));
+    dt_ns.insert(CompactString::from("strptime"), make_builtin(datetime_strptime));
     let datetime_cls = PyObject::class(CompactString::from("datetime"), vec![], dt_ns);
     // Store __init__ for constructor dispatch
     if let PyObjectPayload::Class(ref cd) = datetime_cls.payload {
@@ -274,6 +275,126 @@ fn datetime_fromisoformat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         (h, m, sec)
     } else { (0, 0, 0) };
     Ok(make_datetime_instance(year, month, day, hour, minute, second, 0))
+}
+
+/// datetime.strptime(date_string, format) — parse a date string with a format specifier.
+fn datetime_strptime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("strptime() requires 2 arguments: date_string and format"));
+    }
+    let date_str = args[0].py_to_string();
+    let fmt = args[1].py_to_string();
+
+    let mut year: i64 = 1900;
+    let mut month: i64 = 1;
+    let mut day: i64 = 1;
+    let mut hour: i64 = 0;
+    let mut minute: i64 = 0;
+    let mut second: i64 = 0;
+    let mut microsecond: i64 = 0;
+
+    let fmt_bytes = fmt.as_bytes();
+    let str_bytes = date_str.as_bytes();
+    let mut fi = 0;
+    let mut si = 0;
+
+    while fi < fmt_bytes.len() && si < str_bytes.len() {
+        if fmt_bytes[fi] == b'%' && fi + 1 < fmt_bytes.len() {
+            fi += 1;
+            let code = fmt_bytes[fi] as char;
+            fi += 1;
+            match code {
+                'Y' => { let (v, new_si) = parse_int(&date_str, si, 4)?; year = v; si = new_si; }
+                'm' => { let (v, new_si) = parse_int(&date_str, si, 2)?; month = v; si = new_si; }
+                'd' => { let (v, new_si) = parse_int(&date_str, si, 2)?; day = v; si = new_si; }
+                'H' => { let (v, new_si) = parse_int(&date_str, si, 2)?; hour = v; si = new_si; }
+                'M' => { let (v, new_si) = parse_int(&date_str, si, 2)?; minute = v; si = new_si; }
+                'S' => { let (v, new_si) = parse_int(&date_str, si, 2)?; second = v; si = new_si; }
+                'f' => { let (v, new_si) = parse_int(&date_str, si, 6)?; microsecond = v; si = new_si; }
+                'y' => {
+                    let (v, new_si) = parse_int(&date_str, si, 2)?;
+                    year = if v >= 69 { 1900 + v } else { 2000 + v };
+                    si = new_si;
+                }
+                'j' => { let (_v, new_si) = parse_int(&date_str, si, 3)?; si = new_si; }
+                'p' => {
+                    // AM/PM
+                    let rest = &date_str[si..];
+                    if rest.starts_with("PM") || rest.starts_with("pm") {
+                        if hour < 12 { hour += 12; }
+                        si += 2;
+                    } else if rest.starts_with("AM") || rest.starts_with("am") {
+                        if hour == 12 { hour = 0; }
+                        si += 2;
+                    }
+                }
+                'I' => {
+                    // 12-hour clock
+                    let (v, new_si) = parse_int(&date_str, si, 2)?;
+                    hour = v;
+                    si = new_si;
+                }
+                'b' | 'B' => {
+                    // Month name (abbreviated or full)
+                    let months = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+                    let rest = date_str[si..].to_lowercase();
+                    let mut found = false;
+                    for (i, m) in months.iter().enumerate() {
+                        if rest.starts_with(m) {
+                            month = (i + 1) as i64;
+                            si += if code == 'b' { 3 } else {
+                                // Full month names
+                                let full = ["january","february","march","april","may","june",
+                                            "july","august","september","october","november","december"];
+                                if rest.starts_with(full[i]) { full[i].len() } else { 3 }
+                            };
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return Err(PyException::value_error(format!(
+                            "time data '{}' does not match format '{}'", date_str, fmt)));
+                    }
+                }
+                '%' => {
+                    if str_bytes[si] != b'%' {
+                        return Err(PyException::value_error(format!(
+                            "time data '{}' does not match format '{}'", date_str, fmt)));
+                    }
+                    si += 1;
+                }
+                _ => {
+                    // Skip unknown format codes
+                }
+            }
+        } else {
+            // Literal character — must match
+            if fmt_bytes[fi] == str_bytes[si] {
+                fi += 1;
+                si += 1;
+            } else {
+                return Err(PyException::value_error(format!(
+                    "time data '{}' does not match format '{}'", date_str, fmt)));
+            }
+        }
+    }
+
+    Ok(make_datetime_instance(year, month, day, hour, minute, second, microsecond))
+}
+
+/// Parse an integer of up to `max_digits` from `s` starting at position `pos`.
+fn parse_int(s: &str, pos: usize, max_digits: usize) -> PyResult<(i64, usize)> {
+    let bytes = s.as_bytes();
+    let mut end = pos;
+    while end < bytes.len() && end - pos < max_digits && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    if end == pos {
+        return Err(PyException::value_error(format!("unconverted data remains: '{}'", &s[pos..])));
+    }
+    let val: i64 = s[pos..end].parse().map_err(|_| PyException::value_error("invalid integer"))?;
+    Ok((val, end))
 }
 
 fn days_to_ymd(days: i64) -> (i64, i64, i64) {

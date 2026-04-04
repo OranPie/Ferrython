@@ -2,13 +2,30 @@
 
 use compact_str::CompactString;
 use std::sync::atomic::{AtomicI64, Ordering};
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args,
 };
 
 static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(1000);
+
+/// Thread-local active exception info for sys.exc_info().
+/// Set by the VM when entering an except block, cleared when leaving.
+thread_local! {
+    static ACTIVE_EXC_INFO: std::cell::RefCell<Option<(ExceptionKind, String, Option<PyObjectRef>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Called by VM when entering an except handler.
+pub fn set_exc_info(kind: ExceptionKind, msg: String, obj: Option<PyObjectRef>) {
+    ACTIVE_EXC_INFO.with(|c| *c.borrow_mut() = Some((kind, msg, obj)));
+}
+
+/// Called by VM when leaving an except handler.
+pub fn clear_exc_info() {
+    ACTIVE_EXC_INFO.with(|c| *c.borrow_mut() = None);
+}
 
 /// Get the current recursion limit (for VM stack depth checking).
 pub fn get_recursion_limit() -> i64 {
@@ -108,7 +125,20 @@ pub fn create_sys_module() -> PyObjectRef {
         ("meta_path", PyObject::list(vec![])),
         ("path_hooks", PyObject::list(vec![])),
         ("exc_info", make_builtin(|_| {
-            Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none(), PyObject::none()]))
+            ACTIVE_EXC_INFO.with(|c| {
+                let borrow = c.borrow();
+                if let Some((kind, msg, obj)) = borrow.as_ref() {
+                    let type_obj = PyObject::exception_type(kind.clone());
+                    let value_obj = if let Some(o) = obj {
+                        o.clone()
+                    } else {
+                        PyObject::str_val(CompactString::from(msg.as_str()))
+                    };
+                    Ok(PyObject::tuple(vec![type_obj, value_obj, PyObject::none()]))
+                } else {
+                    Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none(), PyObject::none()]))
+                }
+            })
         })),
         ("_getframe", make_builtin(|_| {
             // Return a minimal frame-like object with common attributes

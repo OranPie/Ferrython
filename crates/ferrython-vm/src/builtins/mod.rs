@@ -108,6 +108,32 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         ("DeprecationWarning", ExceptionKind::DeprecationWarning),
         ("RuntimeWarning", ExceptionKind::RuntimeWarning),
         ("UserWarning", ExceptionKind::UserWarning),
+        // OS exceptions
+        ("TimeoutError", ExceptionKind::TimeoutError),
+        ("IsADirectoryError", ExceptionKind::IsADirectoryError),
+        ("NotADirectoryError", ExceptionKind::NotADirectoryError),
+        ("ProcessLookupError", ExceptionKind::ProcessLookupError),
+        ("ConnectionError", ExceptionKind::ConnectionError),
+        ("ConnectionResetError", ExceptionKind::ConnectionResetError),
+        ("ConnectionAbortedError", ExceptionKind::ConnectionAbortedError),
+        ("ConnectionRefusedError", ExceptionKind::ConnectionRefusedError),
+        ("InterruptedError", ExceptionKind::InterruptedError),
+        ("ChildProcessError", ExceptionKind::ChildProcessError),
+        ("BlockingIOError", ExceptionKind::BlockingIOError),
+        ("BrokenPipeError", ExceptionKind::BrokenPipeError),
+        ("BufferError", ExceptionKind::BufferError),
+        ("ReferenceError", ExceptionKind::ReferenceError),
+        // Warning subtypes
+        ("SyntaxWarning", ExceptionKind::SyntaxWarning),
+        ("FutureWarning", ExceptionKind::FutureWarning),
+        ("ImportWarning", ExceptionKind::ImportWarning),
+        ("UnicodeWarning", ExceptionKind::UnicodeWarning),
+        ("BytesWarning", ExceptionKind::BytesWarning),
+        ("ResourceWarning", ExceptionKind::ResourceWarning),
+        ("PendingDeprecationWarning", ExceptionKind::PendingDeprecationWarning),
+        // Indentation
+        ("IndentationError", ExceptionKind::IndentationError),
+        ("TabError", ExceptionKind::TabError),
     ];
     for (name, kind) in exc_types {
         m.insert(CompactString::from(name), PyObject::exception_type(kind));

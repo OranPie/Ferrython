@@ -763,7 +763,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "bit_length" | "bit_count" | "to_bytes" | "conjugate" | "__abs__" |
                 "__int__" | "__float__" | "__index__" | "__bool__" |
                 "__repr__" | "__str__" | "__hash__" | "__format__" |
-                "__ceil__" | "__floor__" | "__round__" | "__trunc__" => Some(Arc::new(PyObject {
+                "__ceil__" | "__floor__" | "__round__" | "__trunc__" |
+                "as_integer_ratio" => Some(Arc::new(PyObject {
                     payload: PyObjectPayload::BuiltinBoundMethod {
                         receiver: obj.clone(),
                         method_name: CompactString::from(name),

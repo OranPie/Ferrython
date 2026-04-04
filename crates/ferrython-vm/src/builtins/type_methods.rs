@@ -771,25 +771,31 @@ pub(super) fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> 
                 return Err(PyException::value_error("cannot convert Infinity or NaN to integer ratio"));
             }
             // Decompose f into mantissa * 2^exponent
-            let (mantissa, exponent, _) = {
+            let (mantissa, exponent) = {
                 let bits = f.to_bits();
-                let sign = if bits >> 63 != 0 { -1i64 } else { 1 };
+                let sign: i64 = if bits >> 63 != 0 { -1 } else { 1 };
                 let exp = ((bits >> 52) & 0x7ff) as i64;
                 let frac = (bits & 0x000f_ffff_ffff_ffff) as i64;
                 if exp == 0 {
                     // Subnormal
-                    (sign * frac, -1022 - 52, sign)
+                    (sign * frac, -1022i64 - 52)
                 } else {
-                    (sign * ((1i64 << 52) | frac), exp - 1023 - 52, sign)
+                    (sign * ((1i64 << 52) | frac), exp - 1023 - 52)
                 }
             };
-            if exponent >= 0 {
-                let numer = mantissa * (1i64 << exponent.min(62));
-                Ok(PyObject::tuple(vec![PyObject::int(numer), PyObject::int(1)]))
+            let (numer, denom) = if exponent >= 0 {
+                (mantissa << exponent.min(62), 1i64)
             } else {
-                let denom = 1i64 << (-exponent).min(62);
-                Ok(PyObject::tuple(vec![PyObject::int(mantissa), PyObject::int(denom)]))
+                (mantissa, 1i64 << (-exponent).min(62))
+            };
+            // Simplify by GCD
+            fn gcd(mut a: i64, mut b: i64) -> i64 {
+                a = a.abs(); b = b.abs();
+                while b != 0 { let t = b; b = a % b; a = t; }
+                a
             }
+            let g = gcd(numer, denom);
+            Ok(PyObject::tuple(vec![PyObject::int(numer / g), PyObject::int(denom / g)]))
         }
         "conjugate" => Ok(PyObject::float(f)),
         "real" => Ok(PyObject::float(f)),

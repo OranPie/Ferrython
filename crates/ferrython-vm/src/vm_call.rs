@@ -781,11 +781,24 @@ impl VirtualMachine {
                                 .map(|(_, v)| v.py_to_string()).unwrap_or_else(|| " ".to_string());
                             let end = kwargs.iter().find(|(k, _)| k.as_str() == "end")
                                 .map(|(_, v)| v.py_to_string()).unwrap_or_else(|| "\n".to_string());
+                            let file_obj = kwargs.iter().find(|(k, _)| k.as_str() == "file").map(|(_, v)| v.clone());
+                            let _flush = kwargs.iter().find(|(k, _)| k.as_str() == "flush")
+                                .map(|(_,v)| v.is_truthy()).unwrap_or(false);
                             let mut parts = Vec::new();
                             for a in &pos_args {
                                 parts.push(self.vm_str(a)?);
                             }
-                            print!("{}{}", parts.join(&sep), end);
+                            let output = format!("{}{}", parts.join(&sep), end);
+                            if let Some(f) = file_obj {
+                                // Write to file-like object via .write() method
+                                if let Some(write_fn) = f.get_attr("write") {
+                                    self.call_object(write_fn, vec![PyObject::str_val(CompactString::from(&output))])?;
+                                } else {
+                                    print!("{}", output);
+                                }
+                            } else {
+                                print!("{}", output);
+                            }
                             return Ok(PyObject::none());
                         }
                         "max" | "min" => {

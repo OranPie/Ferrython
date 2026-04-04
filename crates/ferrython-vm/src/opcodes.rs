@@ -1970,6 +1970,8 @@ impl VirtualMachine {
             Opcode::ReturnValue => {
                 let frame = self.vm_frame();
                 let value = frame.pop();
+                // If inside a finally block, the new return overrides any pending return
+                let mut found_finally = false;
                 while let Some(block) = frame.block_stack.last() {
                     if block.kind == BlockKind::Finally {
                         let handler = block.handler;
@@ -1977,12 +1979,14 @@ impl VirtualMachine {
                         frame.pending_return = Some(value.clone());
                         frame.push(PyObject::none());
                         frame.ip = handler;
+                        found_finally = true;
                         break;
                     } else {
                         frame.block_stack.pop();
                     }
                 }
-                if frame.pending_return.is_none() {
+                if !found_finally {
+                    // Return immediately — new return value overrides any pending
                     return Ok(Some(value));
                 }
             }
@@ -2045,7 +2049,11 @@ impl VirtualMachine {
                 self.vm_frame().push_block(BlockKind::Except, instr.arg as usize);
             }
             Opcode::PopBlock => { self.vm_frame().pop_block(); }
-            Opcode::PopExcept => { self.vm_frame().pop_block(); }
+            Opcode::PopExcept => {
+                self.vm_frame().pop_block();
+                self.active_exception = None;
+                ferrython_stdlib::clear_exc_info();
+            }
             Opcode::EndFinally => {
                 let frame = self.vm_frame();
                 if let Some(ret_val) = frame.pending_return.take() {

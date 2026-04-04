@@ -85,6 +85,12 @@ impl VirtualMachine {
                     if let Some(handler_ip) = self.unwind_except() {
                         // Store active exception for bare `raise` re-raise
                         self.active_exception = Some(exc.clone());
+                        // Update thread-local for sys.exc_info()
+                        ferrython_stdlib::set_exc_info(
+                            exc.kind.clone(),
+                            exc.message.clone(),
+                            exc.original.clone(),
+                        );
                         let frame = self.call_stack.last_mut().unwrap();
                         // CPython pushes (traceback, value, type) — 3 items
                         let (exc_value, exc_type) = if let Some(orig) = &exc.original {

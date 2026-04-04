@@ -817,7 +817,7 @@ impl Compiler {
                 // Pop the traceback
                 self.emit_op(Opcode::PopTop);
 
-                self.emit_op(Opcode::PopExcept);
+                // Compile handler body BEFORE PopExcept (matches CPython order)
                 self.compile_body(&handler.body)?;
 
                 // Clean up: store None into handler var then delete it (prevents
@@ -830,6 +830,7 @@ impl Compiler {
                     self.delete_name(name);
                 }
 
+                self.emit_op(Opcode::PopExcept);
                 handler_end_labels.push(self.emit_jump(Opcode::JumpForward));
                 self.patch_jump_here(no_match);
             } else {
@@ -842,7 +843,7 @@ impl Compiler {
                 }
                 self.emit_op(Opcode::PopTop);
 
-                self.emit_op(Opcode::PopExcept);
+                // Compile handler body BEFORE PopExcept (matches CPython order)
                 self.compile_body(&handler.body)?;
 
                 // Clean up handler variable (same as typed except path)
@@ -854,6 +855,7 @@ impl Compiler {
                     self.delete_name(name);
                 }
 
+                self.emit_op(Opcode::PopExcept);
                 if i < handlers.len() - 1 {
                     handler_end_labels.push(self.emit_jump(Opcode::JumpForward));
                 }
