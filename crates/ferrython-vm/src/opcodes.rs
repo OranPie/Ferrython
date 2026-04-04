@@ -1637,9 +1637,14 @@ impl VirtualMachine {
                         }
                         Err(e) => return Err(e),
                     }
-                } else if matches!(&iter.payload, PyObjectPayload::Instance(_)) {
+                } else if matches!(&iter.payload, PyObjectPayload::Instance(_) | PyObjectPayload::Module { .. }) {
                     if let Some(next_method) = iter.get_attr("__next__") {
-                        match self.call_object(next_method, vec![]) {
+                        let call_args = if matches!(&iter.payload, PyObjectPayload::Module { .. }) {
+                            vec![iter.clone()]
+                        } else {
+                            vec![]
+                        };
+                        match self.call_object(next_method, call_args) {
                             Ok(value) => { self.vm_push(value); }
                             Err(e) if e.kind == ExceptionKind::StopIteration => {
                                 let f = self.vm_frame();

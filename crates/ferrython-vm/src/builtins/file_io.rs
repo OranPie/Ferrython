@@ -44,6 +44,8 @@ pub(super) fn builtin_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     all_attrs.insert(CompactString::from("readable"), PyObject::native_function("readable", file_readable));
     all_attrs.insert(CompactString::from("writable"), PyObject::native_function("writable", file_writable));
     all_attrs.insert(CompactString::from("seekable"), PyObject::native_function("seekable", file_seekable));
+    all_attrs.insert(CompactString::from("__iter__"), PyObject::native_function("__iter__", file_iter));
+    all_attrs.insert(CompactString::from("__next__"), PyObject::native_function("__next__", file_next));
     all_attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
     
     Ok(PyObject::module_with_attrs(CompactString::from("_file"), all_attrs))
@@ -275,4 +277,32 @@ pub(super) fn file_writable(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn file_seekable(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::bool_val(true))
+}
+
+/// __iter__: returns self (file objects are their own iterators)
+pub(super) fn file_iter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("__iter__ called without self"));
+    }
+    Ok(args[0].clone())
+}
+
+/// __next__: reads next line, raises StopIteration at EOF
+pub(super) fn file_next(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let state = get_file_state(args)?;
+    let mut s = state.write();
+    if s.closed {
+        return Err(PyException::value_error("I/O operation on closed file"));
+    }
+    if s.position >= s.content.len() {
+        return Err(PyException::stop_iteration());
+    }
+    let rest = &s.content[s.position..];
+    let line_end = rest.find('\n').map(|i| i + 1).unwrap_or(rest.len());
+    let line = rest[..line_end].to_string();
+    s.position += line_end;
+    if line.is_empty() {
+        return Err(PyException::stop_iteration());
+    }
+    Ok(PyObject::str_val(CompactString::from(line)))
 }

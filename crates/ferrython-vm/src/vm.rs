@@ -366,10 +366,21 @@ impl VirtualMachine {
     pub(crate) fn try_call_dunder(
         &mut self, obj: &PyObjectRef, dunder: &str, args: Vec<PyObjectRef>,
     ) -> Result<Option<PyObjectRef>, PyException> {
-        if let PyObjectPayload::Instance(_) = &obj.payload {
-            if let Some(method) = obj.get_attr(dunder) {
-                return Ok(Some(self.call_object(method, args)?));
+        match &obj.payload {
+            PyObjectPayload::Instance(_) => {
+                if let Some(method) = obj.get_attr(dunder) {
+                    return Ok(Some(self.call_object(method, args)?));
+                }
             }
+            PyObjectPayload::Module { .. } => {
+                if let Some(method) = obj.get_attr(dunder) {
+                    // Module methods expect self as first arg (like file objects with _bind_methods)
+                    let mut method_args = vec![obj.clone()];
+                    method_args.extend(args);
+                    return Ok(Some(self.call_object(method, method_args)?));
+                }
+            }
+            _ => {}
         }
         Ok(None)
     }
