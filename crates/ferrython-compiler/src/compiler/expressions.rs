@@ -204,10 +204,36 @@ impl Compiler {
             }
 
             ExpressionKind::Set { elts } => {
-                for elt in elts {
-                    self.compile_expression(elt)?;
+                let has_star = elts.iter().any(|e| matches!(e.node, ExpressionKind::Starred { .. }));
+                if has_star {
+                    // Build empty set, then add regular elements and update with starred
+                    self.emit_arg(Opcode::BuildSet, 0);
+                    let mut n_regular = 0u32;
+                    for elt in elts {
+                        if let ExpressionKind::Starred { value, .. } = &elt.node {
+                            // Flush accumulated regular elements
+                            if n_regular > 0 {
+                                self.emit_arg(Opcode::BuildSet, n_regular);
+                                self.emit_arg(Opcode::SetUpdate, 1);
+                                n_regular = 0;
+                            }
+                            self.compile_expression(value)?;
+                            self.emit_arg(Opcode::SetUpdate, 1);
+                        } else {
+                            self.compile_expression(elt)?;
+                            n_regular += 1;
+                        }
+                    }
+                    if n_regular > 0 {
+                        self.emit_arg(Opcode::BuildSet, n_regular);
+                        self.emit_arg(Opcode::SetUpdate, 1);
+                    }
+                } else {
+                    for elt in elts {
+                        self.compile_expression(elt)?;
+                    }
+                    self.emit_arg(Opcode::BuildSet, elts.len() as u32);
                 }
-                self.emit_arg(Opcode::BuildSet, elts.len() as u32);
             }
 
             ExpressionKind::Dict { keys, values } => {
