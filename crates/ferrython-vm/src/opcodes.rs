@@ -933,16 +933,57 @@ impl VirtualMachine {
                 let value = self.vm_pop();
                 match &obj.payload {
                     PyObjectPayload::List(items) => {
-                        if let PyObjectPayload::Slice { start, stop, step: _ } = &key.payload {
+                        if let PyObjectPayload::Slice { start, stop, step } = &key.payload {
+                            let step_val = step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
                             let new_items = value.to_list()?;
                             let mut w = items.write();
                             let len = w.len() as i64;
-                            let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
-                            let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
-                            let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
-                            let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
-                            let e = e.max(s);
-                            w.splice(s..e, new_items);
+                            
+                            if step_val == 1 || step_val == 0 {
+                                // Contiguous slice assignment: a[s:e] = items
+                                let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
+                                let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
+                                let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
+                                let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
+                                let e = e.max(s);
+                                w.splice(s..e, new_items);
+                            } else {
+                                // Extended slice assignment: a[s:e:step] = items
+                                let s_val = if step_val > 0 {
+                                    start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
+                                } else {
+                                    start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
+                                };
+                                let e_val = if step_val > 0 {
+                                    stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
+                                } else {
+                                    stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
+                                };
+                                // Collect indices
+                                let mut indices = Vec::new();
+                                let mut i = if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) };
+                                let end = if e_val < 0 { (len + e_val).max(-1) } else { e_val.min(len) };
+                                if step_val > 0 {
+                                    while i < end {
+                                        indices.push(i as usize);
+                                        i += step_val;
+                                    }
+                                } else {
+                                    while i > end {
+                                        indices.push(i as usize);
+                                        i += step_val;
+                                    }
+                                }
+                                if indices.len() != new_items.len() {
+                                    return Err(PyException::value_error(format!(
+                                        "attempt to assign sequence of size {} to extended slice of size {}",
+                                        new_items.len(), indices.len()
+                                    )));
+                                }
+                                for (idx, val) in indices.iter().zip(new_items.iter()) {
+                                    w[*idx] = val.clone();
+                                }
+                            }
                         } else {
                             let idx = key.to_int()?;
                             let mut w = items.write();
