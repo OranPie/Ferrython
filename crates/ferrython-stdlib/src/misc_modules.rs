@@ -1470,5 +1470,189 @@ pub fn create_errno_module() -> PyObjectRef {
     ])
 }
 
+// ── uuid module ────────────────────────────────────────────────────
+pub fn create_uuid_module() -> PyObjectRef {
+    make_module("uuid", vec![
+        ("uuid4", make_builtin(uuid_uuid4)),
+        ("uuid1", make_builtin(uuid_uuid1)),
+        ("UUID", make_builtin(uuid_UUID)),
+        ("NAMESPACE_DNS", PyObject::str_val(CompactString::from("6ba7b810-9dad-11d1-80b4-00c04fd430c8"))),
+        ("NAMESPACE_URL", PyObject::str_val(CompactString::from("6ba7b811-9dad-11d1-80b4-00c04fd430c8"))),
+    ])
+}
+
+fn random_uuid_bytes() -> [u8; 16] {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+    // Simple xorshift-based PRNG for generating random bytes
+    let mut state = seed ^ 0x517cc1b727220a95;
+    let mut bytes = [0u8; 16];
+    for chunk in bytes.chunks_mut(8) {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        for (i, b) in chunk.iter_mut().enumerate() {
+            *b = ((state >> (i * 8)) & 0xFF) as u8;
+        }
+    }
+    bytes
+}
+
+fn format_uuid(bytes: &[u8; 16]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    )
+}
+
+fn uuid_uuid4(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let _ = args;
+    let mut bytes = random_uuid_bytes();
+    // Set version 4 bits
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    // Set variant bits
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    let hex_str = format_uuid(&bytes);
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("hex"), PyObject::str_val(CompactString::from(hex_str.replace('-', ""))));
+    attrs.insert(CompactString::from("version"), PyObject::int(4));
+    attrs.insert(CompactString::from("int"), PyObject::int(
+        u128::from_be_bytes(bytes.try_into().unwrap()) as i64
+    ));
+    attrs.insert(CompactString::from("__str_val__"), PyObject::str_val(CompactString::from(&hex_str)));
+    attrs.insert(CompactString::from("__uuid__"), PyObject::bool_val(true));
+    Ok(PyObject::instance_with_attrs(
+        PyObject::str_val(CompactString::from("UUID")),
+        attrs,
+    ))
+}
+
+fn uuid_uuid1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // uuid1 is time-based; use same approach as uuid4 for simplicity
+    uuid_uuid4(args)
+}
+
+#[allow(non_snake_case)]
+fn uuid_UUID(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("UUID", args, 1)?;
+    let s = args[0].py_to_string();
+    let hex_str = s.replace('-', "");
+    if hex_str.len() != 32 || !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(PyException::value_error(format!("badly formed hexadecimal UUID string: '{}'", s)));
+    }
+    // Parse the canonical form
+    let canonical = format!("{}-{}-{}-{}-{}",
+        &hex_str[0..8], &hex_str[8..12], &hex_str[12..16],
+        &hex_str[16..20], &hex_str[20..32]);
+    let version = u8::from_str_radix(&hex_str[12..13], 16).unwrap_or(0);
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("hex"), PyObject::str_val(CompactString::from(&hex_str)));
+    attrs.insert(CompactString::from("version"), PyObject::int(version as i64));
+    attrs.insert(CompactString::from("__str_val__"), PyObject::str_val(CompactString::from(&canonical)));
+    attrs.insert(CompactString::from("__uuid__"), PyObject::bool_val(true));
+    Ok(PyObject::instance_with_attrs(
+        PyObject::str_val(CompactString::from("UUID")),
+        attrs,
+    ))
+}
+
+// ── codecs module ──────────────────────────────────────────────────
+pub fn create_codecs_module() -> PyObjectRef {
+    make_module("codecs", vec![
+        ("encode", make_builtin(codecs_encode)),
+        ("decode", make_builtin(codecs_decode)),
+        ("lookup", make_builtin(codecs_lookup)),
+        ("getencoder", make_builtin(codecs_getencoder)),
+        ("getdecoder", make_builtin(codecs_getdecoder)),
+        ("utf_8_encode", make_builtin(codecs_utf8_encode)),
+        ("utf_8_decode", make_builtin(codecs_utf8_decode)),
+    ])
+}
+
+fn codecs_encode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("codecs.encode", args, 1)?;
+    let s = args[0].py_to_string();
+    let encoding = if args.len() > 1 { args[1].py_to_string() } else { "utf-8".to_string() };
+    match encoding.to_lowercase().replace('-', "_").as_str() {
+        "utf_8" | "utf8" => Ok(PyObject::bytes(s.as_bytes().to_vec())),
+        "ascii" => {
+            let bytes: Vec<u8> = s.chars().filter_map(|c| if c.is_ascii() { Some(c as u8) } else { None }).collect();
+            Ok(PyObject::bytes(bytes))
+        }
+        "latin_1" | "latin1" | "iso_8859_1" => {
+            let bytes: Vec<u8> = s.chars().map(|c| c as u8).collect();
+            Ok(PyObject::bytes(bytes))
+        }
+        _ => Err(PyException::value_error(format!("unknown encoding: {}", encoding))),
+    }
+}
+
+fn codecs_decode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("codecs.decode", args, 1)?;
+    let bytes = extract_bytes(&args[0])?;
+    let encoding = if args.len() > 1 { args[1].py_to_string() } else { "utf-8".to_string() };
+    match encoding.to_lowercase().replace('-', "_").as_str() {
+        "utf_8" | "utf8" => {
+            let s = String::from_utf8(bytes).map_err(|_| PyException::value_error("invalid utf-8"))?;
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }
+        "ascii" => {
+            let s: String = bytes.iter().map(|&b| b as char).collect();
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }
+        "latin_1" | "latin1" | "iso_8859_1" => {
+            let s: String = bytes.iter().map(|&b| b as char).collect();
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }
+        _ => Err(PyException::value_error(format!("unknown encoding: {}", encoding))),
+    }
+}
+
+fn codecs_lookup(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("codecs.lookup", args, 1)?;
+    let encoding = args[0].py_to_string().to_lowercase().replace('-', "_");
+    match encoding.as_str() {
+        "utf_8" | "utf8" | "ascii" | "latin_1" | "latin1" | "iso_8859_1" => {
+            Ok(PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from(&encoding)),
+                PyObject::none(), // encode
+                PyObject::none(), // decode
+                PyObject::none(), // stream reader
+            ]))
+        }
+        _ => Err(PyException::value_error(format!("unknown encoding: {}", encoding))),
+    }
+}
+
+fn codecs_getencoder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("codecs.getencoder", args, 1)?;
+    Ok(make_builtin(codecs_encode))
+}
+
+fn codecs_getdecoder(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("codecs.getdecoder", args, 1)?;
+    Ok(make_builtin(codecs_decode))
+}
+
+fn codecs_utf8_encode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("codecs.utf_8_encode", args, 1)?;
+    let s = args[0].py_to_string();
+    let b = s.as_bytes().to_vec();
+    let len = b.len() as i64;
+    Ok(PyObject::tuple(vec![PyObject::bytes(b), PyObject::int(len)]))
+}
+
+fn codecs_utf8_decode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("codecs.utf_8_decode", args, 1)?;
+    let bytes = extract_bytes(&args[0])?;
+    let s = String::from_utf8(bytes.clone()).map_err(|_| PyException::value_error("invalid utf-8"))?;
+    let len = bytes.len() as i64;
+    Ok(PyObject::tuple(vec![PyObject::str_val(CompactString::from(s)), PyObject::int(len)]))
+}
+
 // ── _thread module ──
 

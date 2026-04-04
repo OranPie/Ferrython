@@ -37,6 +37,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "random" => Some(math_modules::create_random_module()),
         "heapq" => Some(math_modules::create_heapq_module()),
         "bisect" => Some(math_modules::create_bisect_module()),
+        "fractions" => Some(math_modules::create_fractions_module()),
         // System & OS
         "sys" => Some(sys_modules::create_sys_module()),
         "os" => Some(sys_modules::create_os_module()),
@@ -53,6 +54,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "functools" => Some(collection_modules::create_functools_module()),
         "itertools" => Some(collection_modules::create_itertools_module()),
         "queue" => Some(collection_modules::create_queue_module()),
+        "array" => Some(collection_modules::create_array_module()),
         // Serialization
         "json" => Some(serial_modules::create_json_module()),
         "csv" => Some(serial_modules::create_csv_module()),
@@ -85,6 +87,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "pprint" => Some(misc_modules::create_pprint_module()),
         "argparse" => Some(misc_modules::create_argparse_module()),
         "errno" => Some(misc_modules::create_errno_module()),
+        "uuid" => Some(misc_modules::create_uuid_module()),
+        "codecs" => Some(misc_modules::create_codecs_module()),
         // Introspection
         "warnings" => Some(introspection_modules::create_warnings_module()),
         "traceback" => Some(introspection_modules::create_traceback_module()),

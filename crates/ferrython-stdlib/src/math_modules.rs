@@ -1206,3 +1206,90 @@ fn insort_right(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         Err(PyException::type_error("insort_right: first arg must be a list"))
     }
 }
+
+// ── fractions module ─────────────────────────────────────────────────
+pub fn create_fractions_module() -> PyObjectRef {
+    make_module("fractions", vec![
+        ("Fraction", make_builtin(fraction_new)),
+        ("gcd", make_builtin(fraction_gcd)),
+    ])
+}
+
+fn fraction_gcd_val(mut a: i64, mut b: i64) -> i64 {
+    a = a.abs(); b = b.abs();
+    while b != 0 { let t = b; b = a % b; a = t; }
+    a
+}
+
+fn fraction_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let (num, den) = if args.is_empty() {
+        (0i64, 1i64)
+    } else if args.len() == 1 {
+        match &args[0].payload {
+            PyObjectPayload::Int(n) => (n.to_i64().unwrap_or(0), 1),
+            PyObjectPayload::Float(f) => {
+                // Convert float to fraction via limiting denominator
+                let (n, d) = float_to_fraction(*f);
+                (n, d)
+            }
+            PyObjectPayload::Str(s) => {
+                if let Some((n_str, d_str)) = s.split_once('/') {
+                    let n: i64 = n_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
+                    let d: i64 = d_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
+                    if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
+                    (n, d)
+                } else {
+                    let n: i64 = s.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
+                    (n, 1)
+                }
+            }
+            _ => return Err(PyException::type_error("Fraction() argument must be int, float, or str")),
+        }
+    } else {
+        let n = args[0].to_int()?;
+        let d = args[1].to_int()?;
+        if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
+        (n, d)
+    };
+    // Normalize
+    let g = fraction_gcd_val(num, den);
+    let (n, d) = if den < 0 { (-num / g, -den / g) } else { (num / g, den / g) };
+    // Create instance with numerator/denominator attributes
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("numerator"), PyObject::int(n));
+    attrs.insert(CompactString::from("denominator"), PyObject::int(d));
+    attrs.insert(CompactString::from("__fraction__"), PyObject::bool_val(true));
+    // Store as a tuple for easy access
+    Ok(PyObject::instance_with_attrs(
+        PyObject::str_val(CompactString::from("Fraction")),
+        attrs,
+    ))
+}
+
+fn float_to_fraction(f: f64) -> (i64, i64) {
+    if f == 0.0 { return (0, 1); }
+    // Use continued fraction approximation
+    let sign = if f < 0.0 { -1i64 } else { 1 };
+    let mut x = f.abs();
+    let mut p0: i64 = 0; let mut q0: i64 = 1;
+    let mut p1: i64 = 1; let mut q1: i64 = 0;
+    for _ in 0..64 {
+        let a = x as i64;
+        let p2 = a * p1 + p0;
+        let q2 = a * q1 + q0;
+        if q2 > 1_000_000_000 { break; }
+        p0 = p1; q0 = q1;
+        p1 = p2; q1 = q2;
+        let frac = x - a as f64;
+        if frac.abs() < 1e-15 { break; }
+        x = 1.0 / frac;
+    }
+    (sign * p1, q1)
+}
+
+fn fraction_gcd(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("gcd", args, 2)?;
+    let a = args[0].to_int()?;
+    let b = args[1].to_int()?;
+    Ok(PyObject::int(fraction_gcd_val(a, b)))
+}

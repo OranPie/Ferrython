@@ -981,3 +981,37 @@ fn create_queue_instance(kind: &str, args: &[PyObjectRef]) -> PyResult<PyObjectR
     }
     Ok(inst)
 }
+
+// ── array module ─────────────────────────────────────────────────────
+pub fn create_array_module() -> PyObjectRef {
+    make_module("array", vec![
+        ("array", make_builtin(array_array)),
+        ("typecodes", PyObject::str_val(CompactString::from("bBuhHiIlLqQfd"))),
+    ])
+}
+
+fn array_array(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("array() requires at least 1 argument"));
+    }
+    let typecode = args[0].py_to_string();
+    if typecode.len() != 1 || !"bBuhHiIlLqQfd".contains(&typecode) {
+        return Err(PyException::value_error(format!(
+            "bad typecode (must be b, B, u, h, H, i, I, l, L, q, Q, f, or d): '{}'", typecode
+        )));
+    }
+    let items = if args.len() > 1 {
+        args[1].to_list()?
+    } else {
+        vec![]
+    };
+    // Store as list with typecode metadata
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("typecode"), PyObject::str_val(CompactString::from(&typecode)));
+    attrs.insert(CompactString::from("_data"), PyObject::list(items));
+    attrs.insert(CompactString::from("__array__"), PyObject::bool_val(true));
+    Ok(PyObject::instance_with_attrs(
+        PyObject::str_val(CompactString::from("array")),
+        attrs,
+    ))
+}
