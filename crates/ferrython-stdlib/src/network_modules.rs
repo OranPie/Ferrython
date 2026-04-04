@@ -1765,3 +1765,180 @@ struct HttpConnState {
     stream: Option<TcpStream>,
     response_data: Option<Vec<u8>>,
 }
+
+// ── http.server module ──
+
+pub fn create_http_server_module() -> PyObjectRef {
+    let http_server_fn = make_builtin(|args: &[PyObjectRef]| {
+        let addr = if !args.is_empty() {
+            args[0].py_to_string()
+        } else {
+            "0.0.0.0:8000".to_string()
+        };
+        let cls = PyObject::class(CompactString::from("HTTPServer"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("server_address"), PyObject::str_val(CompactString::from(addr.as_str())));
+            w.insert(CompactString::from("serve_forever"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("handle_request"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("shutdown"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("server_close"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+        }
+        Ok(inst)
+    });
+
+    let base_handler_cls = PyObject::class(
+        CompactString::from("BaseHTTPRequestHandler"), vec![], IndexMap::new(),
+    );
+
+    let simple_handler_cls = PyObject::class(
+        CompactString::from("SimpleHTTPRequestHandler"), vec![], IndexMap::new(),
+    );
+
+    make_module("http.server", vec![
+        ("HTTPServer", http_server_fn),
+        ("BaseHTTPRequestHandler", base_handler_cls),
+        ("SimpleHTTPRequestHandler", simple_handler_cls),
+    ])
+}
+
+// ── http.cookiejar module ──
+
+pub fn create_http_cookiejar_module() -> PyObjectRef {
+    let cookiejar_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("CookieJar"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            let cookies: Arc<Mutex<Vec<PyObjectRef>>> = Arc::new(Mutex::new(vec![]));
+
+            let c = cookies.clone();
+            w.insert(CompactString::from("set_cookie"), PyObject::native_closure(
+                "CookieJar.set_cookie", move |args: &[PyObjectRef]| {
+                    if !args.is_empty() {
+                        c.lock().unwrap().push(args[0].clone());
+                    }
+                    Ok(PyObject::none())
+                }
+            ));
+
+            let c2 = cookies.clone();
+            w.insert(CompactString::from("clear"), PyObject::native_closure(
+                "CookieJar.clear", move |_args: &[PyObjectRef]| {
+                    c2.lock().unwrap().clear();
+                    Ok(PyObject::none())
+                }
+            ));
+
+            let c3 = cookies.clone();
+            w.insert(CompactString::from("__len__"), PyObject::native_closure(
+                "CookieJar.__len__", move |_args: &[PyObjectRef]| {
+                    Ok(PyObject::int(c3.lock().unwrap().len() as i64))
+                }
+            ));
+
+            let c4 = cookies.clone();
+            w.insert(CompactString::from("__iter__"), PyObject::native_closure(
+                "CookieJar.__iter__", move |_args: &[PyObjectRef]| {
+                    Ok(PyObject::list(c4.lock().unwrap().clone()))
+                }
+            ));
+        }
+        Ok(inst)
+    });
+
+    make_module("http.cookiejar", vec![
+        ("CookieJar", cookiejar_fn),
+        ("FileCookieJar", make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none()))),
+        ("MozillaCookieJar", make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none()))),
+    ])
+}
+
+// ── ssl module ──
+
+pub fn create_ssl_module() -> PyObjectRef {
+    let ssl_context_fn = make_builtin(|args: &[PyObjectRef]| {
+        let protocol = if !args.is_empty() {
+            args[0].to_int().unwrap_or(2)
+        } else {
+            2
+        };
+        let cls = PyObject::class(CompactString::from("SSLContext"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("protocol"), PyObject::int(protocol));
+
+            w.insert(CompactString::from("wrap_socket"), make_builtin(|args: &[PyObjectRef]| {
+                if !args.is_empty() {
+                    Ok(args[0].clone())
+                } else {
+                    Ok(PyObject::none())
+                }
+            }));
+
+            w.insert(CompactString::from("load_cert_chain"), make_builtin(|_args: &[PyObjectRef]| {
+                Ok(PyObject::none())
+            }));
+
+            w.insert(CompactString::from("load_verify_locations"), make_builtin(|_args: &[PyObjectRef]| {
+                Ok(PyObject::none())
+            }));
+
+            w.insert(CompactString::from("set_ciphers"), make_builtin(|_args: &[PyObjectRef]| {
+                Ok(PyObject::none())
+            }));
+
+            w.insert(CompactString::from("set_default_verify_paths"), make_builtin(|_args: &[PyObjectRef]| {
+                Ok(PyObject::none())
+            }));
+
+            w.insert(CompactString::from("check_hostname"), PyObject::bool_val(true));
+            w.insert(CompactString::from("verify_mode"), PyObject::int(2));
+        }
+        Ok(inst)
+    });
+
+    let create_default_context_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("SSLContext"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("protocol"), PyObject::int(2));
+            w.insert(CompactString::from("check_hostname"), PyObject::bool_val(true));
+            w.insert(CompactString::from("verify_mode"), PyObject::int(2));
+            w.insert(CompactString::from("wrap_socket"), make_builtin(|args: &[PyObjectRef]| {
+                if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
+            }));
+            w.insert(CompactString::from("load_cert_chain"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("load_verify_locations"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("set_ciphers"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("set_default_verify_paths"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+        }
+        Ok(inst)
+    });
+
+    make_module("ssl", vec![
+        ("SSLContext", ssl_context_fn),
+        ("create_default_context", create_default_context_fn),
+        ("SSLError", PyObject::exception_type(ExceptionKind::OSError)),
+        ("SSLCertVerificationError", PyObject::exception_type(ExceptionKind::OSError)),
+        ("PROTOCOL_TLS", PyObject::int(2)),
+        ("PROTOCOL_TLS_CLIENT", PyObject::int(16)),
+        ("PROTOCOL_TLS_SERVER", PyObject::int(17)),
+        ("PROTOCOL_SSLv23", PyObject::int(2)),
+        ("CERT_NONE", PyObject::int(0)),
+        ("CERT_OPTIONAL", PyObject::int(1)),
+        ("CERT_REQUIRED", PyObject::int(2)),
+        ("OP_NO_SSLv2", PyObject::int(0x01000000)),
+        ("OP_NO_SSLv3", PyObject::int(0x02000000)),
+        ("OP_NO_TLSv1", PyObject::int(0x04000000)),
+        ("HAS_SNI", PyObject::bool_val(true)),
+        ("HAS_ECDH", PyObject::bool_val(true)),
+        ("HAS_NPN", PyObject::bool_val(false)),
+        ("HAS_ALPN", PyObject::bool_val(true)),
+        ("OPENSSL_VERSION", PyObject::str_val(CompactString::from("OpenSSL 3.0.0 (stub)"))),
+        ("OPENSSL_VERSION_NUMBER", PyObject::int(0x30000000)),
+    ])
+}

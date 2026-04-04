@@ -1016,3 +1016,162 @@ pub fn create_difflib_module() -> PyObjectRef {
 }
 
 
+
+// ── html.parser module ──
+
+pub fn create_html_parser_module() -> PyObjectRef {
+    let html_parser_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("HTMLParser"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            let data_buf: Arc<parking_lot::RwLock<String>> = Arc::new(parking_lot::RwLock::new(String::new()));
+            let pos: Arc<parking_lot::RwLock<(i64, i64)>> = Arc::new(parking_lot::RwLock::new((1, 0)));
+
+            let db = data_buf.clone();
+            w.insert(CompactString::from("feed"), PyObject::native_closure(
+                "HTMLParser.feed", move |args: &[PyObjectRef]| {
+                    check_args_min("HTMLParser.feed", args, 1)?;
+                    db.write().push_str(&args[0].py_to_string());
+                    Ok(PyObject::none())
+                }
+            ));
+
+            let db2 = data_buf.clone();
+            w.insert(CompactString::from("close"), PyObject::native_closure(
+                "HTMLParser.close", move |_args: &[PyObjectRef]| {
+                    db2.write().clear();
+                    Ok(PyObject::none())
+                }
+            ));
+
+            let db3 = data_buf.clone();
+            w.insert(CompactString::from("reset"), PyObject::native_closure(
+                "HTMLParser.reset", move |_args: &[PyObjectRef]| {
+                    db3.write().clear();
+                    Ok(PyObject::none())
+                }
+            ));
+
+            let p = pos.clone();
+            w.insert(CompactString::from("getpos"), PyObject::native_closure(
+                "HTMLParser.getpos", move |_args: &[PyObjectRef]| {
+                    let (line, col) = *p.read();
+                    Ok(PyObject::tuple(vec![PyObject::int(line), PyObject::int(col)]))
+                }
+            ));
+
+            // Callback stubs
+            for name in &["handle_starttag", "handle_endtag", "handle_data",
+                          "handle_comment", "handle_decl", "handle_pi",
+                          "handle_startendtag", "handle_entityref", "handle_charref"] {
+                w.insert(CompactString::from(*name), make_builtin(|_args: &[PyObjectRef]| {
+                    Ok(PyObject::none())
+                }));
+            }
+        }
+        Ok(inst)
+    });
+
+    make_module("html.parser", vec![
+        ("HTMLParser", html_parser_fn),
+    ])
+}
+
+// ── unicodedata module ──
+
+pub fn create_unicodedata_module() -> PyObjectRef {
+    let name_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("unicodedata.name", args, 1)?;
+        let s = args[0].py_to_string();
+        let ch = s.chars().next().unwrap_or('\0');
+        // Return a placeholder name based on codepoint
+        let cp = ch as u32;
+        let name = if ch.is_ascii_uppercase() {
+            format!("LATIN CAPITAL LETTER {}", ch)
+        } else if ch.is_ascii_lowercase() {
+            format!("LATIN SMALL LETTER {}", ch.to_uppercase().next().unwrap_or(ch))
+        } else if ch.is_ascii_digit() {
+            format!("DIGIT {}", ch)
+        } else {
+            format!("U+{:04X}", cp)
+        };
+        Ok(PyObject::str_val(CompactString::from(name)))
+    });
+
+    let lookup_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("unicodedata.lookup", args, 1)?;
+        let name = args[0].py_to_string().to_uppercase();
+        // Handle common lookups
+        if name.starts_with("LATIN CAPITAL LETTER ") {
+            let letter = name.strip_prefix("LATIN CAPITAL LETTER ").unwrap_or("A");
+            let ch = letter.chars().next().unwrap_or('A');
+            Ok(PyObject::str_val(CompactString::from(ch.to_string().as_str())))
+        } else if name.starts_with("LATIN SMALL LETTER ") {
+            let letter = name.strip_prefix("LATIN SMALL LETTER ").unwrap_or("a");
+            let ch = letter.chars().next().unwrap_or('a').to_lowercase().next().unwrap_or('a');
+            Ok(PyObject::str_val(CompactString::from(ch.to_string().as_str())))
+        } else if name.starts_with("DIGIT ") {
+            let digit = name.strip_prefix("DIGIT ").unwrap_or("0");
+            Ok(PyObject::str_val(CompactString::from(digit)))
+        } else {
+            Err(PyException::key_error(format!("undefined character name '{}'", name)))
+        }
+    });
+
+    let category_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("unicodedata.category", args, 1)?;
+        let s = args[0].py_to_string();
+        let ch = s.chars().next().unwrap_or('\0');
+        let cat = if ch.is_ascii_uppercase() { "Lu" }
+            else if ch.is_ascii_lowercase() { "Ll" }
+            else if ch.is_ascii_digit() { "Nd" }
+            else if ch.is_ascii_punctuation() { "Po" }
+            else if ch.is_ascii_whitespace() { "Zs" }
+            else if ch.is_alphabetic() { "L" }
+            else { "Cn" };
+        Ok(PyObject::str_val(CompactString::from(cat)))
+    });
+
+    let numeric_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("unicodedata.numeric", args, 1)?;
+        let s = args[0].py_to_string();
+        let ch = s.chars().next().unwrap_or('\0');
+        if let Some(d) = ch.to_digit(10) {
+            Ok(PyObject::float(d as f64))
+        } else if args.len() > 1 {
+            Ok(args[1].clone())
+        } else {
+            Err(PyException::value_error("not a numeric character"))
+        }
+    });
+
+    let decimal_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("unicodedata.decimal", args, 1)?;
+        let s = args[0].py_to_string();
+        let ch = s.chars().next().unwrap_or('\0');
+        if let Some(d) = ch.to_digit(10) {
+            Ok(PyObject::int(d as i64))
+        } else if args.len() > 1 {
+            Ok(args[1].clone())
+        } else {
+            Err(PyException::value_error("not a decimal character"))
+        }
+    });
+
+    let normalize_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("unicodedata.normalize", args, 2)?;
+        // Return the string as-is
+        Ok(args[1].clone())
+    });
+
+    make_module("unicodedata", vec![
+        ("name", name_fn),
+        ("lookup", lookup_fn),
+        ("category", category_fn),
+        ("numeric", numeric_fn),
+        ("decimal", decimal_fn),
+        ("normalize", normalize_fn),
+        ("unidata_version", PyObject::str_val(CompactString::from("15.0.0"))),
+    ])
+}

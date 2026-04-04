@@ -86,7 +86,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // Type system
         "typing" => Some(type_modules::create_typing_module()),
         "typing_extensions" => Some(type_modules::create_typing_module()),
-        "abc" => Some(type_modules::create_abc_module()),
+        "abc" => Some(misc_modules::create_abc_module()),
         "enum" => Some(type_modules::create_enum_module()),
         "types" => Some(type_modules::create_types_module()),
         "collections.abc" => Some(type_modules::create_collections_abc_module()),
@@ -167,6 +167,31 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "sched" => Some(misc_modules::create_sched_module()),
         // Binary & encoding
         "binascii" => Some(serial_modules::create_binascii_module()),
+        // concurrent.futures
+        "concurrent" => {
+            let futures = concurrency_modules::create_concurrent_futures_module();
+            Some(ferrython_core::object::make_module("concurrent", vec![("futures", futures)]))
+        }
+        "concurrent.futures" => Some(concurrency_modules::create_concurrent_futures_module()),
+        // HTML parser & unicode
+        "html.parser" => Some(text_modules::create_html_parser_module()),
+        "unicodedata" => Some(text_modules::create_unicodedata_module()),
+        // HTTP server, cookies & SSL
+        "http.server" => Some(network_modules::create_http_server_module()),
+        "http.cookiejar" => Some(network_modules::create_http_cookiejar_module()),
+        "ssl" => Some(network_modules::create_ssl_module()),
+        // XML DOM & SAX
+        "xml.dom" => Some(xml_modules::create_xml_dom_module()),
+        "xml.dom.minidom" => Some(xml_modules::create_xml_dom_minidom_module()),
+        "xml.sax" => Some(xml_modules::create_xml_sax_module()),
+        // Testing & debugging
+        "unittest.mock" => Some(misc_modules::create_unittest_mock_module()),
+        "doctest" => Some(misc_modules::create_doctest_module()),
+        "pdb" => Some(misc_modules::create_pdb_module()),
+        "profile" => Some(misc_modules::create_profile_module()),
+        "cProfile" => Some(misc_modules::create_cprofile_module()),
+        // Persistence
+        "shelve" => Some(misc_modules::create_shelve_module()),
         _ => None,
     }
 }

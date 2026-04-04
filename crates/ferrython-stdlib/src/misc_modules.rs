@@ -2374,3 +2374,365 @@ pub fn create_sched_module() -> PyObjectRef {
     });
     make_module("sched", vec![("scheduler", scheduler_fn)])
 }
+
+// ── unittest.mock module ──
+
+pub fn create_unittest_mock_module() -> PyObjectRef {
+    let make_mock = |name: &'static str| -> PyObjectRef {
+        PyObject::native_closure(name, move |_args: &[PyObjectRef]| {
+            let cls = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                let call_count: Arc<RwLock<i64>> = Arc::new(RwLock::new(0));
+                let call_args_list: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(vec![]));
+                let return_value: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
+
+                let rv = return_value.clone();
+                w.insert(CompactString::from("return_value"), PyObject::native_closure(
+                    "Mock.return_value", move |_: &[PyObjectRef]| Ok(rv.read().clone())
+                ));
+
+                let cc = call_count.clone();
+                w.insert(CompactString::from("call_count"), PyObject::native_closure(
+                    "Mock.call_count", move |_: &[PyObjectRef]| Ok(PyObject::int(*cc.read()))
+                ));
+
+                let cal = call_args_list.clone();
+                w.insert(CompactString::from("call_args_list"), PyObject::native_closure(
+                    "Mock.call_args_list", move |_: &[PyObjectRef]| Ok(PyObject::list(cal.read().clone()))
+                ));
+
+                w.insert(CompactString::from("called"), PyObject::native_closure(
+                    "Mock.called", {
+                        let cc2 = call_count.clone();
+                        move |_: &[PyObjectRef]| Ok(PyObject::bool_val(*cc2.read() > 0))
+                    }
+                ));
+
+                let cc3 = call_count.clone();
+                let cal2 = call_args_list.clone();
+                let rv2 = return_value.clone();
+                w.insert(CompactString::from("__call__"), PyObject::native_closure(
+                    "Mock.__call__", move |args: &[PyObjectRef]| {
+                        *cc3.write() += 1;
+                        cal2.write().push(PyObject::tuple(args.to_vec()));
+                        Ok(rv2.read().clone())
+                    }
+                ));
+
+                w.insert(CompactString::from("assert_called"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+                w.insert(CompactString::from("assert_called_once"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+                w.insert(CompactString::from("assert_called_with"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+                w.insert(CompactString::from("reset_mock"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            }
+            Ok(inst)
+        })
+    };
+
+    // patch function — returns a context manager / decorator stub
+    let patch_fn = make_builtin(|args: &[PyObjectRef]| {
+        let target = if !args.is_empty() { args[0].py_to_string() } else { String::new() };
+        let cls = PyObject::class(CompactString::from("_patch"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("attribute"), PyObject::str_val(CompactString::from(target.as_str())));
+            let ir = inst.clone();
+            w.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "patch.__enter__", move |_: &[PyObjectRef]| {
+                    // Return a fresh Mock
+                    let m_cls = PyObject::class(CompactString::from("MagicMock"), vec![], IndexMap::new());
+                    Ok(PyObject::instance(m_cls))
+                }
+            ));
+            w.insert(CompactString::from("__exit__"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
+            w.insert(CompactString::from("__call__"), make_builtin(|args: &[PyObjectRef]| {
+                if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
+            }));
+        }
+        Ok(inst)
+    });
+
+    // sentinel — attribute access returns unique sentinels
+    let sentinel_cls = PyObject::class(CompactString::from("_SentinelObject"), vec![], IndexMap::new());
+    let sentinel = PyObject::instance(sentinel_cls);
+
+    // call — call record
+    let call_fn = make_builtin(|args: &[PyObjectRef]| {
+        Ok(PyObject::tuple(args.to_vec()))
+    });
+
+    // ANY — matches anything
+    let any_cls = PyObject::class(CompactString::from("_ANY"), vec![], IndexMap::new());
+    let any_obj = PyObject::instance(any_cls);
+
+    make_module("unittest.mock", vec![
+        ("Mock", make_mock("Mock")),
+        ("MagicMock", make_mock("MagicMock")),
+        ("patch", patch_fn),
+        ("sentinel", sentinel),
+        ("call", call_fn),
+        ("ANY", any_obj),
+        ("DEFAULT", PyObject::str_val(CompactString::from("DEFAULT"))),
+        ("PropertyMock", make_mock("PropertyMock")),
+    ])
+}
+
+// ── shelve module ──
+
+pub fn create_shelve_module() -> PyObjectRef {
+    let open_fn = make_builtin(|args: &[PyObjectRef]| {
+        let _filename = if !args.is_empty() { args[0].py_to_string() } else { "shelf.db".to_string() };
+        let cls = PyObject::class(CompactString::from("Shelf"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            let data: Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>> = Arc::new(RwLock::new(IndexMap::new()));
+
+            let d1 = data.clone();
+            w.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+                "Shelf.__getitem__", move |args: &[PyObjectRef]| {
+                    check_args_min("Shelf.__getitem__", args, 1)?;
+                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    d1.read().get(&key).cloned().ok_or_else(|| PyException::key_error(args[0].py_to_string()))
+                }
+            ));
+
+            let d2 = data.clone();
+            w.insert(CompactString::from("__setitem__"), PyObject::native_closure(
+                "Shelf.__setitem__", move |args: &[PyObjectRef]| {
+                    check_args_min("Shelf.__setitem__", args, 2)?;
+                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    d2.write().insert(key, args[1].clone());
+                    Ok(PyObject::none())
+                }
+            ));
+
+            let d3 = data.clone();
+            w.insert(CompactString::from("__contains__"), PyObject::native_closure(
+                "Shelf.__contains__", move |args: &[PyObjectRef]| {
+                    check_args_min("Shelf.__contains__", args, 1)?;
+                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    Ok(PyObject::bool_val(d3.read().contains_key(&key)))
+                }
+            ));
+
+            let d4 = data.clone();
+            w.insert(CompactString::from("keys"), PyObject::native_closure(
+                "Shelf.keys", move |_: &[PyObjectRef]| {
+                    let keys: Vec<PyObjectRef> = d4.read().keys().map(|k| match k {
+                        HashableKey::Str(s) => PyObject::str_val(s.clone()),
+                        _ => PyObject::none(),
+                    }).collect();
+                    Ok(PyObject::list(keys))
+                }
+            ));
+
+            w.insert(CompactString::from("close"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("sync"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+
+            let ir = inst.clone();
+            w.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "Shelf.__enter__", move |_: &[PyObjectRef]| Ok(ir.clone())
+            ));
+            w.insert(CompactString::from("__exit__"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
+        }
+        Ok(inst)
+    });
+
+    make_module("shelve", vec![
+        ("open", open_fn),
+    ])
+}
+
+// ── doctest module ──
+
+pub fn create_doctest_module() -> PyObjectRef {
+    let testmod_fn = make_builtin(|_args: &[PyObjectRef]| {
+        // Return a TestResults(failed=0, attempted=0) named tuple-like
+        let cls = PyObject::class(CompactString::from("TestResults"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("failed"), PyObject::int(0));
+        attrs.insert(CompactString::from("attempted"), PyObject::int(0));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
+    let run_docstring_fn = make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::none())
+    });
+
+    make_module("doctest", vec![
+        ("testmod", testmod_fn),
+        ("run_docstring_examples", run_docstring_fn),
+        ("DocTestRunner", make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none()))),
+        ("DocTestFinder", make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none()))),
+        ("ELLIPSIS", PyObject::int(8)),
+        ("NORMALIZE_WHITESPACE", PyObject::int(2)),
+        ("IGNORE_EXCEPTION_DETAIL", PyObject::int(4)),
+        ("OPTIONFLAGS", PyObject::int(0)),
+    ])
+}
+
+// ── pdb module ──
+
+pub fn create_pdb_module() -> PyObjectRef {
+    let set_trace_fn = make_builtin(|_args: &[PyObjectRef]| {
+        // No-op in this runtime
+        Ok(PyObject::none())
+    });
+
+    let pm_fn = make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::none())
+    });
+
+    let run_fn = make_builtin(|args: &[PyObjectRef]| {
+        // Just evaluate nothing — stub
+        let _ = args;
+        Ok(PyObject::none())
+    });
+
+    let pdb_cls = PyObject::class(CompactString::from("Pdb"), vec![], IndexMap::new());
+    if let PyObjectPayload::Class(ref cd) = pdb_cls.payload {
+        let mut ns = cd.namespace.write();
+        ns.insert(CompactString::from("set_trace"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+        ns.insert(CompactString::from("run"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+    }
+
+    make_module("pdb", vec![
+        ("set_trace", set_trace_fn),
+        ("pm", pm_fn),
+        ("run", run_fn),
+        ("Pdb", pdb_cls),
+        ("post_mortem", make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none()))),
+    ])
+}
+
+// ── profile module ──
+
+pub fn create_profile_module() -> PyObjectRef {
+    let run_fn = make_builtin(|args: &[PyObjectRef]| {
+        let _ = args;
+        Ok(PyObject::none())
+    });
+
+    let profile_cls_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("Profile"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("enable"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("disable"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("run"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("runcall"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("print_stats"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+        }
+        Ok(inst)
+    });
+
+    make_module("profile", vec![
+        ("run", run_fn),
+        ("Profile", profile_cls_fn),
+    ])
+}
+
+// ── cProfile module ──
+
+pub fn create_cprofile_module() -> PyObjectRef {
+    let run_fn = make_builtin(|args: &[PyObjectRef]| {
+        let _ = args;
+        Ok(PyObject::none())
+    });
+
+    let profile_cls_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("Profile"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("enable"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("disable"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("run"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("runcall"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            w.insert(CompactString::from("print_stats"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+        }
+        Ok(inst)
+    });
+
+    make_module("cProfile", vec![
+        ("run", run_fn),
+        ("Profile", profile_cls_fn),
+    ])
+}
+
+// ── abc module ──
+
+pub fn create_abc_module() -> PyObjectRef {
+    // ABC base class with __abstractmethods__ marker
+    let abc_class = PyObject::class(
+        CompactString::from("ABC"),
+        vec![],
+        IndexMap::new(),
+    );
+    if let PyObjectPayload::Class(ref cd) = abc_class.payload {
+        cd.namespace.write().insert(
+            CompactString::from("__abstractmethods__"),
+            PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(IndexMap::new())))),
+        );
+    }
+
+    let abstractmethod_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("abstractmethod requires 1 argument"));
+        }
+        let func = args[0].clone();
+        // Return a marker tuple: ("__abstract__", func)
+        let marker = PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("__abstract__")),
+            func,
+        ]);
+        Ok(marker)
+    });
+
+    let abcmeta_cls = PyObject::class(
+        CompactString::from("ABCMeta"), vec![], IndexMap::new(),
+    );
+
+    let abstractclassmethod_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("abstractclassmethod requires 1 argument"));
+        }
+        Ok(args[0].clone())
+    });
+
+    let abstractstaticmethod_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("abstractstaticmethod requires 1 argument"));
+        }
+        Ok(args[0].clone())
+    });
+
+    let abstractproperty_fn = make_builtin(|args: &[PyObjectRef]| {
+        if !args.is_empty() {
+            Ok(args[0].clone())
+        } else {
+            Ok(PyObject::none())
+        }
+    });
+
+    let cache_token: Arc<RwLock<i64>> = Arc::new(RwLock::new(0));
+    let get_cache_token_fn = PyObject::native_closure(
+        "abc.get_cache_token", move |_args: &[PyObjectRef]| {
+            Ok(PyObject::int(*cache_token.read()))
+        }
+    );
+
+    make_module("abc", vec![
+        ("ABC", abc_class),
+        ("ABCMeta", abcmeta_cls),
+        ("abstractmethod", abstractmethod_fn),
+        ("abstractclassmethod", abstractclassmethod_fn),
+        ("abstractstaticmethod", abstractstaticmethod_fn),
+        ("abstractproperty", abstractproperty_fn),
+        ("get_cache_token", get_cache_token_fn),
+    ])
+}
