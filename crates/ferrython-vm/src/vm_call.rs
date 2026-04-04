@@ -2103,6 +2103,15 @@ impl VirtualMachine {
                         }
                     }
                 }
+                // Resolve generators to lists for unnamed stdlib NativeFunctions
+                // that expect iterables (e.g. Counter, deque, OrderedDict)
+                if name.is_empty() && !args.is_empty()
+                    && matches!(&args[0].payload, PyObjectPayload::Generator(_))
+                {
+                    let mut resolved = args.clone();
+                    resolved[0] = PyObject::list(self.collect_iterable(&args[0])?);
+                    return func(&resolved);
+                }
                 func(&args)
             }
             PyObjectPayload::NativeClosure { func, .. } => {
