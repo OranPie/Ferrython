@@ -278,347 +278,357 @@ impl VirtualMachine {
 // ── Group 3: Attribute operations ────────────────────────────────────
 impl VirtualMachine {
     pub(crate) fn exec_attr_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+        let frame = self.vm_frame();
+        let name = frame.code.names[instr.arg as usize].clone();
         match instr.op {
             Opcode::LoadAttr => {
-                let frame = self.vm_frame();
-                let name = frame.code.names[instr.arg as usize].clone();
-                let obj = frame.pop();
-                // __getattribute__ override: called before normal lookup
-                if let PyObjectPayload::Instance(inst) = &obj.payload {
-                    if let Some(ga) = lookup_in_class_mro(&inst.class, "__getattribute__") {
-                        if matches!(&ga.payload, PyObjectPayload::Function(_)) {
-                            let method = Arc::new(PyObject {
+                let obj = self.vm_pop();
+                self.exec_load_attr(&name, obj)
+            }
+            Opcode::StoreAttr => {
+                let obj = self.vm_pop();
+                let value = self.vm_pop();
+                self.exec_store_attr(&name, obj, value)
+            }
+            Opcode::DeleteAttr => {
+                let obj = self.vm_pop();
+                self.exec_delete_attr(&name, obj)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn exec_load_attr(&mut self, name: &CompactString, obj: PyObjectRef) -> Result<Option<PyObjectRef>, PyException> {
+        // __getattribute__ override: called before normal lookup
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if let Some(ga) = lookup_in_class_mro(&inst.class, "__getattribute__") {
+                if matches!(&ga.payload, PyObjectPayload::Function(_)) {
+                    let method = Arc::new(PyObject {
+                        payload: PyObjectPayload::BoundMethod {
+                            receiver: obj.clone(),
+                            method: ga,
+                        }
+                    });
+                    let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
+                    match self.call_object(method, vec![name_arg]) {
+                        Ok(result) => {
+                            self.vm_push(result);
+                            return Ok(None);
+                        }
+                        Err(e) if e.kind == ExceptionKind::AttributeError => {
+                            // Fall through to __getattr__
+                            if let Some(ga2) = obj.get_attr("__getattr__") {
+                                let name_arg2 = PyObject::str_val(CompactString::from(name.as_str()));
+                                let result = self.call_object(ga2, vec![name_arg2])?;
+                                self.vm_push(result);
+                                return Ok(None);
+                            }
+                            return Err(e);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
+        match obj.get_attr(name) {
+            Some(v) => {
+                if let PyObjectPayload::Property { fget, .. } = &v.payload {
+                    if let Some(getter) = fget {
+                        let getter = getter.clone();
+                        let result = self.call_object(getter, vec![obj])?;
+                        self.vm_push(result);
+                    } else {
+                        return Err(PyException::attribute_error(format!(
+                            "unreadable attribute '{}'", name
+                        )));
+                    }
+                } else if v.get_attr("__cached_property_func__").is_some() {
+                    // cached_property: compute once, cache in instance dict
+                    let func = if let PyObjectPayload::Instance(ref cp_inst) = v.payload {
+                        cp_inst.attrs.read().get("__cached_property_func__").cloned()
+                    } else { None };
+                    if let Some(func) = func {
+                        let result = self.call_object(func, vec![obj.clone()])?;
+                        if let PyObjectPayload::Instance(ref inst) = obj.payload {
+                            inst.attrs.write().insert(CompactString::from(name.as_str()), result.clone());
+                        }
+                        self.vm_push(result);
+                    } else {
+                        self.vm_push(v);
+                    }
+                } else if has_descriptor_get(&v) {
+                    // Custom descriptor protocol: call __get__(self, instance, owner)
+                    let get_method = v.get_attr("__get__").unwrap();
+                    let (instance_arg, owner_arg) = match &obj.payload {
+                        PyObjectPayload::Instance(inst) => (obj.clone(), inst.class.clone()),
+                        PyObjectPayload::Class(_) => (PyObject::none(), obj.clone()),
+                        _ => (obj.clone(), PyObject::none()),
+                    };
+                    let get_method_bound = if matches!(&get_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                        get_method
+                    } else {
+                        Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: v.clone(),
+                                method: get_method,
+                            }
+                        })
+                    };
+                    let result = self.call_object(get_method_bound, vec![instance_arg, owner_arg])?;
+                    self.vm_push(result);
+                } else if matches!(&obj.payload, PyObjectPayload::Module(_))
+                    && matches!(&v.payload, PyObjectPayload::NativeFunction { .. })
+                    && obj.get_attr("_bind_methods").is_some()
+                {
+                    self.vm_push(Arc::new(PyObject {
+                        payload: PyObjectPayload::BoundMethod {
+                            receiver: obj,
+                            method: v,
+                        }
+                    }));
+                } else {
+                    self.vm_push(v);
+                }
+            }
+            None => {
+                // Type method access: e.g., dict.fromkeys, object.__getattribute__
+                let type_name = match &obj.payload {
+                    PyObjectPayload::NativeFunction { name: fn_name, .. } => Some(fn_name.as_str()),
+                    PyObjectPayload::BuiltinType(tn) => Some(tn.as_str()),
+                    PyObjectPayload::BuiltinFunction(fn_name) => Some(fn_name.as_str()),
+                    _ => None,
+                };
+                if let Some(tn) = type_name {
+                    if let Some(type_method) = builtins::resolve_type_class_method(tn, name) {
+                        self.vm_push(type_method);
+                        return Ok(None);
+                    }
+                }
+                if let PyObjectPayload::Instance(_) = &obj.payload {
+                    if let Some(ga) = obj.get_attr("__getattr__") {
+                        let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
+                        let result = self.call_object(ga, vec![name_arg])?;
+                        self.vm_push(result);
+                        return Ok(None);
+                    }
+                }
+                return Err(PyException::attribute_error(format!(
+                    "'{}' object has no attribute '{}'", obj.type_name(), name
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    fn exec_store_attr(&mut self, name: &CompactString, obj: PyObjectRef, value: PyObjectRef) -> Result<Option<PyObjectRef>, PyException> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if let Some(desc) = lookup_in_class_mro(&inst.class, name) {
+                if let PyObjectPayload::Property { fset, .. } = &desc.payload {
+                    if let Some(setter) = fset {
+                        let setter = setter.clone();
+                        self.call_object(setter, vec![obj, value])?;
+                        return Ok(None);
+                    } else {
+                        return Err(PyException::attribute_error(format!(
+                            "can't set attribute '{}'", name
+                        )));
+                    }
+                }
+                // Custom data descriptor with __set__
+                if is_data_descriptor(&desc) {
+                    if let Some(set_method) = desc.get_attr("__set__") {
+                        let set_bound = if matches!(&set_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                            set_method
+                        } else {
+                            Arc::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
-                                    receiver: obj.clone(),
-                                    method: ga,
+                                    receiver: desc,
+                                    method: set_method,
                                 }
-                            });
-                            let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
-                            match self.call_object(method, vec![name_arg]) {
-                                Ok(result) => {
-                                    self.vm_push(result);
-                                    return Ok(None);
-                                }
-                                Err(e) if e.kind == ExceptionKind::AttributeError => {
-                                    // Fall through to __getattr__
-                                    if let Some(ga2) = obj.get_attr("__getattr__") {
-                                        let name_arg2 = PyObject::str_val(CompactString::from(name.as_str()));
-                                        let result = self.call_object(ga2, vec![name_arg2])?;
-                                        self.vm_push(result);
-                                        return Ok(None);
+                            })
+                        };
+                        self.call_object(set_bound, vec![obj, value])?;
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if let Some(sa) = lookup_in_class_mro(&inst.class, "__setattr__") {
+                match &sa.payload {
+                    PyObjectPayload::Function(_) => {
+                        let method = Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: obj.clone(),
+                                method: sa,
+                            }
+                        });
+                        let name_arg = PyObject::str_val(name.clone());
+                        self.call_object(method, vec![name_arg, value])?;
+                        return Ok(None);
+                    }
+                    PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => {
+                        let name_arg = PyObject::str_val(name.clone());
+                        self.call_object(sa, vec![obj, name_arg, value])?;
+                        return Ok(None);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        match &obj.payload {
+            PyObjectPayload::Instance(inst) => {
+                // Check __slots__ restriction — accumulate from entire MRO
+                let has_slots = {
+                    let mut all_slots: Vec<String> = Vec::new();
+                    let mut found_any = false;
+                    // Collect __slots__ from the class and all bases in MRO
+                    let classes_to_check: Vec<PyObjectRef> = {
+                        let mut v = vec![inst.class.clone()];
+                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            v.extend(cd.mro.clone());
+                            v.extend(cd.bases.clone());
+                        }
+                        v
+                    };
+                    for cls in &classes_to_check {
+                        if let PyObjectPayload::Class(cd) = &cls.payload {
+                            if let Some(slots) = cd.namespace.read().get("__slots__").cloned() {
+                                if matches!(&slots.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
+                                    found_any = true;
+                                    if let Ok(items) = slots.to_list() {
+                                        for item in &items {
+                                            let s = item.py_to_string();
+                                            if !all_slots.contains(&s) {
+                                                all_slots.push(s);
+                                            }
+                                        }
                                     }
-                                    return Err(e);
                                 }
-                                Err(e) => return Err(e),
                             }
                         }
                     }
+                    if found_any { Some(all_slots) } else { None }
+                };
+                if let Some(allowed_names) = has_slots {
+                    // If __dict__ is in slots, allow any attribute
+                    if !allowed_names.iter().any(|s| s == "__dict__") {
+                        if !allowed_names.iter().any(|s| s == name.as_str()) {
+                            return Err(PyException::attribute_error(format!(
+                                "'{}' object has no attribute '{}'",
+                                inst.class.get_attr("__name__")
+                                    .map(|n| n.py_to_string())
+                                    .unwrap_or_else(|| "object".to_string()),
+                                name
+                            )));
+                        }
+                    }
                 }
-                match obj.get_attr(&name) {
-                    Some(v) => {
-                        if let PyObjectPayload::Property { fget, .. } = &v.payload {
-                            if let Some(getter) = fget {
-                                let getter = getter.clone();
-                                let result = self.call_object(getter, vec![obj])?;
-                                self.vm_push(result);
-                            } else {
-                                return Err(PyException::attribute_error(format!(
-                                    "unreadable attribute '{}'", name
-                                )));
-                            }
-                        } else if v.get_attr("__cached_property_func__").is_some() {
-                            // cached_property: compute once, cache in instance dict
-                            let func = if let PyObjectPayload::Instance(ref cp_inst) = v.payload {
-                                cp_inst.attrs.read().get("__cached_property_func__").cloned()
-                            } else { None };
-                            if let Some(func) = func {
-                                let result = self.call_object(func, vec![obj.clone()])?;
-                                if let PyObjectPayload::Instance(ref inst) = obj.payload {
-                                    inst.attrs.write().insert(CompactString::from(name.as_str()), result.clone());
+                inst.attrs.write().insert(name.clone(), value);
+            }
+            PyObjectPayload::Class(cd) => {
+                cd.namespace.write().insert(name.clone(), value);
+            }
+            PyObjectPayload::Module(md) => {
+                md.attrs.write().insert(name.clone(), value);
+            }
+            PyObjectPayload::Function(f) => {
+                f.attrs.write().insert(name.clone(), value);
+            }
+            _ => {
+                return Err(PyException::attribute_error(format!(
+                    "'{}' object does not support attribute assignment", obj.type_name()
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    fn exec_delete_attr(&mut self, name: &CompactString, obj: PyObjectRef) -> Result<Option<PyObjectRef>, PyException> {
+        match &obj.payload {
+            PyObjectPayload::Instance(inst) => {
+                // Check for descriptor with __delete__ or property fdel first
+                if let Some(class_attr) = lookup_in_class_mro(&inst.class, name.as_str()) {
+                    if let PyObjectPayload::Property { fdel, .. } = &class_attr.payload {
+                        if let Some(fdel_fn) = fdel {
+                            let bound = Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: obj.clone(),
+                                    method: fdel_fn.clone(),
                                 }
-                                self.vm_push(result);
-                            } else {
-                                self.vm_push(v);
-                            }
-                        } else if has_descriptor_get(&v) {
-                            // Custom descriptor protocol: call __get__(self, instance, owner)
-                            let get_method = v.get_attr("__get__").unwrap();
-                            let (instance_arg, owner_arg) = match &obj.payload {
-                                PyObjectPayload::Instance(inst) => (obj.clone(), inst.class.clone()),
-                                PyObjectPayload::Class(_) => (PyObject::none(), obj.clone()),
-                                _ => (obj.clone(), PyObject::none()),
-                            };
-                            let get_method_bound = if matches!(&get_method.payload, PyObjectPayload::BoundMethod { .. }) {
-                                get_method
+                            });
+                            self.call_object(bound, vec![])?;
+                        } else {
+                            return Err(PyException::attribute_error(format!(
+                                "can't delete attribute '{}'", name)));
+                        }
+                    } else if is_data_descriptor(&class_attr) {
+                        // Data descriptor with __delete__
+                        if let Some(del_method) = class_attr.get_attr("__delete__") {
+                            let del_bound = if matches!(&del_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                                del_method
                             } else {
                                 Arc::new(PyObject {
                                     payload: PyObjectPayload::BoundMethod {
-                                        receiver: v.clone(),
-                                        method: get_method,
+                                        receiver: class_attr.clone(),
+                                        method: del_method,
                                     }
                                 })
                             };
-                            let result = self.call_object(get_method_bound, vec![instance_arg, owner_arg])?;
-                            self.vm_push(result);
-                        } else if matches!(&obj.payload, PyObjectPayload::Module(_))
-                            && matches!(&v.payload, PyObjectPayload::NativeFunction { .. })
-                            && obj.get_attr("_bind_methods").is_some()
-                        {
-                            self.vm_push(Arc::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: obj,
-                                    method: v,
-                                }
-                            }));
-                        } else {
-                            self.vm_push(v);
-                        }
-                    }
-                    None => {
-                        // Type method access: e.g., dict.fromkeys, object.__getattribute__
-                        let type_name = match &obj.payload {
-                            PyObjectPayload::NativeFunction { name: fn_name, .. } => Some(fn_name.as_str()),
-                            PyObjectPayload::BuiltinType(tn) => Some(tn.as_str()),
-                            PyObjectPayload::BuiltinFunction(fn_name) => Some(fn_name.as_str()),
-                            _ => None,
-                        };
-                        if let Some(tn) = type_name {
-                            if let Some(type_method) = builtins::resolve_type_class_method(tn, &name) {
-                                self.vm_push(type_method);
-                                return Ok(None);
-                            }
-                        }
-                        if let PyObjectPayload::Instance(_) = &obj.payload {
-                            if let Some(ga) = obj.get_attr("__getattr__") {
-                                let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
-                                let result = self.call_object(ga, vec![name_arg])?;
-                                self.vm_push(result);
-                                return Ok(None);
-                            }
-                        }
-                        return Err(PyException::attribute_error(format!(
-                            "'{}' object has no attribute '{}'", obj.type_name(), name
-                        )));
-                    }
-                }
-            }
-            Opcode::StoreAttr => {
-                let frame = self.vm_frame();
-                let name = frame.code.names[instr.arg as usize].clone();
-                let obj = frame.pop();
-                let value = frame.pop();
-                if let PyObjectPayload::Instance(inst) = &obj.payload {
-                    if let Some(desc) = lookup_in_class_mro(&inst.class, &name) {
-                        if let PyObjectPayload::Property { fset, .. } = &desc.payload {
-                            if let Some(setter) = fset {
-                                let setter = setter.clone();
-                                self.call_object(setter, vec![obj, value])?;
-                                return Ok(None);
-                            } else {
-                                return Err(PyException::attribute_error(format!(
-                                    "can't set attribute '{}'", name
-                                )));
-                            }
-                        }
-                        // Custom data descriptor with __set__
-                        if is_data_descriptor(&desc) {
-                            if let Some(set_method) = desc.get_attr("__set__") {
-                                let set_bound = if matches!(&set_method.payload, PyObjectPayload::BoundMethod { .. }) {
-                                    set_method
-                                } else {
-                                    Arc::new(PyObject {
-                                        payload: PyObjectPayload::BoundMethod {
-                                            receiver: desc,
-                                            method: set_method,
-                                        }
-                                    })
-                                };
-                                self.call_object(set_bound, vec![obj, value])?;
-                                return Ok(None);
-                            }
-                        }
-                    }
-                }
-                if let PyObjectPayload::Instance(inst) = &obj.payload {
-                    if let Some(sa) = lookup_in_class_mro(&inst.class, "__setattr__") {
-                        match &sa.payload {
-                            PyObjectPayload::Function(_) => {
-                                let method = Arc::new(PyObject {
-                                    payload: PyObjectPayload::BoundMethod {
-                                        receiver: obj.clone(),
-                                        method: sa,
-                                    }
-                                });
-                                let name_arg = PyObject::str_val(name);
-                                self.call_object(method, vec![name_arg, value])?;
-                                return Ok(None);
-                            }
-                            PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => {
-                                let name_arg = PyObject::str_val(name);
-                                self.call_object(sa, vec![obj, name_arg, value])?;
-                                return Ok(None);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                match &obj.payload {
-                    PyObjectPayload::Instance(inst) => {
-                        // Check __slots__ restriction — accumulate from entire MRO
-                        let has_slots = {
-                            let mut all_slots: Vec<String> = Vec::new();
-                            let mut found_any = false;
-                            // Collect __slots__ from the class and all bases in MRO
-                            let classes_to_check: Vec<PyObjectRef> = {
-                                let mut v = vec![inst.class.clone()];
-                                if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                    v.extend(cd.mro.clone());
-                                    v.extend(cd.bases.clone());
-                                }
-                                v
-                            };
-                            for cls in &classes_to_check {
-                                if let PyObjectPayload::Class(cd) = &cls.payload {
-                                    if let Some(slots) = cd.namespace.read().get("__slots__").cloned() {
-                                        if matches!(&slots.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
-                                            found_any = true;
-                                            if let Ok(items) = slots.to_list() {
-                                                for item in &items {
-                                                    let s = item.py_to_string();
-                                                    if !all_slots.contains(&s) {
-                                                        all_slots.push(s);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if found_any { Some(all_slots) } else { None }
-                        };
-                        if let Some(allowed_names) = has_slots {
-                            // If __dict__ is in slots, allow any attribute
-                            if !allowed_names.iter().any(|s| s == "__dict__") {
-                                if !allowed_names.iter().any(|s| s == name.as_str()) {
-                                    return Err(PyException::attribute_error(format!(
-                                        "'{}' object has no attribute '{}'",
-                                        inst.class.get_attr("__name__")
-                                            .map(|n| n.py_to_string())
-                                            .unwrap_or_else(|| "object".to_string()),
-                                        name
-                                    )));
-                                }
-                            }
-                        }
-                        inst.attrs.write().insert(name, value);
-                    }
-                    PyObjectPayload::Class(cd) => {
-                        cd.namespace.write().insert(name, value);
-                    }
-                    PyObjectPayload::Module(md) => {
-                        md.attrs.write().insert(name, value);
-                    }
-                    PyObjectPayload::Function(f) => {
-                        f.attrs.write().insert(name, value);
-                    }
-                    _ => {
-                        return Err(PyException::attribute_error(format!(
-                            "'{}' object does not support attribute assignment", obj.type_name()
-                        )));
-                    }
-                }
-            }
-            Opcode::DeleteAttr => {
-                let frame = self.vm_frame();
-                let name = frame.code.names[instr.arg as usize].clone();
-                let obj = frame.pop();
-                match &obj.payload {
-                    PyObjectPayload::Instance(inst) => {
-                        // Check for descriptor with __delete__ or property fdel first
-                        if let Some(class_attr) = lookup_in_class_mro(&inst.class, name.as_str()) {
-                            if let PyObjectPayload::Property { fdel, .. } = &class_attr.payload {
-                                if let Some(fdel_fn) = fdel {
-                                    let bound = Arc::new(PyObject {
-                                        payload: PyObjectPayload::BoundMethod {
-                                            receiver: obj.clone(),
-                                            method: fdel_fn.clone(),
-                                        }
-                                    });
-                                    self.call_object(bound, vec![])?;
-                                } else {
-                                    return Err(PyException::attribute_error(format!(
-                                        "can't delete attribute '{}'", name)));
-                                }
-                            } else if is_data_descriptor(&class_attr) {
-                                // Data descriptor with __delete__
-                                if let Some(del_method) = class_attr.get_attr("__delete__") {
-                                    let del_bound = if matches!(&del_method.payload, PyObjectPayload::BoundMethod { .. }) {
-                                        del_method
-                                    } else {
-                                        Arc::new(PyObject {
-                                            payload: PyObjectPayload::BoundMethod {
-                                                receiver: class_attr.clone(),
-                                                method: del_method,
-                                            }
-                                        })
-                                    };
-                                    self.call_object(del_bound, vec![obj.clone()])?;
-                                } else {
-                                    if inst.attrs.write().swap_remove(name.as_str()).is_none() {
-                                        return Err(PyException::attribute_error(format!(
-                                            "'{}' object has no attribute '{}'", obj.type_name(), name)));
-                                    }
-                                }
-                            } else if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
-                                if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
-                                    let method = Arc::new(PyObject {
-                                        payload: PyObjectPayload::BoundMethod { receiver: obj.clone(), method: delattr_method }
-                                    });
-                                    let name_arg = PyObject::str_val(name);
-                                    self.call_object(method, vec![name_arg])?;
-                                } else {
-                                    if inst.attrs.write().swap_remove(name.as_str()).is_none() {
-                                        return Err(PyException::attribute_error(format!(
-                                            "'{}' object has no attribute '{}'", obj.type_name(), name)));
-                                    }
-                                }
-                            } else {
-                                if inst.attrs.write().swap_remove(name.as_str()).is_none() {
-                                    return Err(PyException::attribute_error(format!(
-                                        "'{}' object has no attribute '{}'", obj.type_name(), name)));
-                                }
-                            }
-                        } else if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
-                            if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
-                                let method = Arc::new(PyObject {
-                                    payload: PyObjectPayload::BoundMethod { receiver: obj.clone(), method: delattr_method }
-                                });
-                                let name_arg = PyObject::str_val(name);
-                                self.call_object(method, vec![name_arg])?;
-                            } else {
-                                if inst.attrs.write().swap_remove(name.as_str()).is_none() {
-                                    return Err(PyException::attribute_error(format!(
-                                        "'{}' object has no attribute '{}'", obj.type_name(), name)));
-                                }
-                            }
+                            self.call_object(del_bound, vec![obj.clone()])?;
                         } else {
                             if inst.attrs.write().swap_remove(name.as_str()).is_none() {
                                 return Err(PyException::attribute_error(format!(
                                     "'{}' object has no attribute '{}'", obj.type_name(), name)));
                             }
                         }
-                    }
-                    PyObjectPayload::Class(cd) => {
-                        if cd.namespace.write().swap_remove(name.as_str()).is_none() {
+                    } else if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
+                        if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
+                            let method = Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod { receiver: obj.clone(), method: delattr_method }
+                            });
+                            let name_arg = PyObject::str_val(name.clone());
+                            self.call_object(method, vec![name_arg])?;
+                        } else {
+                            if inst.attrs.write().swap_remove(name.as_str()).is_none() {
+                                return Err(PyException::attribute_error(format!(
+                                    "'{}' object has no attribute '{}'", obj.type_name(), name)));
+                            }
+                        }
+                    } else {
+                        if inst.attrs.write().swap_remove(name.as_str()).is_none() {
                             return Err(PyException::attribute_error(format!(
-                                "type object has no attribute '{}'", name)));
+                                "'{}' object has no attribute '{}'", obj.type_name(), name)));
                         }
                     }
-                    _ => return Err(PyException::attribute_error(format!(
-                        "'{}' object does not support attribute deletion", obj.type_name()))),
+                } else if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
+                    if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
+                        let method = Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod { receiver: obj.clone(), method: delattr_method }
+                        });
+                        let name_arg = PyObject::str_val(name.clone());
+                        self.call_object(method, vec![name_arg])?;
+                    } else {
+                        if inst.attrs.write().swap_remove(name.as_str()).is_none() {
+                            return Err(PyException::attribute_error(format!(
+                                "'{}' object has no attribute '{}'", obj.type_name(), name)));
+                        }
+                    }
+                } else {
+                    if inst.attrs.write().swap_remove(name.as_str()).is_none() {
+                        return Err(PyException::attribute_error(format!(
+                            "'{}' object has no attribute '{}'", obj.type_name(), name)));
+                    }
                 }
             }
-            _ => unreachable!(),
+            PyObjectPayload::Class(cd) => {
+                if cd.namespace.write().swap_remove(name.as_str()).is_none() {
+                    return Err(PyException::attribute_error(format!(
+                        "type object has no attribute '{}'", name)));
+                }
+            }
+            _ => return Err(PyException::attribute_error(format!(
+                "'{}' object does not support attribute deletion", obj.type_name()))),
         }
         Ok(None)
     }
@@ -1258,8 +1268,12 @@ impl VirtualMachine {
 
     pub(crate) fn exec_compare_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
         let (a, b) = self.vm_pop2();
-        if let op @ 0..=5 = instr.arg {
-            let (dunder, rdunder) = match op {
+        self.exec_compare_op(instr.arg, a, b)
+    }
+
+    fn exec_compare_op(&mut self, op: u32, a: PyObjectRef, b: PyObjectRef) -> Result<Option<PyObjectRef>, PyException> {
+        if let cmp @ 0..=5 = op {
+            let (dunder, rdunder) = match cmp {
                 0 => ("__lt__", "__gt__"),
                 1 => ("__le__", "__ge__"),
                 2 => ("__eq__", "__eq__"),
@@ -1299,7 +1313,7 @@ impl VirtualMachine {
                 }
             }
             // Dataclass auto-equality fallback
-            if op == 2 || op == 3 {
+            if cmp == 2 || cmp == 3 {
                 if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
                     let cls_a = &inst_a.class;
                     if cls_a.get_attr("__dataclass__").is_some() {
@@ -1323,7 +1337,7 @@ impl VirtualMachine {
                                         }
                                     }
                                 }
-                                let result = if op == 2 { eq } else { !eq };
+                                let result = if cmp == 2 { eq } else { !eq };
                                 self.vm_push(PyObject::bool_val(result));
                                 return Ok(None);
                             }
@@ -1332,14 +1346,14 @@ impl VirtualMachine {
                 }
             }
             // namedtuple equality: compare underlying _tuple
-            if op == 2 || op == 3 {
+            if cmp == 2 || cmp == 3 {
                 if let (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) = (&a.payload, &b.payload) {
                     if inst_a.class.get_attr("__namedtuple__").is_some() && inst_b.class.get_attr("__namedtuple__").is_some() {
                         let ta = inst_a.attrs.read().get("_tuple").cloned();
                         let tb = inst_b.attrs.read().get("_tuple").cloned();
                         if let (Some(tup_a), Some(tup_b)) = (ta, tb) {
                             let result = tup_a.compare(&tup_b, CompareOp::Eq)?;
-                            let val = if op == 2 { result.is_truthy() } else { !result.is_truthy() };
+                            let val = if cmp == 2 { result.is_truthy() } else { !result.is_truthy() };
                             self.vm_push(PyObject::bool_val(val));
                             return Ok(None);
                         }
@@ -1351,7 +1365,7 @@ impl VirtualMachine {
                         if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                             if matches!(b.payload, PyObjectPayload::Tuple(_)) {
                                 let result = tup.compare(&b, CompareOp::Eq)?;
-                                let val = if op == 2 { result.is_truthy() } else { !result.is_truthy() };
+                                let val = if cmp == 2 { result.is_truthy() } else { !result.is_truthy() };
                                 self.vm_push(PyObject::bool_val(val));
                                 return Ok(None);
                             }
@@ -1363,7 +1377,7 @@ impl VirtualMachine {
                         if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                             if matches!(a.payload, PyObjectPayload::Tuple(_)) {
                                 let result = a.compare(&tup, CompareOp::Eq)?;
-                                let val = if op == 2 { result.is_truthy() } else { !result.is_truthy() };
+                                let val = if cmp == 2 { result.is_truthy() } else { !result.is_truthy() };
                                 self.vm_push(PyObject::bool_val(val));
                                 return Ok(None);
                             }
@@ -1379,7 +1393,7 @@ impl VirtualMachine {
                     if matches!(av.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_))
                         && matches!(bv.payload, PyObjectPayload::Int(_) | PyObjectPayload::Float(_))
                     {
-                        let cmp_op = match op {
+                        let cmp_op = match cmp {
                             0 => CompareOp::Lt,
                             1 => CompareOp::Le,
                             2 => CompareOp::Eq,
@@ -1412,7 +1426,7 @@ impl VirtualMachine {
                         } else {
                             (ov.clone(), ev)
                         };
-                        let cmp_op = match op {
+                        let cmp_op = match cmp {
                             0 => CompareOp::Lt,
                             1 => CompareOp::Le,
                             2 => CompareOp::Eq,
@@ -1429,7 +1443,7 @@ impl VirtualMachine {
             }
         }
         // 'in' / 'not in' with __contains__
-        if instr.arg == 6 || instr.arg == 7 {
+        if op == 6 || op == 7 {
             // Handle Class with __contains__ (e.g., Enum: Color.RED in Color)
             if let PyObjectPayload::Class(cd) = &b.payload {
                 // Look in own namespace and MRO
@@ -1451,7 +1465,7 @@ impl VirtualMachine {
                 };
                 if let Some(method) = contains_fn {
                     let r = self.call_object(method, vec![b.clone(), a.clone()])?;
-                    let val = if instr.arg == 6 { r.is_truthy() } else { !r.is_truthy() };
+                    let val = if op == 6 { r.is_truthy() } else { !r.is_truthy() };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
@@ -1463,19 +1477,19 @@ impl VirtualMachine {
                 } else { None };
                 if let Some(method) = custom_contains {
                     let r = self.call_object(method, vec![b.clone(), a.clone()])?;
-                    let val = if instr.arg == 6 { r.is_truthy() } else { !r.is_truthy() };
+                    let val = if op == 6 { r.is_truthy() } else { !r.is_truthy() };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
                 // Dict subclass: use native contains() directly
                 if inst.dict_storage.is_some() {
-                    let val = if instr.arg == 6 { b.contains(&a)? } else { !b.contains(&a)? };
+                    let val = if op == 6 { b.contains(&a)? } else { !b.contains(&a)? };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
                 if let Some(method) = b.get_attr("__contains__") {
                     let r = self.call_object(method, vec![a])?;
-                    let val = if instr.arg == 6 { r.is_truthy() } else { !r.is_truthy() };
+                    let val = if op == 6 { r.is_truthy() } else { !r.is_truthy() };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
@@ -1494,7 +1508,7 @@ impl VirtualMachine {
                             None => break,
                         }
                     }
-                    let val = if instr.arg == 6 { found } else { !found };
+                    let val = if op == 6 { found } else { !found };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
@@ -1516,13 +1530,13 @@ impl VirtualMachine {
                             Err(e) => return Err(e),
                         }
                     }
-                    let val = if instr.arg == 6 { found } else { !found };
+                    let val = if op == 6 { found } else { !found };
                     self.vm_push(PyObject::bool_val(val));
                     return Ok(None);
                 }
             }
         }
-        let result = match instr.arg {
+        let result = match op {
             0 => a.compare(&b, CompareOp::Lt)?,
             1 => a.compare(&b, CompareOp::Le)?,
             2 => a.compare(&b, CompareOp::Eq)?,
@@ -2294,210 +2308,16 @@ impl VirtualMachine {
                 ferrython_stdlib::clear_exc_info();
             }
             Opcode::EndFinally => {
-                let frame = self.vm_frame();
-                if let Some(ret_val) = frame.pending_return.take() {
-                    let mut has_finally = false;
-                    while let Some(block) = frame.block_stack.last() {
-                        if block.kind == BlockKind::Finally {
-                            let handler = block.handler;
-                            frame.block_stack.pop();
-                            frame.pending_return = Some(ret_val.clone());
-                            frame.push(PyObject::none());
-                            frame.ip = handler;
-                            has_finally = true;
-                            break;
-                        } else {
-                            frame.block_stack.pop();
-                        }
-                    }
-                    if !has_finally {
-                        return Ok(Some(ret_val));
-                    }
-                } else {
-                    if !frame.stack.is_empty() {
-                        let tos = frame.peek();
-                        match &tos.payload {
-                            PyObjectPayload::ExceptionType(kind) => {
-                                let kind = kind.clone();
-                                frame.pop();
-                                let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
-                                if !frame.stack.is_empty() { frame.pop(); }
-                                let msg = match &value.payload {
-                                    PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
-                                    _ => value.py_to_string(),
-                                };
-                                return Err(PyException::new(kind, msg));
-                            }
-                            PyObjectPayload::Class(_) => {
-                                // User-defined exception class on stack — re-raise
-                                let cls = frame.pop();
-                                let kind = Self::find_exception_kind(&cls);
-                                let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
-                                if !frame.stack.is_empty() { frame.pop(); }
-                                let msg = match &value.payload {
-                                    PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
-                                    PyObjectPayload::Instance(_) => {
-                                        if let Some(args) = value.get_attr("args") {
-                                            args.py_to_string()
-                                        } else {
-                                            value.py_to_string()
-                                        }
-                                    }
-                                    _ => value.py_to_string(),
-                                };
-                                return Err(PyException::with_original(kind, msg, value));
-                            }
-                            PyObjectPayload::None => { frame.pop(); }
-                            _ => {}
-                        }
-                    }
-                }
+                return self.exec_end_finally();
             }
             Opcode::BeginFinally => {
                 self.vm_frame().push(PyObject::none());
             }
             Opcode::RaiseVarargs => {
-                let frame = self.vm_frame();
-                let raise_exc = |exc: &PyObjectRef| -> PyException {
-                    match &exc.payload {
-                        PyObjectPayload::ExceptionInstance { kind, message, .. } => {
-                            PyException::with_original(kind.clone(), message.to_string(), exc.clone())
-                        }
-                        PyObjectPayload::ExceptionType(kind) => {
-                            PyException::new(kind.clone(), "")
-                        }
-                        PyObjectPayload::Instance(inst) => {
-                            let kind = Self::find_exception_kind(&inst.class);
-                            // Derive message from args (CPython: str(exc) uses args)
-                            let msg = if let Some(a) = exc.get_attr("args") {
-                                if let PyObjectPayload::Tuple(items) = &a.payload {
-                                    if items.len() == 1 {
-                                        items[0].py_to_string()
-                                    } else if items.is_empty() {
-                                        String::new()
-                                    } else {
-                                        a.repr()
-                                    }
-                                } else {
-                                    exc.py_to_string()
-                                }
-                            } else {
-                                exc.py_to_string()
-                            };
-                            PyException::with_original(kind, msg, exc.clone())
-                        }
-                        PyObjectPayload::Class(_) => {
-                            let kind = Self::find_exception_kind(exc);
-                            PyException::new(kind, "")
-                        }
-                        _ => PyException::runtime_error(exc.py_to_string()),
-                    }
-                };
-                match instr.arg {
-                    0 => {
-                        // Bare raise: re-raise the currently active exception
-                        if let Some(exc) = self.active_exception.clone() {
-                            return Err(exc);
-                        }
-                        return Err(PyException::runtime_error("No active exception to re-raise"));
-                    }
-                    1 => {
-                        let exc = frame.pop();
-                        let mut py_exc = raise_exc(&exc);
-                        // Implicit chaining: set __context__ to active exception
-                        if let Some(active) = &self.active_exception {
-                            py_exc.context = Some(Box::new(active.clone()));
-                        }
-                        return Err(py_exc);
-                    }
-                    2 => {
-                        let cause = frame.pop();
-                        let exc = frame.pop();
-                        let mut py_exc = raise_exc(&exc);
-                        // `raise X from None` suppresses the cause
-                        if matches!(cause.payload, PyObjectPayload::None) {
-                            // raise X from None: suppress context display
-                            if let Some(ref original) = py_exc.original {
-                                if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
-                                    let mut w = attrs.write();
-                                    w.insert(CompactString::from("__cause__"), PyObject::none());
-                                    w.insert(CompactString::from("__suppress_context__"), PyObject::bool_val(true));
-                                }
-                            }
-                        } else {
-                            let cause_exc = raise_exc(&cause);
-                            // Store __cause__ on the exception instance's attrs
-                            if let Some(ref original) = py_exc.original {
-                                if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
-                                    let mut w = attrs.write();
-                                    w.insert(CompactString::from("__cause__"), cause.clone());
-                                    w.insert(CompactString::from("__suppress_context__"), PyObject::bool_val(true));
-                                }
-                            }
-                            py_exc.cause = Some(Box::new(cause_exc));
-                        }
-                        // Implicit chaining: set __context__ to active exception
-                        if let Some(active) = &self.active_exception {
-                            py_exc.context = Some(Box::new(active.clone()));
-                            if let Some(ref original) = py_exc.original {
-                                if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
-                                    // Store __context__ as the active exception's original object
-                                    if let Some(ref ctx_orig) = active.original {
-                                        attrs.write().insert(CompactString::from("__context__"), ctx_orig.clone());
-                                    }
-                                }
-                            }
-                        }
-                        return Err(py_exc);
-                    }
-                    _ => return Err(PyException::runtime_error("bad RAISE_VARARGS arg")),
-                }
+                return self.exec_raise_varargs(instr.arg);
             }
             Opcode::SetupWith => {
-                let ctx_mgr = self.vm_pop();
-                if let PyObjectPayload::Generator(gen_arc) = &ctx_mgr.payload {
-                    let enter_result = match self.resume_generator(gen_arc, PyObject::none()) {
-                        Ok(val) => val,
-                        Err(e) if e.kind == ExceptionKind::StopIteration => PyObject::none(),
-                        Err(e) => return Err(e),
-                    };
-                    let frame = self.vm_frame();
-                    frame.push(ctx_mgr.clone());
-                    frame.push_block(BlockKind::With, instr.arg as usize);
-                    frame.push(enter_result);
-                } else {
-                    let exit_raw = ctx_mgr.get_attr("__exit__").ok_or_else(||
-                        PyException::attribute_error("__exit__"))?;
-                    // Bind exit to ctx_mgr so WithCleanupStart passes self correctly
-                    let exit_method = if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
-                        exit_raw
-                    } else {
-                        Arc::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: ctx_mgr.clone(),
-                                method: exit_raw,
-                            }
-                        })
-                    };
-                    self.vm_push(exit_method);
-                    let enter_raw = ctx_mgr.get_attr("__enter__").ok_or_else(||
-                        PyException::attribute_error("__enter__"))?;
-                    let (enter_method, enter_args) = if matches!(&enter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
-                        (enter_raw, vec![])
-                    } else {
-                        let bound = Arc::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: ctx_mgr.clone(),
-                                method: enter_raw,
-                            }
-                        });
-                        (bound, vec![])
-                    };
-                    let enter_result = self.call_object(enter_method, enter_args)?;
-                    let frame = self.vm_frame();
-                    frame.push_block(BlockKind::With, instr.arg as usize);
-                    frame.push(enter_result);
-                }
+                return self.exec_setup_with(instr.arg);
             }
 
             Opcode::SetupAsyncWith => {
@@ -2664,6 +2484,214 @@ impl VirtualMachine {
                 }
             }
             _ => unreachable!(),
+        }
+        Ok(None)
+    }
+
+    fn exec_end_finally(&mut self) -> Result<Option<PyObjectRef>, PyException> {
+        let frame = self.vm_frame();
+        if let Some(ret_val) = frame.pending_return.take() {
+            let mut has_finally = false;
+            while let Some(block) = frame.block_stack.last() {
+                if block.kind == BlockKind::Finally {
+                    let handler = block.handler;
+                    frame.block_stack.pop();
+                    frame.pending_return = Some(ret_val.clone());
+                    frame.push(PyObject::none());
+                    frame.ip = handler;
+                    has_finally = true;
+                    break;
+                } else {
+                    frame.block_stack.pop();
+                }
+            }
+            if !has_finally {
+                return Ok(Some(ret_val));
+            }
+        } else {
+            if !frame.stack.is_empty() {
+                let tos = frame.peek();
+                match &tos.payload {
+                    PyObjectPayload::ExceptionType(kind) => {
+                        let kind = kind.clone();
+                        frame.pop();
+                        let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
+                        if !frame.stack.is_empty() { frame.pop(); }
+                        let msg = match &value.payload {
+                            PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
+                            _ => value.py_to_string(),
+                        };
+                        return Err(PyException::new(kind, msg));
+                    }
+                    PyObjectPayload::Class(_) => {
+                        // User-defined exception class on stack — re-raise
+                        let cls = frame.pop();
+                        let kind = Self::find_exception_kind(&cls);
+                        let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
+                        if !frame.stack.is_empty() { frame.pop(); }
+                        let msg = match &value.payload {
+                            PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
+                            PyObjectPayload::Instance(_) => {
+                                if let Some(args) = value.get_attr("args") {
+                                    args.py_to_string()
+                                } else {
+                                    value.py_to_string()
+                                }
+                            }
+                            _ => value.py_to_string(),
+                        };
+                        return Err(PyException::with_original(kind, msg, value));
+                    }
+                    PyObjectPayload::None => { frame.pop(); }
+                    _ => {}
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn exec_raise_varargs(&mut self, argc: u32) -> Result<Option<PyObjectRef>, PyException> {
+        let frame = self.vm_frame();
+        let raise_exc = |exc: &PyObjectRef| -> PyException {
+            match &exc.payload {
+                PyObjectPayload::ExceptionInstance { kind, message, .. } => {
+                    PyException::with_original(kind.clone(), message.to_string(), exc.clone())
+                }
+                PyObjectPayload::ExceptionType(kind) => {
+                    PyException::new(kind.clone(), "")
+                }
+                PyObjectPayload::Instance(inst) => {
+                    let kind = Self::find_exception_kind(&inst.class);
+                    // Derive message from args (CPython: str(exc) uses args)
+                    let msg = if let Some(a) = exc.get_attr("args") {
+                        if let PyObjectPayload::Tuple(items) = &a.payload {
+                            if items.len() == 1 {
+                                items[0].py_to_string()
+                            } else if items.is_empty() {
+                                String::new()
+                            } else {
+                                a.repr()
+                            }
+                        } else {
+                            exc.py_to_string()
+                        }
+                    } else {
+                        exc.py_to_string()
+                    };
+                    PyException::with_original(kind, msg, exc.clone())
+                }
+                PyObjectPayload::Class(_) => {
+                    let kind = Self::find_exception_kind(exc);
+                    PyException::new(kind, "")
+                }
+                _ => PyException::runtime_error(exc.py_to_string()),
+            }
+        };
+        match argc {
+            0 => {
+                // Bare raise: re-raise the currently active exception
+                if let Some(exc) = self.active_exception.clone() {
+                    return Err(exc);
+                }
+                return Err(PyException::runtime_error("No active exception to re-raise"));
+            }
+            1 => {
+                let exc = frame.pop();
+                let mut py_exc = raise_exc(&exc);
+                // Implicit chaining: set __context__ to active exception
+                if let Some(active) = &self.active_exception {
+                    py_exc.context = Some(Box::new(active.clone()));
+                }
+                return Err(py_exc);
+            }
+            2 => {
+                let cause = frame.pop();
+                let exc = frame.pop();
+                let mut py_exc = raise_exc(&exc);
+                // `raise X from None` suppresses the cause
+                if matches!(cause.payload, PyObjectPayload::None) {
+                    // raise X from None: suppress context display
+                    if let Some(ref original) = py_exc.original {
+                        if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
+                            let mut w = attrs.write();
+                            w.insert(CompactString::from("__cause__"), PyObject::none());
+                            w.insert(CompactString::from("__suppress_context__"), PyObject::bool_val(true));
+                        }
+                    }
+                } else {
+                    let cause_exc = raise_exc(&cause);
+                    // Store __cause__ on the exception instance's attrs
+                    if let Some(ref original) = py_exc.original {
+                        if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
+                            let mut w = attrs.write();
+                            w.insert(CompactString::from("__cause__"), cause.clone());
+                            w.insert(CompactString::from("__suppress_context__"), PyObject::bool_val(true));
+                        }
+                    }
+                    py_exc.cause = Some(Box::new(cause_exc));
+                }
+                // Implicit chaining: set __context__ to active exception
+                if let Some(active) = &self.active_exception {
+                    py_exc.context = Some(Box::new(active.clone()));
+                    if let Some(ref original) = py_exc.original {
+                        if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
+                            // Store __context__ as the active exception's original object
+                            if let Some(ref ctx_orig) = active.original {
+                                attrs.write().insert(CompactString::from("__context__"), ctx_orig.clone());
+                            }
+                        }
+                    }
+                }
+                return Err(py_exc);
+            }
+            _ => return Err(PyException::runtime_error("bad RAISE_VARARGS arg")),
+        }
+    }
+
+    fn exec_setup_with(&mut self, arg: u32) -> Result<Option<PyObjectRef>, PyException> {
+        let ctx_mgr = self.vm_pop();
+        if let PyObjectPayload::Generator(gen_arc) = &ctx_mgr.payload {
+            let enter_result = match self.resume_generator(gen_arc, PyObject::none()) {
+                Ok(val) => val,
+                Err(e) if e.kind == ExceptionKind::StopIteration => PyObject::none(),
+                Err(e) => return Err(e),
+            };
+            let frame = self.vm_frame();
+            frame.push(ctx_mgr.clone());
+            frame.push_block(BlockKind::With, arg as usize);
+            frame.push(enter_result);
+        } else {
+            let exit_raw = ctx_mgr.get_attr("__exit__").ok_or_else(||
+                PyException::attribute_error("__exit__"))?;
+            // Bind exit to ctx_mgr so WithCleanupStart passes self correctly
+            let exit_method = if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                exit_raw
+            } else {
+                Arc::new(PyObject {
+                    payload: PyObjectPayload::BoundMethod {
+                        receiver: ctx_mgr.clone(),
+                        method: exit_raw,
+                    }
+                })
+            };
+            self.vm_push(exit_method);
+            let enter_raw = ctx_mgr.get_attr("__enter__").ok_or_else(||
+                PyException::attribute_error("__enter__"))?;
+            let (enter_method, enter_args) = if matches!(&enter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                (enter_raw, vec![])
+            } else {
+                let bound = Arc::new(PyObject {
+                    payload: PyObjectPayload::BoundMethod {
+                        receiver: ctx_mgr.clone(),
+                        method: enter_raw,
+                    }
+                });
+                (bound, vec![])
+            };
+            let enter_result = self.call_object(enter_method, enter_args)?;
+            let frame = self.vm_frame();
+            frame.push_block(BlockKind::With, arg as usize);
+            frame.push(enter_result);
         }
         Ok(None)
     }
