@@ -11,6 +11,9 @@ mod serial_modules;
 mod fs_modules;
 mod time_modules;
 mod misc_modules;
+mod crypto_modules;
+mod config_modules;
+mod testing_modules;
 mod type_modules;
 mod introspection_modules;
 mod concurrency_modules;
@@ -95,17 +98,17 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "dataclasses" => Some(misc_modules::create_dataclasses_module()),
         "copy" => Some(misc_modules::create_copy_module()),
         "operator" => Some(misc_modules::create_operator_module()),
-        "hashlib" => Some(misc_modules::create_hashlib_module()),
-        "logging" => Some(misc_modules::create_logging_module()),
-        "unittest" => Some(misc_modules::create_unittest_module()),
+        "hashlib" => Some(crypto_modules::create_hashlib_module()),
+        "logging" => Some(testing_modules::create_logging_module()),
+        "unittest" => Some(testing_modules::create_unittest_module()),
         "pprint" => Some(misc_modules::create_pprint_module()),
-        "argparse" => Some(misc_modules::create_argparse_module()),
+        "argparse" => Some(config_modules::create_argparse_module()),
         "errno" => Some(misc_modules::create_errno_module()),
         "uuid" => Some(misc_modules::create_uuid_module()),
         "codecs" => Some(misc_modules::create_codecs_module()),
-        "secrets" => Some(misc_modules::create_secrets_module()),
-        "hmac" => Some(misc_modules::create_hmac_module()),
-        "configparser" => Some(misc_modules::create_configparser_module()),
+        "secrets" => Some(crypto_modules::create_secrets_module()),
+        "hmac" => Some(crypto_modules::create_hmac_module()),
+        "configparser" => Some(config_modules::create_configparser_module()),
         // Introspection
         "warnings" => Some(introspection_modules::create_warnings_module()),
         "traceback" => Some(introspection_modules::create_traceback_module()),
@@ -185,11 +188,11 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "xml.dom.minidom" => Some(xml_modules::create_xml_dom_minidom_module()),
         "xml.sax" => Some(xml_modules::create_xml_sax_module()),
         // Testing & debugging
-        "unittest.mock" => Some(misc_modules::create_unittest_mock_module()),
-        "doctest" => Some(misc_modules::create_doctest_module()),
-        "pdb" => Some(misc_modules::create_pdb_module()),
-        "profile" => Some(misc_modules::create_profile_module()),
-        "cProfile" => Some(misc_modules::create_cprofile_module()),
+        "unittest.mock" => Some(testing_modules::create_unittest_mock_module()),
+        "doctest" => Some(testing_modules::create_doctest_module()),
+        "pdb" => Some(testing_modules::create_pdb_module()),
+        "profile" => Some(testing_modules::create_profile_module()),
+        "cProfile" => Some(testing_modules::create_cprofile_module()),
         // Persistence
         "shelve" => Some(misc_modules::create_shelve_module()),
         _ => None,

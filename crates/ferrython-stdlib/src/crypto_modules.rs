@@ -1,0 +1,356 @@
+//! Cryptography and hashing stdlib modules
+
+use compact_str::CompactString;
+use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::object::{
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
+    make_module, make_builtin, check_args,
+};
+use indexmap::IndexMap;
+use parking_lot::RwLock;
+use std::sync::Arc;
+
+use super::serial_modules::extract_bytes;
+
+// ── hashlib module ──
+
+pub fn create_hashlib_module() -> PyObjectRef {
+    make_module("hashlib", vec![
+        ("md5", make_builtin(hashlib_md5)),
+        ("sha1", make_builtin(hashlib_sha1)),
+        ("sha256", make_builtin(hashlib_sha256)),
+        ("sha512", make_builtin(hashlib_sha512)),
+        ("sha224", make_builtin(hashlib_sha224)),
+        ("sha384", make_builtin(hashlib_sha384)),
+        ("new", make_builtin(hashlib_new)),
+    ])
+}
+
+fn make_hash_object(name: &str, data: Vec<u8>, digest_hex: String, digest_bytes: Vec<u8>, block_size: i64, digest_size: i64) -> PyObjectRef {
+    let class = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
+    let attrs = IndexMap::new();
+    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class: class.clone(),
+        attrs: Arc::new(RwLock::new(attrs)),
+        dict_storage: None,
+    }));
+    {
+        let a = if let PyObjectPayload::Instance(ref d) = inst.payload { d.attrs.clone() } else { unreachable!() };
+        let mut w = a.write();
+        w.insert(CompactString::from("_hexdigest"), PyObject::str_val(CompactString::from(&digest_hex)));
+        w.insert(CompactString::from("_digest"), PyObject::bytes(digest_bytes));
+        w.insert(CompactString::from("_data"), PyObject::bytes(data));
+        w.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name)));
+        w.insert(CompactString::from("block_size"), PyObject::int(block_size));
+        w.insert(CompactString::from("digest_size"), PyObject::int(digest_size));
+    }
+    inst
+}
+
+fn hashlib_md5(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use md5::Md5;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Md5::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("md5", data, hex, result.to_vec(), 64, 16))
+}
+
+fn hashlib_sha1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use sha1::Sha1;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Sha1::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("sha1", data, hex, result.to_vec(), 64, 20))
+}
+
+fn hashlib_sha256(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use sha2::Sha256;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("sha256", data, hex, result.to_vec(), 64, 32))
+}
+
+fn hashlib_sha224(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use sha2::Sha224;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Sha224::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("sha224", data, hex, result.to_vec(), 64, 28))
+}
+
+fn hashlib_sha384(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use sha2::Sha384;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Sha384::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("sha384", data, hex, result.to_vec(), 128, 48))
+}
+
+fn hashlib_sha512(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use sha2::Sha512;
+    use digest::Digest;
+    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
+    let mut hasher = Sha512::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    Ok(make_hash_object("sha512", data, hex, result.to_vec(), 128, 64))
+}
+
+fn hashlib_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("hashlib.new() requires algorithm name")); }
+    let name = match &args[0].payload {
+        PyObjectPayload::Str(s) => s.to_string(),
+        _ => return Err(PyException::type_error("algorithm name must be a string")),
+    };
+    let data_args = if args.len() > 1 { &args[1..] } else { &[] as &[PyObjectRef] };
+    match name.as_str() {
+        "md5" => hashlib_md5(data_args),
+        "sha1" => hashlib_sha1(data_args),
+        "sha256" => hashlib_sha256(data_args),
+        "sha224" => hashlib_sha224(data_args),
+        "sha384" => hashlib_sha384(data_args),
+        "sha512" => hashlib_sha512(data_args),
+        _ => Err(PyException::value_error(format!("unsupported hash type {}", name))),
+    }
+}
+
+// ── secrets module ──────────────────────────────────────────────────
+
+pub fn create_secrets_module() -> PyObjectRef {
+    make_module("secrets", vec![
+        ("token_bytes", make_builtin(secrets_token_bytes)),
+        ("token_hex", make_builtin(secrets_token_hex)),
+        ("token_urlsafe", make_builtin(secrets_token_urlsafe)),
+        ("randbelow", make_builtin(secrets_randbelow)),
+        ("choice", make_builtin(secrets_choice)),
+        ("compare_digest", make_builtin(secrets_compare_digest)),
+    ])
+}
+
+fn secrets_random_bytes(n: usize) -> Vec<u8> {
+    use std::time::SystemTime;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut result = Vec::with_capacity(n);
+    for _ in 0..n {
+        let cnt = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos() as u64;
+        let seed = nanos
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(cnt.wrapping_mul(1442695040888963407));
+        result.push((seed >> 16) as u8);
+    }
+    result
+}
+
+fn secrets_random_f64() -> f64 {
+    use std::time::SystemTime;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let cnt = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos() as u64;
+    let seed = nanos
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(cnt.wrapping_mul(1442695040888963407));
+    (seed >> 11) as f64 / (1u64 << 53) as f64
+}
+
+fn secrets_token_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    Ok(PyObject::bytes(secrets_random_bytes(nbytes)))
+}
+
+fn secrets_token_hex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    let bytes = secrets_random_bytes(nbytes);
+    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    Ok(PyObject::str_val(CompactString::from(hex)))
+}
+
+fn secrets_token_urlsafe(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let nbytes = if args.is_empty() { 32 } else { args[0].to_int()? as usize };
+    let bytes = secrets_random_bytes(nbytes);
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut result = String::with_capacity((nbytes * 4 + 2) / 3);
+    let mut i = 0;
+    while i < bytes.len() {
+        let b0 = bytes[i] as u32;
+        let b1 = if i + 1 < bytes.len() { bytes[i + 1] as u32 } else { 0 };
+        let b2 = if i + 2 < bytes.len() { bytes[i + 2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if i + 1 < bytes.len() {
+            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        }
+        if i + 2 < bytes.len() {
+            result.push(CHARS[(triple & 0x3F) as usize] as char);
+        }
+        i += 3;
+    }
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn secrets_randbelow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("secrets.randbelow", args, 1)?;
+    let n = args[0].to_int()?;
+    if n <= 0 {
+        return Err(PyException::value_error("upper bound must be positive"));
+    }
+    let val = (secrets_random_f64() * n as f64) as i64;
+    Ok(PyObject::int(val.min(n - 1)))
+}
+
+fn secrets_choice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("secrets.choice", args, 1)?;
+    let items = args[0].to_list()?;
+    if items.is_empty() {
+        return Err(PyException::index_error("cannot choose from an empty sequence"));
+    }
+    let idx = (secrets_random_f64() * items.len() as f64) as usize;
+    Ok(items[idx.min(items.len() - 1)].clone())
+}
+
+fn secrets_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("secrets.compare_digest", args, 2)?;
+    let a = args[0].py_to_string();
+    let b = args[1].py_to_string();
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let mut result: u8 = if a_bytes.len() != b_bytes.len() { 1 } else { 0 };
+    let len = std::cmp::min(a_bytes.len(), b_bytes.len());
+    for i in 0..len {
+        result |= a_bytes[i] ^ b_bytes[i];
+    }
+    Ok(PyObject::bool_val(result == 0))
+}
+
+
+// ── hmac module ──────────────────────────────────────────────────────
+pub fn create_hmac_module() -> PyObjectRef {
+
+    fn hmac_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("hmac.new requires key and msg")); }
+        let key = match &args[0].payload {
+            PyObjectPayload::Bytes(b) => b.clone(),
+            PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+            _ => return Err(PyException::type_error("key must be bytes")),
+        };
+        let msg = match &args[1].payload {
+            PyObjectPayload::Bytes(b) => b.clone(),
+            PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+            _ => vec![],
+        };
+        let digestmod = if args.len() > 2 { args[2].py_to_string() } else { "sha256".to_string() };
+
+        // HMAC computation: H((K ^ opad) || H((K ^ ipad) || message))
+        let block_size = 64usize;
+        let mut k = key;
+        if k.len() > block_size {
+            k = simple_hash(&k, &digestmod);
+        }
+        while k.len() < block_size { k.push(0); }
+        let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+        let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+        let mut inner = ipad;
+        inner.extend_from_slice(&msg);
+        let inner_hash = simple_hash(&inner, &digestmod);
+        let mut outer = opad;
+        outer.extend_from_slice(&inner_hash);
+        let result = simple_hash(&outer, &digestmod);
+
+        let hex_str = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("_digest"), PyObject::bytes(result.clone()));
+        attrs.insert(CompactString::from("_hexdigest"), PyObject::str_val(CompactString::from(&hex_str)));
+        attrs.insert(CompactString::from("digest_size"), PyObject::int(result.len() as i64));
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(format!("hmac-{}", digestmod))));
+        attrs.insert(CompactString::from("_digest_bytes"), PyObject::bytes(result));
+        attrs.insert(CompactString::from("_hex_str"), PyObject::str_val(CompactString::from(&hex_str)));
+
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("digest"), make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::bytes(vec![])); }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(v) = inst.attrs.read().get("_digest_bytes") { return Ok(v.clone()); }
+            }
+            Ok(PyObject::bytes(vec![]))
+        }));
+        ns.insert(CompactString::from("hexdigest"), make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(v) = inst.attrs.read().get("_hex_str") { return Ok(v.clone()); }
+            }
+            Ok(PyObject::str_val(CompactString::from("")))
+        }));
+        let class = PyObject::class(CompactString::from("HMAC"), vec![], ns);
+        let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+            class,
+            attrs: Arc::new(RwLock::new(attrs)),
+            dict_storage: None,
+        }));
+        Ok(inst)
+    }
+
+    fn simple_hash(data: &[u8], algo: &str) -> Vec<u8> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        // Use Rust's built-in hasher as a simplified substitute
+        // (Real HMAC would need proper SHA implementation)
+        let mut hasher = DefaultHasher::new();
+        data.hash(&mut hasher);
+        algo.hash(&mut hasher);
+        let h = hasher.finish();
+        let mut result = Vec::new();
+        for i in 0..4 {
+            let mut hasher2 = DefaultHasher::new();
+            data.hash(&mut hasher2);
+            (h.wrapping_add(i as u64)).hash(&mut hasher2);
+            let v = hasher2.finish();
+            result.extend_from_slice(&v.to_be_bytes());
+        }
+        result
+    }
+
+    fn hmac_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("compare_digest requires 2 arguments")); }
+        let a = args[0].py_to_string();
+        let b = args[1].py_to_string();
+        let a_bytes = a.as_bytes();
+        let b_bytes = b.as_bytes();
+        if a_bytes.len() != b_bytes.len() { return Ok(PyObject::bool_val(false)); }
+        let mut result = 0u8;
+        for i in 0..a_bytes.len() { result |= a_bytes[i] ^ b_bytes[i]; }
+        Ok(PyObject::bool_val(result == 0))
+    }
+
+    make_module("hmac", vec![
+        ("new", make_builtin(hmac_new)),
+        ("compare_digest", make_builtin(hmac_compare_digest)),
+        ("digest", make_builtin(|args| hmac_new(args).and_then(|h| {
+            h.get_attr("_digest").ok_or_else(|| PyException::runtime_error("no digest"))
+        }))),
+        ("HMAC", make_builtin(hmac_new)),
+    ])
+}
