@@ -4,6 +4,7 @@ use crate::error::{PyException, PyResult};
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
+use std::sync::Arc;
 
 use super::payload::*;
 use super::methods::PyObjectMethods;
@@ -209,6 +210,65 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
                 }
             }
             Some(std::cmp::Ordering::Equal)
+        }
+        // Instance comparison: check __eq__ method on class (for dataclass, custom __eq__)
+        (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) => {
+            // Check if they are the same object
+            if Arc::ptr_eq(a, b) { return Some(std::cmp::Ordering::Equal); }
+            // Look for __eq__ in the class hierarchy
+            fn find_in_mro(cls: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+                if let PyObjectPayload::Class(cd) = &cls.payload {
+                    let ns = cd.namespace.read();
+                    if let Some(f) = ns.get(name) { return Some(f.clone()); }
+                    for base in &cd.mro {
+                        if let PyObjectPayload::Class(bcd) = &base.payload {
+                            let bns = bcd.namespace.read();
+                            if let Some(f) = bns.get(name) { return Some(f.clone()); }
+                        }
+                    }
+                }
+                None
+            }
+            if let Some(eq_fn) = find_in_mro(&inst_a.class, "__eq__") {
+                match &eq_fn.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => {
+                        if let Ok(result) = func(&[a.clone(), b.clone()]) {
+                            return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
+                        }
+                    }
+                    PyObjectPayload::NativeClosure { func, .. } => {
+                        if let Ok(result) = func(&[a.clone(), b.clone()]) {
+                            return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // For __lt__ comparison (used by sorted), also check
+            if let Some(lt_fn) = find_in_mro(&inst_a.class, "__lt__") {
+                match &lt_fn.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => {
+                        if let Ok(result) = func(&[a.clone(), b.clone()]) {
+                            if result.is_truthy() { return Some(std::cmp::Ordering::Less); }
+                        }
+                        if let Ok(result) = func(&[b.clone(), a.clone()]) {
+                            if result.is_truthy() { return Some(std::cmp::Ordering::Greater); }
+                        }
+                        return Some(std::cmp::Ordering::Equal);
+                    }
+                    PyObjectPayload::NativeClosure { func, .. } => {
+                        if let Ok(result) = func(&[a.clone(), b.clone()]) {
+                            if result.is_truthy() { return Some(std::cmp::Ordering::Less); }
+                        }
+                        if let Ok(result) = func(&[b.clone(), a.clone()]) {
+                            if result.is_truthy() { return Some(std::cmp::Ordering::Greater); }
+                        }
+                        return Some(std::cmp::Ordering::Equal);
+                    }
+                    _ => {}
+                }
+            }
+            None
         }
         _ => None,
     }
