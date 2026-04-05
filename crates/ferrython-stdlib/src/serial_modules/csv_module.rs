@@ -5,7 +5,6 @@ use ferrython_core::object::{
     make_module, make_builtin, check_args_min,
 };
 use ferrython_core::types::HashableKey;
-use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
 pub fn create_csv_module() -> PyObjectRef {

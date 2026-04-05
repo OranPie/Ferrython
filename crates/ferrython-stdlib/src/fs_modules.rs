@@ -198,27 +198,7 @@ pub fn create_pathlib_module() -> PyObjectRef {
         let path = get_path_str(&args[0]);
         let meta = std::fs::metadata(&path)
             .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
-        let cls = PyObject::class(CompactString::from("stat_result"), vec![], IndexMap::new());
-        let inst = PyObject::instance(cls);
-        if let PyObjectPayload::Instance(ref d) = inst.payload {
-            let mut w = d.attrs.write();
-            w.insert(CompactString::from("st_size"), PyObject::int(meta.len() as i64));
-            w.insert(CompactString::from("st_mode"), PyObject::int(0o644));
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                w.insert(CompactString::from("st_mode"), PyObject::int(meta.mode() as i64));
-                w.insert(CompactString::from("st_ino"), PyObject::int(meta.ino() as i64));
-                w.insert(CompactString::from("st_dev"), PyObject::int(meta.dev() as i64));
-                w.insert(CompactString::from("st_nlink"), PyObject::int(meta.nlink() as i64));
-                w.insert(CompactString::from("st_uid"), PyObject::int(meta.uid() as i64));
-                w.insert(CompactString::from("st_gid"), PyObject::int(meta.gid() as i64));
-                w.insert(CompactString::from("st_atime"), PyObject::float(meta.atime() as f64));
-                w.insert(CompactString::from("st_mtime"), PyObject::float(meta.mtime() as f64));
-                w.insert(CompactString::from("st_ctime"), PyObject::float(meta.ctime() as f64));
-            }
-        }
-        Ok(inst)
+        build_stat_result(meta)
     }));
 
     // with_name(name) -> Path
@@ -293,6 +273,133 @@ pub fn create_pathlib_module() -> PyObjectRef {
         Ok(PyObject::str_val(CompactString::from(get_path_str(&args[0]))))
     }));
 
+    // relative_to(other) -> Path
+    path_ns.insert(CompactString::from("relative_to"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("relative_to requires self and other")); }
+        let path = get_path_str(&args[0]);
+        let base = args[1].py_to_string();
+        let p = std::path::Path::new(&path);
+        let b = std::path::Path::new(&base);
+        match p.strip_prefix(b) {
+            Ok(rel) => make_path_instance(&rel.to_string_lossy()),
+            Err(_) => Err(PyException::value_error(format!("'{}' is not relative to '{}'", path, base))),
+        }
+    }));
+
+    // with_stem(stem) -> Path (Python 3.9+)
+    path_ns.insert(CompactString::from("with_stem"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("with_stem requires self and stem")); }
+        let path = get_path_str(&args[0]);
+        let new_stem = args[1].py_to_string();
+        let p = std::path::Path::new(&path);
+        let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        let parent = p.parent().unwrap_or(std::path::Path::new(""));
+        let new_path = parent.join(format!("{}{}", new_stem, ext));
+        make_path_instance(&new_path.to_string_lossy())
+    }));
+
+    // expanduser() -> Path
+    path_ns.insert(CompactString::from("expanduser"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("expanduser requires self")); }
+        let path = get_path_str(&args[0]);
+        if path.starts_with("~/") || path == "~" {
+            if let Ok(home) = std::env::var("HOME") {
+                let expanded = if path == "~" { home } else { format!("{}{}", home, &path[1..]) };
+                return make_path_instance(&expanded);
+            }
+        }
+        make_path_instance(&path)
+    }));
+
+    // is_absolute() -> bool
+    path_ns.insert(CompactString::from("is_absolute"), make_builtin(|args| {
+        if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+        Ok(PyObject::bool_val(std::path::Path::new(&get_path_str(&args[0])).is_absolute()))
+    }));
+
+    // absolute() -> Path (like resolve but without symlink resolution)
+    path_ns.insert(CompactString::from("absolute"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("absolute requires self")); }
+        let path = get_path_str(&args[0]);
+        let p = std::path::Path::new(&path);
+        if p.is_absolute() {
+            make_path_instance(&path)
+        } else {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            make_path_instance(&cwd.join(p).to_string_lossy())
+        }
+    }));
+
+    // match(pattern) -> bool (simple glob match against the path name)
+    path_ns.insert(CompactString::from("match"), make_builtin(|args| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let path = get_path_str(&args[0]);
+        let pattern = args[1].py_to_string();
+        let name = std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Ok(PyObject::bool_val(simple_glob_match(&pattern, &name)))
+    }));
+
+    // samefile(other) -> bool
+    path_ns.insert(CompactString::from("samefile"), make_builtin(|args| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a = get_path_str(&args[0]);
+        let b = args[1].py_to_string();
+        let ma = std::fs::metadata(&a);
+        let mb = std::fs::metadata(&b);
+        match (ma, mb) {
+            #[cfg(unix)]
+            (Ok(ma), Ok(mb)) => {
+                use std::os::unix::fs::MetadataExt;
+                Ok(PyObject::bool_val(ma.ino() == mb.ino() && ma.dev() == mb.dev()))
+            }
+            #[cfg(not(unix))]
+            (Ok(_), Ok(_)) => {
+                let ca = std::fs::canonicalize(&a).unwrap_or_default();
+                let cb = std::fs::canonicalize(&b).unwrap_or_default();
+                Ok(PyObject::bool_val(ca == cb))
+            }
+            _ => Ok(PyObject::bool_val(false)),
+        }
+    }));
+
+    // write_bytes(data) -> int
+    path_ns.insert(CompactString::from("write_bytes"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("write_bytes requires self and data")); }
+        let path = get_path_str(&args[0]);
+        let data = match &args[1].payload {
+            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+            _ => args[1].py_to_string().into_bytes(),
+        };
+        let len = data.len();
+        std::fs::write(&path, &data)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        Ok(PyObject::int(len as i64))
+    }));
+
+    // lstat() -> stat_result (without following symlinks)
+    path_ns.insert(CompactString::from("lstat"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("lstat requires self")); }
+        let path = get_path_str(&args[0]);
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        build_stat_result(meta)
+    }));
+
+    // chmod(mode)
+    #[cfg(unix)]
+    path_ns.insert(CompactString::from("chmod"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("chmod requires self and mode")); }
+        let path = get_path_str(&args[0]);
+        let mode = args[1].as_int().unwrap_or(0o644) as u32;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        Ok(PyObject::none())
+    }));
+
     let path_cls = PyObject::class(CompactString::from("Path"), vec![], path_ns);
     // Add __init__ for constructor dispatch: Path("/some/path")
     if let PyObjectPayload::Class(ref cd) = path_cls.payload {
@@ -334,6 +441,30 @@ fn simple_glob_match(pattern: &str, text: &str) -> bool {
 fn pathlib_home(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     make_path_instance(&home)
+}
+
+pub fn build_stat_result(meta: std::fs::Metadata) -> PyResult<PyObjectRef> {
+    let cls = PyObject::class(CompactString::from("stat_result"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("st_size"), PyObject::int(meta.len() as i64));
+        w.insert(CompactString::from("st_mode"), PyObject::int(0o644));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            w.insert(CompactString::from("st_mode"), PyObject::int(meta.mode() as i64));
+            w.insert(CompactString::from("st_ino"), PyObject::int(meta.ino() as i64));
+            w.insert(CompactString::from("st_dev"), PyObject::int(meta.dev() as i64));
+            w.insert(CompactString::from("st_nlink"), PyObject::int(meta.nlink() as i64));
+            w.insert(CompactString::from("st_uid"), PyObject::int(meta.uid() as i64));
+            w.insert(CompactString::from("st_gid"), PyObject::int(meta.gid() as i64));
+            w.insert(CompactString::from("st_atime"), PyObject::float(meta.atime() as f64));
+            w.insert(CompactString::from("st_mtime"), PyObject::float(meta.mtime() as f64));
+            w.insert(CompactString::from("st_ctime"), PyObject::float(meta.ctime() as f64));
+        }
+    }
+    Ok(inst)
 }
 
 fn pathlib_cwd(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

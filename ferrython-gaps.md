@@ -3,7 +3,7 @@
 **Methodology:** All results are empirical — each item was verified by running an isolated Python
 program through `ferrython` (`cargo build --release`).
 
-**Score: 64 PASS · 5 FAIL/PARTIAL (language + stdlib) + ~10 missing modules**
+**Score: 69 PASS · 5 FAIL/PARTIAL (language + stdlib) + ~10 missing modules**
 
 > Items marked `[simplified]` are partially implemented — the stub unblocks common usage.
 
@@ -194,9 +194,12 @@ Missing: `help()`.
 | `csv.DictWriter` | ✅ Fixed — writeheader/writerow/writerows work |
 | `subprocess.Popen` | ✅ Fixed — communicate/wait/poll/kill/terminate/context manager |
 | `multiprocessing.Pool` | Stub |
-| `threading` sync | Only Thread works; RLock/Semaphore/Event stubs |
+| `threading` sync | ✅ Fixed — Lock/RLock/Semaphore/BoundedSemaphore/Event/Barrier/Condition all working |
 | `warnings` | ✅ Fixed — filterwarnings/simplefilter/catch_warnings with real filters |
-| `typing.get_type_hints()` | Returns `{}` |
+| `typing` | ✅ Fixed — get_args/get_origin/get_type_hints + proper _GenericAlias objects |
+| `pathlib.Path` | ✅ Expanded — stat/lstat/touch/with_stem/relative_to/expanduser/chmod/samefile/write_bytes |
+| `os.scandir` | ✅ Added — returns DirEntry with name/path/is_file/is_dir/is_symlink/stat |
+| `re.compile` | ✅ Working — Pattern with match/search/findall/finditer/sub/split/fullmatch |
 
 ### 5.3 Missing Modules (ImportError) ❌
 

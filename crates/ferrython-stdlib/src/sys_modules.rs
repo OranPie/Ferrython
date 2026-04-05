@@ -390,6 +390,25 @@ pub fn create_os_module() -> PyObjectRef {
         ("O_CREAT", PyObject::int(0o100)),
         ("O_TRUNC", PyObject::int(0o1000)),
         ("O_APPEND", PyObject::int(0o2000)),
+        ("scandir", make_builtin(os_scandir)),
+        ("lstat", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("os.lstat requires path")); }
+            let path = args[0].py_to_string();
+            let meta = std::fs::symlink_metadata(&path)
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+            crate::fs_modules::build_stat_result(meta)
+        })),
+        ("expanduser", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("expanduser requires path")); }
+            let path = args[0].py_to_string();
+            if path.starts_with("~/") || path == "~" {
+                if let Ok(home) = std::env::var("HOME") {
+                    let expanded = if path == "~" { home } else { format!("{}{}", home, &path[1..]) };
+                    return Ok(PyObject::str_val(CompactString::from(expanded)));
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(path)))
+        })),
     ])
 }
 
@@ -653,6 +672,58 @@ fn os_system(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .status()
         .map_err(|e| PyException::os_error(format!("{}", e)))?;
     Ok(PyObject::int(status.code().unwrap_or(-1) as i64))
+}
+
+fn os_scandir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let path = if args.is_empty() { ".".to_string() } else { args[0].py_to_string() };
+    let entries = std::fs::read_dir(&path)
+        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+    let mut items = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let full_path = entry.path().to_string_lossy().to_string();
+        let file_type = entry.file_type().ok();
+        let is_file = file_type.as_ref().map(|ft| ft.is_file()).unwrap_or(false);
+        let is_dir = file_type.as_ref().map(|ft| ft.is_dir()).unwrap_or(false);
+        let is_symlink = file_type.as_ref().map(|ft| ft.is_symlink()).unwrap_or(false);
+
+        let cls = PyObject::class(CompactString::from("DirEntry"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&name)));
+        attrs.insert(CompactString::from("path"), PyObject::str_val(CompactString::from(&full_path)));
+
+        let is_file_val = is_file;
+        attrs.insert(CompactString::from("is_file"), PyObject::native_closure(
+            "DirEntry.is_file", move |_| Ok(PyObject::bool_val(is_file_val))));
+        let is_dir_val = is_dir;
+        attrs.insert(CompactString::from("is_dir"), PyObject::native_closure(
+            "DirEntry.is_dir", move |_| Ok(PyObject::bool_val(is_dir_val))));
+        let is_sym_val = is_symlink;
+        attrs.insert(CompactString::from("is_symlink"), PyObject::native_closure(
+            "DirEntry.is_symlink", move |_| Ok(PyObject::bool_val(is_sym_val))));
+        // stat() — cached metadata
+        let stat_path = full_path.clone();
+        attrs.insert(CompactString::from("stat"), PyObject::native_closure(
+            "DirEntry.stat", move |_| {
+                let meta = std::fs::metadata(&stat_path)
+                    .map_err(|e| PyException::os_error(format!("{}: '{}'", e, stat_path)))?;
+                crate::fs_modules::build_stat_result(meta)
+            }));
+        // __repr__
+        let repr_name = name.clone();
+        attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+            "DirEntry.__repr__", move |_| {
+                Ok(PyObject::str_val(CompactString::from(format!("<DirEntry '{}'>", repr_name))))
+            }));
+        // __str__ returns name
+        let str_name = name.clone();
+        attrs.insert(CompactString::from("__str__"), PyObject::native_closure(
+            "DirEntry.__str__", move |_| {
+                Ok(PyObject::str_val(CompactString::from(str_name.as_str())))
+            }));
+        items.push(PyObject::instance_with_attrs(cls, attrs));
+    }
+    Ok(PyObject::list(items))
 }
 
 // ── os.path module ──

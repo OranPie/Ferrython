@@ -583,9 +583,12 @@ fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     attrs.insert(CompactString::from("match"), PyObject::native_function("Pattern.match", compiled_match));
     attrs.insert(CompactString::from("search"), PyObject::native_function("Pattern.search", compiled_search));
     attrs.insert(CompactString::from("findall"), PyObject::native_function("Pattern.findall", compiled_findall));
+    attrs.insert(CompactString::from("finditer"), PyObject::native_function("Pattern.finditer", compiled_findall)); // finditer returns same as findall for now
     attrs.insert(CompactString::from("sub"), PyObject::native_function("Pattern.sub", compiled_sub));
     attrs.insert(CompactString::from("split"), PyObject::native_function("Pattern.split", compiled_split));
     attrs.insert(CompactString::from("fullmatch"), PyObject::native_function("Pattern.fullmatch", compiled_fullmatch));
+    attrs.insert(CompactString::from("groupindex"), PyObject::dict(IndexMap::new()));
+    attrs.insert(CompactString::from("groups"), PyObject::int(0));
     attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
     Ok(PyObject::module_with_attrs(CompactString::from("Pattern"), attrs))
 }

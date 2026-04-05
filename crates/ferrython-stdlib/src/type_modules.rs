@@ -37,7 +37,7 @@ pub fn create_typing_module() -> PyObjectRef {
     );
 
     // Helper to create typing generic alias classes
-    // These support subscript notation: List[int] → _GenericAlias("List", (int,))
+    // These support subscript notation: List[int] → _GenericAlias with __origin__ and __args__
     let make_typing_alias = |display_name: &str| -> PyObjectRef {
         let name = CompactString::from(display_name);
         let display = name.clone();
@@ -49,7 +49,16 @@ pub fn create_typing_module() -> PyObjectRef {
             {
                 let display = display.clone();
                 move |args: &[PyObjectRef]| -> Result<PyObjectRef, PyException> {
-                    // args[0] = cls, args[1] = params
+                    // Build a _GenericAlias object with __origin__, __args__, __repr__
+                    let origin_display = display.clone();
+                    let params = if args.len() >= 2 { args[1].clone() } else if args.len() == 1 { args[0].clone() } else { PyObject::none() };
+
+                    // Build __args__ tuple
+                    let args_tuple = match &params.payload {
+                        PyObjectPayload::Tuple(items) => PyObject::tuple(items.clone()),
+                        _ => PyObject::tuple(vec![params.clone()]),
+                    };
+
                     let params_str = if args.len() >= 2 {
                         args[1].py_to_string()
                     } else if args.len() == 1 {
@@ -57,8 +66,15 @@ pub fn create_typing_module() -> PyObjectRef {
                     } else {
                         "?".to_string()
                     };
-                    let repr = format!("typing.{}[{}]", display, params_str);
-                    Ok(PyObject::str_val(CompactString::from(repr)))
+                    let repr = format!("typing.{}[{}]", origin_display, params_str);
+
+                    let cls = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
+                    let mut attrs = IndexMap::new();
+                    attrs.insert(CompactString::from("__origin__"), PyObject::str_val(CompactString::from(origin_display.as_str())));
+                    attrs.insert(CompactString::from("__args__"), args_tuple);
+                    attrs.insert(CompactString::from("__repr__"), PyObject::str_val(CompactString::from(&repr)));
+                    attrs.insert(CompactString::from("__str__"), PyObject::str_val(CompactString::from(&repr)));
+                    Ok(PyObject::instance_with_attrs(cls, attrs))
                 }
             },
         ));
@@ -90,7 +106,6 @@ pub fn create_typing_module() -> PyObjectRef {
         ("Literal", make_typing_alias("Literal")),
         ("NamedTuple", PyObject::builtin_type(CompactString::from("NamedTuple"))),
         ("get_type_hints", make_builtin(|args: &[PyObjectRef]| {
-            // Return __annotations__ dict from the function/class, or empty dict
             if args.is_empty() {
                 return Ok(PyObject::dict(IndexMap::new()));
             }
@@ -99,6 +114,22 @@ pub fn create_typing_module() -> PyObjectRef {
                 Ok(ann)
             } else {
                 Ok(PyObject::dict(IndexMap::new()))
+            }
+        })),
+        ("get_args", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::tuple(vec![])); }
+            if let Some(type_args) = args[0].get_attr("__args__") {
+                Ok(type_args)
+            } else {
+                Ok(PyObject::tuple(vec![]))
+            }
+        })),
+        ("get_origin", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            if let Some(origin) = args[0].get_attr("__origin__") {
+                Ok(origin)
+            } else {
+                Ok(PyObject::none())
             }
         })),
         ("cast", make_builtin(|args: &[PyObjectRef]| {
