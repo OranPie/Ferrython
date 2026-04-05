@@ -1,6 +1,7 @@
 //! Arithmetic operation methods.
 
 use crate::error::{PyException, PyResult};
+use crate::intern::intern_or_new;
 use crate::types::{PyInt, HashableKey};
 use compact_str::CompactString;
 use indexmap::IndexMap;
@@ -79,10 +80,10 @@ pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                     result.insert(k.clone(), PyObject::int(new_val));
                 }
                 // Preserve __counter__ marker if both inputs are counters
-                let a_is_counter = ra.contains_key(&HashableKey::Str(CompactString::from("__counter__")));
-                let b_is_counter = rb.contains_key(&HashableKey::Str(CompactString::from("__counter__")));
+                let a_is_counter = ra.contains_key(&HashableKey::Str(intern_or_new("__counter__")));
+                let b_is_counter = rb.contains_key(&HashableKey::Str(intern_or_new("__counter__")));
                 if a_is_counter && b_is_counter {
-                    result.insert(HashableKey::Str(CompactString::from("__counter__")), PyObject::bool_val(true));
+                    result.insert(HashableKey::Str(intern_or_new("__counter__")), PyObject::bool_val(true));
                 }
                 Ok(PyObject::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(result)))))
             }
@@ -144,10 +145,10 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             // Counter - Counter: subtract counts, keep positive
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
                 let ra = a_map.read(); let rb = b_map.read();
-                let counter_key = HashableKey::Str(CompactString::from("__counter__"));
+                let counter_key = HashableKey::Str(intern_or_new("__counter__"));
                 if ra.contains_key(&counter_key) && rb.contains_key(&counter_key) {
                     let mut result = IndexMap::new();
-                    result.insert(HashableKey::Str(CompactString::from("__defaultdict_factory__")),
+                    result.insert(HashableKey::Str(intern_or_new("__defaultdict_factory__")),
                         PyObject::builtin_type(CompactString::from("int")));
                     result.insert(counter_key, PyObject::bool_val(true));
                     for (k, v) in ra.iter() {
@@ -193,7 +194,7 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                     let inst = PyObject::instance(cls);
                     if let PyObjectPayload::Instance(ref d) = inst.payload {
                         let mut w = d.attrs.write();
-                        w.insert(CompactString::from("__timedelta__"), PyObject::bool_val(true));
+                        w.insert(intern_or_new("__timedelta__"), PyObject::bool_val(true));
                         w.insert(CompactString::from("days"), PyObject::int(diff_days));
                         w.insert(CompactString::from("seconds"), PyObject::int(0));
                         w.insert(CompactString::from("microseconds"), PyObject::int(0));
@@ -331,7 +332,7 @@ pub(super) fn py_true_div(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObject
                 let new_inst = PyObject::instance(cls);
                 if let PyObjectPayload::Instance(ref d) = new_inst.payload {
                     let mut w = d.attrs.write();
-                    w.insert(CompactString::from("__pathlib_path__"), PyObject::bool_val(true));
+                    w.insert(intern_or_new("__pathlib_path__"), PyObject::bool_val(true));
                     w.insert(CompactString::from("_path"), PyObject::str_val(CompactString::from(&joined_str)));
                     w.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(
                         path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
@@ -512,12 +513,12 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             // Counter & Counter: minimum of counts (intersection)
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
                 let ra = a_map.read(); let rb = b_map.read();
-                let counter_key = HashableKey::Str(CompactString::from("__counter__"));
+                let counter_key = HashableKey::Str(intern_or_new("__counter__"));
                 let a_counter = ra.contains_key(&counter_key);
                 let b_counter = rb.contains_key(&counter_key);
                 if a_counter && b_counter {
                     let mut result = IndexMap::new();
-                    result.insert(HashableKey::Str(CompactString::from("__defaultdict_factory__")),
+                    result.insert(HashableKey::Str(intern_or_new("__defaultdict_factory__")),
                         PyObject::builtin_type(CompactString::from("int")));
                     result.insert(counter_key, PyObject::bool_val(true));
                     for (k, v) in ra.iter() {
@@ -572,13 +573,13 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
             // PEP 584: dict | dict (also Counter | Counter with max semantics)
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
                 let ra = a_map.read(); let rb = b_map.read();
-                let counter_key = HashableKey::Str(CompactString::from("__counter__"));
+                let counter_key = HashableKey::Str(intern_or_new("__counter__"));
                 let a_counter = ra.contains_key(&counter_key);
                 let b_counter = rb.contains_key(&counter_key);
                 if a_counter && b_counter {
                     // Counter | Counter: maximum of counts (union)
                     let mut result = IndexMap::new();
-                    result.insert(HashableKey::Str(CompactString::from("__defaultdict_factory__")),
+                    result.insert(HashableKey::Str(intern_or_new("__defaultdict_factory__")),
                         PyObject::builtin_type(CompactString::from("int")));
                     result.insert(counter_key, PyObject::bool_val(true));
                     let mut all_keys = IndexMap::new();

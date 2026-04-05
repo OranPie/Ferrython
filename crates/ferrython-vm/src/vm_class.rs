@@ -4,6 +4,7 @@ use crate::frame::{CellRef, Frame, ScopeKind};
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
     ClassData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -193,7 +194,7 @@ impl VirtualMachine {
         }
 
         let mut ns = cd.namespace.write();
-        ns.insert(CompactString::from("__namedtuple__"), PyObject::bool_val(true));
+        ns.insert(intern_or_new("__namedtuple__"), PyObject::bool_val(true));
         ns.insert(CompactString::from("_fields"), fields_tuple);
         ns.insert(CompactString::from("_field_defaults"), PyObject::dict(defaults_map));
     }
@@ -249,14 +250,14 @@ impl VirtualMachine {
             // Enum __repr__ and __str__: "ClassName.MemberName"
             let enum_repr = CompactString::from(format!("{}.{}", class_name, name));
             let repr_copy = enum_repr.clone();
-            attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+            attrs.insert(intern_or_new("__repr__"), PyObject::native_closure(
                 "__repr__",
                 move |_args| {
                     Ok(PyObject::str_val(repr_copy.clone()))
                 }
             ));
             let str_copy = enum_repr;
-            attrs.insert(CompactString::from("__str__"), PyObject::native_closure(
+            attrs.insert(intern_or_new("__str__"), PyObject::native_closure(
                 "__str__",
                 move |_args| {
                     Ok(PyObject::str_val(str_copy.clone()))
@@ -305,10 +306,10 @@ impl VirtualMachine {
         let pairs: Vec<(PyObjectRef, PyObjectRef)> = member_map.iter()
             .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
             .collect();
-        ns.insert(CompactString::from("__members__"), PyObject::dict_from_pairs(pairs));
+        ns.insert(intern_or_new("__members__"), PyObject::dict_from_pairs(pairs));
 
         // Mark as enum
-        ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
+        ns.insert(intern_or_new("__enum__"), PyObject::bool_val(true));
 
         Ok(())
     }

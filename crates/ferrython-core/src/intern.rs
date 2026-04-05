@@ -264,3 +264,11 @@ pub fn try_intern(name: &str) -> Option<CompactString> {
         _ => None,
     }
 }
+
+/// Get an interned string if available, otherwise allocate a new one.
+/// Use this in hot paths instead of `CompactString::from(name)` to avoid
+/// repeated allocations for known dunder names.
+#[inline]
+pub fn intern_or_new(name: &str) -> CompactString {
+    try_intern(name).unwrap_or_else(|| CompactString::from(name))
+}

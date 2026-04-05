@@ -4,6 +4,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
 use ferrython_core::error::PyException;
+use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
     lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -305,8 +306,8 @@ impl VirtualMachine {
                         let repr = format!("{}[{}]", name, params);
                         let alias_cls = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
                         let mut attrs = IndexMap::new();
-                        attrs.insert(CompactString::from("__typing_repr__"), PyObject::str_val(CompactString::from(&repr)));
-                        attrs.insert(CompactString::from("__str__"), PyObject::str_val(CompactString::from(&repr)));
+                        attrs.insert(intern_or_new("__typing_repr__"), PyObject::str_val(CompactString::from(&repr)));
+                        attrs.insert(intern_or_new("__str__"), PyObject::str_val(CompactString::from(&repr)));
                         self.vm_push(PyObject::instance_with_attrs(alias_cls, attrs));
                         return Ok(None);
                     }
@@ -360,7 +361,7 @@ impl VirtualMachine {
                     if let Some(val) = existing {
                         self.vm_push(val);
                     } else {
-                        let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+                        let factory_key = HashableKey::Str(intern_or_new("__defaultdict_factory__"));
                         let factory = map.read().get(&factory_key).cloned();
                         if let Some(factory) = factory {
                             let default = self.call_object(factory, vec![])?;

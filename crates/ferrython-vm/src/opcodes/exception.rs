@@ -6,6 +6,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
+use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use std::sync::Arc;
 
@@ -343,8 +344,8 @@ impl VirtualMachine {
                     if let Some(ref original) = py_exc.original {
                         if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
                             let mut w = attrs.write();
-                            w.insert(CompactString::from("__cause__"), PyObject::none());
-                            w.insert(CompactString::from("__suppress_context__"), PyObject::bool_val(true));
+                            w.insert(intern_or_new("__cause__"), PyObject::none());
+                            w.insert(intern_or_new("__suppress_context__"), PyObject::bool_val(true));
                         }
                     }
                 } else {
@@ -353,8 +354,8 @@ impl VirtualMachine {
                     if let Some(ref original) = py_exc.original {
                         if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
                             let mut w = attrs.write();
-                            w.insert(CompactString::from("__cause__"), cause.clone());
-                            w.insert(CompactString::from("__suppress_context__"), PyObject::bool_val(true));
+                            w.insert(intern_or_new("__cause__"), cause.clone());
+                            w.insert(intern_or_new("__suppress_context__"), PyObject::bool_val(true));
                         }
                     }
                     py_exc.cause = Some(Box::new(cause_exc));
@@ -366,7 +367,7 @@ impl VirtualMachine {
                         if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
                             // Store __context__ as the active exception's original object
                             if let Some(ref ctx_orig) = active.original {
-                                attrs.write().insert(CompactString::from("__context__"), ctx_orig.clone());
+                                attrs.write().insert(intern_or_new("__context__"), ctx_orig.clone());
                             }
                         }
                     }

@@ -1,6 +1,7 @@
 //! Container operation methods (len, getitem, contains, iter).
 
 use crate::error::{PyException, PyResult};
+use crate::intern::intern_or_new;
 use crate::types::HashableKey;
 use compact_str::CompactString;
 use indexmap::IndexMap;
@@ -90,8 +91,8 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             PyObjectPayload::DictKeys(m) | PyObjectPayload::DictValues(m) | PyObjectPayload::DictItems(m) => {
                 let map = m.read();
                 let mut hidden = 0;
-                if map.contains_key(&HashableKey::Str(CompactString::from("__defaultdict_factory__"))) { hidden += 1; }
-                if map.contains_key(&HashableKey::Str(CompactString::from("__counter__"))) { hidden += 1; }
+                if map.contains_key(&HashableKey::Str(intern_or_new("__defaultdict_factory__"))) { hidden += 1; }
+                if map.contains_key(&HashableKey::Str(intern_or_new("__counter__"))) { hidden += 1; }
                 Ok(map.len() - hidden)
             },
             _ => Err(PyException::type_error(format!("object of type '{}' has no len()", obj.type_name()))),
@@ -126,7 +127,7 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                     return Ok(val.clone());
                 }
                 // Check for __defaultdict_factory__ (Counter / defaultdict)
-                let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+                let factory_key = HashableKey::Str(intern_or_new("__defaultdict_factory__"));
                 if let Some(factory) = map_r.get(&factory_key) {
                     let factory = factory.clone();
                     drop(map_r);

@@ -5,6 +5,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
     CompareOp, check_args_min,
@@ -1620,8 +1621,8 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             let inst_obj = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst_obj.payload {
                 let mut w = d.attrs.write();
-                w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
-                w.insert(CompactString::from("__date_only__"), PyObject::bool_val(true));
+                w.insert(intern_or_new("__datetime__"), PyObject::bool_val(true));
+                w.insert(intern_or_new("__date_only__"), PyObject::bool_val(true));
                 w.insert(CompactString::from("year"), PyObject::int(year));
                 w.insert(CompactString::from("month"), PyObject::int(month));
                 w.insert(CompactString::from("day"), PyObject::int(day));
@@ -1633,8 +1634,8 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             let inst_obj = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst_obj.payload {
                 let mut w = d.attrs.write();
-                w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
-                w.insert(CompactString::from("__time_only__"), PyObject::bool_val(true));
+                w.insert(intern_or_new("__datetime__"), PyObject::bool_val(true));
+                w.insert(intern_or_new("__time_only__"), PyObject::bool_val(true));
                 w.insert(CompactString::from("hour"), PyObject::int(hour));
                 w.insert(CompactString::from("minute"), PyObject::int(minute));
                 w.insert(CompactString::from("second"), PyObject::int(second));
@@ -1662,7 +1663,7 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             let inst_obj = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst_obj.payload {
                 let mut w = d.attrs.write();
-                w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+                w.insert(intern_or_new("__datetime__"), PyObject::bool_val(true));
                 w.insert(CompactString::from("year"), PyObject::int(ny));
                 w.insert(CompactString::from("month"), PyObject::int(nm));
                 w.insert(CompactString::from("day"), PyObject::int(nd));
@@ -1738,7 +1739,7 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             let inst_obj = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst_obj.payload {
                 let mut w = d.attrs.write();
-                w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+                w.insert(intern_or_new("__datetime__"), PyObject::bool_val(true));
                 w.insert(CompactString::from("year"), PyObject::int(year));
                 w.insert(CompactString::from("month"), PyObject::int(month));
                 w.insert(CompactString::from("day"), PyObject::int(day));
@@ -1765,7 +1766,7 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
                         let td = PyObject::instance(td_cls);
                         if let PyObjectPayload::Instance(ref d) = td.payload {
                             let mut w = d.attrs.write();
-                            w.insert(CompactString::from("__timedelta__"), PyObject::bool_val(true));
+                            w.insert(intern_or_new("__timedelta__"), PyObject::bool_val(true));
                             w.insert(CompactString::from("days"), PyObject::int(0));
                             w.insert(CompactString::from("seconds"), PyObject::int(offset_secs));
                             w.insert(CompactString::from("microseconds"), PyObject::int(0));
@@ -1826,7 +1827,7 @@ pub(super) fn call_timedelta_method(inst: &ferrython_core::object::InstanceData,
             let inst_obj = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst_obj.payload {
                 let mut w = d.attrs.write();
-                w.insert(CompactString::from("__timedelta__"), PyObject::bool_val(true));
+                w.insert(intern_or_new("__timedelta__"), PyObject::bool_val(true));
                 w.insert(CompactString::from("days"), PyObject::int(days));
                 w.insert(CompactString::from("seconds"), PyObject::int(seconds));
                 w.insert(CompactString::from("microseconds"), PyObject::int(microseconds));

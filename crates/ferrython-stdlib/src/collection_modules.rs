@@ -319,23 +319,28 @@ pub fn create_functools_module() -> PyObjectRef {
         ("lru_cache", make_builtin(|args| {
             // lru_cache(func) or lru_cache(maxsize=N)(func) — returns a cached wrapper
             if args.is_empty() { 
-                // @lru_cache() with no args — return decorator
-                return Ok(make_builtin(|args| {
-                    if args.is_empty() { return Ok(PyObject::none()); }
-                    Ok(create_cached_function(args[0].clone()))
+                // @lru_cache() with no args — return decorator with default maxsize=128
+                return Ok(PyObject::native_closure("lru_cache", move |inner_args| {
+                    if inner_args.is_empty() { return Ok(PyObject::none()); }
+                    Ok(create_cached_function(inner_args[0].clone(), Some(128)))
                 }));
             }
             match &args[0].payload {
                 PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } 
-                | PyObjectPayload::BuiltinFunction(_) => {
-                    // @lru_cache directly on function
-                    Ok(create_cached_function(args[0].clone()))
+                | PyObjectPayload::BuiltinFunction(_) | PyObjectPayload::NativeClosure { .. } => {
+                    // @lru_cache directly on function — default maxsize=128
+                    Ok(create_cached_function(args[0].clone(), Some(128)))
                 }
                 _ => {
-                    // Called with maxsize parameter — return decorator
-                    Ok(make_builtin(|args| {
-                        if args.is_empty() { return Ok(PyObject::none()); }
-                        Ok(create_cached_function(args[0].clone()))
+                    // Called with maxsize parameter — extract it and return decorator
+                    let maxsize = if matches!(&args[0].payload, PyObjectPayload::None) {
+                        None // unlimited
+                    } else {
+                        Some(args[0].as_int().unwrap_or(128))
+                    };
+                    Ok(PyObject::native_closure("lru_cache", move |inner_args| {
+                        if inner_args.is_empty() { return Ok(PyObject::none()); }
+                        Ok(create_cached_function(inner_args[0].clone(), maxsize))
                     }))
                 }
             }
@@ -961,47 +966,68 @@ fn itertools_starmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// Create a cached wrapper function for lru_cache.
 /// Returns an Instance with __wrapped__ (original func) and _cache (dict).
 /// The VM intercepts __call__ on instances with _cache to implement caching.
-fn create_cached_function(func: PyObjectRef) -> PyObjectRef {
+/// `maxsize`: Some(n) for bounded cache, None for unlimited.
+fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRef {
     let cache_class = PyObject::class(
         CompactString::from("_lru_wrapper"),
         vec![],
         IndexMap::new(),
     );
     let cache_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+    let cache_arc = Arc::new(parking_lot::RwLock::new(cache_dict));
     let attrs_map: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
     let attrs_arc = Arc::new(parking_lot::RwLock::new(attrs_map));
 
     // Build cache_info closure that reads _hits/_misses from attrs
     let info_attrs = attrs_arc.clone();
+    let info_cache = cache_arc.clone();
+    let info_maxsize = maxsize;
     let cache_info_fn = PyObject::native_closure("cache_info", move |_args| {
         let r = info_attrs.read();
         let hits = r.get(&CompactString::from("_hits")).and_then(|v| v.as_int()).unwrap_or(0);
         let misses = r.get(&CompactString::from("_misses")).and_then(|v| v.as_int()).unwrap_or(0);
-        let currsize = if let Some(cache) = r.get(&CompactString::from("_cache")) {
-            if let PyObjectPayload::Dict(d) = &cache.payload { d.read().len() as i64 } else { 0 }
-        } else { 0 };
+        let currsize = info_cache.read().len() as i64;
         let info_class = PyObject::class(CompactString::from("CacheInfo"), vec![], IndexMap::new());
         let info = PyObject::instance(info_class);
         if let PyObjectPayload::Instance(ref d) = info.payload {
             let mut w = d.attrs.write();
             w.insert(CompactString::from("hits"), PyObject::int(hits));
             w.insert(CompactString::from("misses"), PyObject::int(misses));
-            w.insert(CompactString::from("maxsize"), PyObject::int(128));
+            w.insert(CompactString::from("maxsize"), match info_maxsize {
+                Some(n) => PyObject::int(n),
+                None => PyObject::none(),
+            });
             w.insert(CompactString::from("currsize"), PyObject::int(currsize));
         }
         Ok(info)
     });
 
+    // Build cache_clear closure that actually clears the cache and resets counters
+    let clear_attrs = attrs_arc.clone();
+    let clear_cache = cache_arc.clone();
+    let cache_clear_fn = PyObject::native_closure("cache_clear", move |_args| {
+        clear_cache.write().clear();
+        let mut w = clear_attrs.write();
+        w.insert(CompactString::from("_hits"), PyObject::int(0));
+        w.insert(CompactString::from("_misses"), PyObject::int(0));
+        Ok(PyObject::none())
+    });
+
+    // Store the cache as a Dict PyObject wrapping our shared Arc
+    let cache_obj = PyObject::wrap(PyObjectPayload::Dict(cache_arc));
+
     {
         let mut w = attrs_arc.write();
         w.insert(CompactString::from("__wrapped__"), func);
-        w.insert(CompactString::from("_cache"), PyObject::dict(cache_dict));
+        w.insert(CompactString::from("_cache"), cache_obj);
         w.insert(CompactString::from("_hits"), PyObject::int(0));
         w.insert(CompactString::from("_misses"), PyObject::int(0));
+        w.insert(CompactString::from("_maxsize"), match maxsize {
+            Some(n) => PyObject::int(n),
+            None => PyObject::int(-1), // -1 signals unlimited in VM
+        });
         w.insert(CompactString::from("cache_info"), cache_info_fn);
-        w.insert(CompactString::from("cache_clear"), PyObject::native_function("cache_clear", |_args| {
-            Ok(PyObject::none())
-        }));
+        w.insert(CompactString::from("cache_clear"), cache_clear_fn);
     }
 
     // Build the Instance manually with the shared attrs Arc

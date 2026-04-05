@@ -1,7 +1,7 @@
 //! Attribute lookup methods and descriptor protocol helpers.
 
 use crate::error::{PyException, ExceptionKind};
-use crate::intern;
+use crate::intern::{self, intern_or_new};
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
@@ -408,7 +408,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     if let Some(v) = cd.namespace.read().get("__module__") {
                         return Some(v.clone());
                     }
-                    return Some(PyObject::str_val(CompactString::from("__main__")));
+                    return Some(PyObject::str_val(intern_or_new("__main__")));
                 }
                 if name == "__qualname__" {
                     // Check namespace first
@@ -928,7 +928,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         if f.defaults.is_empty() { Some(PyObject::none()) }
                         else { Some(PyObject::tuple(f.defaults.clone())) }
                     }
-                    "__module__" => Some(PyObject::str_val(CompactString::from("__main__"))),
+                    "__module__" => Some(PyObject::str_val(intern_or_new("__main__"))),
                     "__doc__" => {
                         // Check attrs first (set by functools.wraps etc.)
                         if let Some(doc) = f.attrs.read().get("__doc__").cloned() {

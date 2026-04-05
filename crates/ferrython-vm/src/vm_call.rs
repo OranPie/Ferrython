@@ -6,6 +6,7 @@ use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeFlags, CodeObject};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
+use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
     AsyncGenAction, CompareOp, IteratorData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, is_data_descriptor, lookup_in_class_mro,
@@ -411,7 +412,7 @@ impl VirtualMachine {
                             };
                             if let Some(val) = value {
                                 inst_data.attrs.write().insert(
-                                    CompactString::from("__builtin_value__"), val,
+                                    intern_or_new("__builtin_value__"), val,
                                 );
                             }
                         }
@@ -517,10 +518,10 @@ impl VirtualMachine {
                     if !ns.contains_key("__setattr__") {
                         drop(ns);
                         let mut ns = cd.namespace.write();
-                        ns.insert(CompactString::from("__setattr__"), PyObject::native_function("__setattr__", |_args| {
+                        ns.insert(intern_or_new("__setattr__"), PyObject::native_function("__setattr__", |_args| {
                             Err(PyException::attribute_error(String::from("cannot assign to field of frozen dataclass")))
                         }));
-                        ns.insert(CompactString::from("__delattr__"), PyObject::native_function("__delattr__", |_args| {
+                        ns.insert(intern_or_new("__delattr__"), PyObject::native_function("__delattr__", |_args| {
                             Err(PyException::attribute_error(String::from("cannot delete field of frozen dataclass")))
                         }));
                     }
@@ -2035,21 +2036,37 @@ impl VirtualMachine {
                                 // Cache hit: increment _hits counter
                                 if let PyObjectPayload::Instance(ref d) = func.payload {
                                     let mut w = d.attrs.write();
-                                    let hits = w.get(&CompactString::from("_hits"))
+                                    let hits = w.get(&intern_or_new("_hits"))
                                         .and_then(|v| v.as_int()).unwrap_or(0);
-                                    w.insert(CompactString::from("_hits"), PyObject::int(hits + 1));
+                                    w.insert(intern_or_new("_hits"), PyObject::int(hits + 1));
                                 }
                                 return Ok(cached.clone());
                             }
                             // Cache miss: call the wrapped function, increment _misses
                             if let PyObjectPayload::Instance(ref d) = func.payload {
                                 let mut w = d.attrs.write();
-                                let misses = w.get(&CompactString::from("_misses"))
+                                let misses = w.get(&intern_or_new("_misses"))
                                     .and_then(|v| v.as_int()).unwrap_or(0);
-                                w.insert(CompactString::from("_misses"), PyObject::int(misses + 1));
+                                w.insert(intern_or_new("_misses"), PyObject::int(misses + 1));
                             }
                             let result = self.call_object(wrapped, args)?;
-                            cache_map.write().insert(cache_key, result.clone());
+                            // Enforce maxsize: evict oldest entry (FIFO) when cache is full
+                            {
+                                let mut cache_w = cache_map.write();
+                                if let PyObjectPayload::Instance(ref d) = func.payload {
+                                    let maxsize = d.attrs.read()
+                                        .get(&intern_or_new("_maxsize"))
+                                        .and_then(|v| v.as_int());
+                                    if let Some(max) = maxsize {
+                                        if max >= 0 {
+                                            while cache_w.len() >= max as usize {
+                                                cache_w.shift_remove_index(0);
+                                            }
+                                        }
+                                    }
+                                }
+                                cache_w.insert(cache_key, result.clone());
+                            }
                             return Ok(result);
                         }
                     }

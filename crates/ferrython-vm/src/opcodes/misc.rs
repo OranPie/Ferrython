@@ -6,6 +6,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
+use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use indexmap::IndexMap;
 use std::sync::Arc;
@@ -23,13 +24,13 @@ impl VirtualMachine {
             }
             Opcode::LoadBuildClass => {
                 self.vm_frame().push(PyObject::builtin_function(
-                    CompactString::from("__build_class__")));
+                    intern_or_new("__build_class__")));
             }
             Opcode::SetupAnnotations => {
                 let frame = self.vm_frame();
                 if !frame.local_names.contains_key("__annotations__") {
                     frame.store_name(
-                        CompactString::from("__annotations__"),
+                        intern_or_new("__annotations__"),
                         PyObject::dict(IndexMap::new()),
                     );
                 }
