@@ -6,6 +6,7 @@ use ferrython_core::object::PyObjectRef;
 use ferrython_core::types::{SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// A shared cell for closure variables.
@@ -13,6 +14,22 @@ pub type CellRef = Arc<RwLock<Option<PyObjectRef>>>;
 
 /// Shared builtins map — built once, shared across all frames.
 pub type SharedBuiltins = Arc<IndexMap<CompactString, PyObjectRef>>;
+
+/// Global version counter — incremented on every StoreGlobal/DeleteGlobal.
+/// LoadGlobal checks this to invalidate its per-frame cache.
+static GLOBALS_VERSION: AtomicU64 = AtomicU64::new(0);
+
+/// Bump the global version counter (called from StoreGlobal/DeleteGlobal).
+#[inline]
+pub fn bump_globals_version() {
+    GLOBALS_VERSION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Read current globals version.
+#[inline]
+pub fn globals_version() -> u64 {
+    GLOBALS_VERSION.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind { Loop, Except, Finally, With, ExceptHandler }
@@ -46,6 +63,10 @@ pub struct Frame {
     pub pending_return: Option<PyObjectRef>,
     /// Pre-boxed constants — shared from PyFunction or built for module-level code.
     pub constant_cache: SharedConstantCache,
+    /// Per-frame inline cache for LoadGlobal: lazily allocated on first miss.
+    pub global_cache: Option<Vec<Option<PyObjectRef>>>,
+    /// The globals_version at which global_cache was populated.
+    pub global_cache_version: u64,
 }
 
 impl Frame {
@@ -72,6 +93,8 @@ impl Frame {
             yielded: false,
             pending_return: None,
             constant_cache,
+            global_cache: None,
+            global_cache_version: u64::MAX, // force miss on first access
         }
     }
 
@@ -112,6 +135,8 @@ impl Frame {
             yielded: false,
             pending_return: None,
             constant_cache,
+            global_cache: None,
+            global_cache_version: u64::MAX,
         }
     }
 

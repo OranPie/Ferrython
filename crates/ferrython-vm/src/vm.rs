@@ -178,6 +178,26 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
+                // Inline LoadGlobal: check per-frame cache, then globals, then builtins
+                Opcode::LoadGlobal => {
+                    let idx = instr.arg as usize;
+                    let ver = crate::frame::globals_version();
+                    // Fast path: cache hit
+                    if frame.global_cache_version == ver {
+                        if let Some(ref cache) = frame.global_cache {
+                            if let Some(ref v) = cache[idx] {
+                                frame.stack.push(v.clone());
+                                Ok(None)
+                            } else {
+                                self.execute_one(instr) // miss — fall through to full handler
+                            }
+                        } else {
+                            self.execute_one(instr)
+                        }
+                    } else {
+                        self.execute_one(instr) // version mismatch
+                    }
+                }
                 _ => self.execute_one(instr),
             };
 

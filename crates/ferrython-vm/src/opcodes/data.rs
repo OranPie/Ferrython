@@ -83,7 +83,10 @@ impl VirtualMachine {
                 let name = frame.code.names[instr.arg as usize].clone();
                 let value = frame.pop();
                 match frame.scope_kind {
-                    ScopeKind::Module => { frame.globals.write().insert(name, value); }
+                    ScopeKind::Module => {
+                        frame.globals.write().insert(name, value);
+                        crate::frame::bump_globals_version();
+                    }
                     ScopeKind::Class => { frame.local_names.insert(name, value); }
                     ScopeKind::Function => { frame.local_names.insert(name, value); }
                 }
@@ -94,6 +97,7 @@ impl VirtualMachine {
                     .or_else(|| frame.globals.read().get(name.as_str()).cloned());
                 frame.local_names.shift_remove(name.as_str());
                 frame.globals.write().shift_remove(name.as_str());
+                crate::frame::bump_globals_version();
                 if let Some(ref obj) = old {
                     if matches!(&obj.payload, PyObjectPayload::Instance(_)) {
                         if obj.get_attr("__del__").is_some() {
@@ -183,27 +187,50 @@ impl VirtualMachine {
                 frame.push(PyObject::cell(cell));
             }
             Opcode::LoadGlobal => {
-                let name = &frame.code.names[instr.arg as usize];
+                let idx = instr.arg as usize;
+                let ver = crate::frame::globals_version();
+                // Check inline cache
+                if frame.global_cache_version == ver {
+                    if let Some(ref cache) = frame.global_cache {
+                        if let Some(ref v) = cache[idx] {
+                            frame.push(v.clone());
+                            return Ok(None);
+                        }
+                    }
+                } else if frame.global_cache.is_some() {
+                    // Version mismatch — invalidate
+                    for slot in frame.global_cache.as_mut().unwrap().iter_mut() { *slot = None; }
+                    frame.global_cache_version = ver;
+                }
+                let name = &frame.code.names[idx];
                 let from_globals = frame.globals.read().get(name.as_str()).cloned();
-                if let Some(v) = from_globals {
-                    frame.push(v);
+                let resolved = if let Some(v) = from_globals {
+                    v
                 } else if let Some(v) = frame.builtins.get(name.as_str()) {
-                    let v = v.clone();
-                    frame.push(v);
+                    v.clone()
                 } else {
                     return Err(PyException::name_error(format!(
                         "name '{}' is not defined", name
                     )));
-                }
+                };
+                // Lazily allocate and populate cache
+                let cache = frame.global_cache.get_or_insert_with(|| {
+                    vec![None; frame.code.names.len()]
+                });
+                cache[idx] = Some(resolved.clone());
+                frame.global_cache_version = ver;
+                frame.push(resolved);
             }
             Opcode::StoreGlobal => {
                 let name = frame.code.names[instr.arg as usize].clone();
                 let value = frame.pop();
                 frame.globals.write().insert(name, value);
+                crate::frame::bump_globals_version();
             }
             Opcode::DeleteGlobal => {
                 let name = &frame.code.names[instr.arg as usize];
                 frame.globals.write().shift_remove(name.as_str());
+                crate::frame::bump_globals_version();
             }
             _ => unreachable!(),
         }
