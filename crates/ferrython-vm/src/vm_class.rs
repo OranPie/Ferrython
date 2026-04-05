@@ -97,32 +97,7 @@ impl VirtualMachine {
         }
 
         // Call __set_name__ on descriptors in the class namespace (PEP 487)
-        if let PyObjectPayload::Class(cd) = &cls.payload {
-            let ns_snapshot: Vec<(CompactString, PyObjectRef)> = {
-                let ns = cd.namespace.read();
-                ns.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-            };
-            for (attr_name, attr_val) in &ns_snapshot {
-                // Only call __set_name__ on instance objects (descriptors)
-                if !matches!(&attr_val.payload, PyObjectPayload::Instance(_)) {
-                    continue;
-                }
-                if let Some(set_name_method) = attr_val.get_attr("__set_name__") {
-                    let bound = if matches!(&set_name_method.payload, PyObjectPayload::BoundMethod { .. }) {
-                        set_name_method
-                    } else {
-                        Arc::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: attr_val.clone(),
-                                method: set_name_method,
-                            }
-                        })
-                    };
-                    let name_arg = PyObject::str_val(attr_name.clone());
-                    self.call_object(bound, vec![cls.clone(), name_arg])?;
-                }
-            }
-        }
+        self.call_set_name_on_descriptors(&cls)?;
 
         // NamedTuple metaclass behavior: add __namedtuple__ marker and _fields
         self.process_namedtuple_class(&cls, &bases);
@@ -500,6 +475,9 @@ impl VirtualMachine {
                     }
                 }
             }
+            // Call __set_name__ on descriptors in the class namespace (PEP 487)
+            self.call_set_name_on_descriptors(&cls)?;
+
             // Populate __class__ cell (PEP 3135)
             if let Some((ref cellvar_names, ref cells)) = class_cell_info {
                 Self::patch_class_cell(cellvar_names, cells, &cls);
@@ -549,6 +527,16 @@ impl VirtualMachine {
                     }
                 }
             }
+
+            // Call __set_name__ on descriptors in the class namespace (PEP 487)
+            self.call_set_name_on_descriptors(&cls)?;
+
+            // NamedTuple metaclass behavior
+            self.process_namedtuple_class(&cls, &bases);
+
+            // Enum metaclass behavior
+            self.process_enum_class(&cls, &bases)?;
+
             // Populate __class__ cell (PEP 3135)
             if let Some((ref cellvar_names, ref cells)) = class_cell_info {
                 Self::patch_class_cell(cellvar_names, cells, &cls);
@@ -574,6 +562,36 @@ impl VirtualMachine {
                 break;
             }
         }
+    }
+
+    /// Call __set_name__ on descriptors in the class namespace (PEP 487).
+    fn call_set_name_on_descriptors(&mut self, cls: &PyObjectRef) -> PyResult<()> {
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            let ns_snapshot: Vec<(CompactString, PyObjectRef)> = {
+                let ns = cd.namespace.read();
+                ns.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            };
+            for (attr_name, attr_val) in &ns_snapshot {
+                if !matches!(&attr_val.payload, PyObjectPayload::Instance(_)) {
+                    continue;
+                }
+                if let Some(set_name_method) = attr_val.get_attr("__set_name__") {
+                    let bound = if matches!(&set_name_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                        set_name_method
+                    } else {
+                        Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: attr_val.clone(),
+                                method: set_name_method,
+                            }
+                        })
+                    };
+                    let name_arg = PyObject::str_val(attr_name.clone());
+                    self.call_object(bound, vec![cls.clone(), name_arg])?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Compute a simple MRO from bases (includes bases and their ancestors, NOT self).

@@ -177,27 +177,24 @@ impl VirtualMachine {
                         return Ok(None);
                     }
                     let frame = self.vm_frame();
-                    match builtins::iter_advance(&iter)? {
-                        Some((new_iter, value)) => {
-                            frame.pop();
-                            frame.push(new_iter);
+                    // Iterator mutates in place; skip pop/push of iterator for perf
+                    match builtins::iter_next_value(&iter)? {
+                        Some(value) => {
                             frame.push(value);
                         }
                         None => {
-                            frame.pop();
+                            frame.pop(); // remove exhausted iterator
                             frame.ip = instr.arg as usize;
                         }
                     }
                 } else {
                     let frame = self.vm_frame();
-                    match builtins::iter_advance(&iter)? {
-                        Some((new_iter, value)) => {
-                            frame.pop();
-                            frame.push(new_iter);
+                    match builtins::iter_next_value(&iter)? {
+                        Some(value) => {
                             frame.push(value);
                         }
                         None => {
-                            frame.pop();
+                            frame.pop(); // remove exhausted iterator
                             frame.ip = instr.arg as usize;
                         }
                     }

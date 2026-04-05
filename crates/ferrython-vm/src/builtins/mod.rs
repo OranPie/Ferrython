@@ -277,6 +277,50 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
     }
 }
 
+/// Advance an in-place iterator, returning only the next value.
+/// Avoids cloning the iterator itself (used in ForIter hot path).
+pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
+    match &iter_obj.payload {
+        PyObjectPayload::Iterator(iter_data) => {
+            use ferrython_core::object::IteratorData;
+            let mut data = iter_data.lock().unwrap();
+            match &mut *data {
+                IteratorData::List { items, index } => {
+                    if *index < items.len() {
+                        let v = items[*index].clone();
+                        *index += 1;
+                        Ok(Some(v))
+                    } else { Ok(None) }
+                }
+                IteratorData::Tuple { items, index } => {
+                    if *index < items.len() {
+                        let v = items[*index].clone();
+                        *index += 1;
+                        Ok(Some(v))
+                    } else { Ok(None) }
+                }
+                IteratorData::Range { current, stop, step } => {
+                    let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
+                    if done { Ok(None) } else {
+                        let v = PyObject::int(*current);
+                        *current += *step;
+                        Ok(Some(v))
+                    }
+                }
+                IteratorData::Str { chars, index } => {
+                    if *index < chars.len() {
+                        let v = PyObject::str_val(CompactString::from(chars[*index].to_string()));
+                        *index += 1;
+                        Ok(Some(v))
+                    } else { Ok(None) }
+                }
+                _ => Err(PyException::type_error("lazy iterator requires VM-level iteration")),
+            }
+        }
+        _ => Err(PyException::type_error("iter_next_value on non-iterator")),
+    }
+}
+
 /// Public access to get_iter_from_obj for lazy iterator construction.
 pub(crate) fn get_iter_from_obj_pub(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     get_iter_from_obj(obj)
