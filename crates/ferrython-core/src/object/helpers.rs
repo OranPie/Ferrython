@@ -1132,6 +1132,55 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             if args.len() != 1 { return Err(PyException::type_error("__bool__ takes 1 argument")); }
             Ok(PyObject::bool_val(args[0].is_truthy()))
         })),
+        (_, "__pow__") => Some(PyObject::native_function("__pow__", |args| {
+            if args.len() < 2 || args.len() > 3 { return Err(PyException::type_error("__pow__ takes 2-3 arguments")); }
+            args[0].power(&args[1])
+        })),
+        (_, "__lshift__") => Some(PyObject::native_function("__lshift__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__lshift__ takes 2 arguments")); }
+            args[0].lshift(&args[1])
+        })),
+        (_, "__rshift__") => Some(PyObject::native_function("__rshift__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__rshift__ takes 2 arguments")); }
+            args[0].rshift(&args[1])
+        })),
+        (_, "__and__") => Some(PyObject::native_function("__and__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__and__ takes 2 arguments")); }
+            args[0].bit_and(&args[1])
+        })),
+        (_, "__or__") => Some(PyObject::native_function("__or__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__or__ takes 2 arguments")); }
+            args[0].bit_or(&args[1])
+        })),
+        (_, "__xor__") => Some(PyObject::native_function("__xor__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__xor__ takes 2 arguments")); }
+            args[0].bit_xor(&args[1])
+        })),
+        (_, "__pos__") => Some(PyObject::native_function("__pos__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__pos__ takes 1 argument")); }
+            args[0].positive()
+        })),
+        (_, "__invert__") => Some(PyObject::native_function("__invert__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__invert__ takes 1 argument")); }
+            args[0].invert()
+        })),
+        (_, "__getitem__") => Some(PyObject::native_function("__getitem__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__getitem__ takes 2 arguments")); }
+            args[0].get_item(&args[1])
+        })),
+        (_, "__int__") => Some(PyObject::native_function("__int__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__int__ takes 1 argument")); }
+            Ok(PyObject::int(args[0].to_int()?))
+        })),
+        (_, "__float__") => Some(PyObject::native_function("__float__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__float__ takes 1 argument")); }
+            Ok(PyObject::float(args[0].to_float()?))
+        })),
+        (_, "__index__") => Some(PyObject::native_function("__index__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__index__ takes 1 argument")); }
+            Ok(PyObject::int(args[0].to_int()?))
+        })),
+        (_, "__iter__") => None, // handled by VM iter() builtin
         _ => None,
     }
 }
