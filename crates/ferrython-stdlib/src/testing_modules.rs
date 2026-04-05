@@ -1070,8 +1070,56 @@ pub fn create_unittest_module() -> PyObjectRef {
     make_module("unittest", vec![
         ("TestCase", test_case),
         ("main", make_builtin(|_| Ok(PyObject::none()))),
-        ("TestSuite", make_builtin(|_| Ok(PyObject::none()))),
-        ("TestLoader", make_builtin(|_| Ok(PyObject::none()))),
+        ("TestSuite", make_builtin(|args| {
+            let tests: Vec<PyObjectRef> = if !args.is_empty() {
+                args[0].to_list().unwrap_or_default()
+            } else {
+                vec![]
+            };
+            let test_list = Arc::new(RwLock::new(tests));
+            let mut attrs = IndexMap::new();
+            let tl = test_list.clone();
+            attrs.insert(CompactString::from("_tests"), PyObject::list(tl.read().clone()));
+            let tl = test_list.clone();
+            attrs.insert(CompactString::from("addTest"), PyObject::native_closure("addTest", move |args| {
+                if !args.is_empty() { tl.write().push(args[0].clone()); }
+                Ok(PyObject::none())
+            }));
+            let tl = test_list.clone();
+            attrs.insert(CompactString::from("__iter__"), PyObject::native_closure("__iter__", move |_| {
+                Ok(PyObject::list(tl.read().clone()).get_iter()?)
+            }));
+            let tl = test_list.clone();
+            attrs.insert(CompactString::from("__len__"), PyObject::native_closure("__len__", move |_| {
+                Ok(PyObject::int(tl.read().len() as i64))
+            }));
+            let tl = test_list.clone();
+            attrs.insert(CompactString::from("countTestCases"), PyObject::native_closure("countTestCases", move |_| {
+                Ok(PyObject::int(tl.read().len() as i64))
+            }));
+            Ok(PyObject::module_with_attrs(CompactString::from("TestSuite"), attrs))
+        })),
+        ("TestLoader", make_builtin(|_| {
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("loadTestsFromTestCase"), make_builtin(|args| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("loadTestsFromTestCase() requires a TestCase class"));
+                }
+                let cls = &args[0];
+                let mut tests = vec![];
+                // Get test methods from the class namespace
+                if let PyObjectPayload::Class(cls_data) = &cls.payload {
+                    let ns = cls_data.namespace.read();
+                    for (name, _) in ns.iter() {
+                        if name.starts_with("test") {
+                            tests.push(PyObject::str_val(CompactString::from(name.as_str())));
+                        }
+                    }
+                }
+                Ok(PyObject::list(tests))
+            }));
+            Ok(PyObject::module_with_attrs(CompactString::from("TestLoader"), attrs))
+        })),
         ("TextTestRunner", make_builtin(|_| Ok(PyObject::none()))),
         ("skip", make_builtin(|_args| {
             Ok(make_builtin(|args| {
