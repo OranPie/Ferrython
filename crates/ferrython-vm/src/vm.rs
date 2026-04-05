@@ -9,7 +9,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
-use ferrython_core::types::SharedGlobals;
+use ferrython_core::types::{PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -119,6 +119,57 @@ impl VirtualMachine {
                 Opcode::ReturnValue => {
                     let val = frame.stack.pop().expect("stack underflow");
                     Ok(Some(val))
+                }
+                // Inline int+int for BinaryAdd (hot in arithmetic loops)
+                Opcode::BinaryAdd | Opcode::InplaceAdd => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let a = &frame.stack[len - 2];
+                        let b = &frame.stack[len - 1];
+                        match (&a.payload, &b.payload) {
+                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                let result = match x.checked_add(*y) {
+                                    Some(r) => PyObject::int(r),
+                                    None => {
+                                        use num_bigint::BigInt;
+                                        PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
+                                    }
+                                };
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(result);
+                                Ok(None)
+                            }
+                            _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline int comparisons (hot in for-loop range iteration)
+                Opcode::CompareOp if instr.arg <= 5 => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let a = &frame.stack[len - 2];
+                        let b = &frame.stack[len - 1];
+                        match (&a.payload, &b.payload) {
+                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                let result = match instr.arg {
+                                    0 => x < y,  // Lt
+                                    1 => x <= y, // Le
+                                    2 => x == y, // Eq
+                                    3 => x != y, // Ne
+                                    4 => x > y,  // Gt
+                                    _ => x >= y, // Ge (5)
+                                };
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::bool_val(result));
+                                Ok(None)
+                            }
+                            _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
                 }
                 _ => self.execute_one(instr),
             };
