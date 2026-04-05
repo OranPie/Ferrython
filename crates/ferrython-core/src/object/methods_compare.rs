@@ -28,6 +28,42 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
                 };
                 return Ok(PyObject::bool_val(result));
             }
+            // FrozenSet comparisons (with FrozenSet or Set)
+            (PyObjectPayload::FrozenSet(a_map), PyObjectPayload::FrozenSet(b_map)) => {
+                let result = match op {
+                    CompareOp::Eq => a_map.len() == b_map.len() && a_map.keys().all(|k| b_map.contains_key(k)),
+                    CompareOp::Ne => !(a_map.len() == b_map.len() && a_map.keys().all(|k| b_map.contains_key(k))),
+                    CompareOp::Le => a_map.keys().all(|k| b_map.contains_key(k)),
+                    CompareOp::Lt => a_map.len() < b_map.len() && a_map.keys().all(|k| b_map.contains_key(k)),
+                    CompareOp::Ge => b_map.keys().all(|k| a_map.contains_key(k)),
+                    CompareOp::Gt => a_map.len() > b_map.len() && b_map.keys().all(|k| a_map.contains_key(k)),
+                };
+                return Ok(PyObject::bool_val(result));
+            }
+            (PyObjectPayload::FrozenSet(a_map), PyObjectPayload::Set(b_rw)) => {
+                let rb = b_rw.read();
+                let result = match op {
+                    CompareOp::Eq => a_map.len() == rb.len() && a_map.keys().all(|k| rb.contains_key(k)),
+                    CompareOp::Ne => !(a_map.len() == rb.len() && a_map.keys().all(|k| rb.contains_key(k))),
+                    CompareOp::Le => a_map.keys().all(|k| rb.contains_key(k)),
+                    CompareOp::Lt => a_map.len() < rb.len() && a_map.keys().all(|k| rb.contains_key(k)),
+                    CompareOp::Ge => rb.keys().all(|k| a_map.contains_key(k)),
+                    CompareOp::Gt => a_map.len() > rb.len() && rb.keys().all(|k| a_map.contains_key(k)),
+                };
+                return Ok(PyObject::bool_val(result));
+            }
+            (PyObjectPayload::Set(a_rw), PyObjectPayload::FrozenSet(b_map)) => {
+                let ra = a_rw.read();
+                let result = match op {
+                    CompareOp::Eq => ra.len() == b_map.len() && ra.keys().all(|k| b_map.contains_key(k)),
+                    CompareOp::Ne => !(ra.len() == b_map.len() && ra.keys().all(|k| b_map.contains_key(k))),
+                    CompareOp::Le => ra.keys().all(|k| b_map.contains_key(k)),
+                    CompareOp::Lt => ra.len() < b_map.len() && ra.keys().all(|k| b_map.contains_key(k)),
+                    CompareOp::Ge => b_map.keys().all(|k| ra.contains_key(k)),
+                    CompareOp::Gt => ra.len() > b_map.len() && b_map.keys().all(|k| ra.contains_key(k)),
+                };
+                return Ok(PyObject::bool_val(result));
+            }
             _ => {}
         }
         // NaN is never equal to anything, including itself

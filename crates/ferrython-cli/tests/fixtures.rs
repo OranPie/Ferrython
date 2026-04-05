@@ -142,6 +142,7 @@ fixture_test!(test_expand26, "test_expand26.py");
 fixture_test!(test_expand28, "test_expand28.py");
 fixture_test!(test_expand29, "test_expand29.py");
 fixture_test!(test_expand30, "test_expand30.py");
+fixture_test!(test_expand31, "test_expand31.py");
 
 // CPython compatibility tests
 fixture_test!(test_cpython_compat82, "test_cpython_compat82.py");
