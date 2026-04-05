@@ -183,8 +183,11 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "email.mime.multipart" => Some(email_modules::create_email_mime_multipart_module()),
         "email.mime.base" => Some(email_modules::create_email_mime_base_module()),
         "email.utils" => Some(email_modules::create_email_utils_module()),
-        // Zip
+        // Zip / Compression
         "zipfile" => Some(compression_modules::create_zipfile_module()),
+        "bz2" => Some(compression_modules::create_bz2_module()),
+        "lzma" => Some(compression_modules::create_lzma_module()),
+        "tarfile" => Some(compression_modules::create_tarfile_module()),
         // Internal C-extension aliases
         "_collections_abc" => Some(type_modules::create_collections_abc_module()),
         "_functools" => Some(collection_modules::create_functools_module()),

@@ -1,7 +1,7 @@
 # Ferrython — Known Limitations
 
 > Comprehensive inventory of gaps between Ferrython and CPython 3.8.
-> Updated after Phase 73 — __contains__, __missing__, __len__/__bool__ protocol alignment.
+> Updated after builtin subclass inheritance fix session (124/124 tests pass).
 
 ---
 
@@ -9,7 +9,7 @@
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| F-string nested same-quote | ⚠️ | Matches CPython 3.8 behavior (rejected); Python 3.12+ allows it |
+| F-string nested same-quote | ⚠️ | `f"{"y" if c else "n"}"` — matches CPython 3.8 (rejected); Python 3.12+ allows it |
 | Type comments (PEP 484) | ❌ | All `type_comment` fields are `None` |
 | Encoding declarations (PEP 263) | ❌ | Ignored; UTF-8 assumed |
 | Non-ASCII in bytes literals | ❌ | Rejected at parse time |
@@ -20,142 +20,149 @@
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Constant folding | ✅ | Multi-pass: `2*3+4` → `10`, string concat+repeat |
+| Constant folding | ✅ | Multi-pass: `2*3+4` → `10`, `"a"+"b"+"c"` → `"abc"` |
 | Peephole optimization | ✅ | Jump chain collapse, dead store elimination, NOP removal |
 | Dead code elimination | ✅ | Unreachable code after return/jump/raise NOP'd out |
-| `SETUP_ASYNC_WITH` opcode | ❌ | Missing; `async with` partially supported via fallback |
+| `SETUP_ASYNC_WITH` opcode | ❌ | Missing; `async with` supported via fallback |
 | Exception tables (3.11+) | ❌ | Uses legacy jump-opcode exception style |
 
 ## 3. Runtime / VM Limitations
 
-### 3.1 Descriptor Protocol
+### 3.1 Builtin Type Subclassing
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `super().__getattribute__` | ✅ | Proxies to MRO-based lookup via NativeClosure |
-| Data descriptor priority edge cases | ✅ | Full CPython descriptor protocol: data > instance dict > non-data |
+| `class MyList(list)` | ✅ | `repr`, `str`, `len`, `iter`, `bool`, `getitem`, `append` all work |
+| `class MyDict(dict)` | ✅ | dict_storage delegation + custom `__missing__` |
+| `class MyTuple(tuple)` | ✅ | Via `__builtin_value__` delegation |
+| `class MyInt(int)` / `MyStr(str)` | ✅ | Arithmetic/string operations delegated |
+| `class MySet(set)` | ✅ | Via `__builtin_value__` delegation |
+| HTMLParser subclassing | ✅ | Proper Class with MRO inheritance; callbacks via deferred calls |
+| ConfigParser subclassing | ✅ | Proper Class with per-instance state |
+| Thread subclassing | ✅ | Proper Class with start/join/is_alive |
 
-### 3.2 Exception Handling
+### 3.2 Descriptor Protocol
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `sys.exc_info()` | ✅ | Thread-local tracking, set on handler entry, cleared on PopExcept |
-| `__traceback__` attribute | ✅ | Proper linked traceback objects with tb_lineno, tb_filename, tb_name, tb_next |
+| `__get__`, `__set__`, `__delete__` | ✅ | Full descriptor protocol |
+| Data vs non-data descriptor priority | ✅ | data > instance dict > non-data |
+| `__getattribute__` override | ✅ | |
+| `__set_name__` | ✅ | |
+
+### 3.3 Exception Handling
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `sys.exc_info()` | ✅ | Thread-local tracking, set on handler entry |
+| `__traceback__` attribute | ✅ | Proper linked traceback objects with source lines |
 | `finally` return override | ✅ | `return` in `finally` correctly overrides `return` in `try` |
-| Unified error types | ✅ | `From<ParseError>` and `From<CompileError>` for `PyException`; enables `?` across error boundaries |
+| Exception chaining (`from`) | ✅ | `__cause__`, `__context__`, `__suppress_context__` |
+| Source-line tracebacks | ✅ | Shows actual Python source line (like CPython) |
 
-### 3.3 I/O Redirection
+### 3.4 I/O Redirection
 | Feature | Status | Notes |
 |---------|--------|-------|
 | `print(..., file=buf)` | ✅ | Dispatches to file object's `.write()` method |
 | `sys.stdout = buf` | ✅ | VM resolves `sys.stdout` for each print call |
+| `contextlib.redirect_stdout` | ✅ | Uses override stack in stdlib |
 
-### 3.4 Introspection
+### 3.5 Introspection
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `__closure__` | ✅ | Returns tuple of cell objects |
-| `__code__` | ✅ | Returns actual CodeObject |
-| `__kwdefaults__` | ✅ | Returns keyword-only defaults dict |
-| `__globals__` | ✅ | Returns function's global namespace |
+| `__closure__` with `cell_contents` | ✅ | Proper cell objects |
+| `__code__`, `__globals__`, `__kwdefaults__` | ✅ | |
 | `type.__subclasses__()` | ✅ | Tracked via weak references |
-| `operator.length_hint()` | ✅ | Handles NativeFunction, NativeClosure, falls back to py_len() |
-| `dir()` completeness | ⚠️ | Missing imported names in some scopes |
-| Dict views (`.keys()`) | ✅ | Live view objects backed by shared Arc; support len/iter/contains/repr |
+| `operator.length_hint()` | ✅ | Dispatches `__length_hint__` dunder |
+| `inspect` module (17 functions) | ✅ | is*, getmembers, signature, getfullargspec |
+| Dict views (`.keys()`, `.values()`, `.items()`) | ✅ | Live view objects |
 
-### 3.5 Async Runtime
+### 3.6 Async Runtime
 | Feature | Status | Notes |
 |---------|--------|-------|
+| `asyncio.run()`, `gather()`, `sleep()` | ✅ | Sequential execution model |
 | Real event loop scheduling | ❌ | All coroutines run to completion sequentially |
 | `asyncio.wait_for` timeout | ❌ | Runs coroutine immediately, timeout ignored |
 | `asyncio.Queue` blocking | ❌ | `await queue.get()` doesn't suspend; raises if empty |
 | Task cancellation | ❌ | `task.cancel()` is a no-op |
 | `async for` / `async with` | ⚠️ | Basic support; edge cases may fail |
 
-### 3.6 Enum
+### 3.7 Other Runtime
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Tuple-value auto-unpacking | ✅ | `EARTH = (mass, radius)` correctly unpacks into `__init__` |
-| `IntEnum` / `IntFlag` | ✅ | Supports int comparisons and arithmetic |
-
-### 3.7 ABC Enforcement
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Abstract method enforcement | ✅ | Abstract methods enforced at instantiation time |
+| Metaclass with `__prepare__` | ⚠️ | Parses but namespace is always a plain dict |
+| Metaclass conflict resolution | ❌ | Not implemented |
+| `__slots__` `__dict__` prevention | ⚠️ | Restriction enforced but `__dict__` not prevented |
+| GC generations | ⚠️ | Three generations present; not differentiated during collection |
 
 ## 4. Standard Library Limitations
 
-### 4.1 Stub Modules (import works, most functions are no-ops or simplified)
+### 4.1 Simplified Modules (import works, partially functional)
 
 | Module | What works | What doesn't |
 |--------|-----------|--------------|
 | `asyncio` | `run()`, `gather()`, `sleep()`, `Queue` basic | Real scheduling, timeouts, cancellation |
-| `signal` | `signal.signal()` accepts handler | Handler never invoked; returns `SIG_DFL` |
-| `decimal` | Constructor, arithmetic (+, -, *, /), comparisons, quantize, repr | Context/precision control, advanced math (ln, sqrt, exp) |
-| `warnings` | `warn()` prints, `catch_warnings(record=True)` captures | Context/filter management |
-| `dis` | Full bytecode disassembly with line numbers, args, jump targets | Output uses Rust stdout (not capturable via sys.stdout) |
-| `numbers` | `Number` ABC exists | `Complex`, `Real`, `Rational` are stubs |
+| `signal` | `signal.signal()` accepts handler | Handler never invoked |
+| `decimal` | Arithmetic, comparisons, quantize | Context/precision control, advanced math |
+| `warnings` | `warn()` prints | Filter management, `catch_warnings` population |
+| `numbers` | `Number`, `Integral`, `Real`, `Complex` ABCs | Full abstract interface compliance |
 | `locale` | `getlocale()` returns C locale | No real locale support |
-| `inspect` | 17 functions: is*, getmembers, signature, getfullargspec, getdoc, getfile | Parameter/Signature classes are stubs |
-| `typing` | `TypeVar`, `Generic`, `Protocol` exist | All are no-op placeholders; `get_type_hints()` returns `{}` |
-| `pathlib` | `Path` with 16 methods: exists, is_dir, is_file, mkdir, read_text, write_text, etc. | Advanced path operations |
-| `functools` | `lru_cache` fully implemented with maxsize, cache_info, cache_clear | `singledispatch`, `total_ordering` are stubs |
+| `typing` | `TypeVar`, `Generic`, `Protocol`, all container types | `get_type_hints()` returns `{}` |
+| `ssl` | Module imports | OpenSSL version hardcoded to `"(stub)"` |
+| `multiprocessing` | Module imports | `Pool` is a stub |
 
 ### 4.2 Incomplete Implementations
 
 | Module | Gap |
 |--------|-----|
-| `pickle` | Custom simplified format, not CPython-compatible |
-| `csv` | `DictWriter` writerow/writerows/writeheader implemented |
-| `datetime` | `strptime()` works |
-| `contextlib` | `ExitStack.enter_context()` works for native CMs; `redirect_stdout/stderr` are stubs |
-| `multiprocessing` | `Pool` is a stub |
+| `pickle` | Custom simplified format, not CPython wire-compatible |
+| `csv.DictWriter` | writeheader/writerow stubs (no output) |
 | `socket` | `setsockopt()`, `fileno()` are stubs; no real socket I/O |
-| `ssl` | OpenSSL version hardcoded to `"(stub)"` |
-| `configparser` | `write()` returns string instead of writing to file |
-| `textwrap` | Placeholder suffix handling simplified |
-| `bytes.join()` | ✅ | Accepts list, tuple, frozenset, set |
+| `configparser.write()` | Returns string instead of writing to file-like object |
+| `subprocess.Popen` | Streaming/pipe management not implemented |
+| `sqlite3` | Basic query execution; missing cursor protocol details |
 
 ### 4.3 Missing Modules (ImportError)
 
-**Core**: `ctypes`, `cffi`, `mmap`, `fcntl`, `select`, `resource`
-**Compression**: `gzip`, `bz2`, `lzma`, `zipfile`, `tarfile` (zlib exists but simplified)
-**Dev tools**: `pdb`, `pydoc`, `tracemalloc`, `faulthandler`
-**Introspection**: `symtable`, `token`, `tokenize`, `code`
+| Category | Modules |
+|----------|---------|
+| C interop | `ctypes`, `cffi` |
+| OS / Low-level | `mmap`, `fcntl`, `select`, `resource` |
+| Compression | `gzip`, `bz2`, `lzma`, `zipfile`, `tarfile` |
+| Dev tools | `pdb`, `pydoc`, `tracemalloc`, `faulthandler` |
+| Introspection | `symtable`, `token`, `tokenize` |
 
-## 5. Performance Limitations
+## 5. Performance
 
-| Area | Status | Notes |
-|------|--------|-------|
-| Recursive fibonacci ~7× slower than CPython | ⚠️ | Arc<CodeObject> + shared caches; fib(20) at 48 ops/s |
-| Function call overhead | ✅ | 1.2M calls/s (was 220K — Arc<CodeObject> + shared constant cache) |
-| No bytecode caching (`.pyc`) | ❌ | Every import re-parses and re-compiles |
-| Arc-based refcounting overhead | ⚠️ | Atomic ops on every clone/drop |
-| GC cycle detection | ✅ | Covers `Instance`, `Dict`, and `List` objects; trial deletion algorithm |
-| String interning | ✅ | `intern.rs` covers dunder names + `intern_or_new()` in hot paths |
-| Small-int caching | ✅ | Pre-allocated int pool for -5..=256 (matches CPython) |
-| Pre-boxed constant cache | ✅ | Built once per function, shared across all frames via Arc |
-| Binary op fast paths | ✅ | int+int, float+float, str+str skip dunder dispatch |
-| Shared builtins | ✅ | Arc<IndexMap> — zero clone overhead per frame |
-| Attribute lookup | ✅ | Per-class method resolution cache; invalidated on namespace mutation |
+| Benchmark | CPython 3.8 | Ferrython | Ratio |
+|-----------|------------|-----------|-------|
+| `fib(25)` | ~0.03 s | ~0.18 s | ~6× slower |
+| `fib(30)` | ~0.3 s | ~1.4 s | ~5× slower |
+| Function calls/s | — | 1.2M | — |
 
-## 6. Structural / Code Quality Issues
+| Optimization | Status |
+|-------------|--------|
+| Constant folding (multi-pass) | ✅ |
+| Peephole optimizer | ✅ |
+| String interning | ✅ |
+| Small-int cache (-5..256) | ✅ |
+| Arc<CodeObject> sharing | ✅ |
+| Binary op fast paths | ✅ |
+| Method resolution cache | ✅ |
+| Bytecode caching (.pyc) | ❌ |
 
-| Issue | Location | Status | Notes |
-|-------|----------|--------|-------|
-| God files (>2,000 lines) | opcodes.rs, vm_call.rs | ✅ | opcodes.rs split into focused handlers; vm_call.rs helpers extracted; parser.rs split into mod.rs, statements.rs, expressions.rs, arguments.rs |
-| Error type unification | parser/compiler/VM | ✅ | `From<ParseError>` and `From<CompileError>` for `PyException` in ferrython-core |
-| `cargo test` for Python fixtures | tests/fixtures/ | ✅ | 100/100 wired via `cargo test -p ferrython-cli --test fixtures` |
-| Import system scattered | opcodes.rs + vm_helpers.rs + vm_call.rs | ✅ | Consolidated into `vm_import.rs` |
-| Dead code | db_modules.rs | ⚠️ | 2 `#[allow(dead_code)]` on incomplete sqlite3 structs |
-| Module organization | stdlib crate | ✅ | network_modules split (socket, http); serial_modules split (json, csv, other); collection_modules split (collections, functools, itertools, operator, other) |
-| Debug tooling | ferrython-debug crate | ✅ | Profiler, breakpoints, disassembler (`--dis` disassembles to stderr then executes), bytecode stats |
+## 6. Architecture
 
-## 7. Test Results Summary
+- **15 crates** in Cargo workspace
+- **106 stdlib modules** registered
+- **124 fixture tests** (all passing)
+- **13 microbenchmarks** in benchmark suite
 
-- **CPython alignment tests**: ~1,343/1,350 pass (~99.5%)
-- **Fixture tests**: 100/100 pass (100%)
-- **Known test failures by category**:
-  - `asyncio.wait_for` timeout (Test 1230)
-  - `asyncio.Queue` blocking get (Test 1340)
+| Issue | Status | Notes |
+|-------|--------|-------|
+| God files (>2,000 lines) | ⚠️ | vm_call.rs ~2,295 lines; most others split |
+| Error type unification | ✅ | `From<ParseError>` and `From<CompileError>` for `PyException` |
+| Test harness | ✅ | All fixtures wired via `cargo test` |
+| Import system | ✅ | Consolidated in ferrython-import crate |
+| Debug tooling | ✅ | Profiler, breakpoints, disassembler, bytecode stats |
 
 ---
 
-*Last updated after error unification + GC extension session. See `ferrython-gaps.md` for the original feature-by-feature gap audit.*
+*Last updated after builtin subclass inheritance fix + BuiltinBoundMethod delegation refactor.*

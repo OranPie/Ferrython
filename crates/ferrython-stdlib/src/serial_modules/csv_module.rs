@@ -180,72 +180,121 @@ fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             .map(|n| PyObject::str_val(CompactString::from(n.as_str()))).collect();
         attrs.insert(CompactString::from("_fieldnames"), PyObject::list(fieldnames_list.clone()));
         attrs.insert(CompactString::from("fieldnames"), PyObject::list(fieldnames_list));
-        attrs.insert(CompactString::from("_rows"), PyObject::list(vec![]));
+        let fnames_owned: Vec<String> = fieldnames.clone();
 
-        // writerow(rowdict) — appends one row (dict) to internal buffer
+        // writerow(rowdict) — formats row as CSV and writes to fileobj
         let self_ref = inst.clone();
+        let fnames_for_row = fnames_owned.clone();
         attrs.insert(CompactString::from("writerow"), PyObject::native_closure(
             "DictWriter.writerow", {
                 let self_ref = self_ref.clone();
                 move |args: &[PyObjectRef]| {
                     check_args_min("DictWriter.writerow", args, 1)?;
-                    if let Some(rows) = self_ref.get_attr("_rows") {
-                        if let PyObjectPayload::List(items) = &rows.payload {
-                            items.write().push(args[0].clone());
-                        }
+                    let row = &args[0];
+                    let mut fields = Vec::new();
+                    for fname in &fnames_for_row {
+                        let key = HashableKey::Str(CompactString::from(fname.as_str()));
+                        let val = if let PyObjectPayload::Dict(map) = &row.payload {
+                            map.read().get(&key).cloned()
+                                .unwrap_or_else(PyObject::none)
+                        } else if let Some(v) = row.get_attr(fname) {
+                            v
+                        } else {
+                            PyObject::none()
+                        };
+                        fields.push(csv_escape_field(&val.py_to_string()));
                     }
+                    let line = format!("{}\r\n", fields.join(","));
+                    write_to_fileobj(&self_ref, &line)?;
                     Ok(PyObject::none())
                 }
             }
         ));
 
-        // writerows(rows) — appends multiple rows
+        // writerows(rows)
+        let fnames_for_rows = fnames_owned.clone();
         attrs.insert(CompactString::from("writerows"), PyObject::native_closure(
             "DictWriter.writerows", {
                 let self_ref = self_ref.clone();
                 move |args: &[PyObjectRef]| {
                     check_args_min("DictWriter.writerows", args, 1)?;
-                    let new_rows = args[0].to_list()?;
-                    if let Some(rows) = self_ref.get_attr("_rows") {
-                        if let PyObjectPayload::List(items) = &rows.payload {
-                            let mut w = items.write();
-                            for row in new_rows {
-                                w.push(row);
-                            }
+                    let rows = args[0].to_list()?;
+                    for row in &rows {
+                        let mut fields = Vec::new();
+                        for fname in &fnames_for_rows {
+                            let key = HashableKey::Str(CompactString::from(fname.as_str()));
+                            let val = if let PyObjectPayload::Dict(map) = &row.payload {
+                                map.read().get(&key).cloned()
+                                    .unwrap_or_else(PyObject::none)
+                            } else {
+                                PyObject::none()
+                            };
+                            fields.push(csv_escape_field(&val.py_to_string()));
                         }
+                        let line = format!("{}\r\n", fields.join(","));
+                        write_to_fileobj(&self_ref, &line)?;
                     }
                     Ok(PyObject::none())
                 }
             }
         ));
 
-        // writeheader() — writes fieldnames as first row
+        // writeheader() — writes fieldnames as CSV header line
         attrs.insert(CompactString::from("writeheader"), PyObject::native_closure(
             "DictWriter.writeheader", {
                 let self_ref = self_ref.clone();
+                let fnames = fnames_owned.clone();
                 move |_args: &[PyObjectRef]| {
-                    if let Some(fnames) = self_ref.get_attr("_fieldnames") {
-                        if let Some(rows) = self_ref.get_attr("_rows") {
-                            if let PyObjectPayload::List(items) = &rows.payload {
-                                // Create a dict mapping fieldname->fieldname (header row)
-                                let header_items: Vec<PyObjectRef> = if let Ok(fl) = fnames.to_list() {
-                                    fl
-                                } else {
-                                    vec![]
-                                };
-                                let mut map = IndexMap::new();
-                                for f in &header_items {
-                                    let key = HashableKey::Str(CompactString::from(f.py_to_string()));
-                                    map.insert(key, f.clone());
-                                }
-                                items.write().push(PyObject::dict(map));
-                            }
-                        }
-                    }
+                    let escaped: Vec<String> = fnames.iter()
+                        .map(|f| csv_escape_field(f))
+                        .collect();
+                    let line = format!("{}\r\n", escaped.join(","));
+                    write_to_fileobj(&self_ref, &line)?;
                     Ok(PyObject::none())
                 }
             }
         ));
     }
     Ok(inst)
+}
+
+/// Escape a CSV field: quote if contains comma, quote, or newline.
+fn csv_escape_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Write a string to a DictWriter's fileobj via its write() method.
+fn write_to_fileobj(writer_inst: &PyObjectRef, text: &str) -> PyResult<()> {
+    if let Some(fileobj) = writer_inst.get_attr("_fileobj") {
+        if let Some(write_fn) = fileobj.get_attr("write") {
+            if let PyObjectPayload::NativeClosure { func, .. } = &write_fn.payload {
+                let arg = PyObject::str_val(CompactString::from(text));
+                func(&[arg])?;
+                return Ok(());
+            }
+            if let PyObjectPayload::NativeFunction { func, .. } = &write_fn.payload {
+                let arg = PyObject::str_val(CompactString::from(text));
+                func(&[arg])?;
+                return Ok(());
+            }
+        }
+        // Fallback: if fileobj is StringIO, try direct buffer append
+        if let PyObjectPayload::Instance(data) = &fileobj.payload {
+            let mut attrs = data.attrs.write();
+            if let Some(buf) = attrs.get("__buffer__") {
+                if let PyObjectPayload::Str(s) = &buf.payload {
+                    let mut new_s = s.to_string();
+                    new_s.push_str(text);
+                    attrs.insert(CompactString::from("__buffer__"),
+                        PyObject::str_val(CompactString::from(new_s.as_str())));
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Ok(())
 }
