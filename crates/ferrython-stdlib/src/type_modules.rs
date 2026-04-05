@@ -155,6 +155,18 @@ pub fn create_typing_module() -> PyObjectRef {
         })),
         ("runtime_checkable", make_builtin(|args: &[PyObjectRef]| {
             if args.is_empty() { return Ok(PyObject::none()); }
+            // Mark the class as runtime_checkable by adding __protocol_attrs__
+            // which lists the methods that must be present for isinstance checks
+            if let PyObjectPayload::Class(cd) = &args[0].payload {
+                let mut ns = cd.namespace.write();
+                // Collect all non-dunder, non-private method names from the protocol
+                let protocol_attrs: Vec<PyObjectRef> = ns.iter()
+                    .filter(|(k, _)| !k.starts_with('_'))
+                    .map(|(k, _)| PyObject::str_val(k.clone()))
+                    .collect();
+                ns.insert(CompactString::from("__protocol_attrs__"), PyObject::tuple(protocol_attrs));
+                ns.insert(CompactString::from("_is_runtime_checkable"), PyObject::bool_val(true));
+            }
             Ok(args[0].clone())
         })),
     ];

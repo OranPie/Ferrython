@@ -383,8 +383,16 @@ pub fn create_os_module() -> PyObjectRef {
         })),
         ("umask", make_builtin(|_| Ok(PyObject::int(0o022)))),
         ("getlogin", make_builtin(|_| {
-            let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME"))
-                .unwrap_or_else(|_| String::from(""));
+            let user = std::env::var("USER")
+                .or_else(|_| std::env::var("LOGNAME"))
+                .or_else(|_| {
+                    // Fallback: try whoami command
+                    std::process::Command::new("whoami")
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .map_err(|_| std::env::VarError::NotPresent)
+                })
+                .unwrap_or_else(|_| String::from("unknown"));
             Ok(PyObject::str_val(CompactString::from(user)))
         })),
         ("devnull", PyObject::str_val(CompactString::from(if cfg!(windows) { "nul" } else { "/dev/null" }))),

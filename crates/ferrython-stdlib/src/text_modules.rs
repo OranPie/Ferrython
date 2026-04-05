@@ -572,8 +572,8 @@ fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("re.compile() requires a pattern")); }
     let pattern = args[0].py_to_string();
     let flags = if args.len() > 1 { args[1].to_int().unwrap_or(0) } else { 0 };
-    // Validate the pattern compiles
-    let _ = build_regex(&pattern, flags)?;
+    // Build and validate the regex
+    let re_obj = build_regex(&pattern, flags)?;
     // Return a compiled pattern object with match/search/findall etc.
     let pat_str = PyObject::str_val(CompactString::from(pattern.clone()));
     let flags_obj = PyObject::int(flags);
@@ -587,8 +587,22 @@ fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     attrs.insert(CompactString::from("sub"), PyObject::native_function("Pattern.sub", compiled_sub));
     attrs.insert(CompactString::from("split"), PyObject::native_function("Pattern.split", compiled_split));
     attrs.insert(CompactString::from("fullmatch"), PyObject::native_function("Pattern.fullmatch", compiled_fullmatch));
-    attrs.insert(CompactString::from("groupindex"), PyObject::dict(IndexMap::new()));
-    attrs.insert(CompactString::from("groups"), PyObject::int(0));
+    // Compute groups count and groupindex from the pattern
+    let group_count = re_obj.captures_len() - 1; // -1 for the whole match group
+    let mut groupindex_map = IndexMap::new();
+    for name in re_obj.capture_names().flatten() {
+        // Find the index of this named group
+        if let Some(idx) = re_obj.capture_names().enumerate()
+            .find(|(_, n)| n.as_deref() == Some(name))
+            .map(|(i, _)| i) {
+            groupindex_map.insert(
+                HashableKey::Str(CompactString::from(name)),
+                PyObject::int(idx as i64),
+            );
+        }
+    }
+    attrs.insert(CompactString::from("groupindex"), PyObject::dict(groupindex_map));
+    attrs.insert(CompactString::from("groups"), PyObject::int(group_count as i64));
     attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
     Ok(PyObject::module_with_attrs(CompactString::from("Pattern"), attrs))
 }

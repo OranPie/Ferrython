@@ -1469,6 +1469,20 @@ impl VirtualMachine {
                                         return Ok(PyObject::bool_val(result.is_truthy()));
                                     }
                                 }
+                                // Check for runtime_checkable Protocol — structural subtyping
+                                let ns = cd.namespace.read();
+                                if ns.get("_is_runtime_checkable").map_or(false, |v| v.is_truthy()) {
+                                    if let Some(protocol_attrs) = ns.get("__protocol_attrs__") {
+                                        if let PyObjectPayload::Tuple(required) = &protocol_attrs.payload {
+                                            let obj = &args[0];
+                                            let has_all = required.iter().all(|attr_name| {
+                                                let name = attr_name.py_to_string();
+                                                obj.get_attr(&name).is_some()
+                                            });
+                                            return Ok(PyObject::bool_val(has_all));
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
