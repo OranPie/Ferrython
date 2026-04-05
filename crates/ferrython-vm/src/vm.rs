@@ -1,7 +1,7 @@
 //! The main virtual machine — executes bytecode instructions.
 
 use crate::builtins;
-use crate::frame::{BlockKind, Frame, SharedBuiltins};
+use crate::frame::{BlockKind, Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeObject;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
@@ -27,6 +27,8 @@ pub struct VirtualMachine {
     pub profiler: ExecutionProfiler,
     /// Breakpoint manager for debugger support.
     pub breakpoints: BreakpointManager,
+    /// Pool of reusable frame vectors to reduce allocation.
+    pub(crate) frame_pool: FramePool,
 }
 
 impl VirtualMachine {
@@ -39,6 +41,7 @@ impl VirtualMachine {
             sys_modules_dict: None,
             profiler: ExecutionProfiler::new(),
             breakpoints: BreakpointManager::new(),
+            frame_pool: FramePool::new(),
         }
     }
 
@@ -65,7 +68,9 @@ impl VirtualMachine {
         let frame = Frame::new(code, globals, Arc::clone(&self.builtins));
         self.call_stack.push(frame);
         let result = self.run_frame();
-        self.call_stack.pop();
+        if let Some(frame) = self.call_stack.pop() {
+            frame.recycle(&mut self.frame_pool);
+        }
         result
     }
 

@@ -30,7 +30,7 @@ impl VirtualMachine {
                 let code = pyfunc.code.clone();
                 let globals = pyfunc.globals.clone();
                 let cc = pyfunc.constant_cache.clone();
-                let mut frame = Frame::new_with_cache(code, globals, Arc::clone(&self.builtins), cc);
+                let mut frame = Frame::new_from_pool(code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool);
                 frame.scope_kind = ScopeKind::Class;
                 // Wire up closure cells from the captured function
                 let n_cell = frame.code.cellvars.len();
@@ -368,7 +368,7 @@ impl VirtualMachine {
                 let code = pyfunc.code.clone();
                 let globals = pyfunc.globals.clone();
                 let cc = pyfunc.constant_cache.clone();
-                let mut frame = Frame::new_with_cache(code, globals, Arc::clone(&self.builtins), cc);
+                let mut frame = Frame::new_from_pool(code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool);
                 frame.scope_kind = ScopeKind::Class;
                 // Seed with __prepare__ namespace if any
                 for (k, v) in &prepared_ns {

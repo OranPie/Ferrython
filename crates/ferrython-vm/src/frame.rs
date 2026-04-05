@@ -75,6 +75,46 @@ impl Frame {
         }
     }
 
+    /// Create a frame reusing pooled vectors to avoid heap allocation.
+    pub fn new_from_pool(
+        code: Arc<CodeObject>,
+        globals: SharedGlobals,
+        builtins: SharedBuiltins,
+        constant_cache: SharedConstantCache,
+        pool: &mut FramePool,
+    ) -> Self {
+        let nl = code.varnames.len();
+        let nc = code.cellvars.len() + code.freevars.len();
+
+        // Reuse a pooled stack vector or allocate new
+        let mut stack = pool.take_stack();
+        stack.clear();
+        if stack.capacity() < 32 {
+            stack.reserve(32 - stack.capacity());
+        }
+
+        // Reuse a pooled locals vector or allocate new
+        let mut locals = pool.take_locals();
+        locals.clear();
+        locals.resize(nl, None);
+
+        let cells: Vec<CellRef> = (0..nc).map(|_| Arc::new(RwLock::new(None))).collect();
+        Self {
+            code, ip: 0,
+            stack,
+            block_stack: Vec::new(),
+            locals,
+            local_names: IndexMap::new(),
+            globals,
+            builtins,
+            cells,
+            scope_kind: ScopeKind::Module,
+            yielded: false,
+            pending_return: None,
+            constant_cache,
+        }
+    }
+
     /// Create a frame for module-level code (builds its own constant cache).
     pub fn new(
         code: Arc<CodeObject>,
@@ -84,6 +124,14 @@ impl Frame {
         use ferrython_core::types::PyFunction;
         let constant_cache = Arc::new(PyFunction::build_constant_cache(&code));
         Self::new_with_cache(code, globals, builtins, constant_cache)
+    }
+
+    /// Return the stack and locals vectors to the pool for reuse.
+    pub fn recycle(mut self, pool: &mut FramePool) {
+        self.stack.clear();
+        self.locals.clear();
+        pool.return_stack(self.stack);
+        pool.return_locals(self.locals);
     }
 
     #[inline] pub fn push(&mut self, v: PyObjectRef) { self.stack.push(v); }
@@ -102,5 +150,42 @@ impl Frame {
     }
     pub fn store_name(&mut self, name: CompactString, value: PyObjectRef) {
         self.local_names.insert(name, value);
+    }
+}
+
+/// Pool of reusable vectors to reduce allocation overhead on function calls.
+const MAX_POOL_SIZE: usize = 16;
+
+pub struct FramePool {
+    stacks: Vec<Vec<PyObjectRef>>,
+    locals: Vec<Vec<Option<PyObjectRef>>>,
+}
+
+impl FramePool {
+    pub fn new() -> Self {
+        Self {
+            stacks: Vec::with_capacity(MAX_POOL_SIZE),
+            locals: Vec::with_capacity(MAX_POOL_SIZE),
+        }
+    }
+
+    fn take_stack(&mut self) -> Vec<PyObjectRef> {
+        self.stacks.pop().unwrap_or_else(|| Vec::with_capacity(32))
+    }
+
+    fn take_locals(&mut self) -> Vec<Option<PyObjectRef>> {
+        self.locals.pop().unwrap_or_default()
+    }
+
+    fn return_stack(&mut self, v: Vec<PyObjectRef>) {
+        if self.stacks.len() < MAX_POOL_SIZE {
+            self.stacks.push(v);
+        }
+    }
+
+    fn return_locals(&mut self, v: Vec<Option<PyObjectRef>>) {
+        if self.locals.len() < MAX_POOL_SIZE {
+            self.locals.push(v);
+        }
     }
 }

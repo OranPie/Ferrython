@@ -100,7 +100,7 @@ impl VirtualMachine {
         closure: &[Arc<RwLock<Option<PyObjectRef>>>],
         constant_cache: &SharedConstantCache,
     ) -> PyResult<PyObjectRef> {
-        let mut frame = Frame::new_with_cache(Arc::clone(code), globals, Arc::clone(&self.builtins), Arc::clone(constant_cache));
+        let mut frame = Frame::new_from_pool(Arc::clone(code), globals, Arc::clone(&self.builtins), Arc::clone(constant_cache), &mut self.frame_pool);
         let nparams = code.arg_count as usize;
         let nkwonly = code.kwonlyarg_count as usize;
         let has_varargs = code.flags.contains(CodeFlags::VARARGS);
@@ -194,7 +194,7 @@ impl VirtualMachine {
         closure: &[Arc<RwLock<Option<PyObjectRef>>>],
         constant_cache: &SharedConstantCache,
     ) -> PyResult<PyObjectRef> {
-        let mut frame = Frame::new_with_cache(Arc::clone(code), globals, Arc::clone(&self.builtins), Arc::clone(constant_cache));
+        let mut frame = Frame::new_from_pool(Arc::clone(code), globals, Arc::clone(&self.builtins), Arc::clone(constant_cache), &mut self.frame_pool);
         let nparams = code.arg_count as usize;
         let nkwonly = code.kwonlyarg_count as usize;
         let has_varargs = code.flags.contains(CodeFlags::VARARGS);
@@ -2106,7 +2106,9 @@ impl VirtualMachine {
 
         self.call_stack.push(frame);
         let result = self.run_frame();
-        self.call_stack.pop();
+        if let Some(frame) = self.call_stack.pop() {
+            frame.recycle(&mut self.frame_pool);
+        }
         result
     }
 

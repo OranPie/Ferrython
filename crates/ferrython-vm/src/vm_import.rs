@@ -223,7 +223,9 @@ impl VirtualMachine {
         let frame = Frame::new(Arc::new(code), globals.clone(), Arc::clone(&self.builtins));
         self.call_stack.push(frame);
         let exec_result = self.run_frame();
-        self.call_stack.pop();
+        if let Some(frame) = self.call_stack.pop() {
+            frame.recycle(&mut self.frame_pool);
+        }
 
         // Build final module from executed globals
         let final_mod = PyObject::module_with_attrs(mod_name, globals.read().clone());
