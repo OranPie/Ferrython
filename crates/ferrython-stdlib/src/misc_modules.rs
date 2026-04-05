@@ -665,7 +665,7 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             Ok(PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: inst.class.clone(),
                 attrs: Arc::new(RwLock::new(inst.attrs.read().clone())),
-                dict_storage: inst.dict_storage.as_ref().map(|ds| Arc::new(RwLock::new(ds.read().clone()))),
+                is_special: true, dict_storage: inst.dict_storage.as_ref().map(|ds| Arc::new(RwLock::new(ds.read().clone()))),
             })))
         }
         _ => Ok(obj.clone()),

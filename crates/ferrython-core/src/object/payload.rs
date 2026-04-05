@@ -313,6 +313,9 @@ pub struct InstanceData {
     pub attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
     /// Internal dict storage for dict subclasses
     pub dict_storage: Option<Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>>,
+    /// Fast-path flag: true if this instance has special markers (__namedtuple__, __deque__, etc.)
+    /// When true, LoadMethod uses the full get_attr path.
+    pub is_special: bool,
 }
 
 #[derive(Debug, Clone)]

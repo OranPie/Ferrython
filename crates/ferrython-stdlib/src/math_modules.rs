@@ -807,7 +807,7 @@ pub fn create_decimal_module() -> PyObjectRef {
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
             attrs: Arc::new(RwLock::new(IndexMap::new())),
-            dict_storage: None,
+            is_special: true, dict_storage: None,
         }));
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
@@ -1216,7 +1216,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: cls,
                 attrs: Arc::new(RwLock::new(ctx_ns)),
-                dict_storage: None,
+                is_special: true, dict_storage: None,
             }));
             Ok(inst)
         })),
@@ -1721,7 +1721,7 @@ pub fn create_fractions_module() -> PyObjectRef {
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
             attrs: Arc::new(RwLock::new(IndexMap::new())),
-            dict_storage: None,
+            is_special: true, dict_storage: None,
         }));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut w = inst_data.attrs.write();

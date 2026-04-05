@@ -277,7 +277,7 @@ fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRe
         payload: PyObjectPayload::Instance(InstanceData {
             class: cache_class,
             attrs: attrs_arc,
-            dict_storage: None,
+            is_special: true, dict_storage: None,
         }),
     })
 }

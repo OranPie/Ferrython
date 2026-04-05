@@ -1072,7 +1072,7 @@ fn make_ns(cls_name: &str, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObj
     PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class: cls,
         attrs: Arc::new(RwLock::new(attrs)),
-        dict_storage: None,
+        is_special: true, dict_storage: None,
     }))
 }
 

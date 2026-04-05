@@ -9,6 +9,7 @@ use ferrython_bytecode::{CodeObject, Instruction};
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    lookup_in_class_mro,
 };
 use ferrython_core::types::{HashableKey, PyFunction};
 use indexmap::IndexMap;
@@ -546,6 +547,76 @@ impl VirtualMachine {
                 let frame = self.vm_frame();
                 let name = frame.code.names[instr.arg as usize].clone();
                 let obj = frame.pop();
+
+                // Fast path for simple instance method calls:
+                // Skip __getattribute__ check and descriptor protocol for plain instances
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    let skip_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                        !cd.has_getattribute
+                    } else {
+                        false
+                    };
+                    // Only use fast path for plain instances (no dict_storage, no special markers)
+                    let is_plain = skip_ga
+                        && inst.dict_storage.is_none()
+                        && !inst.is_special
+                        && name.as_str() != "__class__"
+                        && name.as_str() != "__dict__";
+
+                    if is_plain {
+                        // Instance dict lookup
+                        if let Some(v) = inst.attrs.read().get(name.as_str()) {
+                            frame.push(v.clone());
+                            return Ok(None);
+                        }
+                        // Class MRO lookup (uses method cache)
+                        if let Some(method) = lookup_in_class_mro(&inst.class, &name) {
+                            match &method.payload {
+                                PyObjectPayload::Function(_)
+                                | PyObjectPayload::NativeFunction { .. } => {
+                                    frame.push(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: obj,
+                                            method,
+                                        }
+                                    }));
+                                    return Ok(None);
+                                }
+                                PyObjectPayload::StaticMethod(func) => {
+                                    frame.push(func.clone());
+                                    return Ok(None);
+                                }
+                                PyObjectPayload::ClassMethod(func) => {
+                                    frame.push(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: inst.class.clone(),
+                                            method: func.clone(),
+                                        }
+                                    }));
+                                    return Ok(None);
+                                }
+                                PyObjectPayload::Property { fget, .. } => {
+                                    if let Some(getter) = fget {
+                                        let result = self.call_object(getter.clone(), vec![obj])?;
+                                        self.vm_push(result);
+                                        return Ok(None);
+                                    }
+                                    return Err(PyException::attribute_error(format!(
+                                        "unreadable attribute '{}'", name
+                                    )));
+                                }
+                                // For descriptors or other types, fall through to full path
+                                _ => {
+                                    frame.push(method);
+                                    return Ok(None);
+                                }
+                            }
+                        }
+                        // Fall through to full get_attr for __getattr__ and other cases
+                    }
+                }
+
+                // Full path: handles all cases including __getattribute__, special instances, etc.
                 match obj.get_attr(&name) {
                     Some(method) => {
                         if matches!(&obj.payload, PyObjectPayload::Module(_))

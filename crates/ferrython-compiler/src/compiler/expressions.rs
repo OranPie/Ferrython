@@ -547,6 +547,16 @@ impl Compiler {
             self.emit_arg(Opcode::LoadConst, tuple_idx);
             let total = (args.len() + keywords.len()) as u32;
             self.emit_arg(Opcode::CallFunctionKw, total);
+        } else if let ExpressionKind::Attribute { value, attr, ctx: ExprContext::Load } = &func.node {
+            // Optimization: obj.method(args) → LoadMethod + CallMethod
+            // Avoids creating a BoundMethod wrapper on every call
+            self.compile_expression(value)?;
+            let attr_idx = self.add_name(attr);
+            self.emit_arg(Opcode::LoadMethod, attr_idx);
+            for arg in args {
+                self.compile_expression(arg)?;
+            }
+            self.emit_arg(Opcode::CallMethod, args.len() as u32);
         } else {
             // Simple CALL_FUNCTION
             self.compile_expression(func)?;

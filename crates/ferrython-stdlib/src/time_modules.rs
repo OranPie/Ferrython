@@ -568,7 +568,7 @@ fn make_timezone_utc() -> PyObjectRef {
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
-        dict_storage: None,
+        is_special: true, dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -872,7 +872,7 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
-        dict_storage: None,
+        is_special: true, dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -1026,7 +1026,7 @@ fn datetime_time_obj(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
-        dict_storage: None,
+        is_special: true, dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -1101,7 +1101,7 @@ fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
-        dict_storage: None,
+        is_special: true, dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -1308,7 +1308,7 @@ fn make_timedelta_with_ops(days: i64, seconds: i64, microseconds: i64, total_sec
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
-        dict_storage: None,
+        is_special: true, dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();

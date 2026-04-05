@@ -708,7 +708,7 @@ pub(super) fn call_hashlib_method(inst: &ferrython_core::object::InstanceData, m
             let new_inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: cls,
                 attrs: Arc::new(RwLock::new(attrs.clone())),
-                dict_storage: None,
+                is_special: true, dict_storage: None,
             }));
             Ok(new_inst)
         }

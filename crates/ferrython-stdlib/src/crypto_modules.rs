@@ -32,7 +32,7 @@ fn make_hash_object(name: &str, data: Vec<u8>, digest_hex: String, digest_bytes:
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class: class.clone(),
         attrs: Arc::new(RwLock::new(attrs)),
-        dict_storage: None,
+        is_special: true, dict_storage: None,
     }));
     {
         let a = if let PyObjectPayload::Instance(ref d) = inst.payload { d.attrs.clone() } else { unreachable!() };
@@ -308,7 +308,7 @@ pub fn create_hmac_module() -> PyObjectRef {
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
             attrs: Arc::new(RwLock::new(attrs)),
-            dict_storage: None,
+            is_special: true, dict_storage: None,
         }));
         Ok(inst)
     }

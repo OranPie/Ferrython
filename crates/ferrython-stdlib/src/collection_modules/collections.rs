@@ -641,7 +641,7 @@ fn collections_chainmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class: cls,
         attrs: Arc::new(RwLock::new(IndexMap::new())),
-        dict_storage: Some(Arc::new(RwLock::new(merged))),
+        is_special: true, dict_storage: Some(Arc::new(RwLock::new(merged))),
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();

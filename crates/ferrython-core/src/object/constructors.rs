@@ -257,13 +257,13 @@ impl PyObject {
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
         let dict_storage = Self::detect_dict_subclass(&class);
-        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(IndexMap::new())), dict_storage }));
+        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(IndexMap::new())), dict_storage, is_special: false }));
         track_object(&obj);
         obj
     }
     pub fn instance_with_attrs(class: PyObjectRef, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
         let dict_storage = Self::detect_dict_subclass(&class);
-        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(attrs)), dict_storage }));
+        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(attrs)), dict_storage, is_special: false }));
         track_object(&obj);
         obj
     }
