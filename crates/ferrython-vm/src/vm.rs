@@ -3,7 +3,7 @@
 use crate::builtins;
 use crate::frame::{BlockKind, Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
-use ferrython_bytecode::code::CodeObject;
+use ferrython_bytecode::code::{CodeObject, CodeFlags};
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
@@ -328,6 +328,74 @@ impl VirtualMachine {
                         frame.stack.push(PyObject::list(items));
                     }
                     Ok(None)
+                }
+                // Inline CallFunction fast path for simple Python function calls
+                Opcode::CallFunction => {
+                    let arg_count = instr.arg as usize;
+                    let stack_len = frame.stack.len();
+                    let func_idx = stack_len - 1 - arg_count;
+                    // Fast path: Python Function with exact positional match, no closures/cells/generators
+                    let is_simple = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                        pf.code.arg_count as usize == arg_count
+                            && pf.code.kwonlyarg_count == 0
+                            && !pf.code.flags.contains(CodeFlags::VARARGS)
+                            && !pf.code.flags.contains(CodeFlags::VARKEYWORDS)
+                            && !pf.code.flags.contains(CodeFlags::GENERATOR)
+                            && !pf.code.flags.contains(CodeFlags::COROUTINE)
+                            && pf.closure.is_empty()
+                            && pf.code.cellvars.is_empty()
+                            && pf.code.freevars.is_empty()
+                    } else {
+                        false
+                    };
+                    if is_simple {
+                        // Extract args directly from stack without intermediate Vec
+                        let args_start = func_idx + 1;
+                        let func = frame.stack[func_idx].clone();
+                        let pf = match &func.payload {
+                            PyObjectPayload::Function(pf) => pf,
+                            _ => unreachable!(),
+                        };
+                        let mut new_frame = Frame::new_from_pool(
+                            Arc::clone(&pf.code),
+                            pf.globals.clone(),
+                            Arc::clone(&self.builtins),
+                            Arc::clone(&pf.constant_cache),
+                            &mut self.frame_pool,
+                        );
+                        // Set locals directly from stack
+                        for i in 0..arg_count {
+                            new_frame.locals[i] = Some(frame.stack[args_start + i].clone());
+                        }
+                        new_frame.scope_kind = crate::frame::ScopeKind::Function;
+                        // Pop func+args off stack
+                        frame.stack.truncate(func_idx);
+                        // Push frame and run
+                        self.call_stack.push(new_frame);
+                        let limit = ferrython_stdlib::get_recursion_limit() as usize;
+                        if self.call_stack.len() > limit {
+                            if let Some(frame) = self.call_stack.pop() {
+                                frame.recycle(&mut self.frame_pool);
+                            }
+                            Err(PyException::recursion_error("maximum recursion depth exceeded"))
+                        } else {
+                            let result = self.run_frame();
+                            if let Some(frame) = self.call_stack.pop() {
+                                frame.recycle(&mut self.frame_pool);
+                            }
+                            match result {
+                                Ok(val) => {
+                                    let mut val = val;
+                                    val = self.post_call_intercept(val)?;
+                                    self.vm_push(val);
+                                    Ok(None)
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
                 }
                 _ => self.execute_one(instr),
             };
