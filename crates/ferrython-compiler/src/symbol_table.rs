@@ -592,10 +592,17 @@ impl Analyzer {
         match &expr.node {
             ExpressionKind::Name { id, .. } => {
                 self.current_scope().mark_referenced(id);
-                // Implicit __class__ reference: when a method uses `super`,
-                // it needs __class__ from the enclosing class scope (PEP 3135).
+                // PEP 3135: __class__ is an implicit cell variable in class bodies.
+                // When a method (function inside class) references __class__ directly
+                // or via super(), capture it from the enclosing class scope.
                 if id.as_str() == "super" && self.is_inside_class_method() {
                     self.current_scope().mark_referenced("__class__");
+                }
+                if id.as_str() == "__class__" && self.is_inside_class_method() {
+                    // Force scope to Free (override the default Global from mark_referenced)
+                    if let Some(sym) = self.current_scope().symbols.get_mut("__class__") {
+                        sym.scope = SymbolScope::Free;
+                    }
                 }
             }
 
