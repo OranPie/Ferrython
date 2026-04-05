@@ -970,6 +970,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__name__" => Some(PyObject::str_val(CompactString::from(fname.as_str()))),
                 "__qualname__" => Some(PyObject::str_val(CompactString::from(fname.as_str()))),
                 "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
+                "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
                 "__doc__" => Some(PyObject::none()),
                 _ => None,
             }
@@ -1509,6 +1510,36 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("cell"))),
                 _ => None,
+            }
+            PyObjectPayload::Iterator(_) => {
+                match name {
+                    "__next__" | "__iter__" | "__length_hint__" => {
+                        Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: obj.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }))
+                    }
+                    "__class__" => Some(PyObject::builtin_type(CompactString::from("iterator"))),
+                    _ => None,
+                }
+            }
+            PyObjectPayload::BuiltinBoundMethod { .. } => {
+                match name {
+                    "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
+                    "__name__" => {
+                        if let PyObjectPayload::BuiltinBoundMethod { method_name, .. } = &obj.payload {
+                            Some(PyObject::str_val(method_name.clone()))
+                        } else { None }
+                    }
+                    "__self__" => {
+                        if let PyObjectPayload::BuiltinBoundMethod { receiver, .. } = &obj.payload {
+                            Some(receiver.clone())
+                        } else { None }
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         }

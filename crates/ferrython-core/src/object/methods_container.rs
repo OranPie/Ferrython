@@ -99,6 +99,7 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 if map.contains_key(&HashableKey::Str(intern_or_new("__counter__"))) { hidden += 1; }
                 Ok(map.len() - hidden)
             },
+            PyObjectPayload::InstanceDict(attrs) => Ok(attrs.read().len()),
             _ => Err(PyException::type_error(format!("object of type '{}' has no len()", obj.type_name()))),
         }
 }

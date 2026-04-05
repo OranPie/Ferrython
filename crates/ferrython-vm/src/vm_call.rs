@@ -1906,6 +1906,22 @@ impl VirtualMachine {
                     }
                 }
 
+                // ── Iterator protocol dispatch ──
+                if let PyObjectPayload::Iterator(_) = &receiver.payload {
+                    match method_name.as_str() {
+                        "__next__" => {
+                            match crate::builtins::iter_advance(&receiver)? {
+                                Some((_new_iter, value)) => return Ok(value),
+                                None => return Err(ferrython_core::error::PyException::stop_iteration()),
+                            }
+                        }
+                        "__iter__" => {
+                            return Ok(receiver.clone());
+                        }
+                        _ => {}
+                    }
+                }
+
                 // ── AsyncGenAwaitable dispatch (driving the awaitable) ──
                 if let PyObjectPayload::AsyncGenAwaitable { gen, action } = &receiver.payload {
                     match method_name.as_str() {
