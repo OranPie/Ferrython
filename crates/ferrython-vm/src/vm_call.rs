@@ -1171,6 +1171,51 @@ impl VirtualMachine {
                             let rest = pos_args[1..].to_vec();
                             return self.instantiate_class(&cls, rest, kwargs);
                         }
+                        // json.dumps / json.dump with `default` kwarg that may be a Python function
+                        if (name.as_str() == "json.dumps" || name.as_str() == "json.dump") && !kwargs.is_empty() {
+                            let default_fn = kwargs.iter()
+                                .find(|(k, _)| k.as_str() == "default")
+                                .map(|(_, v)| v.clone());
+                            let cls_default = if default_fn.is_none() {
+                                kwargs.iter()
+                                    .find(|(k, _)| k.as_str() == "cls")
+                                    .and_then(|(_, v)| v.get_attr("default"))
+                            } else { None };
+                            let effective_default = default_fn.or(cls_default);
+                            if let Some(ref def) = effective_default {
+                                if matches!(&def.payload, PyObjectPayload::Function(_)) {
+                                    // Pre-process object tree: call `default` on non-serializable values
+                                    let prepared = self.json_prepare_with_default(&pos_args[0], def)?;
+                                    // Rebuild kwargs without `default` and `cls`
+                                    let filtered_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs.into_iter()
+                                        .filter(|(k, _)| k.as_str() != "default" && k.as_str() != "cls")
+                                        .collect();
+                                    if name.as_str() == "json.dump" {
+                                        // json.dump(obj, fp, **kwargs) → dump prepared obj to fp
+                                        let mut dump_args = vec![prepared];
+                                        if pos_args.len() > 1 { dump_args.push(pos_args[1].clone()); }
+                                        if !filtered_kwargs.is_empty() {
+                                            let mut kw_map = IndexMap::new();
+                                            for (k, v) in filtered_kwargs {
+                                                kw_map.insert(HashableKey::Str(k), v);
+                                            }
+                                            dump_args.push(PyObject::dict(kw_map));
+                                        }
+                                        return nf(&dump_args);
+                                    }
+                                    // json.dumps(prepared, **remaining_kwargs)
+                                    let mut dump_args = vec![prepared];
+                                    if !filtered_kwargs.is_empty() {
+                                        let mut kw_map = IndexMap::new();
+                                        for (k, v) in filtered_kwargs {
+                                            kw_map.insert(HashableKey::Str(k), v);
+                                        }
+                                        dump_args.push(PyObject::dict(kw_map));
+                                    }
+                                    return nf(&dump_args);
+                                }
+                            }
+                        }
                         // Pass kwargs as trailing dict if present
                         if !kwargs.is_empty() {
                             let mut all_args = pos_args;
@@ -2496,5 +2541,52 @@ impl VirtualMachine {
             }
         }
         Ok(best)
+    }
+
+    /// Pre-process an object tree for json.dumps: replace non-JSON-serializable
+    /// values by calling `default(obj)` (a user Python function). Basic types
+    /// (dict, list, tuple, str, int, float, bool, None) are passed through.
+    fn json_prepare_with_default(
+        &mut self,
+        obj: &PyObjectRef,
+        default_fn: &PyObjectRef,
+    ) -> PyResult<PyObjectRef> {
+        match &obj.payload {
+            PyObjectPayload::Dict(map) => {
+                let entries: Vec<_> = map.read().iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let mut new_map = IndexMap::new();
+                for (k, v) in entries {
+                    new_map.insert(k, self.json_prepare_with_default(&v, default_fn)?);
+                }
+                Ok(PyObject::dict(new_map))
+            }
+            PyObjectPayload::List(items) => {
+                let items: Vec<_> = items.read().clone();
+                let mut prepared = Vec::with_capacity(items.len());
+                for item in &items {
+                    prepared.push(self.json_prepare_with_default(item, default_fn)?);
+                }
+                Ok(PyObject::list(prepared))
+            }
+            PyObjectPayload::Tuple(items) => {
+                let mut prepared = Vec::with_capacity(items.len());
+                for item in items.iter() {
+                    prepared.push(self.json_prepare_with_default(item, default_fn)?);
+                }
+                Ok(PyObject::tuple(prepared))
+            }
+            PyObjectPayload::Str(_)
+            | PyObjectPayload::Int(_)
+            | PyObjectPayload::Float(_)
+            | PyObjectPayload::Bool(_)
+            | PyObjectPayload::None => Ok(obj.clone()),
+            _ => {
+                // Call default(obj) and recursively prepare the result
+                let result = self.call_object(default_fn.clone(), vec![obj.clone()])?;
+                self.json_prepare_with_default(&result, default_fn)
+            }
+        }
     }
 }

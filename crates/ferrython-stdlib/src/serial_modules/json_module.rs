@@ -8,9 +8,9 @@ use ferrython_core::types::HashableKey;
 
 pub fn create_json_module() -> PyObjectRef {
     make_module("json", vec![
-        ("dumps", make_builtin(json_dumps)),
+        ("dumps", PyObject::native_function("json.dumps", json_dumps)),
         ("loads", make_builtin(json_loads)),
-        ("dump", make_builtin(json_dump)),
+        ("dump", PyObject::native_function("json.dump", json_dump)),
         ("load", make_builtin(json_load)),
         ("JSONEncoder", make_builtin(json_encoder_ctor)),
         ("JSONDecoder", make_builtin(json_decoder_ctor)),
@@ -57,7 +57,7 @@ fn json_decoder_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(inst)
 }
 
-fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("json.dumps() missing 1 required positional argument: 'obj'"));
     }
@@ -263,9 +263,8 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
 }
 
 /// Handle non-primitive objects in JSON serialization:
-/// 1. Instance objects → serialize their attrs as a JSON object
-/// 2. If a `default` callable is provided, call it and re-serialize the result
-/// 3. Otherwise, raise TypeError
+/// 1. If a `default` callable is provided, call it and re-serialize the result
+/// 2. Otherwise, raise TypeError (matching CPython behavior — unknown types are NOT auto-serialized)
 fn json_serialize_fallback<F>(
     obj: &PyObjectRef,
     default: Option<&PyObjectRef>,
@@ -274,22 +273,6 @@ fn json_serialize_fallback<F>(
 where
     F: Fn(&PyObjectRef, Option<&PyObjectRef>) -> PyResult<String>,
 {
-    // Try serializing Instance attrs as a JSON object
-    if let PyObjectPayload::Instance(inst) = &obj.payload {
-        let attrs = inst.attrs.read();
-        // Filter out internal/dunder attrs
-        let public_attrs: Vec<_> = attrs.iter()
-            .filter(|(k, _)| !k.starts_with('_'))
-            .collect();
-        if !public_attrs.is_empty() {
-            let parts: Result<Vec<String>, PyException> = public_attrs.iter().map(|(k, v)| {
-                let val_str = recurse(v, default)?;
-                Ok(format!("\"{}\": {}", k, val_str))
-            }).collect();
-            return Ok(format!("{{{}}}", parts?.join(", ")));
-        }
-    }
-
     // Try calling the default function if provided
     if let Some(def) = default {
         if let Some(result) = try_call_default(def, obj)? {
