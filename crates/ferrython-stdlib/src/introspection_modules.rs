@@ -369,17 +369,142 @@ pub fn create_inspect_module() -> PyObjectRef {
         })),
         ("signature", make_builtin(|args| {
             check_args("inspect.signature", args, 1)?;
+            // Build a Signature object with .parameters (OrderedDict of Parameter objects)
+            let sig_cls = PyObject::class(CompactString::from("Signature"), vec![], IndexMap::new());
+            let param_cls = PyObject::class(CompactString::from("Parameter"), vec![], IndexMap::new());
+
+            let mut params_map = IndexMap::new();
+
             if let PyObjectPayload::Function(f) = &args[0].payload {
-                let total = (f.code.arg_count + f.code.kwonlyarg_count) as usize;
-                let params: Vec<String> = f.code.varnames.iter()
-                    .take(total)
-                    .map(|v| v.to_string())
-                    .collect();
-                let sig_str = format!("({})", params.join(", "));
-                Ok(PyObject::str_val(CompactString::from(sig_str)))
-            } else {
-                Ok(PyObject::str_val(CompactString::from("(*args, **kwargs)")))
+                let ac = f.code.arg_count as usize;
+                let kwc = f.code.kwonlyarg_count as usize;
+                let total = ac + kwc;
+                let n_defaults = f.defaults.len();
+
+                for (i, name) in f.code.varnames.iter().take(total).enumerate() {
+                    let p = PyObject::instance(param_cls.clone());
+                    if let PyObjectPayload::Instance(ref inst) = p.payload {
+                        let mut w = inst.attrs.write();
+                        w.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
+                        // Determine kind
+                        let kind = if i < ac { 1 } else { 3 }; // POSITIONAL_OR_KEYWORD=1, KEYWORD_ONLY=3
+                        w.insert(CompactString::from("kind"), PyObject::int(kind));
+                        // Default
+                        if i < ac && i >= ac - n_defaults {
+                            w.insert(CompactString::from("default"), f.defaults[i - (ac - n_defaults)].clone());
+                        } else if i >= ac {
+                            let kw_name = name.clone();
+                            if let Some(kw_def) = f.kw_defaults.get(&kw_name) {
+                                w.insert(CompactString::from("default"), kw_def.clone());
+                            } else {
+                                w.insert(CompactString::from("default"), PyObject::instance(
+                                    PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
+                                ));
+                            }
+                        } else {
+                            w.insert(CompactString::from("default"), PyObject::instance(
+                                PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
+                            ));
+                        }
+                        // Annotation
+                        if let Some(ann) = f.annotations.get(name) {
+                            w.insert(CompactString::from("annotation"), ann.clone());
+                        }
+                    }
+                    params_map.insert(
+                        HashableKey::Str(name.clone()),
+                        p,
+                    );
+                }
+
+                // *args
+                if f.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARARGS) && total < f.code.varnames.len() {
+                    let name = &f.code.varnames[total];
+                    let p = PyObject::instance(param_cls.clone());
+                    if let PyObjectPayload::Instance(ref inst) = p.payload {
+                        let mut w = inst.attrs.write();
+                        w.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
+                        w.insert(CompactString::from("kind"), PyObject::int(2)); // VAR_POSITIONAL
+                    }
+                    params_map.insert(HashableKey::Str(name.clone()), p);
+                }
+
+                // **kwargs
+                if f.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARKEYWORDS) {
+                    let kw_idx = total + if f.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARARGS) { 1 } else { 0 };
+                    if kw_idx < f.code.varnames.len() {
+                        let name = &f.code.varnames[kw_idx];
+                        let p = PyObject::instance(param_cls.clone());
+                        if let PyObjectPayload::Instance(ref inst) = p.payload {
+                            let mut w = inst.attrs.write();
+                            w.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
+                            w.insert(CompactString::from("kind"), PyObject::int(4)); // VAR_KEYWORD
+                        }
+                        params_map.insert(HashableKey::Str(name.clone()), p);
+                    }
+                }
             }
+
+            let sig = PyObject::instance(sig_cls);
+            if let PyObjectPayload::Instance(ref inst) = sig.payload {
+                let mut w = inst.attrs.write();
+                let params = PyObject::dict(params_map.clone());
+                w.insert(CompactString::from("parameters"), params);
+
+                // __contains__ — check if parameter name is in signature
+                let keys: Vec<String> = params_map.keys()
+                    .filter_map(|k| if let HashableKey::Str(s) = k { Some(s.to_string()) } else { None })
+                    .collect();
+                let keys2 = keys.clone();
+                w.insert(CompactString::from("__contains__"), PyObject::native_closure("__contains__", move |args| {
+                    if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+                    let needle = args[0].py_to_string();
+                    Ok(PyObject::bool_val(keys.iter().any(|k| k == &needle)))
+                }));
+
+                // __str__ / __repr__ — "(a, b, *args, **kwargs)" format
+                let sig_str = {
+                    let mut parts = Vec::new();
+                    for k in &keys2 {
+                        if let Some(p) = params_map.get(&HashableKey::Str(CompactString::from(k.as_str()))) {
+                            if let PyObjectPayload::Instance(ref pinst) = p.payload {
+                                let attrs = pinst.attrs.read();
+                                let kind = attrs.get("kind").and_then(|v| v.as_int()).unwrap_or(1);
+                                match kind {
+                                    2 => parts.push(format!("*{}", k)),
+                                    4 => parts.push(format!("**{}", k)),
+                                    _ => {
+                                        if let Some(default) = attrs.get("default") {
+                                            if let PyObjectPayload::Instance(ref di) = default.payload {
+                                                if let PyObjectPayload::Class(ref dc) = di.class.payload {
+                                                    if dc.name.as_str() == "_empty" {
+                                                        parts.push(k.to_string());
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                            parts.push(format!("{}={}", k, default.repr()));
+                                        } else {
+                                            parts.push(k.to_string());
+                                        }
+                                    }
+                                }
+                            } else {
+                                parts.push(k.to_string());
+                            }
+                        }
+                    }
+                    format!("({})", parts.join(", "))
+                };
+                let sig_str2 = sig_str.clone();
+                w.insert(CompactString::from("__str__"), PyObject::native_closure("__str__", move |_args| {
+                    Ok(PyObject::str_val(CompactString::from(&sig_str)))
+                }));
+                w.insert(CompactString::from("__repr__"), PyObject::native_closure("__repr__", move |_args| {
+                    Ok(PyObject::str_val(CompactString::from(format!("<Signature {}>", sig_str2))))
+                }));
+            }
+            Ok(sig)
         })),
         ("getfullargspec", make_builtin(|args| {
             check_args("inspect.getfullargspec", args, 1)?;

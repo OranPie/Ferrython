@@ -1367,9 +1367,18 @@ impl VirtualMachine {
                         if args.len() == 2 {
                             let sup = &args[1];
                             if let PyObjectPayload::Class(cd) = &sup.payload {
+                                // Check metaclass __subclasscheck__ first
                                 if let Some(ref metaclass) = cd.metaclass {
                                     if let Some(sc) = metaclass.get_attr("__subclasscheck__") {
                                         let result = self.call_object(sc, vec![sup.clone(), args[0].clone()])?;
+                                        return Ok(PyObject::bool_val(result.is_truthy()));
+                                    }
+                                }
+                                // Check __subclasshook__ on the superclass (ABC protocol)
+                                if let Some(hook) = sup.get_attr("__subclasshook__") {
+                                    let result = self.call_object(hook, vec![args[0].clone()])?;
+                                    // If NotImplemented, fall through to normal check
+                                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
                                         return Ok(PyObject::bool_val(result.is_truthy()));
                                     }
                                 }
