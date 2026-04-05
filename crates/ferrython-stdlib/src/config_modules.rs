@@ -514,27 +514,52 @@ pub fn create_configparser_module() -> PyObjectRef {
         sections
     }
 
+    fn apply_parsed(obj: &PyObjectRef, parsed: IndexMap<HashableKey, PyObjectRef>) {
+        if let Some(secs) = get_sections(obj) {
+            let mut w = secs.write();
+            for (k, v) in &parsed {
+                if k != &HashableKey::Str(CompactString::from("DEFAULT")) {
+                    w.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        // Copy DEFAULT section items to _defaults for fallback inheritance
+        if let Some(default_dict) = parsed.get(&HashableKey::Str(CompactString::from("DEFAULT"))) {
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let PyObjectPayload::Dict(src) = &default_dict.payload {
+                    let mut attrs_w = inst.attrs.write();
+                    // Merge into _defaults
+                    if let Some(defs) = attrs_w.get("_defaults") {
+                        if let PyObjectPayload::Dict(d) = &defs.payload {
+                            let mut dw = d.write();
+                            for (k, v) in src.read().iter() {
+                                dw.insert(k.clone(), v.clone());
+                            }
+                            return;
+                        }
+                    }
+                    // If _defaults doesn't exist yet, create it
+                    attrs_w.insert(CompactString::from("_defaults"), default_dict.clone());
+                }
+            }
+        }
+    }
+
     fn cp_read(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 { return Err(PyException::type_error("read requires filename")); }
         let path = args[1].py_to_string();
         let content = std::fs::read_to_string(&path).map_err(|e|
             PyException::runtime_error(format!("Cannot read {}: {}", path, e)))?;
-        if let Some(secs) = get_sections(&args[0]) {
-            let parsed = parse_ini(&content);
-            let mut w = secs.write();
-            for (k, v) in parsed { w.insert(k, v); }
-        }
+        let parsed = parse_ini(&content);
+        apply_parsed(&args[0], parsed);
         Ok(PyObject::none())
     }
 
     fn cp_read_string(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 { return Err(PyException::type_error("read_string requires string")); }
         let content = args[1].py_to_string();
-        if let Some(secs) = get_sections(&args[0]) {
-            let parsed = parse_ini(&content);
-            let mut w = secs.write();
-            for (k, v) in parsed { w.insert(k, v); }
-        }
+        let parsed = parse_ini(&content);
+        apply_parsed(&args[0], parsed);
         Ok(PyObject::none())
     }
 

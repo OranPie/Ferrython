@@ -1141,7 +1141,20 @@ fn os_path_commonpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub fn create_platform_module() -> PyObjectRef {
     make_module("platform", vec![
-        ("system", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(std::env::consts::OS))))),
+        ("system", make_builtin(|_| {
+            let os = std::env::consts::OS;
+            // CPython capitalizes: "Linux", "Darwin", "Windows"
+            let capitalized = match os {
+                "linux" => "Linux",
+                "macos" => "Darwin",
+                "windows" => "Windows",
+                "freebsd" => "FreeBSD",
+                "openbsd" => "OpenBSD",
+                "netbsd" => "NetBSD",
+                other => other,
+            };
+            Ok(PyObject::str_val(CompactString::from(capitalized)))
+        })),
         ("machine", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(std::env::consts::ARCH))))),
         ("python_version", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("3.8.0"))))),
         ("python_implementation", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("Ferrython"))))),
