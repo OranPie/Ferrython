@@ -236,10 +236,20 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let typename = args[0].py_to_string();
     
+    // Check for kwargs dict as last arg
+    let (_field_args_end, kwargs_dict) = if args.len() > 2 {
+        if let PyObjectPayload::Dict(map) = &args[args.len() - 1].payload {
+            (args.len() - 1, Some(map.read().clone()))
+        } else {
+            (args.len(), None)
+        }
+    } else {
+        (args.len(), None)
+    };
+    
     // Parse field names
     let field_names: Vec<CompactString> = match &args[1].payload {
         PyObjectPayload::Str(s) => {
-            // "x y" or "x, y" style
             s.replace(',', " ").split_whitespace()
                 .map(|s| CompactString::from(s))
                 .collect()
@@ -255,14 +265,37 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     };
     
+    // Parse defaults from kwargs
+    let defaults: Vec<PyObjectRef> = kwargs_dict.as_ref()
+        .and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("defaults"))))
+        .and_then(|d| d.to_list().ok())
+        .unwrap_or_default();
+    
     // Create a class with namespace containing field info
     let mut namespace = IndexMap::new();
-    // Store field names for __init__ and indexing
     let fields_tuple = PyObject::tuple(
         field_names.iter().map(|n| PyObject::str_val(n.clone())).collect()
     );
     namespace.insert(CompactString::from("_fields"), fields_tuple);
     namespace.insert(CompactString::from("__namedtuple__"), PyObject::bool_val(true));
+    
+    // Build _field_defaults from defaults (right-aligned to fields)
+    if !defaults.is_empty() {
+        let mut defaults_map = IndexMap::new();
+        let offset = field_names.len().saturating_sub(defaults.len());
+        for (i, val) in defaults.iter().enumerate() {
+            if let Some(name) = field_names.get(offset + i) {
+                defaults_map.insert(
+                    HashableKey::Str(name.clone()),
+                    val.clone(),
+                );
+            }
+        }
+        namespace.insert(
+            CompactString::from("_field_defaults"),
+            PyObject::dict(defaults_map),
+        );
+    }
     
     // Store field indices  
     for (i, name) in field_names.iter().enumerate() {

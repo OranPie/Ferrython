@@ -613,6 +613,7 @@ impl VirtualMachine {
                             } else { None }
                         });
                         let mut attrs = inst.attrs.write();
+                        let mut tuple_values = Vec::with_capacity(field_names.len());
                         for (i, field) in field_names.iter().enumerate() {
                             let name = field.py_to_string();
                             let value = if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
@@ -625,9 +626,10 @@ impl VirtualMachine {
                             } else {
                                 PyObject::none()
                             };
-                            attrs.insert(CompactString::from(name.as_str()), value);
+                            attrs.insert(CompactString::from(name.as_str()), value.clone());
+                            tuple_values.push(value);
                         }
-                        attrs.insert(CompactString::from("_tuple"), PyObject::tuple(pos_args.clone()));
+                        attrs.insert(CompactString::from("_tuple"), PyObject::tuple(tuple_values));
                     }
                 }
             }
