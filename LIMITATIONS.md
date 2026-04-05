@@ -126,16 +126,17 @@
 | C interop | `ctypes`, `cffi` |
 | OS / Low-level | `mmap`, `fcntl`, `select`, `resource` |
 | Compression | `gzip`, `bz2`, `lzma`, `zipfile`, `tarfile` |
-| Dev tools | `pdb`, `pydoc`, `tracemalloc`, `faulthandler` |
-| Introspection | `symtable`, `token`, `tokenize` |
+| Dev tools | `pdb` (pydoc ✅, tracemalloc ✅, faulthandler ✅) |
+| Introspection | `token` (symtable ✅, tokenize ✅) |
 
 ## 5. Performance
 
 | Benchmark | CPython 3.8 | Ferrython | Ratio |
 |-----------|------------|-----------|-------|
-| `fib(25)` | ~0.03 s | ~0.18 s | ~6× slower |
-| `fib(30)` | ~0.3 s | ~1.4 s | ~5× slower |
-| Function calls/s | — | 1.2M | — |
+| `fib(25)` | ~0.03 s | ~0.13 s | ~4× slower |
+| `fib(30)` | ~0.3 s | ~1.3 s | ~4× slower |
+| Function calls/s | — | 1.95M | — |
+| Arithmetic ops/s | — | 3.6M | — |
 
 | Optimization | Status |
 |-------------|--------|
@@ -146,13 +147,16 @@
 | Arc<CodeObject> sharing | ✅ |
 | Binary op fast paths | ✅ |
 | Method resolution cache | ✅ |
+| Inline CallFunction fast path | ✅ |
+| Frame vector pool (16 slots) | ✅ |
+| Global cache per frame | ✅ |
 | Bytecode caching (.pyc) | ❌ |
 
 ## 6. Architecture
 
 - **15 crates** in Cargo workspace
-- **106 stdlib modules** registered
-- **124 fixture tests** (all passing)
+- **135+ stdlib modules** registered
+- **124 fixture tests** + 12 unit tests (all passing)
 - **13 microbenchmarks** in benchmark suite
 
 | Issue | Status | Notes |

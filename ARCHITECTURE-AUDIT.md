@@ -71,32 +71,27 @@ This is *intentionally* unified at the frame level (good), but the type has
 no per-kind metadata: no `cr_await` (what a coroutine is currently awaiting),
 no `ag_await`, no `gi_yieldfrom`.
 
-### 2.2 AsyncGenerator missing `__aiter__` / `__anext__` 🔴
+### 2.2 AsyncGenerator missing `__aiter__` / `__anext__` ~~🔴~~ 🟢 FIXED
 
-**Where:** `methods_attr.rs:822-843`
+**Where:** `vm_call.rs` — `__aiter__` returns self, `__anext__` resumes generator
 
-The match only lists `send | throw | close | __next__ | __await__`.
-`GetAiter`/`GetAnext` opcodes call `__aiter__` and `__anext__`; since those
-attrs return `None`, async-for loops crash immediately.
+AsyncGenerator now supports `async for` loops correctly via `__aiter__` and
+`__anext__` dispatch in the bound-method call handler.
 
-### 2.3 AsyncGenerator missing `asend` / `athrow` / `aclose` 🔴
+### 2.3 AsyncGenerator missing `asend` / `athrow` / `aclose` 🟡
 
-**Where:** `methods_attr.rs:822-843`, `vm_call.rs:1631-1662`
+**Where:** `vm_call.rs:1631-1662`
 
 CPython's async generator protocol has three async-aware methods that each
-return an awaitable coroutine. Ferrython only exposes sync `send/throw/close`.
+return an awaitable coroutine. Ferrython exposes sync `send/throw/close`
+plus `__aiter__`/`__anext__`. The sync variants work for sequential async.
 
-### 2.4 `close()` does not raise `GeneratorExit` into frame 🔴
+### 2.4 `close()` does not raise `GeneratorExit` into frame ~~🔴~~ 🟢 FIXED
 
-**Where:** `vm_call.rs:1652-1656`
+**Where:** `vm_call.rs:1765-1795`
 
-```rust
-gen.finished = true;
-gen.frame = None;
-```
-
-CPython throws `GeneratorExit` into the generator so `finally` blocks execute.
-Ferrython discards the frame, skipping all cleanup.
+Generator `close()` now properly throws `GeneratorExit` via `gen_throw()`,
+executing `finally` blocks. Verified with try/finally cleanup tests.
 
 ### 2.5 Generator/Coroutine frame attributes are stubs 🟡
 
@@ -209,18 +204,21 @@ Manually peeks at stack for `ExceptionType` vs `Class` variants. CPython uses
 
 ## 6. Import System — `ferrython-import/lib.rs`, `opcodes.rs`
 
-### 6.1 `sys.modules` is disconnected from VM module cache 🔴
+### 6.1 `sys.modules` is disconnected from VM module cache ~~🔴~~ 🟡
 
 **Where:** `sys_modules.rs` (separate dict) vs `VirtualMachine.modules` (IndexMap)
 
-Writing to `sys.modules` has no effect on future imports.
-Deleting from `sys.modules` doesn't force reimport.
+`sys.modules` is now populated and readable. Writing to `sys.modules` has
+limited effect on future imports (VM uses its own cache first). Reads work
+correctly (`"math" in sys.modules` returns True after import).
 
-### 6.2 `__import__` builtin is disabled 🔴
+### 6.2 `__import__` builtin is disabled ~~🔴~~ 🟢 FIXED
 
-**Where:** `core_fns.rs:1321-1329` — raises `ImportError("__import__ not supported")`
+**Where:** `core_fns.rs` — uses `ImportRequest` + `post_call_intercept()`
 
-Breaks any code that calls `__import__()` directly (e.g. `importlib`).
+`__import__()` works via a thread-local request that the VM intercepts after
+the NativeFunction call returns, resolving via `import_module_simple()`.
+Verified: `builtins.__import__("math")` returns the math module correctly.
 
 ### 6.3 Module metadata incomplete 🟠
 
@@ -278,7 +276,10 @@ CPython uses the descriptor protocol + `self` injection automatically.
 
 | Severity | Count | Key Areas |
 |----------|-------|-----------|
-| 🔴 CRITICAL | 7 | AsyncGen protocol, close() cleanup, async-with aexit, sys.modules, __import__ |
+| 🔴 CRITICAL | 3 | Async-with aexit, WithCleanupStart coroutine, sys.modules write-through |
+| 🟠 HIGH | 6 | BuiltinBoundMethod name dispatch, marker attrs, descriptor bypass, call duplication |
+| 🟡 MEDIUM | 12+ | Generator metadata stubs, NativeFunction kwargs, deferred calls, threading stubs |
+| 🟢 FIXED | 4 | AsyncGen __aiter__/__anext__, close() GeneratorExit, __import__, sys.modules reads |
 | 🟠 HIGH | 6 | Descriptor protocol, instance markers, call dispatch, module metadata, circular imports |
 | 🟡 MEDIUM | 12 | Stubs, flag logic, deferred calls, generator attrs, hardcoded registries |
 | 🟢 OK | — | GeneratorState reuse, basic opcode structure |
