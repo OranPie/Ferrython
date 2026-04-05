@@ -219,7 +219,10 @@ impl VirtualMachine {
                 else { with_enum_fallback!(a, b, floor_div) }
             }
             Opcode::BinaryModulo | Opcode::InplaceModulo => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__mod__", Some("__rmod__"))? { r }
+                // str % val → Python printf-style formatting
+                if let PyObjectPayload::Str(fmt_str) = &a.payload {
+                    string_percent_format(fmt_str, &b)?
+                } else if let Some(r) = self.try_binary_dunder(&a, &b, "__mod__", Some("__rmod__"))? { r }
                 else { with_enum_fallback!(a, b, modulo) }
             }
             Opcode::BinaryPower | Opcode::InplacePower => {
@@ -566,4 +569,107 @@ impl VirtualMachine {
         }
         Ok(None)
     }
+}
+
+/// Python printf-style string formatting: "hello %s, %d items" % (name, count)
+fn string_percent_format(fmt: &str, args: &PyObjectRef) -> Result<PyObjectRef, PyException> {
+    let arg_list: Vec<PyObjectRef> = match &args.payload {
+        PyObjectPayload::Tuple(items) => items.clone(),
+        _ => vec![args.clone()],
+    };
+
+    let mut result = String::with_capacity(fmt.len() + 32);
+    let mut chars = fmt.chars().peekable();
+    let mut arg_idx = 0;
+
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            result.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some(&'%') => { chars.next(); result.push('%'); }
+            Some(_) => {
+                let mut flags = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c == '-' || c == '+' || c == '0' || c == ' ' || c == '#' {
+                        flags.push(c); chars.next();
+                    } else { break; }
+                }
+                let mut width = 0usize;
+                if let Some(&'*') = chars.peek() {
+                    chars.next();
+                    if arg_idx < arg_list.len() {
+                        width = arg_list[arg_idx].as_int().unwrap_or(0) as usize;
+                        arg_idx += 1;
+                    }
+                } else {
+                    while let Some(&c) = chars.peek() {
+                        if c.is_ascii_digit() { width = width * 10 + (c as usize - '0' as usize); chars.next(); }
+                        else { break; }
+                    }
+                }
+                let mut precision: Option<usize> = None;
+                if let Some(&'.') = chars.peek() {
+                    chars.next();
+                    let mut p = 0usize;
+                    while let Some(&c) = chars.peek() {
+                        if c.is_ascii_digit() { p = p * 10 + (c as usize - '0' as usize); chars.next(); }
+                        else { break; }
+                    }
+                    precision = Some(p);
+                }
+                let spec = chars.next().unwrap_or('s');
+                if arg_idx >= arg_list.len() {
+                    return Err(PyException::type_error("not enough arguments for format string"));
+                }
+                let arg = &arg_list[arg_idx];
+                arg_idx += 1;
+
+                let formatted = match spec {
+                    's' => arg.py_to_string(),
+                    'r' => arg.py_to_string(),
+                    'd' | 'i' => format!("{}", arg.as_int().unwrap_or(0)),
+                    'f' | 'F' => {
+                        let v = arg.to_float().unwrap_or(0.0);
+                        let p = precision.unwrap_or(6);
+                        format!("{:.prec$}", v, prec = p)
+                    }
+                    'e' | 'E' => {
+                        let v = arg.to_float().unwrap_or(0.0);
+                        let p = precision.unwrap_or(6);
+                        if spec == 'e' { format!("{:.prec$e}", v, prec = p) }
+                        else { format!("{:.prec$E}", v, prec = p) }
+                    }
+                    'g' | 'G' => format!("{}", arg.to_float().unwrap_or(0.0)),
+                    'x' => format!("{:x}", arg.as_int().unwrap_or(0)),
+                    'X' => format!("{:X}", arg.as_int().unwrap_or(0)),
+                    'o' => format!("{:o}", arg.as_int().unwrap_or(0)),
+                    'c' => {
+                        if let Some(n) = arg.as_int() {
+                            char::from_u32(n as u32).map(|c| c.to_string()).unwrap_or_default()
+                        } else {
+                            arg.py_to_string().chars().next().map(|c| c.to_string()).unwrap_or_default()
+                        }
+                    }
+                    _ => format!("%{}", spec),
+                };
+
+                if width > 0 && formatted.len() < width {
+                    if flags.contains('-') {
+                        result.push_str(&formatted);
+                        for _ in 0..(width - formatted.len()) { result.push(' '); }
+                    } else {
+                        let pad = if flags.contains('0') { '0' } else { ' ' };
+                        for _ in 0..(width - formatted.len()) { result.push(pad); }
+                        result.push_str(&formatted);
+                    }
+                } else {
+                    result.push_str(&formatted);
+                }
+            }
+            None => { result.push('%'); }
+        }
+    }
+    Ok(PyObject::str_val(CompactString::from(result)))
 }
