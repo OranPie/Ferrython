@@ -321,3 +321,24 @@ pub fn clear_thread_exc_info() {
 pub fn get_thread_exc_info() -> Option<(ExceptionKind, String, Vec<TracebackEntry>)> {
     THREAD_EXC_INFO.with(|c| c.borrow().clone())
 }
+
+// ── Pending VM method call (stdlib → VM callback) ──
+// Stdlib modules can't call Python functions directly (no VM access).
+// When a NativeClosure needs the VM to call a method, it stores the
+// request here and the VM executes it after the NativeClosure returns.
+
+thread_local! {
+    static PENDING_VM_CALL: RefCell<Option<(PyObjectRef, Vec<PyObjectRef>)>>
+        = RefCell::new(None);
+}
+
+/// Request the VM to call `func` with `args` after the current NativeClosure returns.
+/// The VM will replace the NativeClosure's return value with the call result.
+pub fn request_vm_call(func: PyObjectRef, args: Vec<PyObjectRef>) {
+    PENDING_VM_CALL.with(|c| *c.borrow_mut() = Some((func, args)));
+}
+
+/// Take the pending VM call request (called by the VM after NativeClosure dispatch).
+pub fn take_pending_vm_call() -> Option<(PyObjectRef, Vec<PyObjectRef>)> {
+    PENDING_VM_CALL.with(|c| c.borrow_mut().take())
+}

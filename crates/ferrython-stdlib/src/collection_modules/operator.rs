@@ -402,30 +402,37 @@ pub fn create_operator_module() -> PyObjectRef {
         ("length_hint", make_builtin(|args| {
             check_args_min("length_hint", args, 1)?;
             let default = if args.len() > 1 { args[1].to_int().unwrap_or(0) } else { 0 };
-            // Helper to call a method on the object
-            let try_call = |method: &PyObjectRef, obj: &PyObjectRef| -> Option<i64> {
-                let result = match &method.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => func(&[obj.clone()]).ok(),
-                    PyObjectPayload::NativeClosure { func, .. } => func(&[obj.clone()]).ok(),
-                    PyObjectPayload::BuiltinBoundMethod { .. } => {
-                        // BuiltinBoundMethod is dispatched by the VM; for length_hint
-                        // we just try py_len() below
-                        None
+            // Try to call a method natively; fall back to VM callback for Python funcs.
+            let try_dunder = |method: &PyObjectRef| -> Option<Result<i64, ()>> {
+                match &method.payload {
+                    PyObjectPayload::NativeFunction { func, .. } =>
+                        func(&[]).ok().and_then(|r| r.to_int().ok()).map(Ok),
+                    PyObjectPayload::NativeClosure { func, .. } =>
+                        func(&[]).ok().and_then(|r| r.to_int().ok()).map(Ok),
+                    PyObjectPayload::BoundMethod { receiver, method: m } => {
+                        match &m.payload {
+                            PyObjectPayload::NativeFunction { func, .. } =>
+                                func(&[receiver.clone()]).ok().and_then(|r| r.to_int().ok()).map(Ok),
+                            PyObjectPayload::NativeClosure { func, .. } =>
+                                func(&[receiver.clone()]).ok().and_then(|r| r.to_int().ok()).map(Ok),
+                            _ => Some(Err(())), // needs VM
+                        }
                     }
-                    _ => None,
-                };
-                result.and_then(|r: PyObjectRef| r.to_int().ok())
-            };
-            // Try __length_hint__ first
-            if let Some(method) = args[0].get_attr("__length_hint__") {
-                if let Some(n) = try_call(&method, &args[0]) {
-                    return Ok(PyObject::int(n));
+                    _ => Some(Err(())), // needs VM
                 }
-            }
-            // Try __len__
-            if let Some(method) = args[0].get_attr("__len__") {
-                if let Some(n) = try_call(&method, &args[0]) {
-                    return Ok(PyObject::int(n));
+            };
+            // Try __length_hint__ first, then __len__
+            for dunder in &["__length_hint__", "__len__"] {
+                if let Some(method) = args[0].get_attr(dunder) {
+                    match try_dunder(&method) {
+                        Some(Ok(n)) => return Ok(PyObject::int(n)),
+                        Some(Err(())) => {
+                            // Python function — request VM to call it
+                            ferrython_core::error::request_vm_call(method, vec![]);
+                            return Ok(PyObject::none());
+                        }
+                        None => {} // call failed, try next
+                    }
                 }
             }
             // Try len() directly

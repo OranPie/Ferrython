@@ -2021,10 +2021,21 @@ impl VirtualMachine {
                     resolved.extend_from_slice(&args[1..]);
                     return func(&resolved);
                 }
-                func(&args)
+                let result = func(&args)?;
+                // Check if native function requested a VM method call
+                if let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
+                    return self.call_object(method, margs);
+                }
+                Ok(result)
             }
             PyObjectPayload::NativeClosure { func, .. } => {
                 let result = func(&args)?;
+                // Check if stdlib requested a VM method call (e.g., operator.length_hint
+                // with a Python-defined __length_hint__). If so, call it and use that result.
+                if let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
+                    let vm_result = self.call_object(method, margs)?;
+                    return Ok(vm_result);
+                }
                 // Execute any deferred calls (e.g., Thread.start() calling Python functions)
                 let deferred = ferrython_stdlib::drain_deferred_calls();
                 for (dfunc, dargs) in deferred {

@@ -852,18 +852,17 @@ impl<'src> Lexer<'src> {
 
     fn emit_eof(&mut self) -> Result<Token, ParseError> {
         let span = self.span_here();
-        // Emit remaining DEDENT tokens
+        self.done = true;
+        // Push in reverse order (pending is LIFO stack).
+        // Desired drain order: [Newline?] [Dedent...] Eof
+        self.pending.push(Token::new(TokenKind::Eof, span));
         while self.indent_stack.len() > 1 {
             self.indent_stack.pop();
             self.pending.push(Token::new(TokenKind::Dedent, span));
         }
-        self.pending.push(Token::new(TokenKind::Eof, span));
-        self.done = true;
-        // Add a final NEWLINE if the file doesn't end with one
         if !self.at_line_start {
             self.pending.push(Token::new(TokenKind::Newline, span));
         }
-        // Return first pending token
         Ok(self.pending.pop().unwrap())
     }
 

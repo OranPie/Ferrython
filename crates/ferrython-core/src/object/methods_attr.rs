@@ -1499,6 +1499,17 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("code"))),
                 _ => None,
             }
+            PyObjectPayload::Cell(cell_ref) => match name {
+                "cell_contents" => {
+                    let guard = cell_ref.read();
+                    match guard.as_ref() {
+                        Some(v) => Some(v.clone()),
+                        None => None, // empty cell → raise ValueError in Python
+                    }
+                }
+                "__class__" => Some(PyObject::builtin_type(CompactString::from("cell"))),
+                _ => None,
+            }
             _ => None,
         }
 }
