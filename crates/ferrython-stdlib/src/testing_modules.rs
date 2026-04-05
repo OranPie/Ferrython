@@ -13,6 +13,27 @@ use std::sync::Arc;
 
 // ── logging module ──
 
+// Global root logger config — basicConfig modifies this once
+static ROOT_CONFIGURED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+static ROOT_LEVEL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(30); // WARNING
+static ROOT_FORMAT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn root_format() -> &'static str {
+    ROOT_FORMAT.get().map(|s| s.as_str()).unwrap_or("%(levelname)s:%(name)s:%(message)s")
+}
+
+fn format_log_message(fmt: &str, level_name: &str, name: &str, msg: &str) -> String {
+    fmt.replace("%(levelname)s", level_name)
+       .replace("%(name)s", name)
+       .replace("%(message)s", msg)
+       .replace("%(asctime)s", "")
+       .replace("%(lineno)d", "0")
+       .replace("%(filename)s", "")
+       .replace("%(funcName)s", "")
+       .replace("%(module)s", "")
+       .replace("%(pathname)s", "")
+}
+
 pub fn create_logging_module() -> PyObjectRef {
     // Logging levels
     let debug_level = PyObject::int(10);
@@ -192,23 +213,67 @@ pub fn create_logging_module() -> PyObjectRef {
         Ok(inst)
     });
 
-    // basicConfig(**kwargs) — configure root logger
+    // basicConfig(**kwargs) — configure root logger (once)
     let basic_config_fn = make_builtin(|args: &[PyObjectRef]| {
-        // Accept kwargs as last dict arg from VM
+        // Only configure once per CPython semantics
+        if ROOT_CONFIGURED.get().is_some() { return Ok(PyObject::none()); }
+        
         if let Some(last) = args.last() {
             if let PyObjectPayload::Dict(kw_map) = &last.payload {
                 let r = kw_map.read();
-                // Extract level if present
-                if let Some(_level) = r.get(&HashableKey::Str(CompactString::from("level"))) {
-                    // In a real impl, would set root logger level
+                if let Some(level) = r.get(&HashableKey::Str(CompactString::from("level"))) {
+                    if let Some(n) = level.as_int() {
+                        ROOT_LEVEL.store(n, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
-                // Extract format if present
-                if let Some(_format) = r.get(&HashableKey::Str(CompactString::from("format"))) {
-                    // Would set root logger format
+                if let Some(format) = r.get(&HashableKey::Str(CompactString::from("format"))) {
+                    let _ = ROOT_FORMAT.set(format.py_to_string().to_string());
                 }
             }
         }
+        let _ = ROOT_CONFIGURED.set(());
         Ok(PyObject::none())
+    });
+
+    // NullHandler — discards all log records
+    let null_handler_cls = PyObject::class(CompactString::from("NullHandler"), vec![], IndexMap::new());
+    let nh_cls = null_handler_cls.clone();
+    let null_handler_fn = PyObject::native_closure("NullHandler", move |_args: &[PyObjectRef]| {
+        let inst = PyObject::instance(nh_cls.clone());
+        if let PyObjectPayload::Instance(ref data) = inst.payload {
+            let mut attrs = data.attrs.write();
+            attrs.insert(CompactString::from("level"), PyObject::int(0));
+            attrs.insert(CompactString::from("emit"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("handle"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("setLevel"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("setFormatter"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("createLock"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("acquire"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("release"), make_builtin(|_| Ok(PyObject::none())));
+        }
+        Ok(inst)
+    });
+
+    // getLevelName
+    let get_level_name_fn = make_builtin(|args: &[PyObjectRef]| {
+        if let Some(v) = args.first().and_then(|a| a.as_int()) {
+            let name = match v {
+                10 => "DEBUG", 20 => "INFO", 30 => "WARNING",
+                40 => "ERROR", 50 => "CRITICAL", 0 => "NOTSET",
+                _ => return Ok(PyObject::str_val(CompactString::from(format!("Level {}", v)))),
+            };
+            Ok(PyObject::str_val(CompactString::from(name)))
+        } else if let Some(s) = args.first() {
+            let name = s.py_to_string();
+            let level = match name.as_ref() {
+                "DEBUG" => 10, "INFO" => 20, "WARNING" => 30,
+                "ERROR" => 40, "CRITICAL" => 50, "NOTSET" => 0,
+                _ => return Err(PyException::value_error(format!("Unknown level: '{}'", name))),
+            };
+            Ok(PyObject::int(level))
+        } else {
+            Ok(PyObject::none())
+        }
     });
 
     make_module("logging", vec![
@@ -220,6 +285,7 @@ pub fn create_logging_module() -> PyObjectRef {
         ("NOTSET", PyObject::int(0)),
         ("basicConfig", basic_config_fn),
         ("getLogger", make_builtin(logging_get_logger)),
+        ("getLevelName", get_level_name_fn),
         ("debug", make_builtin(|args| { logging_log(10, args) })),
         ("info", make_builtin(|args| { logging_log(20, args) })),
         ("warning", make_builtin(|args| { logging_log(30, args) })),
@@ -237,12 +303,16 @@ pub fn create_logging_module() -> PyObjectRef {
         ("FileHandler", file_handler_fn),
         ("Formatter", formatter_fn),
         ("Handler", handler_fn),
+        ("NullHandler", null_handler_fn),
         ("Logger", make_builtin(logging_get_logger)),
     ])
 }
 
 fn logging_log(level: i64, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Ok(PyObject::none()); }
+    // Respect root logger level from basicConfig
+    let root_level = ROOT_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
+    if root_level > 0 && level < root_level { return Ok(PyObject::none()); }
     let level_name = match level {
         10 => "DEBUG",
         20 => "INFO",
@@ -252,7 +322,8 @@ fn logging_log(level: i64, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         _ => "UNKNOWN",
     };
     let msg = args[0].py_to_string();
-    eprintln!("{}:root:{}", level_name, msg);
+    let formatted = format_log_message(root_format(), level_name, "root", &msg);
+    eprintln!("{}", formatted);
     Ok(PyObject::none())
 }
 

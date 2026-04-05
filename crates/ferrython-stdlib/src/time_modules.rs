@@ -30,8 +30,19 @@ pub fn create_time_module() -> PyObjectRef {
         })),
         ("process_time", make_builtin(time_monotonic)),
         ("strftime", make_builtin(time_strftime)),
+        ("strptime", make_builtin(time_strptime)),
         ("localtime", make_builtin(time_localtime)),
-        ("gmtime", make_builtin(time_localtime)),
+        ("gmtime", make_builtin(time_gmtime)),
+        ("mktime", make_builtin(time_mktime)),
+        ("ctime", make_builtin(time_ctime)),
+        ("asctime", make_builtin(time_asctime)),
+        ("timezone", PyObject::int(0)),
+        ("altzone", PyObject::int(0)),
+        ("daylight", PyObject::int(0)),
+        ("tzname", PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("UTC")),
+            PyObject::str_val(CompactString::from("UTC")),
+        ])),
     ])
 }
 
@@ -56,81 +67,347 @@ fn time_monotonic(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::float(start.elapsed().as_secs_f64()))
 }
 
-fn time_strftime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("strftime requires a format string")); }
-    let fmt = args[0].py_to_string();
-    // Simplified strftime — handle common format codes
-    use std::time::SystemTime;
-    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-    // Basic time decomposition (UTC)
-    let s = (secs % 60) as u32;
-    let m = ((secs / 60) % 60) as u32;
-    let h = ((secs / 3600) % 24) as u32;
-    let days = (secs / 86400) as i64;
-    // Days since epoch → year/month/day (simplified)
-    let mut y: i64 = 1970;
-    let mut remaining = days;
-    loop {
-        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-        if remaining < days_in_year { break; }
-        remaining -= days_in_year;
-        y += 1;
-    }
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut mon = 0usize;
-    for (i, &md) in month_days.iter().enumerate() {
-        if remaining < md as i64 { mon = i; break; }
-        remaining -= md as i64;
-    }
-    let day = remaining + 1;
-    let result = fmt
-        .replace("%Y", &format!("{:04}", y))
-        .replace("%m", &format!("{:02}", mon + 1))
-        .replace("%d", &format!("{:02}", day))
-        .replace("%H", &format!("{:02}", h))
-        .replace("%M", &format!("{:02}", m))
-        .replace("%S", &format!("{:02}", s))
-        .replace("%%", "%");
-    Ok(PyObject::str_val(CompactString::from(result)))
+// ── Shared time decomposition ──
+
+const MONTH_NAMES_ABBR: [&str; 12] = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const MONTH_NAMES_FULL: [&str; 12] = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const DAY_NAMES_ABBR: [&str; 7] = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const DAY_NAMES_FULL: [&str; 7] = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+
+fn is_leap_year(y: i64) -> bool { y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) }
+
+fn days_in_month(y: i64) -> [i64; 12] {
+    [31, if is_leap_year(y) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 }
 
-fn time_localtime(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // Return a basic time tuple (year, month, day, hour, minute, second, weekday, yearday, dst)
-    use std::time::SystemTime;
-    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-    let s = (secs % 60) as i64;
-    let m = ((secs / 60) % 60) as i64;
-    let h = ((secs / 3600) % 24) as i64;
-    let days = (secs / 86400) as i64;
+/// Decompose Unix timestamp into (year, month 1-12, day 1-31, hour, min, sec, wday 0=Mon, yday 1-366)
+fn decompose_timestamp(epoch_secs: u64) -> (i64, i64, i64, i64, i64, i64, i64, i64) {
+    let sec = (epoch_secs % 60) as i64;
+    let min = ((epoch_secs / 60) % 60) as i64;
+    let hour = ((epoch_secs / 3600) % 24) as i64;
+    let total_days = (epoch_secs / 86400) as i64;
     let mut y: i64 = 1970;
-    let mut remaining = days;
+    let mut remaining = total_days;
     loop {
-        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-        if remaining < days_in_year { break; }
-        remaining -= days_in_year;
+        let dy = if is_leap_year(y) { 366 } else { 365 };
+        if remaining < dy { break; }
+        remaining -= dy;
         y += 1;
     }
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let md = days_in_month(y);
     let mut mon = 1i64;
-    for &md in &month_days {
-        if remaining < md as i64 { break; }
-        remaining -= md as i64;
+    for &d in &md {
+        if remaining < d { break; }
+        remaining -= d;
         mon += 1;
     }
     let day = remaining + 1;
-    let wday = ((days + 3) % 7) as i64; // 0=Monday for time.struct_time
+    let wday = ((total_days + 3) % 7) as i64; // epoch was Thursday, 0=Monday
     let yday = {
         let mut yd = day;
-        for i in 0..(mon - 1) as usize { yd += month_days[i] as i64; }
+        for i in 0..(mon - 1) as usize { yd += md[i]; }
         yd
     };
-    Ok(PyObject::tuple(vec![
-        PyObject::int(y), PyObject::int(mon), PyObject::int(day),
-        PyObject::int(h), PyObject::int(m), PyObject::int(s),
-        PyObject::int(wday), PyObject::int(yday), PyObject::int(-1),
-    ]))
+    (y, mon, day, hour, min, sec, wday, yday)
+}
+
+fn make_struct_time(y: i64, mon: i64, day: i64, h: i64, m: i64, s: i64, wday: i64, yday: i64) -> PyObjectRef {
+    let cls = PyObject::class(CompactString::from("struct_time"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref data) = inst.payload {
+        let mut attrs = data.attrs.write();
+        attrs.insert(CompactString::from("tm_year"), PyObject::int(y));
+        attrs.insert(CompactString::from("tm_mon"), PyObject::int(mon));
+        attrs.insert(CompactString::from("tm_mday"), PyObject::int(day));
+        attrs.insert(CompactString::from("tm_hour"), PyObject::int(h));
+        attrs.insert(CompactString::from("tm_min"), PyObject::int(m));
+        attrs.insert(CompactString::from("tm_sec"), PyObject::int(s));
+        attrs.insert(CompactString::from("tm_wday"), PyObject::int(wday));
+        attrs.insert(CompactString::from("tm_yday"), PyObject::int(yday));
+        attrs.insert(CompactString::from("tm_isdst"), PyObject::int(-1));
+        // Also support indexing as tuple
+        let items = vec![
+            PyObject::int(y), PyObject::int(mon), PyObject::int(day),
+            PyObject::int(h), PyObject::int(m), PyObject::int(s),
+            PyObject::int(wday), PyObject::int(yday), PyObject::int(-1),
+        ];
+        attrs.insert(CompactString::from("__tuple__"), PyObject::tuple(items.clone()));
+        // __repr__
+        let repr = format!(
+            "time.struct_time(tm_year={}, tm_mon={}, tm_mday={}, tm_hour={}, tm_min={}, tm_sec={}, tm_wday={}, tm_yday={}, tm_isdst=-1)",
+            y, mon, day, h, m, s, wday, yday
+        );
+        attrs.insert(CompactString::from("__repr__"), PyObject::str_val(CompactString::from(repr)));
+        // __len__ and __getitem__ for tuple-like access
+        attrs.insert(CompactString::from("__len__"), make_builtin(|_| Ok(PyObject::int(9))));
+        let items_ref = PyObject::tuple(items);
+        attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+            "__getitem__", move |args: &[PyObjectRef]| {
+                if let Some(idx) = args.first().and_then(|a| a.as_int()) {
+                    if let PyObjectPayload::Tuple(t) = &items_ref.payload {
+                        let i = if idx < 0 { (t.len() as i64 + idx) as usize } else { idx as usize };
+                        return Ok(t.get(i).cloned().unwrap_or_else(PyObject::none));
+                    }
+                }
+                Ok(PyObject::none())
+            }
+        ));
+    }
+    inst
+}
+
+fn get_epoch_secs(args: &[PyObjectRef]) -> u64 {
+    if let Some(secs_arg) = args.first() {
+        if let Ok(f) = secs_arg.to_float() { return f as u64; }
+        if let Some(i) = secs_arg.as_int() { return i as u64; }
+    }
+    use std::time::SystemTime;
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// Format struct_time components using strftime format codes
+fn format_time(fmt: &str, y: i64, mon: i64, day: i64, h: i64, m: i64, s: i64, wday: i64, yday: i64) -> String {
+    let hour12 = if h == 0 { 12 } else if h > 12 { h - 12 } else { h };
+    let ampm = if h < 12 { "AM" } else { "PM" };
+    let mut result = String::with_capacity(fmt.len() * 2);
+    let mut chars = fmt.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            match chars.next() {
+                Some('Y') => result.push_str(&format!("{:04}", y)),
+                Some('m') => result.push_str(&format!("{:02}", mon)),
+                Some('d') => result.push_str(&format!("{:02}", day)),
+                Some('H') => result.push_str(&format!("{:02}", h)),
+                Some('M') => result.push_str(&format!("{:02}", m)),
+                Some('S') => result.push_str(&format!("{:02}", s)),
+                Some('I') => result.push_str(&format!("{:02}", hour12)),
+                Some('p') => result.push_str(ampm),
+                Some('a') => result.push_str(DAY_NAMES_ABBR[wday as usize % 7]),
+                Some('A') => result.push_str(DAY_NAMES_FULL[wday as usize % 7]),
+                Some('b') | Some('h') => result.push_str(MONTH_NAMES_ABBR[(mon - 1) as usize % 12]),
+                Some('B') => result.push_str(MONTH_NAMES_FULL[(mon - 1) as usize % 12]),
+                Some('j') => result.push_str(&format!("{:03}", yday)),
+                Some('w') => result.push_str(&format!("{}", (wday + 1) % 7)), // 0=Sunday
+                Some('u') => result.push_str(&format!("{}", if wday == 6 { 7 } else { wday + 1 })), // 1=Monday
+                Some('y') => result.push_str(&format!("{:02}", y % 100)),
+                Some('c') => {
+                    // Locale's date+time: "Mon Jan  1 00:00:00 2024"
+                    result.push_str(&format!("{} {} {:2} {:02}:{:02}:{:02} {:04}",
+                        DAY_NAMES_ABBR[wday as usize % 7], MONTH_NAMES_ABBR[(mon - 1) as usize % 12],
+                        day, h, m, s, y));
+                }
+                Some('x') => result.push_str(&format!("{:02}/{:02}/{:02}", mon, day, y % 100)),
+                Some('X') => result.push_str(&format!("{:02}:{:02}:{:02}", h, m, s)),
+                Some('Z') => result.push_str("UTC"),
+                Some('z') => result.push_str("+0000"),
+                Some('n') => result.push('\n'),
+                Some('t') => result.push('\t'),
+                Some('%') => result.push('%'),
+                Some(other) => { result.push('%'); result.push(other); }
+                None => result.push('%'),
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn time_strftime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("strftime requires a format string")); }
+    let fmt = args[0].py_to_string();
+    // Use struct_time arg if provided, otherwise current time
+    let (y, mon, day, h, m, s, wday, yday) = if args.len() >= 2 {
+        extract_struct_time(&args[1])?
+    } else {
+        let secs = get_epoch_secs(&[]);
+        decompose_timestamp(secs)
+    };
+    let result = format_time(&fmt, y, mon, day, h, m, s, wday, yday);
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+/// Extract (y, mon, day, h, m, s, wday, yday) from a struct_time or tuple
+fn extract_struct_time(obj: &PyObjectRef) -> PyResult<(i64, i64, i64, i64, i64, i64, i64, i64)> {
+    match &obj.payload {
+        PyObjectPayload::Tuple(t) if t.len() >= 9 => {
+            Ok((
+                t[0].as_int().unwrap_or(1970), t[1].as_int().unwrap_or(1),
+                t[2].as_int().unwrap_or(1), t[3].as_int().unwrap_or(0),
+                t[4].as_int().unwrap_or(0), t[5].as_int().unwrap_or(0),
+                t[6].as_int().unwrap_or(0), t[7].as_int().unwrap_or(1),
+            ))
+        }
+        PyObjectPayload::Instance(data) => {
+            let attrs = data.attrs.read();
+            if let Some(tup) = attrs.get("__tuple__") {
+                if let PyObjectPayload::Tuple(t) = &tup.payload {
+                    if t.len() >= 9 {
+                        return Ok((
+                            t[0].as_int().unwrap_or(1970), t[1].as_int().unwrap_or(1),
+                            t[2].as_int().unwrap_or(1), t[3].as_int().unwrap_or(0),
+                            t[4].as_int().unwrap_or(0), t[5].as_int().unwrap_or(0),
+                            t[6].as_int().unwrap_or(0), t[7].as_int().unwrap_or(1),
+                        ));
+                    }
+                }
+            }
+            // Try named attrs
+            let y = attrs.get("tm_year").and_then(|v| v.as_int()).unwrap_or(1970);
+            let mon = attrs.get("tm_mon").and_then(|v| v.as_int()).unwrap_or(1);
+            let day = attrs.get("tm_mday").and_then(|v| v.as_int()).unwrap_or(1);
+            let h = attrs.get("tm_hour").and_then(|v| v.as_int()).unwrap_or(0);
+            let m = attrs.get("tm_min").and_then(|v| v.as_int()).unwrap_or(0);
+            let s = attrs.get("tm_sec").and_then(|v| v.as_int()).unwrap_or(0);
+            let wday = attrs.get("tm_wday").and_then(|v| v.as_int()).unwrap_or(0);
+            let yday = attrs.get("tm_yday").and_then(|v| v.as_int()).unwrap_or(1);
+            Ok((y, mon, day, h, m, s, wday, yday))
+        }
+        _ => Err(PyException::type_error("expected struct_time or 9-tuple")),
+    }
+}
+
+fn time_strptime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("strptime() takes exactly 2 arguments"));
+    }
+    let date_str = args[0].py_to_string();
+    let fmt = args[1].py_to_string();
+
+    let mut y: i64 = 1900; let mut mon: i64 = 1; let mut day: i64 = 1;
+    let mut h: i64 = 0; let mut m: i64 = 0; let mut s: i64 = 0;
+
+    // Parse format string and extract values from date_str
+    let mut fi = fmt.chars().peekable();
+    let mut di = date_str.chars().peekable();
+
+    while let Some(fc) = fi.next() {
+        if fc == '%' {
+            match fi.next() {
+                Some('Y') => { y = parse_digits(&mut di, 4)?; }
+                Some('y') => {
+                    let v = parse_digits(&mut di, 2)?;
+                    y = if v >= 69 { 1900 + v } else { 2000 + v };
+                }
+                Some('m') => { mon = parse_digits(&mut di, 2)?; }
+                Some('d') => { day = parse_digits(&mut di, 2)?; }
+                Some('H') => { h = parse_digits(&mut di, 2)?; }
+                Some('I') => { h = parse_digits(&mut di, 2)?; }
+                Some('M') => { m = parse_digits(&mut di, 2)?; }
+                Some('S') => { s = parse_digits(&mut di, 2)?; }
+                Some('p') => {
+                    // AM/PM
+                    let a: String = (&mut di).take(2).collect();
+                    if a.eq_ignore_ascii_case("PM") && h < 12 { h += 12; }
+                    else if a.eq_ignore_ascii_case("AM") && h == 12 { h = 0; }
+                }
+                Some('j') => { let _ = parse_digits(&mut di, 3)?; } // yday - skip
+                Some('b') | Some('B') => {
+                    // Month name - consume letters
+                    let name: String = (&mut di).take_while(|c| c.is_alphabetic()).collect();
+                    let lower = name.to_lowercase();
+                    for (i, &abbr) in MONTH_NAMES_ABBR.iter().enumerate() {
+                        if lower == abbr.to_lowercase() || lower == MONTH_NAMES_FULL[i].to_lowercase() {
+                            mon = i as i64 + 1;
+                            break;
+                        }
+                    }
+                }
+                Some('a') | Some('A') => {
+                    // Day name - consume and ignore
+                    let _: String = (&mut di).take_while(|c| c.is_alphabetic()).collect();
+                }
+                Some('%') => { di.next(); }
+                Some(_) => {}
+                None => {}
+            }
+        } else {
+            di.next(); // consume matching literal
+        }
+    }
+
+    // Compute wday and yday
+    let md = days_in_month(y);
+    let yday = {
+        let mut yd = day;
+        for i in 0..(mon - 1) as usize { if i < 12 { yd += md[i]; } }
+        yd
+    };
+    // Compute day of week using Tomohiko Sakamoto's algorithm
+    let wday = {
+        let t = [0i64, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+        let yy = if mon < 3 { y - 1 } else { y };
+        let w = (yy + yy/4 - yy/100 + yy/400 + t[(mon - 1) as usize] + day) % 7;
+        (w + 6) % 7 // convert Sunday=0 to Monday=0
+    };
+
+    Ok(make_struct_time(y, mon, day, h, m, s, wday, yday))
+}
+
+fn parse_digits(chars: &mut std::iter::Peekable<std::str::Chars>, max: usize) -> PyResult<i64> {
+    let mut s = String::new();
+    // skip leading whitespace
+    while chars.peek().map_or(false, |c| *c == ' ') { chars.next(); }
+    for _ in 0..max {
+        match chars.peek() {
+            Some(c) if c.is_ascii_digit() => s.push(chars.next().unwrap()),
+            _ => break,
+        }
+    }
+    if s.is_empty() { return Ok(0); }
+    s.parse::<i64>().map_err(|_| PyException::value_error("time data does not match format"))
+}
+
+fn time_localtime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let secs = get_epoch_secs(args);
+    let (y, mon, day, h, m, s, wday, yday) = decompose_timestamp(secs);
+    Ok(make_struct_time(y, mon, day, h, m, s, wday, yday))
+}
+
+fn time_gmtime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let secs = get_epoch_secs(args);
+    let (y, mon, day, h, m, s, wday, yday) = decompose_timestamp(secs);
+    Ok(make_struct_time(y, mon, day, h, m, s, wday, yday))
+}
+
+fn time_mktime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("mktime() requires a struct_time argument"));
+    }
+    let (y, mon, day, h, m, s, _wday, _yday) = extract_struct_time(&args[0])?;
+    // Convert to epoch seconds
+    let mut total_days: i64 = 0;
+    for yr in 1970..y { total_days += if is_leap_year(yr) { 366 } else { 365 }; }
+    if y < 1970 {
+        for yr in y..1970 { total_days -= if is_leap_year(yr) { 366 } else { 365 }; }
+    }
+    let md = days_in_month(y);
+    for i in 0..(mon - 1) as usize { if i < 12 { total_days += md[i]; } }
+    total_days += day - 1;
+    let epoch = total_days * 86400 + h * 3600 + m * 60 + s;
+    Ok(PyObject::float(epoch as f64))
+}
+
+fn time_ctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let secs = get_epoch_secs(args);
+    let (y, mon, day, h, m, s, wday, _yday) = decompose_timestamp(secs);
+    let result = format!("{} {} {:2} {:02}:{:02}:{:02} {:04}",
+        DAY_NAMES_ABBR[wday as usize % 7], MONTH_NAMES_ABBR[(mon - 1) as usize % 12],
+        day, h, m, s, y);
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn time_asctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let (y, mon, day, h, m, s, wday, _yday) = if args.is_empty() {
+        let secs = get_epoch_secs(&[]);
+        decompose_timestamp(secs)
+    } else {
+        extract_struct_time(&args[0])?
+    };
+    let result = format!("{} {} {:2} {:02}:{:02}:{:02} {:04}",
+        DAY_NAMES_ABBR[wday as usize % 7], MONTH_NAMES_ABBR[(mon - 1) as usize % 12],
+        day, h, m, s, y);
+    Ok(PyObject::str_val(CompactString::from(result)))
 }
 
 // ── random module (basic) ──
