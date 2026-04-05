@@ -23,6 +23,7 @@ mod network_modules;
 pub mod xml_modules;
 pub mod db_modules;
 mod email_modules;
+mod compression_modules;
 
 use ferrython_core::object::PyObjectRef;
 
@@ -80,7 +81,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "tempfile" => Some(fs_modules::create_tempfile_module()),
         "io" => Some(fs_modules::create_io_module()),
         "subprocess" => Some(fs_modules::create_subprocess_module()),
-        "gzip" => Some(fs_modules::create_gzip_module()),
+        "gzip" => Some(compression_modules::create_gzip_module()),
         "zlib" => Some(fs_modules::create_zlib_module()),
         // Time & datetime
         "time" => Some(time_modules::create_time_module()),
@@ -151,7 +152,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "email.mime.base" => Some(email_modules::create_email_mime_base_module()),
         "email.utils" => Some(email_modules::create_email_utils_module()),
         // Zip
-        "zipfile" => Some(fs_modules::create_zipfile_module()),
+        "zipfile" => Some(compression_modules::create_zipfile_module()),
         // Internal C-extension aliases
         "_collections_abc" => Some(type_modules::create_collections_abc_module()),
         "_functools" => Some(collection_modules::create_functools_module()),
