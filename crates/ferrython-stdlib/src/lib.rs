@@ -193,6 +193,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "pdb" => Some(testing_modules::create_pdb_module()),
         "profile" => Some(testing_modules::create_profile_module()),
         "cProfile" => Some(testing_modules::create_cprofile_module()),
+        "timeit" => Some(testing_modules::create_timeit_module()),
         // Persistence
         "shelve" => Some(serial_modules::create_shelve_module()),
         _ => None,

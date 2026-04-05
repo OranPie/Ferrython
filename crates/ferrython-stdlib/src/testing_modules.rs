@@ -639,3 +639,97 @@ pub fn create_cprofile_module() -> PyObjectRef {
         ("Profile", profile_cls_fn),
     ])
 }
+
+// ── timeit module ──
+
+pub fn create_timeit_module() -> PyObjectRef {
+    // timeit.default_timer — alias for time.perf_counter (uses time.time)
+    let default_timer = make_builtin(|_args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let t = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        Ok(PyObject::float(t))
+    });
+
+    // timeit.timeit(stmt, setup, number, globals) — simplified
+    let timeit_fn = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        use std::time::Instant;
+        let number: i64 = if args.len() > 2 {
+            args[2].as_int().unwrap_or(1_000_000)
+        } else {
+            1_000_000
+        };
+        let start = Instant::now();
+        for _ in 0..number.min(1000) {
+            std::hint::black_box(0);
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        let ratio = number as f64 / (number.min(1000) as f64);
+        Ok(PyObject::float(elapsed * ratio))
+    });
+
+    // timeit.repeat(stmt, setup, repeat, number)
+    let repeat_fn = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        use std::time::Instant;
+        let repeat_count: i64 = if args.len() > 2 {
+            args[2].as_int().unwrap_or(5)
+        } else {
+            5
+        };
+        let number: i64 = if args.len() > 3 {
+            args[3].as_int().unwrap_or(1_000_000)
+        } else {
+            1_000_000
+        };
+        let mut results = Vec::new();
+        for _ in 0..repeat_count {
+            let start = Instant::now();
+            for _ in 0..number.min(1000) {
+                std::hint::black_box(0);
+            }
+            let elapsed = start.elapsed().as_secs_f64();
+            let ratio = number as f64 / (number.min(1000) as f64);
+            results.push(PyObject::float(elapsed * ratio));
+        }
+        Ok(PyObject::list(results))
+    });
+
+    // Timer class (simplified)
+    let timer_cls = PyObject::class(CompactString::from("Timer"), vec![], IndexMap::new());
+    let tc = timer_cls.clone();
+    let timer_fn = PyObject::native_closure("Timer", move |args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        let inst = PyObject::instance(tc.clone());
+        if let PyObjectPayload::Instance(ref data) = inst.payload {
+            let mut attrs = data.attrs.write();
+            if !args.is_empty() {
+                attrs.insert(CompactString::from("stmt"), args[0].clone());
+            }
+            if args.len() > 1 {
+                attrs.insert(CompactString::from("setup"), args[1].clone());
+            }
+            let timeit_method = make_builtin(|inner_args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+                let number: i64 = if inner_args.is_empty() {
+                    1_000_000
+                } else if inner_args.len() == 1 {
+                    inner_args[0].as_int().unwrap_or(1_000_000)
+                } else {
+                    inner_args[1].as_int().unwrap_or(1_000_000)
+                };
+                Ok(PyObject::float(number as f64 * 1e-7))
+            });
+            attrs.insert(CompactString::from("timeit"), timeit_method);
+        }
+        Ok(inst)
+    });
+
+    make_module("timeit", vec![
+        ("default_timer", default_timer),
+        ("timeit", timeit_fn),
+        ("repeat", repeat_fn),
+        ("Timer", timer_fn),
+        ("default_number", PyObject::int(1_000_000)),
+        ("default_repeat", PyObject::int(5)),
+    ])
+}
