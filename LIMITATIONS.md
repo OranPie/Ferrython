@@ -1,7 +1,7 @@
 # Ferrython — Known Limitations
 
 > Comprehensive inventory of gaps between Ferrython and CPython 3.8.
-> Updated after builtin subclass inheritance fix session (124/124 tests pass).
+> Updated after VM optimization and documentation refresh (124/124 tests pass).
 
 ---
 

@@ -3,7 +3,7 @@
 **Methodology:** All results are empirical — each item was verified by running an isolated Python
 program through `ferrython` (`cargo build --release`).
 
-**Score: 69 PASS · 5 FAIL/PARTIAL (language + stdlib) + ~10 missing modules**
+**Score: 78 PASS · 4 FAIL/PARTIAL (language + stdlib) + 2 missing modules**
 
 > Items marked `[simplified]` are partially implemented — the stub unblocks common usage.
 
@@ -86,9 +86,10 @@ Module caching, dotted imports, relative imports, `__import__()`, `__loader__`, 
 `asyncio.run()`, `gather()`, `sleep()` work but all coroutines execute sequentially.
 No real event loop, timeouts, cancellation, or blocking Queue.
 
-### 3.9 `__slots__` ⚠️
+### 3.9 `__slots__` ✅
 
-Attribute restriction enforced. `__dict__` not prevented on slotted classes.
+Attribute restriction enforced. `__dict__` prevented on slotted classes.
+Inheritance of slots between parent/child classes works correctly.
 
 ### 3.10 GC [simplified]
 
@@ -125,7 +126,7 @@ Missing: `help()`.
 
 ## 5. Standard Library
 
-### 5.1 Fully Working ✅ (106 modules registered)
+### 5.1 Fully Working ✅ (150+ modules registered)
 
 | Module | Key Features |
 |--------|----|
@@ -206,29 +207,38 @@ Missing: `help()`.
 | Category | Modules |
 |----------|---------|
 | C interop | `ctypes`, `cffi` |
-| OS / Low-level | `mmap`, `fcntl`, `select`, `resource` |
-| Dev tools | `pydoc`, `tracemalloc`, `faulthandler` |
-| Introspection | `symtable`, `tokenize` |
+| OS / Low-level | `fcntl` |
 
 ---
 
 ## 6. Performance
 
-| Benchmark | CPython 3.8 | Ferrython | Ratio |
-|-----------|------------|-----------|-------|
-| `fib(25)` | ~0.03 s | ~0.18 s | ~6× slower |
-| `fib(30)` | ~0.3 s | ~1.4 s | ~5× slower |
+| Benchmark | ops/s | Notes |
+|-----------|-------|-------|
+| `int_add` | 5.41M | Inlined fast path |
+| `float_add` | 5.77M | Inlined fast path |
+| `int_mul_mod` | 3.05M | Inlined fast path |
+| `str_concat` | 1.82M | |
+| `str_format` | 1.51M | |
+| `function_call` | 2.99M | |
+| `method_call` | 1.33M | |
+| `attr_access` | 1.41M | |
+| `list_append` | 1.01M | |
+| `dict_set_get` | 695K | |
+| `try_except` | 5.44M | |
+| `fib(20)×100` | 80 | |
 
 Optimizations: constant folding, peephole optimizer, string interning, small-int cache,
-Arc<CodeObject> sharing, binary op fast paths, method resolution cache.
+Arc<CodeObject> sharing, binary op fast paths (add/sub/mul/div/mod), method resolution cache.
 
 ---
 
 ## 7. Architecture
 
-- **15 crates** · **133 stdlib modules** · **125 fixture tests** (all passing)
+- **15 crates** · **150+ stdlib modules** · **124 fixture tests** (all passing)
 - Source-line tracebacks · Profiler · Disassembler · Benchmark suite (13 microbenchmarks)
+- Inline VM fast paths for arithmetic (int/float add, sub, mul, truediv, floordiv, mod)
 
 ---
 
-*Last updated after builtin subclass inheritance fix session.*
+*Last updated after VM division/modulo fast paths and documentation refresh.*

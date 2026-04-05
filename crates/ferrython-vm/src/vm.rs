@@ -332,6 +332,90 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
+                // Inline BinaryModulo int fast path (hot in fib, loops)
+                Opcode::BinaryModulo | Opcode::InplaceModulo => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let a = &frame.stack[len - 2];
+                        let b = &frame.stack[len - 1];
+                        match (&a.payload, &b.payload) {
+                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
+                                // Python modulo: result has same sign as divisor
+                                let r = ((*x % *y) + *y) % *y;
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::int(r));
+                                Ok(None)
+                            }
+                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
+                                let r = *x % *y;
+                                // Python modulo for floats: adjust sign
+                                let r = if r != 0.0 && (r < 0.0) != (*y < 0.0) { r + *y } else { r };
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::float(r));
+                                Ok(None)
+                            }
+                            _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline BinaryTrueDivide fast path
+                Opcode::BinaryTrueDivide | Opcode::InplaceTrueDivide => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let a = &frame.stack[len - 2];
+                        let b = &frame.stack[len - 1];
+                        match (&a.payload, &b.payload) {
+                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
+                                let r = *x as f64 / *y as f64;
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::float(r));
+                                Ok(None)
+                            }
+                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
+                                let r = *x / *y;
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::float(r));
+                                Ok(None)
+                            }
+                            _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline BinaryFloorDivide fast path
+                Opcode::BinaryFloorDivide | Opcode::InplaceFloorDivide => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let a = &frame.stack[len - 2];
+                        let b = &frame.stack[len - 1];
+                        match (&a.payload, &b.payload) {
+                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
+                                // Python floor division: rounds towards negative infinity
+                                let r = x.div_euclid(*y);
+                                let r = if (*x ^ *y) < 0 && *x % *y != 0 {
+                                    r - 1
+                                } else {
+                                    r
+                                };
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::int(r));
+                                Ok(None)
+                            }
+                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
+                                let r = (*x / *y).floor();
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::float(r));
+                                Ok(None)
+                            }
+                            _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
                 // Inline LoadDeref (closure variable load — common in functional code)
                 Opcode::LoadDeref => {
                     let idx = instr.arg as usize;
