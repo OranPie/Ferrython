@@ -973,25 +973,61 @@ fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::value_error("empty command"));
     }
 
-    // Parse kwargs (last arg may be dict from VM kwarg passing)
     let mut text_mode = false;
-    let mut _capture = false;
+    let mut capture = false;
     let mut cwd: Option<String> = None;
     let mut shell = false;
+    let mut check = false;
+    let mut input_data: Option<Vec<u8>> = None;
+    let mut env_vars: Option<Vec<(String, String)>> = None;
+    let mut timeout_secs: Option<f64> = None;
+
     for arg in &args[1..] {
         if let PyObjectPayload::Dict(kw_map) = &arg.payload {
             let r = kw_map.read();
             if let Some(v) = r.get(&HashableKey::Str(CompactString::from("text"))) {
                 text_mode = v.is_truthy();
             }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("universal_newlines"))) {
+                text_mode = text_mode || v.is_truthy();
+            }
             if let Some(v) = r.get(&HashableKey::Str(CompactString::from("capture_output"))) {
-                _capture = v.is_truthy();
+                capture = v.is_truthy();
             }
             if let Some(v) = r.get(&HashableKey::Str(CompactString::from("cwd"))) {
                 cwd = Some(v.py_to_string());
             }
             if let Some(v) = r.get(&HashableKey::Str(CompactString::from("shell"))) {
                 shell = v.is_truthy();
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("check"))) {
+                check = v.is_truthy();
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("input"))) {
+                match &v.payload {
+                    PyObjectPayload::Bytes(b) => input_data = Some(b.clone()),
+                    PyObjectPayload::Str(s) => input_data = Some(s.as_bytes().to_vec()),
+                    _ if !matches!(v.payload, PyObjectPayload::None) => input_data = Some(v.py_to_string().into_bytes()),
+                    _ => {}
+                }
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("timeout"))) {
+                if let Ok(t) = v.to_float() { timeout_secs = Some(t); }
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("env"))) {
+                if let PyObjectPayload::Dict(env_map) = &v.payload {
+                    let er = env_map.read();
+                    let mut pairs = Vec::new();
+                    for (k, val) in er.iter() {
+                        let key_str = match k {
+                            HashableKey::Str(s) => s.to_string(),
+                            HashableKey::Int(i) => i.to_string(),
+                            _ => continue,
+                        };
+                        pairs.push((key_str, val.py_to_string()));
+                    }
+                    env_vars = Some(pairs);
+                }
             }
         }
     }
@@ -1006,35 +1042,119 @@ fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         c
     };
 
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
+    if let Some(dir) = cwd { cmd.current_dir(dir); }
+    if let Some(pairs) = env_vars {
+        cmd.env_clear();
+        for (k, v) in pairs { cmd.env(k, v); }
     }
 
+    // If input is provided, pipe stdin
+    if input_data.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
+    if capture {
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+    }
+
+    if let Some(data) = input_data {
+        let mut child = cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| PyException::runtime_error(format!("subprocess error: {}", e)))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(&data);
+        }
+        if let Some(t) = timeout_secs {
+            // Poll-based timeout: try_wait in a loop
+            let dur = std::time::Duration::from_secs_f64(t);
+            let start = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_status)) => {
+                        let out = child.wait_with_output()
+                            .map_err(|e| PyException::runtime_error(format!("subprocess error: {}", e)))?;
+                        return build_completed_process(out.status.code().unwrap_or(-1), out.stdout, out.stderr, text_mode, check);
+                    }
+                    Ok(None) => {
+                        if start.elapsed() >= dur {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(PyException::runtime_error("subprocess.TimeoutExpired"));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(e) => return Err(PyException::runtime_error(format!("subprocess error: {}", e))),
+                }
+            }
+        }
+        let out = child.wait_with_output()
+            .map_err(|e| PyException::runtime_error(format!("subprocess error: {}", e)))?;
+        return build_completed_process(out.status.code().unwrap_or(-1), out.stdout, out.stderr, text_mode, check);
+    }
+
+    // Handle timeout for non-input case
+    if let Some(t) = timeout_secs {
+        cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn()
+            .map_err(|e| PyException::runtime_error(format!("subprocess error: {}", e)))?;
+        let dur = std::time::Duration::from_secs_f64(t);
+        let start = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    let out = child.wait_with_output()
+                        .map_err(|e| PyException::runtime_error(format!("subprocess error: {}", e)))?;
+                    return build_completed_process(out.status.code().unwrap_or(-1), out.stdout, out.stderr, text_mode, check);
+                }
+                Ok(None) => {
+                    if start.elapsed() >= dur {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(PyException::runtime_error("subprocess.TimeoutExpired"));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => return Err(PyException::runtime_error(format!("subprocess error: {}", e))),
+            }
+        }
+    }
+
+    // No stdin input, no timeout — simple output capture
     let output = cmd.output();
     match output {
-        Ok(out) => {
-            let mut ns = IndexMap::new();
-            ns.insert(CompactString::from("returncode"), PyObject::int(out.status.code().unwrap_or(-1) as i64));
-            // If text=True, decode stdout/stderr as UTF-8 strings
-            if text_mode {
-                ns.insert(CompactString::from("stdout"),
-                    PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stdout).as_ref())));
-                ns.insert(CompactString::from("stderr"),
-                    PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stderr).as_ref())));
-            } else {
-                ns.insert(CompactString::from("stdout"), PyObject::bytes(out.stdout));
-                ns.insert(CompactString::from("stderr"), PyObject::bytes(out.stderr));
-            }
-            let cls = PyObject::class(CompactString::from("CompletedProcess"), vec![], IndexMap::new());
-            let inst = PyObject::instance(cls);
-            if let PyObjectPayload::Instance(inst_data) = &inst.payload {
-                let mut attrs = inst_data.attrs.write();
-                for (k, v) in ns { attrs.insert(k, v); }
-            }
-            Ok(inst)
-        }
+        Ok(out) => build_completed_process(out.status.code().unwrap_or(-1), out.stdout, out.stderr, text_mode, check),
         Err(e) => Err(PyException::runtime_error(format!("subprocess error: {}", e))),
     }
+}
+
+fn build_completed_process(
+    returncode: i32, stdout: Vec<u8>, stderr: Vec<u8>, text_mode: bool, check: bool,
+) -> PyResult<PyObjectRef> {
+    if check && returncode != 0 {
+        return Err(PyException::runtime_error(
+            format!("Command returned non-zero exit status {}", returncode)
+        ));
+    }
+    let mut ns = IndexMap::new();
+    ns.insert(CompactString::from("returncode"), PyObject::int(returncode as i64));
+    if text_mode {
+        ns.insert(CompactString::from("stdout"),
+            PyObject::str_val(CompactString::from(String::from_utf8_lossy(&stdout).as_ref())));
+        ns.insert(CompactString::from("stderr"),
+            PyObject::str_val(CompactString::from(String::from_utf8_lossy(&stderr).as_ref())));
+    } else {
+        ns.insert(CompactString::from("stdout"), PyObject::bytes(stdout));
+        ns.insert(CompactString::from("stderr"), PyObject::bytes(stderr));
+    }
+    let cls = PyObject::class(CompactString::from("CompletedProcess"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        for (k, v) in ns { attrs.insert(k, v); }
+    }
+    Ok(inst)
 }
 
 fn subprocess_call(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
