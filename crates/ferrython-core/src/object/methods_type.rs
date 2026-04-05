@@ -79,6 +79,17 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
             PyObjectPayload::FrozenSet(m) => !m.is_empty(),
             PyObjectPayload::Dict(m) => !m.read().is_empty(),
             PyObjectPayload::DictKeys(m) | PyObjectPayload::DictValues(m) | PyObjectPayload::DictItems(m) => !m.read().is_empty(),
+            PyObjectPayload::Instance(inst) => {
+                // Builtin base type subclass: delegate truthiness to __builtin_value__
+                if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    return bv.is_truthy();
+                }
+                // Dict subclass: delegate to dict_storage
+                if let Some(ref ds) = inst.dict_storage {
+                    return !ds.read().is_empty();
+                }
+                true
+            }
             _ => true,
         }
 }
@@ -158,6 +169,10 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             PyObjectPayload::Code(c) => format!("<code object {}>", c.name),
             PyObjectPayload::Class(cd) => format!("<class '{}'>", cd.name),
             PyObjectPayload::Instance(inst) => {
+                // Builtin base type subclass: delegate to __builtin_value__
+                if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    return bv.py_to_string();
+                }
                 // Dict subclass: display like a dict
                 if let Some(ref ds) = inst.dict_storage {
                     return format_dict(&ds.read());
@@ -368,6 +383,10 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                 }
             }
             PyObjectPayload::Instance(inst) => {
+                // Builtin base type subclass: delegate to __builtin_value__
+                if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    return bv.repr();
+                }
                 // Dict subclass: repr like a dict
                 if let Some(ref ds) = inst.dict_storage {
                     let items: Vec<String> = ds.read().iter()

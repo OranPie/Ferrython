@@ -30,89 +30,113 @@ pub fn drain_deferred_calls() -> Vec<(PyObjectRef, Vec<PyObjectRef>)> {
 
 
 pub fn create_threading_module() -> PyObjectRef {
-    // Thread class constructor — accepts target=, args=, kwargs=, daemon=
-    let thread_cls = PyObject::class(CompactString::from("Thread"), vec![], IndexMap::new());
-    let tc = thread_cls.clone();
-    let thread_fn = PyObject::native_closure("Thread", move |args: &[PyObjectRef]| {
-        let inst = PyObject::instance(tc.clone());
-        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
-            let mut attrs = inst_data.attrs.write();
-            // Parse kwargs — VM passes kwargs dict as last arg
+    // Build Thread as a proper Class so subclasses inherit methods via MRO.
+    let mut thread_ns = IndexMap::new();
+
+    // __init__(self, *, target=None, args=(), daemon=False, name="Thread")
+    thread_ns.insert(CompactString::from("__init__"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        let self_obj = &args[0];
+        if let PyObjectPayload::Instance(ref inst) = self_obj.payload {
+            let mut attrs = inst.attrs.write();
             let mut target = PyObject::none();
             let mut thread_args = PyObject::tuple(vec![]);
             let mut daemon = PyObject::bool_val(false);
             let mut name = PyObject::str_val(CompactString::from("Thread"));
-            // Check for kwargs dict as last argument
+            // kwargs dict is last arg
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(kw_map) = &last.payload {
                     let r = kw_map.read();
-                    if let Some(t) = r.get(&HashableKey::Str(CompactString::from("target"))) {
-                        target = t.clone();
-                    }
-                    if let Some(a) = r.get(&HashableKey::Str(CompactString::from("args"))) {
-                        thread_args = a.clone();
-                    }
-                    if let Some(d) = r.get(&HashableKey::Str(CompactString::from("daemon"))) {
-                        daemon = d.clone();
-                    }
-                    if let Some(n) = r.get(&HashableKey::Str(CompactString::from("name"))) {
-                        name = n.clone();
-                    }
+                    if let Some(t) = r.get(&HashableKey::Str(CompactString::from("target"))) { target = t.clone(); }
+                    if let Some(a) = r.get(&HashableKey::Str(CompactString::from("args"))) { thread_args = a.clone(); }
+                    if let Some(d) = r.get(&HashableKey::Str(CompactString::from("daemon"))) { daemon = d.clone(); }
+                    if let Some(n) = r.get(&HashableKey::Str(CompactString::from("name"))) { name = n.clone(); }
                 }
             }
-            attrs.insert(CompactString::from("name"), name.clone());
+            attrs.insert(CompactString::from("_target"), target);
+            attrs.insert(CompactString::from("_args"), thread_args);
+            attrs.insert(CompactString::from("name"), name);
             attrs.insert(CompactString::from("daemon"), daemon);
-
-            // Shared state for thread lifecycle
-            let alive = Arc::new(RwLock::new(false));
-            let started = Arc::new(RwLock::new(false));
-
-            // start() — call target(*args) synchronously (single-threaded interpreter)
-            let tgt = target.clone();
-            let targs = thread_args.clone();
-            let a1 = alive.clone();
-            let s1 = started.clone();
-            attrs.insert(CompactString::from("start"), PyObject::native_closure(
-                "start", move |_: &[PyObjectRef]| {
-                    *s1.write() = true;
-                    *a1.write() = true;
-                    if !matches!(&tgt.payload, PyObjectPayload::None) {
-                        let call_args: Vec<PyObjectRef> = match &targs.payload {
-                            PyObjectPayload::Tuple(items) => items.clone(),
-                            PyObjectPayload::List(items) => items.read().clone(),
-                            _ => vec![],
-                        };
-                        match &tgt.payload {
-                            PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&call_args); }
-                            PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&call_args); }
-                            _ => {
-                                // Python function — defer to VM via thread-local
-                                push_deferred_call(tgt.clone(), call_args);
-                            }
-                        }
-                    }
-                    *a1.write() = false;
-                    Ok(PyObject::none())
-                }
-            ));
-            attrs.insert(CompactString::from("join"), make_builtin(|_| Ok(PyObject::none())));
-            let a2 = alive.clone();
-            attrs.insert(CompactString::from("is_alive"), PyObject::native_closure(
-                "is_alive", move |_: &[PyObjectRef]| {
-                    Ok(PyObject::bool_val(*a2.read()))
-                }
-            ));
-            let nm = name.clone();
-            attrs.insert(CompactString::from("getName"), PyObject::native_closure(
-                "getName", move |_: &[PyObjectRef]| {
-                    Ok(nm.clone())
-                }
-            ));
-            attrs.insert(CompactString::from("setDaemon"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("_alive"), PyObject::bool_val(false));
+            attrs.insert(CompactString::from("_started"), PyObject::bool_val(false));
             attrs.insert(CompactString::from("ident"), PyObject::none());
         }
-        Ok(inst)
-    });
+        Ok(PyObject::none())
+    }));
+
+    // start(self)
+    thread_ns.insert(CompactString::from("start"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        let self_obj = &args[0];
+        if let PyObjectPayload::Instance(ref inst) = self_obj.payload {
+            inst.attrs.write().insert(CompactString::from("_started"), PyObject::bool_val(true));
+            inst.attrs.write().insert(CompactString::from("_alive"), PyObject::bool_val(true));
+            let target = inst.attrs.read().get("_target").cloned().unwrap_or_else(PyObject::none);
+            let thread_args = inst.attrs.read().get("_args").cloned().unwrap_or_else(|| PyObject::tuple(vec![]));
+            if !matches!(&target.payload, PyObjectPayload::None) {
+                let call_args: Vec<PyObjectRef> = match &thread_args.payload {
+                    PyObjectPayload::Tuple(items) => items.clone(),
+                    PyObjectPayload::List(items) => items.read().clone(),
+                    _ => vec![],
+                };
+                match &target.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&call_args); }
+                    PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&call_args); }
+                    _ => { push_deferred_call(target, call_args); }
+                }
+            }
+            inst.attrs.write().insert(CompactString::from("_alive"), PyObject::bool_val(false));
+        }
+        Ok(PyObject::none())
+    }));
+
+    // join(self)
+    thread_ns.insert(CompactString::from("join"), make_builtin(|_| Ok(PyObject::none())));
+
+    // is_alive(self)
+    thread_ns.insert(CompactString::from("is_alive"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+        if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+            if let Some(alive) = inst.attrs.read().get("_alive").cloned() {
+                return Ok(alive);
+            }
+        }
+        Ok(PyObject::bool_val(false))
+    }));
+
+    // getName(self)
+    thread_ns.insert(CompactString::from("getName"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("Thread"))); }
+        if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+            if let Some(name) = inst.attrs.read().get("name").cloned() {
+                return Ok(name);
+            }
+        }
+        Ok(PyObject::str_val(CompactString::from("Thread")))
+    }));
+
+    // setDaemon(self, val)
+    thread_ns.insert(CompactString::from("setDaemon"), make_builtin(|_| Ok(PyObject::none())));
+
+    // run(self) — default implementation calls target
+    thread_ns.insert(CompactString::from("run"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+            let target = inst.attrs.read().get("_target").cloned().unwrap_or_else(PyObject::none);
+            if !matches!(&target.payload, PyObjectPayload::None) {
+                let thread_args = inst.attrs.read().get("_args").cloned().unwrap_or_else(|| PyObject::tuple(vec![]));
+                let call_args: Vec<PyObjectRef> = match &thread_args.payload {
+                    PyObjectPayload::Tuple(items) => items.clone(),
+                    PyObjectPayload::List(items) => items.read().clone(),
+                    _ => vec![],
+                };
+                push_deferred_call(target, call_args);
+            }
+        }
+        Ok(PyObject::none())
+    }));
+
+    let thread_class = PyObject::class(CompactString::from("Thread"), vec![], thread_ns);
 
     // Lock — context manager with acquire/release using shared state
     let lock_cls = PyObject::class(CompactString::from("Lock"), vec![], IndexMap::new());
@@ -477,7 +501,7 @@ pub fn create_threading_module() -> PyObjectRef {
     });
 
     make_module("threading", vec![
-        ("Thread", thread_fn),
+        ("Thread", thread_class),
         ("Lock", lock_fn),
         ("RLock", rlock_fn),
         ("Event", event_fn),

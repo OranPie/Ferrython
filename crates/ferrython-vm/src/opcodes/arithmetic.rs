@@ -348,7 +348,12 @@ impl VirtualMachine {
                     self.vm_push(r);
                     return Ok(None);
                 }
+                // Builtin base type subclass: delegate to __builtin_value__
                 if let PyObjectPayload::Instance(_) = &obj.payload {
+                    if let Some(bv) = obj.get_attr("__builtin_value__") {
+                        self.vm_push(bv.get_item(&key)?);
+                        return Ok(None);
+                    }
                     if let Some(tup) = obj.get_attr("_tuple") {
                         self.vm_push(tup.get_item(&key)?);
                         return Ok(None);

@@ -3,7 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args_min,
 };
 use ferrython_core::types::HashableKey;
@@ -436,41 +436,42 @@ fn argparse_parse_args(
 // ── configparser module ──────────────────────────────────────────────
 pub fn create_configparser_module() -> PyObjectRef {
 
-    fn configparser_new(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        let mut ns = IndexMap::new();
-        ns.insert(CompactString::from("read"), make_builtin(cp_read));
-        ns.insert(CompactString::from("read_string"), make_builtin(cp_read_string));
-        ns.insert(CompactString::from("get"), make_builtin(cp_get));
-        ns.insert(CompactString::from("getint"), make_builtin(cp_getint));
-        ns.insert(CompactString::from("getfloat"), make_builtin(cp_getfloat));
-        ns.insert(CompactString::from("getboolean"), make_builtin(cp_getboolean));
-        ns.insert(CompactString::from("sections"), make_builtin(cp_sections));
-        ns.insert(CompactString::from("has_section"), make_builtin(cp_has_section));
-        ns.insert(CompactString::from("has_option"), make_builtin(cp_has_option));
-        ns.insert(CompactString::from("options"), make_builtin(cp_options));
-        ns.insert(CompactString::from("items"), make_builtin(cp_items));
-        ns.insert(CompactString::from("set"), make_builtin(cp_set));
-        ns.insert(CompactString::from("remove_section"), make_builtin(cp_remove_section));
-        ns.insert(CompactString::from("remove_option"), make_builtin(cp_remove_option));
-        ns.insert(CompactString::from("write"), make_builtin(cp_write));
-        ns.insert(CompactString::from("__getitem__"), make_builtin(cp_getitem));
-        ns.insert(CompactString::from("__setitem__"), make_builtin(cp_setitem));
-        ns.insert(CompactString::from("__contains__"), make_builtin(cp_contains));
-        let class = PyObject::class(CompactString::from("ConfigParser"), vec![], ns);
-        let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
-            class,
-            attrs: Arc::new(RwLock::new(IndexMap::new())),
-            dict_storage: None,
-        }));
-        // Store sections as a dict of dicts
-        if let PyObjectPayload::Instance(ref d) = inst.payload {
-            let mut w = d.attrs.write();
-            w.insert(CompactString::from("__configparser__"), PyObject::bool_val(true));
-            w.insert(CompactString::from("_sections"), PyObject::dict(IndexMap::new()));
-            w.insert(CompactString::from("_defaults"), PyObject::dict(IndexMap::new()));
+    // Build ConfigParser as a proper Class so subclasses inherit methods via MRO.
+    let mut ns = IndexMap::new();
+
+    // __init__: set up per-instance state
+    ns.insert(CompactString::from("__init__"), make_builtin(|args: &[PyObjectRef]| {
+        if !args.is_empty() {
+            if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                let mut w = inst.attrs.write();
+                w.insert(CompactString::from("__configparser__"), PyObject::bool_val(true));
+                w.insert(CompactString::from("_sections"), PyObject::dict(IndexMap::new()));
+                w.insert(CompactString::from("_defaults"), PyObject::dict(IndexMap::new()));
+            }
         }
-        Ok(inst)
-    }
+        Ok(PyObject::none())
+    }));
+
+    ns.insert(CompactString::from("read"), make_builtin(cp_read));
+    ns.insert(CompactString::from("read_string"), make_builtin(cp_read_string));
+    ns.insert(CompactString::from("get"), make_builtin(cp_get));
+    ns.insert(CompactString::from("getint"), make_builtin(cp_getint));
+    ns.insert(CompactString::from("getfloat"), make_builtin(cp_getfloat));
+    ns.insert(CompactString::from("getboolean"), make_builtin(cp_getboolean));
+    ns.insert(CompactString::from("sections"), make_builtin(cp_sections));
+    ns.insert(CompactString::from("has_section"), make_builtin(cp_has_section));
+    ns.insert(CompactString::from("has_option"), make_builtin(cp_has_option));
+    ns.insert(CompactString::from("options"), make_builtin(cp_options));
+    ns.insert(CompactString::from("items"), make_builtin(cp_items));
+    ns.insert(CompactString::from("set"), make_builtin(cp_set));
+    ns.insert(CompactString::from("remove_section"), make_builtin(cp_remove_section));
+    ns.insert(CompactString::from("remove_option"), make_builtin(cp_remove_option));
+    ns.insert(CompactString::from("write"), make_builtin(cp_write));
+    ns.insert(CompactString::from("__getitem__"), make_builtin(cp_getitem));
+    ns.insert(CompactString::from("__setitem__"), make_builtin(cp_setitem));
+    ns.insert(CompactString::from("__contains__"), make_builtin(cp_contains));
+
+    let configparser_class = PyObject::class(CompactString::from("ConfigParser"), vec![], ns);
 
     fn get_sections(obj: &PyObjectRef) -> Option<Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
@@ -845,8 +846,8 @@ pub fn create_configparser_module() -> PyObjectRef {
     }
 
     make_module("configparser", vec![
-        ("ConfigParser", make_builtin(configparser_new)),
-        ("RawConfigParser", make_builtin(configparser_new)),
-        ("SafeConfigParser", make_builtin(configparser_new)),
+        ("ConfigParser", configparser_class.clone()),
+        ("RawConfigParser", configparser_class.clone()),
+        ("SafeConfigParser", configparser_class),
     ])
 }

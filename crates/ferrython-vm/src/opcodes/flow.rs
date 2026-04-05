@@ -75,6 +75,13 @@ impl VirtualMachine {
                 if let Some(r) = self.try_call_dunder(&obj, "__iter__", vec![])? {
                     self.vm_push(r);
                 } else {
+                    // Builtin base type subclass: delegate to __builtin_value__
+                    if let PyObjectPayload::Instance(inst) = &obj.payload {
+                        if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                            self.vm_push(bv.get_iter()?);
+                            return Ok(None);
+                        }
+                    }
                     match obj.get_iter() {
                         Ok(iter) => self.vm_push(iter),
                         Err(_) => {

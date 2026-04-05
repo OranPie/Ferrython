@@ -59,11 +59,32 @@ impl VirtualMachine {
         false
     }
 
+    /// Resolve a dunder method on an Instance, skipping BuiltinBoundMethod
+    /// (which comes from BuiltinType bases like list/dict and can't be called).
+    /// Returns the method if it's a real callable (BoundMethod, Function, etc.).
+    pub(crate) fn resolve_instance_dunder(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+        if let Some(method) = obj.get_attr(name) {
+            if matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod { .. }) {
+                return None;
+            }
+            return Some(method);
+        }
+        None
+    }
+
+    /// Get the __builtin_value__ from an Instance (for builtin type subclasses).
+    pub(crate) fn get_builtin_value(obj: &PyObjectRef) -> Option<PyObjectRef> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            return inst.attrs.read().get("__builtin_value__").cloned();
+        }
+        None
+    }
+
     pub(crate) fn vm_str(&mut self, obj: &PyObjectRef) -> PyResult<String> {
         match &obj.payload {
-            PyObjectPayload::Instance(_) => {
-                if let Some(str_method) = obj.get_attr("__str__") {
-                    // NativeFunction from class namespace needs self as first arg
+            PyObjectPayload::Instance(_inst) => {
+                // Check for custom __str__ (skip BuiltinBoundMethod from builtin bases)
+                if let Some(str_method) = Self::resolve_instance_dunder(obj, "__str__") {
                     let args = match &str_method.payload {
                         PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
                         _ => vec![],
@@ -71,7 +92,12 @@ impl VirtualMachine {
                     let result = self.call_object(str_method, args)?;
                     return Ok(result.py_to_string());
                 }
-                if let Some(repr_method) = obj.get_attr("__repr__") {
+                // Builtin base type subclass: delegate to __builtin_value__
+                if let Some(bv) = Self::get_builtin_value(obj) {
+                    return self.vm_str(&bv);
+                }
+                // Fall back to __repr__ (also skip BuiltinBoundMethod)
+                if let Some(repr_method) = Self::resolve_instance_dunder(obj, "__repr__") {
                     let args = match &repr_method.payload {
                         PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
                         _ => vec![],
@@ -122,11 +148,12 @@ impl VirtualMachine {
     pub(crate) fn vm_repr(&mut self, obj: &PyObjectRef) -> PyResult<String> {
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
-                if let Some(repr_method) = obj.get_attr("__repr__") {
+                // Check for custom __repr__ (skip BuiltinBoundMethod from builtin bases)
+                if let Some(repr_method) = Self::resolve_instance_dunder(obj, "__repr__") {
                     let result = self.call_object(repr_method, vec![])?;
                     return Ok(result.py_to_string());
                 }
-                // Dataclass auto-repr
+                // Dataclass auto-repr (before __builtin_value__ delegation)
                 let class = &inst.class;
                 if matches!(&class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__dataclass__")) {
                     if let Some(fields) = class.get_attr("__dataclass_fields__") {
@@ -149,7 +176,7 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // Namedtuple auto-repr
+                // Namedtuple auto-repr (before __builtin_value__ delegation)
                 if matches!(&class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__namedtuple__")) {
                     if let Some(fields) = class.get_attr("_fields") {
                         if let PyObjectPayload::Tuple(field_names) = &fields.payload {
@@ -168,6 +195,10 @@ impl VirtualMachine {
                             return Ok(format!("{}({})", class_name, parts.join(", ")));
                         }
                     }
+                }
+                // Builtin base type subclass: delegate to __builtin_value__
+                if let Some(bv) = Self::get_builtin_value(obj) {
+                    return self.vm_repr(&bv);
                 }
                 Ok(obj.repr())
             }
@@ -359,6 +390,10 @@ impl VirtualMachine {
             // Custom __iter__: call it to get the actual iterator
             if let Some(iter_method) = obj.get_attr("__iter__") {
                 return self.call_object(iter_method, vec![]);
+            }
+            // Builtin base type subclass: delegate to __builtin_value__
+            if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                return bv.get_iter();
             }
             // Has __getitem__: return obj itself for sequence protocol
             if obj.get_attr("__getitem__").is_some() {

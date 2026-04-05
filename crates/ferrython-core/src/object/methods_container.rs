@@ -30,6 +30,10 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 if let Some(ref ds) = inst.dict_storage {
                     return Ok(ds.read().len());
                 }
+                // Builtin base type subclass: delegate to __builtin_value__
+                if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                    return py_len(&bv);
+                }
                 Err(PyException::type_error(format!("object of type '{}' has no len()", obj.type_name())))
             },
             PyObjectPayload::Class(cd) => {
@@ -190,7 +194,15 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                 if actual < 0 || actual >= len { return Err(PyException::index_error("range object index out of range")); }
                 Ok(PyObject::int(start + actual * step))
             }
-            _ => Err(PyException::type_error(format!("'{}' object is not subscriptable", obj.type_name()))),
+            _ => {
+                // Builtin base type subclass: delegate to __builtin_value__
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
+                        return py_get_item(&bv, key);
+                    }
+                }
+                Err(PyException::type_error(format!("'{}' object is not subscriptable", obj.type_name())))
+            }
         }
 }
 
@@ -340,6 +352,11 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     }
                 }
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Tuple { items: vec![], index: 0 })))))
+            }
+            // Builtin base type subclass: delegate to __builtin_value__
+            PyObjectPayload::Instance(inst) if inst.attrs.read().contains_key("__builtin_value__") => {
+                let bv = inst.attrs.read().get("__builtin_value__").cloned().unwrap();
+                py_get_iter(&bv)
             }
             PyObjectPayload::DictKeys(m) => {
                 let keys: Vec<PyObjectRef> = m.read().keys()

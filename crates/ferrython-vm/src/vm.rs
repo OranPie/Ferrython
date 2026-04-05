@@ -572,13 +572,17 @@ impl VirtualMachine {
 
     pub(crate) fn vm_is_truthy(&mut self, obj: &PyObjectRef) -> PyResult<bool> {
         if let PyObjectPayload::Instance(_) = &obj.payload {
-            if let Some(bool_method) = obj.get_attr("__bool__") {
+            if let Some(bool_method) = Self::resolve_instance_dunder(obj, "__bool__") {
                 let result = self.call_object(bool_method, vec![])?;
                 return Ok(result.is_truthy());
             }
-            if let Some(len_method) = obj.get_attr("__len__") {
+            if let Some(len_method) = Self::resolve_instance_dunder(obj, "__len__") {
                 let result = self.call_object(len_method, vec![])?;
                 return Ok(result.is_truthy());
+            }
+            // Builtin base type subclass: delegate to __builtin_value__
+            if let Some(bv) = Self::get_builtin_value(obj) {
+                return Ok(bv.is_truthy());
             }
         }
         Ok(obj.is_truthy())
@@ -591,8 +595,17 @@ impl VirtualMachine {
     ) -> Result<Option<PyObjectRef>, PyException> {
         match &obj.payload {
             PyObjectPayload::Instance(_) => {
-                if let Some(method) = obj.get_attr(dunder) {
+                // Use resolve_instance_dunder to skip BuiltinBoundMethod from builtin type bases
+                if let Some(method) = Self::resolve_instance_dunder(obj, dunder) {
                     return Ok(Some(self.call_object(method, args)?));
+                }
+                // Fall through: check __builtin_value__ for supported container operations
+                if matches!(dunder, "__getitem__" | "__setitem__" | "__delitem__" |
+                    "__contains__" | "__iter__" | "__len__" | "__bool__" |
+                    "__add__" | "__mul__" | "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__") {
+                    if let Some(bv) = Self::get_builtin_value(obj) {
+                        return self.try_call_dunder(&bv, dunder, args);
+                    }
                 }
             }
             PyObjectPayload::Module { .. } => {
