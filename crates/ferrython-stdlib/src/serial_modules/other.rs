@@ -531,6 +531,9 @@ const PICKLE_BYTES: u8 = b'B';
 const PICKLE_LIST: u8 = b'L';
 const PICKLE_TUPLE: u8 = b'U';
 const PICKLE_DICT: u8 = b'd';
+const PICKLE_INSTANCE: u8 = b'O';
+const PICKLE_SET: u8 = b's';
+const PICKLE_FROZENSET: u8 = b'f';
 const PICKLE_STOP: u8 = b'.';
 
 pub fn create_pickle_module() -> PyObjectRef {
@@ -607,6 +610,57 @@ fn pickle_serialize(obj: &PyObjectRef, buf: &mut Vec<u8>) -> PyResult<()> {
                 pickle_serialize(v, buf)?;
             }
             buf.push(PICKLE_DICT);
+            buf.extend_from_slice(&count.to_le_bytes());
+        }
+        PyObjectPayload::Set(items) => {
+            let items_r = items.read();
+            let count = items_r.len() as u32;
+            for (_, v) in items_r.iter() {
+                pickle_serialize(v, buf)?;
+            }
+            buf.push(PICKLE_SET);
+            buf.extend_from_slice(&count.to_le_bytes());
+        }
+        PyObjectPayload::FrozenSet(items) => {
+            let count = items.len() as u32;
+            for (_, v) in items.iter() {
+                pickle_serialize(v, buf)?;
+            }
+            buf.push(PICKLE_FROZENSET);
+            buf.extend_from_slice(&count.to_le_bytes());
+        }
+        PyObjectPayload::Instance(inst) => {
+            // Collect serializable instance attrs (skip methods/closures)
+            let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                cd.name.to_string()
+            } else {
+                "object".to_string()
+            };
+            let attrs_r = inst.attrs.read();
+            let mut data_pairs: Vec<(CompactString, PyObjectRef)> = Vec::new();
+            for (k, v) in attrs_r.iter() {
+                match &v.payload {
+                    PyObjectPayload::NativeFunction { .. }
+                    | PyObjectPayload::NativeClosure { .. }
+                    | PyObjectPayload::Function(_)
+                    | PyObjectPayload::Class(_) => continue,
+                    _ => {
+                        data_pairs.push((k.clone(), v.clone()));
+                    }
+                }
+            }
+            // Serialize attrs as key-value pairs first (pushed to stack)
+            for (k, v) in &data_pairs {
+                pickle_serialize(&PyObject::str_val(k.clone()), buf)?;
+                pickle_serialize(v, buf)?;
+            }
+            // Then the marker with class name + count
+            let name_bytes = class_name.as_bytes();
+            buf.push(PICKLE_INSTANCE);
+            let name_len = name_bytes.len() as u32;
+            buf.extend_from_slice(&name_len.to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+            let count = data_pairs.len() as u32;
             buf.extend_from_slice(&count.to_le_bytes());
         }
         _ => {
@@ -830,6 +884,61 @@ fn pickle_loads_stack(data: &[u8]) -> PyResult<PyObjectRef> {
                     pairs.push((chunk[0].clone(), chunk[1].clone()));
                 }
                 stack.push(PyObject::dict_from_pairs(pairs));
+            }
+            PICKLE_SET | PICKLE_FROZENSET => {
+                let is_frozen = marker == PICKLE_FROZENSET;
+                if pos + 4 > data.len() {
+                    return Err(PyException::runtime_error("UnpicklingError: truncated set count"));
+                }
+                let count = u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]) as usize;
+                pos += 4;
+                if stack.len() < count {
+                    return Err(PyException::runtime_error("UnpicklingError: stack underflow for set"));
+                }
+                let items = stack.split_off(stack.len() - count);
+                let mut map = IndexMap::new();
+                for item in &items {
+                    if let Ok(hk) = HashableKey::from_object(item) {
+                        map.insert(hk, item.clone());
+                    }
+                }
+                if is_frozen {
+                    stack.push(PyObject::frozenset(map));
+                } else {
+                    stack.push(PyObject::set(map));
+                }
+            }
+            PICKLE_INSTANCE => {
+                // Read class name
+                if pos + 4 > data.len() {
+                    return Err(PyException::runtime_error("UnpicklingError: truncated instance class name"));
+                }
+                let name_len = u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]) as usize;
+                pos += 4;
+                if pos + name_len > data.len() {
+                    return Err(PyException::runtime_error("UnpicklingError: truncated class name data"));
+                }
+                let class_name = std::str::from_utf8(&data[pos..pos+name_len])
+                    .map_err(|_| PyException::runtime_error("UnpicklingError: invalid class name utf-8"))?;
+                pos += name_len;
+                // Read attr count
+                if pos + 4 > data.len() {
+                    return Err(PyException::runtime_error("UnpicklingError: truncated instance attr count"));
+                }
+                let count = u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]) as usize;
+                pos += 4;
+                let pair_count = count * 2;
+                if stack.len() < pair_count {
+                    return Err(PyException::runtime_error("UnpicklingError: stack underflow for instance"));
+                }
+                let kv_items = stack.split_off(stack.len() - pair_count);
+                let mut attrs = IndexMap::new();
+                for chunk in kv_items.chunks_exact(2) {
+                    let key = chunk[0].py_to_string();
+                    attrs.insert(CompactString::from(key), chunk[1].clone());
+                }
+                let cls = PyObject::class(CompactString::from(class_name), vec![], IndexMap::new());
+                stack.push(PyObject::instance_with_attrs(cls, attrs));
             }
             _ => {
                 return Err(PyException::runtime_error(
