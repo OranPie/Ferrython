@@ -818,6 +818,15 @@ pub fn create_builtins_module() -> PyObjectRef {
         ("OverflowError", PyObject::exception_type(ferrython_core::error::ExceptionKind::OverflowError)),
         ("AssertionError", PyObject::exception_type(ferrython_core::error::ExceptionKind::AssertionError)),
         ("SyntaxError", PyObject::exception_type(ferrython_core::error::ExceptionKind::SyntaxError)),
+        // Additional builtins
+        ("breakpoint", PyObject::builtin_function(CompactString::from("breakpoint"))),
+        ("compile", PyObject::builtin_function(CompactString::from("compile"))),
+        ("delattr", PyObject::builtin_function(CompactString::from("delattr"))),
+        ("memoryview", PyObject::builtin_type(CompactString::from("memoryview"))),
+        ("slice", PyObject::builtin_type(CompactString::from("slice"))),
+        ("NotImplemented", PyObject::none()),
+        ("Ellipsis", PyObject::none()),
+        ("__debug__", PyObject::bool_val(true)),
     ])
 }
 
