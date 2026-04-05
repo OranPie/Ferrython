@@ -20,6 +20,9 @@ pub fn create_collections_module() -> PyObjectRef {
         ("deque", PyObject::native_function("collections.deque", collections_deque)),
         ("most_common", make_builtin(collections_most_common)),
         ("ChainMap", PyObject::native_function("collections.ChainMap", collections_chainmap)),
+        ("UserDict", make_user_dict_class()),
+        ("UserList", make_user_list_class()),
+        ("UserString", make_user_string_class()),
         // Counter helper functions (usable as Counter.elements(c), Counter.update(c, other), etc.)
         ("counter_elements", make_builtin(counter_elements)),
         ("counter_update", make_builtin(counter_update)),
@@ -667,4 +670,492 @@ fn collections_chainmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     }
     Ok(inst)
+}
+
+// --- UserDict / UserList / UserString ---
+
+fn make_user_dict_class() -> PyObjectRef {
+    let mut ns = IndexMap::new();
+    ns.insert(CompactString::from("__init__"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("UserDict.__init__ requires self")); }
+        let inst = &args[0];
+        let data = if args.len() > 1 {
+            if let PyObjectPayload::Dict(d) = &args[1].payload {
+                PyObject::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(d.read().clone()))))
+            } else {
+                PyObject::dict_from_pairs(vec![])
+            }
+        } else {
+            PyObject::dict_from_pairs(vec![])
+        };
+        if let PyObjectPayload::Instance(d) = &inst.payload {
+            d.attrs.write().insert(CompactString::from("data"), data.clone());
+            // Install instance methods that directly operate on the data
+            install_dict_methods(&d.attrs, &data);
+        }
+        Ok(PyObject::none())
+    }));
+    ns.insert(CompactString::from("__getitem__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected key")); }
+        let data = get_user_data(&args[0], "data")?;
+        data.get_item(&args[1])
+    }));
+    ns.insert(CompactString::from("__setitem__"), make_builtin(|args| {
+        if args.len() < 3 { return Err(PyException::type_error("expected key and value")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(d) = &data.payload {
+            let key = HashableKey::from_object(&args[1])?;
+            d.write().insert(key, args[2].clone());
+        }
+        Ok(PyObject::none())
+    }));
+    ns.insert(CompactString::from("__delitem__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected key")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(d) = &data.payload {
+            let key = HashableKey::from_object(&args[1])?;
+            if d.write().shift_remove(&key).is_none() {
+                return Err(PyException::key_error(args[1].py_to_string()));
+            }
+        }
+        Ok(PyObject::none())
+    }));
+    ns.insert(CompactString::from("__len__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        Ok(PyObject::int(data.py_len()? as i64))
+    }));
+    ns.insert(CompactString::from("__contains__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected key")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::Dict(d) = &data.payload {
+            let key = HashableKey::from_object(&args[1])?;
+            Ok(PyObject::bool_val(d.read().contains_key(&key)))
+        } else {
+            Ok(PyObject::bool_val(false))
+        }
+    }));
+    ns.insert(CompactString::from("__repr__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        Ok(PyObject::str_val(CompactString::from(data.py_to_string())))
+    }));
+    ns.insert(CompactString::from("__iter__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        data.get_iter()
+    }));
+    PyObject::class(CompactString::from("UserDict"), vec![], ns)
+}
+
+fn install_dict_methods(attrs: &Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>, data: &PyObjectRef) {
+    let map = if let PyObjectPayload::Dict(m) = &data.payload { m.clone() } else { return; };
+    let m = map.clone();
+    attrs.write().insert(CompactString::from("keys"), PyObject::native_closure("keys", move |_| {
+        Ok(PyObject::wrap(PyObjectPayload::DictKeys(m.clone())))
+    }));
+    let m = map.clone();
+    attrs.write().insert(CompactString::from("values"), PyObject::native_closure("values", move |_| {
+        Ok(PyObject::wrap(PyObjectPayload::DictValues(m.clone())))
+    }));
+    let m = map.clone();
+    attrs.write().insert(CompactString::from("items"), PyObject::native_closure("items", move |_| {
+        Ok(PyObject::wrap(PyObjectPayload::DictItems(m.clone())))
+    }));
+    let m = map.clone();
+    attrs.write().insert(CompactString::from("get"), PyObject::native_closure("get", move |args| {
+        if args.is_empty() { return Err(PyException::type_error("get() requires at least 1 argument")); }
+        let key = args[0].to_hashable_key()?;
+        let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+        Ok(m.read().get(&key).cloned().unwrap_or(default))
+    }));
+    let m = map.clone();
+    attrs.write().insert(CompactString::from("pop"), PyObject::native_closure("pop", move |args| {
+        if args.is_empty() { return Err(PyException::type_error("pop() requires at least 1 argument")); }
+        let key = args[0].to_hashable_key()?;
+        let default = if args.len() >= 2 { Some(args[1].clone()) } else { None };
+        match m.write().shift_remove(&key) {
+            Some(v) => Ok(v),
+            None => default.ok_or_else(|| PyException::key_error(args[0].py_to_string())),
+        }
+    }));
+    let m = map.clone();
+    attrs.write().insert(CompactString::from("setdefault"), PyObject::native_closure("setdefault", move |args| {
+        if args.is_empty() { return Err(PyException::type_error("setdefault() requires at least 1 argument")); }
+        let key = args[0].to_hashable_key()?;
+        let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+        let mut w = m.write();
+        if let Some(v) = w.get(&key) { return Ok(v.clone()); }
+        w.insert(key, default.clone());
+        Ok(default)
+    }));
+    let m = map.clone();
+    attrs.write().insert(CompactString::from("update"), PyObject::native_closure("update", move |args| {
+        if !args.is_empty() {
+            if let PyObjectPayload::Dict(other) = &args[0].payload {
+                let mut w = m.write();
+                for (k, v) in other.read().iter() { w.insert(k.clone(), v.clone()); }
+            }
+        }
+        Ok(PyObject::none())
+    }));
+    let m = map.clone();
+    attrs.write().insert(CompactString::from("copy"), PyObject::native_closure("copy", move |_| {
+        Ok(PyObject::dict(m.read().clone()))
+    }));
+    let m = map.clone();
+    attrs.write().insert(CompactString::from("clear"), PyObject::native_closure("clear", move |_| {
+        m.write().clear();
+        Ok(PyObject::none())
+    }));
+}
+
+fn make_user_list_class() -> PyObjectRef {
+    let mut ns = IndexMap::new();
+    ns.insert(CompactString::from("__init__"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("UserList.__init__ requires self")); }
+        let inst = &args[0];
+        let data = if args.len() > 1 {
+            let items = args[1].to_list()?;
+            PyObject::list(items)
+        } else {
+            PyObject::list(vec![])
+        };
+        if let PyObjectPayload::Instance(d) = &inst.payload {
+            d.attrs.write().insert(CompactString::from("data"), data.clone());
+            install_list_methods(&d.attrs, &data);
+        }
+        Ok(PyObject::none())
+    }));
+    ns.insert(CompactString::from("__getitem__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected index")); }
+        let data = get_user_data(&args[0], "data")?;
+        data.get_item(&args[1])
+    }));
+    ns.insert(CompactString::from("__setitem__"), make_builtin(|args| {
+        if args.len() < 3 { return Err(PyException::type_error("expected index and value")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::List(l) = &data.payload {
+            let idx = args[1].to_int()? as i64;
+            let mut w = l.write();
+            let len = w.len() as i64;
+            let i = if idx < 0 { (len + idx).max(0) as usize } else { idx as usize };
+            if i < w.len() {
+                w[i] = args[2].clone();
+            } else {
+                return Err(PyException::index_error("list assignment index out of range"));
+            }
+        }
+        Ok(PyObject::none())
+    }));
+    ns.insert(CompactString::from("__len__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        Ok(PyObject::int(data.py_len()? as i64))
+    }));
+    ns.insert(CompactString::from("__contains__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected item")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::List(l) = &data.payload {
+            let target = &args[1];
+            Ok(PyObject::bool_val(l.read().iter().any(|x| {
+                x.compare(target, CompareOp::Eq).map_or(false, |v| v.is_truthy())
+            })))
+        } else {
+            Ok(PyObject::bool_val(false))
+        }
+    }));
+    ns.insert(CompactString::from("__repr__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        Ok(PyObject::str_val(CompactString::from(data.py_to_string())))
+    }));
+    ns.insert(CompactString::from("__iter__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        data.get_iter()
+    }));
+    PyObject::class(CompactString::from("UserList"), vec![], ns)
+}
+
+fn install_list_methods(attrs: &Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>, data: &PyObjectRef) {
+    let list = if let PyObjectPayload::List(l) = &data.payload { l.clone() } else { return; };
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("append"), PyObject::native_closure("append", move |args| {
+        if args.is_empty() { return Err(PyException::type_error("append() requires 1 argument")); }
+        l.write().push(args[0].clone());
+        Ok(PyObject::none())
+    }));
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("extend"), PyObject::native_closure("extend", move |args| {
+        if args.is_empty() { return Err(PyException::type_error("extend() requires 1 argument")); }
+        let items = args[0].to_list()?;
+        l.write().extend(items);
+        Ok(PyObject::none())
+    }));
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("insert"), PyObject::native_closure("insert", move |args| {
+        if args.len() < 2 { return Err(PyException::type_error("insert() requires 2 arguments")); }
+        let idx = args[0].to_int()? as usize;
+        let mut w = l.write();
+        let idx = idx.min(w.len());
+        w.insert(idx, args[1].clone());
+        Ok(PyObject::none())
+    }));
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("pop"), PyObject::native_closure("pop", move |args| {
+        let mut w = l.write();
+        if w.is_empty() { return Err(PyException::index_error("pop from empty list")); }
+        let idx = if !args.is_empty() {
+            let i = args[0].to_int()? as i64;
+            let len = w.len() as i64;
+            (if i < 0 { (len + i).max(0) } else { i.min(len - 1) }) as usize
+        } else { w.len() - 1 };
+        if idx < w.len() { Ok(w.remove(idx)) } else { Err(PyException::index_error("pop index out of range")) }
+    }));
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("remove"), PyObject::native_closure("remove", move |args| {
+        if args.is_empty() { return Err(PyException::type_error("remove() requires 1 argument")); }
+        let mut w = l.write();
+        let target = &args[0];
+        if let Some(pos) = w.iter().position(|x| x.compare(target, CompareOp::Eq).map_or(false, |v| v.is_truthy())) {
+            w.remove(pos);
+            Ok(PyObject::none())
+        } else {
+            Err(PyException::value_error("list.remove(x): x not in list"))
+        }
+    }));
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("clear"), PyObject::native_closure("clear", move |_| {
+        l.write().clear();
+        Ok(PyObject::none())
+    }));
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("reverse"), PyObject::native_closure("reverse", move |_| {
+        l.write().reverse();
+        Ok(PyObject::none())
+    }));
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("count"), PyObject::native_closure("count", move |args| {
+        if args.is_empty() { return Err(PyException::type_error("count() requires 1 argument")); }
+        let target = &args[0];
+        let count = l.read().iter().filter(|x| x.compare(target, CompareOp::Eq).map_or(false, |v| v.is_truthy())).count();
+        Ok(PyObject::int(count as i64))
+    }));
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("index"), PyObject::native_closure("index", move |args| {
+        if args.is_empty() { return Err(PyException::type_error("index() requires 1 argument")); }
+        let target = &args[0];
+        let r = l.read();
+        for (i, x) in r.iter().enumerate() {
+            if x.compare(target, CompareOp::Eq).map_or(false, |v| v.is_truthy()) {
+                return Ok(PyObject::int(i as i64));
+            }
+        }
+        Err(PyException::value_error("x not in list"))
+    }));
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("sort"), PyObject::native_closure("sort", move |_| {
+        let mut w = l.write();
+        let mut items: Vec<_> = w.drain(..).collect();
+        items.sort_by(|a, b| a.compare(b, CompareOp::Lt).map_or(std::cmp::Ordering::Equal, |v| if v.is_truthy() { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }));
+        *w = items;
+        Ok(PyObject::none())
+    }));
+    let l = list.clone();
+    attrs.write().insert(CompactString::from("copy"), PyObject::native_closure("copy", move |_| {
+        Ok(PyObject::list(l.read().clone()))
+    }));
+}
+
+fn make_user_string_class() -> PyObjectRef {
+    let mut ns = IndexMap::new();
+    ns.insert(CompactString::from("__init__"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("UserString.__init__ requires self")); }
+        let inst = &args[0];
+        let data = if args.len() > 1 {
+            PyObject::str_val(CompactString::from(args[1].py_to_string()))
+        } else {
+            PyObject::str_val(CompactString::from(""))
+        };
+        if let PyObjectPayload::Instance(d) = &inst.payload {
+            d.attrs.write().insert(CompactString::from("data"), data.clone());
+            install_string_methods(&d.attrs, &data);
+        }
+        Ok(PyObject::none())
+    }));
+    ns.insert(CompactString::from("__str__"), make_builtin(|args| {
+        get_user_data(&args[0], "data")
+    }));
+    ns.insert(CompactString::from("__repr__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("");
+        Ok(PyObject::str_val(CompactString::from(format!("'{}'", s))))
+    }));
+    ns.insert(CompactString::from("__len__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("");
+        Ok(PyObject::int(s.len() as i64))
+    }));
+    ns.insert(CompactString::from("__contains__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected item")); }
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("");
+        let sub = args[1].py_to_string();
+        Ok(PyObject::bool_val(s.contains(&*sub)))
+    }));
+    ns.insert(CompactString::from("__add__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected other")); }
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("").to_string();
+        let other = args[1].py_to_string();
+        Ok(PyObject::str_val(CompactString::from(format!("{}{}", s, other))))
+    }));
+    ns.insert(CompactString::from("__eq__"), make_builtin(|args| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("");
+        let other = args[1].py_to_string();
+        Ok(PyObject::bool_val(s == other.as_str()))
+    }));
+    PyObject::class(CompactString::from("UserString"), vec![], ns)
+}
+
+fn install_string_methods(attrs: &Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>, data: &PyObjectRef) {
+    let s_val = data.as_str().unwrap_or("").to_string();
+
+    macro_rules! str_method {
+        ($attrs:expr, $name:expr, $s:expr, $body:expr) => {{
+            let captured = $s.clone();
+            $attrs.write().insert(CompactString::from($name), PyObject::native_closure($name, move |args| {
+                let s = &captured;
+                #[allow(clippy::redundant_closure_call)]
+                ($body)(s, args)
+            }));
+        }};
+    }
+
+    str_method!(attrs, "upper", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::str_val(CompactString::from(s.to_uppercase())))
+    });
+    str_method!(attrs, "lower", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::str_val(CompactString::from(s.to_lowercase())))
+    });
+    str_method!(attrs, "strip", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::str_val(CompactString::from(s.trim())))
+    });
+    str_method!(attrs, "lstrip", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::str_val(CompactString::from(s.trim_start())))
+    });
+    str_method!(attrs, "rstrip", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::str_val(CompactString::from(s.trim_end())))
+    });
+    str_method!(attrs, "title", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        let mut title = String::with_capacity(s.len());
+        let mut capitalize_next = true;
+        for c in s.chars() {
+            if c.is_whitespace() || !c.is_alphanumeric() {
+                capitalize_next = true;
+                title.push(c);
+            } else if capitalize_next {
+                title.extend(c.to_uppercase());
+                capitalize_next = false;
+            } else {
+                title.extend(c.to_lowercase());
+            }
+        }
+        Ok(PyObject::str_val(CompactString::from(title)))
+    });
+    str_method!(attrs, "capitalize", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        let mut chars = s.chars();
+        let cap = match chars.next() {
+            None => String::new(),
+            Some(c) => c.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
+        };
+        Ok(PyObject::str_val(CompactString::from(cap)))
+    });
+    str_method!(attrs, "swapcase", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        let swapped: String = s.chars().map(|c| {
+            if c.is_uppercase() { c.to_lowercase().to_string() }
+            else if c.is_lowercase() { c.to_uppercase().to_string() }
+            else { c.to_string() }
+        }).collect();
+        Ok(PyObject::str_val(CompactString::from(swapped)))
+    });
+    str_method!(attrs, "split", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        let parts: Vec<PyObjectRef> = if args.is_empty() || matches!(args[0].payload, PyObjectPayload::None) {
+            s.split_whitespace().map(|p| PyObject::str_val(CompactString::from(p))).collect()
+        } else {
+            let sep = args[0].py_to_string();
+            s.split(&*sep).map(|p| PyObject::str_val(CompactString::from(p))).collect()
+        };
+        Ok(PyObject::list(parts))
+    });
+    str_method!(attrs, "rsplit", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        let parts: Vec<PyObjectRef> = if args.is_empty() || matches!(args[0].payload, PyObjectPayload::None) {
+            s.split_whitespace().rev().map(|p| PyObject::str_val(CompactString::from(p))).collect()
+        } else {
+            let sep = args[0].py_to_string();
+            s.rsplit(&*sep).map(|p| PyObject::str_val(CompactString::from(p))).collect()
+        };
+        Ok(PyObject::list(parts))
+    });
+    str_method!(attrs, "replace", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("replace() requires at least 2 arguments")); }
+        let old = args[0].py_to_string();
+        let new = args[1].py_to_string();
+        Ok(PyObject::str_val(CompactString::from(s.replace(&*old, &*new))))
+    });
+    str_method!(attrs, "find", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("find() requires 1 argument")); }
+        let sub = args[0].py_to_string();
+        Ok(PyObject::int(s.find(&*sub).map_or(-1, |i| i as i64)))
+    });
+    str_method!(attrs, "rfind", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("rfind() requires 1 argument")); }
+        let sub = args[0].py_to_string();
+        Ok(PyObject::int(s.rfind(&*sub).map_or(-1, |i| i as i64)))
+    });
+    str_method!(attrs, "count", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("count() requires 1 argument")); }
+        let sub = args[0].py_to_string();
+        Ok(PyObject::int(s.matches(&*sub).count() as i64))
+    });
+    str_method!(attrs, "startswith", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("startswith() requires 1 argument")); }
+        let prefix = args[0].py_to_string();
+        Ok(PyObject::bool_val(s.starts_with(&*prefix)))
+    });
+    str_method!(attrs, "endswith", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("endswith() requires 1 argument")); }
+        let suffix = args[0].py_to_string();
+        Ok(PyObject::bool_val(s.ends_with(&*suffix)))
+    });
+    str_method!(attrs, "join", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("join() requires 1 argument")); }
+        let items = args[0].to_list()?;
+        let strs: Vec<String> = items.iter().map(|x| x.py_to_string()).collect();
+        Ok(PyObject::str_val(CompactString::from(strs.join(s))))
+    });
+    str_method!(attrs, "isalpha", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_alphabetic())))
+    });
+    str_method!(attrs, "isdigit", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_ascii_digit())))
+    });
+    str_method!(attrs, "isalnum", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_alphanumeric())))
+    });
+    str_method!(attrs, "isspace", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_whitespace())))
+    });
+    str_method!(attrs, "isupper", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::bool_val(s.chars().any(|c| c.is_uppercase()) && !s.chars().any(|c| c.is_lowercase())))
+    });
+    str_method!(attrs, "islower", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        Ok(PyObject::bool_val(s.chars().any(|c| c.is_lowercase()) && !s.chars().any(|c| c.is_uppercase())))
+    });
+}
+
+fn get_user_data(obj: &PyObjectRef, attr: &str) -> PyResult<PyObjectRef> {
+    if let PyObjectPayload::Instance(d) = &obj.payload {
+        if let Some(v) = d.attrs.read().get(attr) {
+            return Ok(v.clone());
+        }
+    }
+    Err(PyException::attribute_error(format!("'{}' object has no attribute '{}'", obj.type_name(), attr)))
 }

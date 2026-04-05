@@ -434,3 +434,254 @@ class ChainMap:
 
     def __repr__(self):
         return 'ChainMap(%s)' % ', '.join(repr(m) for m in self.maps)
+
+
+class UserDict(dict):
+    """Wrapper around dictionary objects for easier subclassing."""
+
+    def __init__(self, dict=None, **kwargs):
+        self.data = {}
+        if dict is not None:
+            self.update(dict)
+        if kwargs:
+            self.update(kwargs)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, key):
+        if key in self.data:
+            return self.data[key]
+        raise KeyError(key)
+
+    def __setitem__(self, key, item):
+        self.data[key] = item
+
+    def __delitem__(self, key):
+        del self.data[key]
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __contains__(self, key):
+        return key in self.data
+
+    def __repr__(self):
+        return repr(self.data)
+
+    def __or__(self, other):
+        if isinstance(other, UserDict):
+            return self.__class__(self.data | other.data)
+        if isinstance(other, dict):
+            return self.__class__(self.data | other)
+        return NotImplemented
+
+    def copy(self):
+        c = self.__class__()
+        c.data = self.data.copy()
+        return c
+
+    def keys(self):
+        return self.data.keys()
+
+    def items(self):
+        return self.data.items()
+
+    def values(self):
+        return self.data.values()
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def update(self, other=None, **kwargs):
+        if other is not None:
+            if hasattr(other, 'items'):
+                for k, v in other.items():
+                    self.data[k] = v
+            else:
+                for k, v in other:
+                    self.data[k] = v
+        for k, v in kwargs.items():
+            self.data[k] = v
+
+    def pop(self, key, *args):
+        return self.data.pop(key, *args)
+
+    def setdefault(self, key, default=None):
+        return self.data.setdefault(key, default)
+
+
+class UserList(list):
+    """Wrapper around list objects for easier subclassing."""
+
+    def __init__(self, initlist=None):
+        self.data = []
+        if initlist is not None:
+            if isinstance(initlist, UserList):
+                self.data = initlist.data[:]
+            elif isinstance(initlist, list):
+                self.data = initlist[:]
+            else:
+                self.data = list(initlist)
+
+    def __repr__(self):
+        return repr(self.data)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return self.__class__(self.data[i])
+        return self.data[i]
+
+    def __setitem__(self, i, item):
+        self.data[i] = item
+
+    def __delitem__(self, i):
+        del self.data[i]
+
+    def __contains__(self, item):
+        return item in self.data
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __add__(self, other):
+        if isinstance(other, UserList):
+            return self.__class__(self.data + other.data)
+        return self.__class__(self.data + list(other))
+
+    def __mul__(self, n):
+        return self.__class__(self.data * n)
+
+    def append(self, item):
+        self.data.append(item)
+
+    def insert(self, i, item):
+        self.data.insert(i, item)
+
+    def pop(self, i=-1):
+        return self.data.pop(i)
+
+    def remove(self, item):
+        self.data.remove(item)
+
+    def clear(self):
+        self.data.clear()
+
+    def copy(self):
+        return self.__class__(self.data[:])
+
+    def count(self, item):
+        return self.data.count(item)
+
+    def index(self, item, *args):
+        return self.data.index(item, *args)
+
+    def reverse(self):
+        self.data.reverse()
+
+    def sort(self, *args, **kwargs):
+        self.data.sort(*args, **kwargs)
+
+    def extend(self, other):
+        if isinstance(other, UserList):
+            self.data.extend(other.data)
+        else:
+            self.data.extend(other)
+
+
+class UserString(str):
+    """Wrapper around string objects for easier subclassing."""
+
+    def __init__(self, seq=''):
+        if isinstance(seq, str):
+            self.data = seq
+        elif isinstance(seq, UserString):
+            self.data = seq.data
+        else:
+            self.data = str(seq)
+
+    def __str__(self):
+        return self.data
+
+    def __repr__(self):
+        return repr(self.data)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        return self.__class__(self.data[index])
+
+    def __add__(self, other):
+        if isinstance(other, UserString):
+            return self.__class__(self.data + other.data)
+        return self.__class__(self.data + str(other))
+
+    def __mul__(self, n):
+        return self.__class__(self.data * n)
+
+    def __contains__(self, char):
+        return char in self.data
+
+    def __eq__(self, other):
+        if isinstance(other, UserString):
+            return self.data == other.data
+        return self.data == other
+
+    def __hash__(self):
+        return hash(self.data)
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def upper(self):
+        return self.__class__(self.data.upper())
+
+    def lower(self):
+        return self.__class__(self.data.lower())
+
+    def strip(self, chars=None):
+        return self.__class__(self.data.strip(chars))
+
+    def split(self, sep=None, maxsplit=-1):
+        return self.data.split(sep, maxsplit)
+
+    def replace(self, old, new, count=-1):
+        if count < 0:
+            return self.__class__(self.data.replace(old, new))
+        return self.__class__(self.data.replace(old, new, count))
+
+    def find(self, sub, start=0, end=None):
+        if end is None:
+            end = len(self.data)
+        return self.data.find(sub, start, end)
+
+    def count(self, sub, start=0, end=None):
+        if end is None:
+            end = len(self.data)
+        return self.data.count(sub, start, end)
+
+    def startswith(self, prefix, start=0, end=None):
+        if end is None:
+            end = len(self.data)
+        return self.data.startswith(prefix, start, end)
+
+    def endswith(self, suffix, start=0, end=None):
+        if end is None:
+            end = len(self.data)
+        return self.data.endswith(suffix, start, end)
+
+    def join(self, seq):
+        return self.data.join(seq)
+
+    def title(self):
+        return self.__class__(self.data.title())
+
+    def capitalize(self):
+        return self.__class__(self.data.capitalize())
+
+    def encode(self, encoding='utf-8', errors='strict'):
+        return self.data.encode(encoding, errors)
