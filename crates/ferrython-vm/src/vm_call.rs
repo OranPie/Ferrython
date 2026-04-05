@@ -91,6 +91,42 @@ impl VirtualMachine {
         Ok(PyObject::str_val(CompactString::from(result)))
     }
 
+    /// Collect the current frame's local variables into a dict.
+    /// At module scope, locals() == globals().
+    fn collect_locals_dict(&self) -> PyResult<PyObjectRef> {
+        let frame = self.call_stack.last().unwrap();
+        if matches!(frame.scope_kind, ScopeKind::Module) {
+            // At module level, locals() == globals()
+            let g = frame.globals.read();
+            let pairs: Vec<(PyObjectRef, PyObjectRef)> = g.iter()
+                .map(|(k, v)| (PyObject::str_val(CompactString::from(k.as_str())), v.clone()))
+                .collect();
+            drop(g);
+            return Ok(PyObject::dict_from_pairs(pairs));
+        }
+        let mut pairs: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
+        // Fast locals (function parameters and local variables)
+        for (i, name) in frame.code.varnames.iter().enumerate() {
+            if let Some(Some(val)) = frame.locals.get(i) {
+                pairs.push((PyObject::str_val(name.clone()), val.clone()));
+            }
+        }
+        // local_names (class scope, etc.)
+        for (k, v) in &frame.local_names {
+            pairs.push((PyObject::str_val(k.clone()), v.clone()));
+        }
+        // Cell and free variables
+        for (i, name) in frame.code.cellvars.iter().chain(frame.code.freevars.iter()).enumerate() {
+            if let Some(cell) = frame.cells.get(i) {
+                let cell_val = cell.read();
+                if let Some(val) = cell_val.as_ref() {
+                    pairs.push((PyObject::str_val(name.clone()), val.clone()));
+                }
+            }
+        }
+        Ok(PyObject::dict_from_pairs(pairs))
+    }
+
     pub(crate) fn call_function(
         &mut self,
         code: &Arc<CodeObject>,
@@ -1486,22 +1522,13 @@ impl VirtualMachine {
                         return Ok(PyObject::dict_from_pairs(pairs));
                     }
                     "locals" => {
-                        let frame = self.call_stack.last().unwrap();
-                        let mut pairs: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
-                        for (i, name) in frame.code.varnames.iter().enumerate() {
-                            if let Some(Some(val)) = frame.locals.get(i) {
-                                pairs.push((PyObject::str_val(name.clone()), val.clone()));
-                            }
+                        return self.collect_locals_dict();
+                    }
+                    "vars" => {
+                        if args.is_empty() {
+                            return self.collect_locals_dict();
                         }
-                        for (i, name) in frame.code.cellvars.iter().chain(frame.code.freevars.iter()).enumerate() {
-                            if let Some(cell) = frame.cells.get(i) {
-                                let cell_val = cell.read();
-                                if let Some(val) = cell_val.as_ref() {
-                                    pairs.push((PyObject::str_val(name.clone()), val.clone()));
-                                }
-                            }
-                        }
-                        return Ok(PyObject::dict_from_pairs(pairs));
+                        // vars(obj) — fall through to static builtin_vars
                     }
                     "setattr" => {
                         if args.len() != 3 {
