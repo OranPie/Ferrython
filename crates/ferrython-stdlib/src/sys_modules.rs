@@ -585,16 +585,39 @@ fn os_listdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::list(items))
 }
 fn os_mkdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("os.mkdir", args, 1)?;
-    std::fs::create_dir(args[0].py_to_string())
-        .map_err(|e| PyException::os_error(format!("{}", e)))?;
-    Ok(PyObject::none())
+    if args.is_empty() { return Err(PyException::type_error("os.mkdir() requires at least 1 argument")); }
+    let path = args[0].py_to_string();
+    let exist_ok = args.iter().skip(1).any(|a| {
+        if let PyObjectPayload::Dict(kw) = &a.payload {
+            kw.read().get(&HashableKey::Str(CompactString::from("exist_ok")))
+                .map(|v| matches!(&v.payload, PyObjectPayload::Bool(true)))
+                .unwrap_or(false)
+        } else { false }
+    });
+    match std::fs::create_dir(&path) {
+        Ok(_) => Ok(PyObject::none()),
+        Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => Ok(PyObject::none()),
+        Err(e) => Err(PyException::os_error(format!("{}", e))),
+    }
 }
 fn os_makedirs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("os.makedirs", args, 1)?;
-    std::fs::create_dir_all(args[0].py_to_string())
-        .map_err(|e| PyException::os_error(format!("{}", e)))?;
-    Ok(PyObject::none())
+    if args.is_empty() { return Err(PyException::type_error("os.makedirs() requires at least 1 argument")); }
+    let path = args[0].py_to_string();
+    // Check for exist_ok kwarg (may be in trailing dict)
+    let exist_ok = args.iter().skip(1).any(|a| {
+        if let PyObjectPayload::Dict(kw) = &a.payload {
+            kw.read().get(&HashableKey::Str(CompactString::from("exist_ok")))
+                .map(|v| matches!(&v.payload, PyObjectPayload::Bool(true)))
+                .unwrap_or(false)
+        } else {
+            matches!(&a.payload, PyObjectPayload::Bool(true))
+        }
+    });
+    match std::fs::create_dir_all(&path) {
+        Ok(_) => Ok(PyObject::none()),
+        Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => Ok(PyObject::none()),
+        Err(e) => Err(PyException::os_error(format!("{}", e))),
+    }
 }
 fn os_remove(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.remove", args, 1)?;
