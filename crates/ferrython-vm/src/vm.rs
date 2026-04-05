@@ -146,6 +146,24 @@ impl VirtualMachine {
                                 frame.stack.push(result);
                                 Ok(None)
                             }
+                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                let r = *x + *y;
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::float(r));
+                                Ok(None)
+                            }
+                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
+                                let r = *x as f64 + *y;
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::float(r));
+                                Ok(None)
+                            }
+                            (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                let r = *x + *y as f64;
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::float(r));
+                                Ok(None)
+                            }
                             _ => self.execute_one(instr),
                         }
                     } else {
@@ -168,6 +186,28 @@ impl VirtualMachine {
                                     4 => x > y,  // Gt
                                     _ => x >= y, // Ge (5)
                                 };
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::bool_val(result));
+                                Ok(None)
+                            }
+                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                let (xv, yv) = (*x, *y);
+                                let result = match instr.arg {
+                                    0 => xv < yv,
+                                    1 => xv <= yv,
+                                    2 => xv == yv,
+                                    3 => xv != yv,
+                                    4 => xv > yv,
+                                    _ => xv >= yv,
+                                };
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::bool_val(result));
+                                Ok(None)
+                            }
+                            // String equality (hot for dict lookups, isinstance checks)
+                            (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) if instr.arg == 2 || instr.arg == 3 => {
+                                let eq = x == y;
+                                let result = if instr.arg == 2 { eq } else { !eq };
                                 frame.stack.truncate(len - 2);
                                 frame.stack.push(PyObject::bool_val(result));
                                 Ok(None)
@@ -249,13 +289,19 @@ impl VirtualMachine {
                                 frame.stack.push(result);
                                 Ok(None)
                             }
+                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                let r = *x - *y;
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::float(r));
+                                Ok(None)
+                            }
                             _ => self.execute_one(instr),
                         }
                     } else {
                         self.execute_one(instr)
                     }
                 }
-                // Inline BinaryMul int fast path
+                // Inline BinaryMul int/float fast path
                 Opcode::BinaryMultiply | Opcode::InplaceMultiply => {
                     let len = frame.stack.len();
                     if len >= 2 {
@@ -272,6 +318,12 @@ impl VirtualMachine {
                                 };
                                 frame.stack.truncate(len - 2);
                                 frame.stack.push(result);
+                                Ok(None)
+                            }
+                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                let r = *x * *y;
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(PyObject::float(r));
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
