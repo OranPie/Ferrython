@@ -933,9 +933,14 @@ pub fn create_io_module() -> PyObjectRef {
     make_module("io", vec![
         ("StringIO", make_builtin(io_string_io)),
         ("BytesIO", make_builtin(io_bytes_io)),
-        ("TextIOWrapper", make_builtin(|_| Ok(PyObject::none()))),
-        ("BufferedReader", make_builtin(|_| Ok(PyObject::none()))),
-        ("BufferedWriter", make_builtin(|_| Ok(PyObject::none()))),
+        ("TextIOWrapper", make_builtin(io_text_io_wrapper)),
+        ("BufferedReader", make_builtin(io_buffered_reader)),
+        ("BufferedWriter", make_builtin(io_buffered_writer)),
+        ("IOBase", PyObject::class(CompactString::from("IOBase"), vec![], IndexMap::new())),
+        ("RawIOBase", PyObject::class(CompactString::from("RawIOBase"), vec![], IndexMap::new())),
+        ("BufferedIOBase", PyObject::class(CompactString::from("BufferedIOBase"), vec![], IndexMap::new())),
+        ("TextIOBase", PyObject::class(CompactString::from("TextIOBase"), vec![], IndexMap::new())),
+        ("UnsupportedOperation", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
         ("SEEK_SET", PyObject::int(0)),
         ("SEEK_CUR", PyObject::int(1)),
         ("SEEK_END", PyObject::int(2)),
@@ -1196,6 +1201,176 @@ fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         attrs.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
     }
     Ok(inst)
+}
+
+/// TextIOWrapper: wraps a binary buffer with text encoding/decoding
+fn io_text_io_wrapper(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // TextIOWrapper(buffer, encoding='utf-8', errors='strict', newline=None, line_buffering=False)
+    if args.is_empty() {
+        return Err(PyException::type_error("TextIOWrapper() requires a buffer argument"));
+    }
+    let buffer = args[0].clone();
+    let encoding = if args.len() > 1 { args[1].py_to_string() } else { "utf-8".to_string() };
+    // Extract kwargs if trailing dict
+    let (enc, _errors) = if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(kw) = &last.payload {
+            let r = kw.read();
+            let e = r.get(&HashableKey::Str(CompactString::from("encoding")))
+                .map(|v| v.py_to_string()).unwrap_or(encoding);
+            let er = r.get(&HashableKey::Str(CompactString::from("errors")))
+                .map(|v| v.py_to_string()).unwrap_or_else(|| "strict".to_string());
+            (e, er)
+        } else {
+            (encoding, "strict".to_string())
+        }
+    } else {
+        (encoding, "strict".to_string())
+    };
+
+    let cls = PyObject::class(CompactString::from("TextIOWrapper"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("buffer"), buffer.clone());
+        attrs.insert(CompactString::from("encoding"), PyObject::str_val(CompactString::from(&enc)));
+        attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from("r")));
+        attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from("<TextIOWrapper>")));
+
+        // read(size=-1) — decode bytes from buffer
+        let buf = buffer.clone();
+        attrs.insert(CompactString::from("read"), PyObject::native_closure("TextIOWrapper.read", move |a: &[PyObjectRef]| {
+            let size = if a.is_empty() { -1i64 } else { a[0].as_int().unwrap_or(-1) };
+            if let Some(read_fn) = buf.get_attr("read") {
+                let bytes_result = if size < 0 {
+                    call_native(&read_fn, &[])?
+                } else {
+                    call_native(&read_fn, &[PyObject::int(size)])?
+                };
+                if let PyObjectPayload::Bytes(b) = &bytes_result.payload {
+                    Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(b).as_ref())))
+                } else {
+                    Ok(bytes_result)
+                }
+            } else {
+                Err(PyException::type_error("buffer has no read method"))
+            }
+        }));
+
+        // write(s) — encode str to bytes and write to buffer
+        let buf = buffer.clone();
+        attrs.insert(CompactString::from("write"), PyObject::native_closure("TextIOWrapper.write", move |a: &[PyObjectRef]| {
+            if a.is_empty() { return Err(PyException::type_error("write() requires 1 argument")); }
+            let text = a[0].py_to_string();
+            let bytes_obj = PyObject::bytes(text.as_bytes().to_vec());
+            if let Some(write_fn) = buf.get_attr("write") {
+                call_native(&write_fn, &[bytes_obj])
+            } else {
+                Err(PyException::type_error("buffer has no write method"))
+            }
+        }));
+
+        // readline() — read line from buffer
+        let buf = buffer.clone();
+        attrs.insert(CompactString::from("readline"), PyObject::native_closure("TextIOWrapper.readline", move |_: &[PyObjectRef]| {
+            if let Some(readline_fn) = buf.get_attr("readline") {
+                let result = call_native(&readline_fn, &[])?;
+                if let PyObjectPayload::Bytes(b) = &result.payload {
+                    Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(b).as_ref())))
+                } else {
+                    Ok(result)
+                }
+            } else {
+                Err(PyException::type_error("buffer has no readline method"))
+            }
+        }));
+
+        // close
+        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+
+        // __enter__ / __exit__
+        let inst_ref = inst.clone();
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("TextIOWrapper.__enter__", move |_| Ok(inst_ref.clone())));
+        attrs.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+    }
+    Ok(inst)
+}
+
+/// BufferedReader: wraps a raw binary stream with buffering
+fn io_buffered_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("BufferedReader() requires a raw stream"));
+    }
+    let raw = args[0].clone();
+    let cls = PyObject::class(CompactString::from("BufferedReader"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("raw"), raw.clone());
+
+        let r = raw.clone();
+        attrs.insert(CompactString::from("read"), PyObject::native_closure("BufferedReader.read", move |a: &[PyObjectRef]| {
+            if let Some(read_fn) = r.get_attr("read") {
+                call_native(&read_fn, a)
+            } else {
+                Err(PyException::type_error("raw stream has no read method"))
+            }
+        }));
+
+        let r = raw;
+        attrs.insert(CompactString::from("readline"), PyObject::native_closure("BufferedReader.readline", move |a: &[PyObjectRef]| {
+            if let Some(readline_fn) = r.get_attr("readline") {
+                call_native(&readline_fn, a)
+            } else {
+                Err(PyException::type_error("raw stream has no readline method"))
+            }
+        }));
+        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+    }
+    Ok(inst)
+}
+
+/// BufferedWriter: wraps a raw binary stream with write buffering
+fn io_buffered_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("BufferedWriter() requires a raw stream"));
+    }
+    let raw = args[0].clone();
+    let cls = PyObject::class(CompactString::from("BufferedWriter"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        attrs.insert(CompactString::from("raw"), raw.clone());
+
+        let r = raw.clone();
+        attrs.insert(CompactString::from("write"), PyObject::native_closure("BufferedWriter.write", move |a: &[PyObjectRef]| {
+            if let Some(write_fn) = r.get_attr("write") {
+                call_native(&write_fn, a)
+            } else {
+                Err(PyException::type_error("raw stream has no write method"))
+            }
+        }));
+
+        let r = raw;
+        attrs.insert(CompactString::from("flush"), PyObject::native_closure("BufferedWriter.flush", move |_: &[PyObjectRef]| {
+            if let Some(flush_fn) = r.get_attr("flush") {
+                call_native(&flush_fn, &[])
+            } else {
+                Ok(PyObject::none())
+            }
+        }));
+        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+    }
+    Ok(inst)
+}
+
+/// Helper: call a NativeFunction/NativeClosure directly
+fn call_native(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match &func.payload {
+        PyObjectPayload::NativeFunction { func: f, .. } => f(args),
+        PyObjectPayload::NativeClosure { func: f, .. } => f(args),
+        _ => Err(PyException::type_error("not a callable")),
+    }
 }
 
 
