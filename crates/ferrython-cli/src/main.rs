@@ -81,8 +81,11 @@ fn main() {
             process::exit(2);
         }
         let filename = &args[2];
+        if let Some(parent) = std::path::Path::new(filename).parent() {
+            ferrython_import::prepend_search_path(parent.to_path_buf());
+        }
         match fs::read_to_string(filename) {
-            Ok(source) => dis_string(&source, filename),
+            Ok(source) => dis_and_run_string(&source, filename),
             Err(e) => {
                 eprintln!("ferrython: can't open file '{}': {}", filename, e);
                 process::exit(2);
@@ -133,7 +136,7 @@ fn main() {
         println!("  -c CMD        Execute CMD as a string");
         println!("  -m MODULE     Run library module as a script (NYI)");
         println!("  -V, --version Show version");
-        println!("  --dis FILE    Disassemble bytecode");
+        println!("  --dis FILE    Disassemble bytecode to stderr, then execute");
         println!("  --profile FILE  Run with execution profiling");
         println!("  --stats FILE    Show bytecode statistics");
         println!("  -h, --help    Show this help");
@@ -177,15 +180,25 @@ fn run_string(source: &str, filename: &str) {
     }
 }
 
-fn dis_pipeline(source: &str, filename: &str) -> Result<(), PipelineError> {
+fn dis_and_run_pipeline(source: &str, filename: &str) -> Result<(), PipelineError> {
     let module = ferrython_parser::parse(source, filename)?;
     let code = ferrython_compiler::compile(&module, filename)?;
-    ferrython_debug::dis_code(&code, 0);
+    ferrython_debug::dis_code_stderr(&code, 0);
+    let mut vm = ferrython_vm::VirtualMachine::new();
+    vm.execute(code)?;
     Ok(())
 }
 
-fn dis_string(source: &str, filename: &str) {
-    if let Err(e) = dis_pipeline(source, filename) {
+fn dis_and_run_string(source: &str, filename: &str) {
+    if let Err(e) = dis_and_run_pipeline(source, filename) {
+        if let PipelineError::Runtime(ref exc) = e {
+            if exc.kind == ferrython_core::error::ExceptionKind::SystemExit {
+                let code = exc.value.as_ref()
+                    .map(|v| v.to_int().unwrap_or(1) as i32)
+                    .unwrap_or(0);
+                process::exit(code);
+            }
+        }
         e.report(filename);
         process::exit(1);
     }
