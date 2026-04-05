@@ -607,6 +607,103 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
         w.insert(CompactString::from("minute"), PyObject::int(minute));
         w.insert(CompactString::from("second"), PyObject::int(second));
         w.insert(CompactString::from("microsecond"), PyObject::int(microsecond));
+
+        // isoformat(sep='T') -> str
+        let (y, mo, da, h, mi, s, us) = (year, month, day, hour, minute, second, microsecond);
+        w.insert(CompactString::from("isoformat"), PyObject::native_closure(
+            "datetime.isoformat", move |args: &[PyObjectRef]| {
+                let sep = if args.is_empty() { "T".to_string() } else { args[0].py_to_string() };
+                let base = format!("{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}", y, mo, da, sep, h, mi, s);
+                if us != 0 {
+                    Ok(PyObject::str_val(CompactString::from(format!("{}.{:06}", base, us))))
+                } else {
+                    Ok(PyObject::str_val(CompactString::from(base)))
+                }
+            }
+        ));
+
+        // strftime(format) -> str
+        let (y2, mo2, da2, h2, mi2, s2) = (year, month, day, hour, minute, second);
+        w.insert(CompactString::from("strftime"), PyObject::native_closure(
+            "datetime.strftime", move |args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("strftime requires format string")); }
+                let fmt = args[0].py_to_string();
+                let result = fmt
+                    .replace("%Y", &format!("{:04}", y2))
+                    .replace("%m", &format!("{:02}", mo2))
+                    .replace("%d", &format!("{:02}", da2))
+                    .replace("%H", &format!("{:02}", h2))
+                    .replace("%M", &format!("{:02}", mi2))
+                    .replace("%S", &format!("{:02}", s2))
+                    .replace("%y", &format!("{:02}", y2 % 100))
+                    .replace("%%", "%");
+                Ok(PyObject::str_val(CompactString::from(result)))
+            }
+        ));
+
+        // weekday() -> int (0=Monday, 6=Sunday)
+        let ord = ymd_to_ordinal(year, month, day);
+        let wd = ((ord + 6) % 7) as i64; // 0=Mon
+        w.insert(CompactString::from("weekday"), PyObject::native_closure(
+            "datetime.weekday", move |_: &[PyObjectRef]| {
+                Ok(PyObject::int(wd))
+            }
+        ));
+
+        // isoweekday() -> int (1=Monday, 7=Sunday)
+        let iwd = wd + 1;
+        w.insert(CompactString::from("isoweekday"), PyObject::native_closure(
+            "datetime.isoweekday", move |_: &[PyObjectRef]| {
+                Ok(PyObject::int(iwd))
+            }
+        ));
+
+        // date() -> date object
+        w.insert(CompactString::from("date"), PyObject::native_closure(
+            "datetime.date", move |_: &[PyObjectRef]| {
+                Ok(make_date_instance(y, mo, da))
+            }
+        ));
+
+        // timestamp() -> float (POSIX timestamp)
+        let ts = {
+            let days_since_epoch = ymd_to_ordinal(year, month, day) - ymd_to_ordinal(1970, 1, 1);
+            days_since_epoch as f64 * 86400.0 + hour as f64 * 3600.0 + minute as f64 * 60.0 + second as f64 + microsecond as f64 / 1_000_000.0
+        };
+        w.insert(CompactString::from("timestamp"), PyObject::native_closure(
+            "datetime.timestamp", move |_: &[PyObjectRef]| {
+                Ok(PyObject::float(ts))
+            }
+        ));
+
+        // __str__() / __repr__()
+        let iso = if microsecond != 0 {
+            format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}", year, month, day, hour, minute, second, microsecond)
+        } else {
+            format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, minute, second)
+        };
+
+        w.insert(CompactString::from("__str__"), PyObject::native_closure(
+            "datetime.__str__", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(&iso)))
+            }
+        ));
+        w.insert(CompactString::from("__repr__"), PyObject::native_closure(
+            "datetime.__repr__", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(format!("datetime.datetime({}, {}, {}, {}, {}, {})", y, mo, da, h, mi, s))))
+            }
+        ));
+
+        // timetuple() -> time.struct_time compatible tuple
+        w.insert(CompactString::from("timetuple"), PyObject::native_closure(
+            "datetime.timetuple", move |_: &[PyObjectRef]| {
+                Ok(PyObject::tuple(vec![
+                    PyObject::int(y), PyObject::int(mo), PyObject::int(da),
+                    PyObject::int(h), PyObject::int(mi), PyObject::int(s),
+                    PyObject::int(wd), PyObject::int(0), PyObject::int(-1),
+                ]))
+            }
+        ));
     }
     inst
 }
@@ -704,6 +801,61 @@ fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
         w.insert(CompactString::from("year"), PyObject::int(year));
         w.insert(CompactString::from("month"), PyObject::int(month));
         w.insert(CompactString::from("day"), PyObject::int(day));
+
+        // isoformat() -> str
+        let (y, mo, da) = (year, month, day);
+        w.insert(CompactString::from("isoformat"), PyObject::native_closure(
+            "date.isoformat", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(format!("{:04}-{:02}-{:02}", y, mo, da))))
+            }
+        ));
+
+        // strftime(format) -> str
+        w.insert(CompactString::from("strftime"), PyObject::native_closure(
+            "date.strftime", move |args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("strftime requires format string")); }
+                let fmt = args[0].py_to_string();
+                let result = fmt
+                    .replace("%Y", &format!("{:04}", y))
+                    .replace("%m", &format!("{:02}", mo))
+                    .replace("%d", &format!("{:02}", da))
+                    .replace("%y", &format!("{:02}", y % 100))
+                    .replace("%%", "%");
+                Ok(PyObject::str_val(CompactString::from(result)))
+            }
+        ));
+
+        // weekday() -> int (0=Monday)
+        let ord = ymd_to_ordinal(year, month, day);
+        let wd = ((ord + 6) % 7) as i64;
+        w.insert(CompactString::from("weekday"), PyObject::native_closure(
+            "date.weekday", move |_: &[PyObjectRef]| { Ok(PyObject::int(wd)) }
+        ));
+
+        // isoweekday() -> int (1=Monday)
+        let iwd = wd + 1;
+        w.insert(CompactString::from("isoweekday"), PyObject::native_closure(
+            "date.isoweekday", move |_: &[PyObjectRef]| { Ok(PyObject::int(iwd)) }
+        ));
+
+        // __str__() / __repr__()
+        w.insert(CompactString::from("__str__"), PyObject::native_closure(
+            "date.__str__", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(format!("{:04}-{:02}-{:02}", y, mo, da))))
+            }
+        ));
+        w.insert(CompactString::from("__repr__"), PyObject::native_closure(
+            "date.__repr__", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(format!("datetime.date({}, {}, {})", y, mo, da))))
+            }
+        ));
+
+        // toordinal() -> int
+        w.insert(CompactString::from("toordinal"), PyObject::native_closure(
+            "date.toordinal", move |_: &[PyObjectRef]| {
+                Ok(PyObject::int(ymd_to_ordinal(y, mo, da)))
+            }
+        ));
     }
     inst
 }
