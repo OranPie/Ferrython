@@ -1372,14 +1372,14 @@ pub fn create_difflib_module() -> PyObjectRef {
             match &args[3].payload { PyObjectPayload::Float(f) => *f, _ => 0.6 }
         } else { 0.6 };
 
-        // Simple ratio: 2 * matching_chars / total_chars
-        let mut scored: Vec<(f64, &String)> = possibilities.iter().map(|p| {
-            let matching = word.chars().filter(|c| p.contains(*c)).count();
-            let ratio = if word.len() + p.len() > 0 {
-                2.0 * matching as f64 / (word.len() + p.len()) as f64
-            } else { 0.0 };
-            (ratio, p)
-        }).filter(|(r, _)| *r >= cutoff).collect();
+        let word_chars: Vec<char> = word.chars().collect();
+        let mut scored: Vec<(f64, &String)> = possibilities.iter().filter_map(|p| {
+            let p_chars: Vec<char> = p.chars().collect();
+            let matches = lcs_length(&word_chars, &p_chars);
+            let total = word_chars.len() + p_chars.len();
+            let ratio = if total > 0 { 2.0 * matches as f64 / total as f64 } else { 1.0 };
+            if ratio >= cutoff { Some((ratio, p)) } else { None }
+        }).collect();
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(n);
         Ok(PyObject::list(scored.iter().map(|(_, s)| PyObject::str_val(CompactString::from(s.as_str()))).collect()))
