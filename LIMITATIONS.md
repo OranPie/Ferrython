@@ -32,7 +32,7 @@
 | Feature | Status | Notes |
 |---------|--------|-------|
 | `super().__getattribute__` | ✅ | Proxies to MRO-based lookup via NativeClosure |
-| Data descriptor priority edge cases | ⚠️ | Most cases work; some MRO edge cases may differ |
+| Data descriptor priority edge cases | ✅ | Full CPython descriptor protocol: data > instance dict > non-data |
 
 ### 3.2 Exception Handling
 | Feature | Status | Notes |

@@ -13,9 +13,11 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::CodeObject;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::PyObjectRef;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
+use std::time::SystemTime;
 
 /// Result of resolving an import: either a pre-built module or compiled source.
 pub enum ResolvedModule {
@@ -170,10 +172,38 @@ pub fn resolve_relative_import(
     )))
 }
 
+// ── In-memory bytecode cache (keyed by canonical path + mtime) ──
+
+static BYTECODE_CACHE: LazyLock<Mutex<HashMap<(PathBuf, SystemTime), Arc<CodeObject>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Clear the bytecode cache (useful in tests or when reloading).
+pub fn clear_bytecode_cache() {
+    BYTECODE_CACHE.lock().clear();
+}
+
 // ── Internal helpers ──
 
 fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
     let path_str = path.to_string_lossy().to_string();
+
+    // Check bytecode cache: if the file path + mtime match, reuse compiled code.
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mtime = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok();
+
+    if let Some(mtime) = mtime {
+        let cache = BYTECODE_CACHE.lock();
+        if let Some(cached) = cache.get(&(canonical.clone(), mtime)) {
+            return Ok(ResolvedModule::Source {
+                code: CodeObject::clone(&cached),
+                name: CompactString::from(module_name),
+                file_path: Some(CompactString::from(path_str)),
+            });
+        }
+    }
+
     let source = std::fs::read_to_string(path)
         .map_err(|e| PyException::import_error(
             format!("cannot read '{}': {}", path_str, e)
@@ -186,6 +216,15 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
         .map_err(|e| PyException::import_error(
             format!("compile error in '{}': {}", path_str, e)
         ))?;
+
+    // Store in cache if we have a valid mtime.
+    if let Some(mtime) = mtime {
+        BYTECODE_CACHE.lock().insert(
+            (canonical, mtime),
+            Arc::new(code.clone()),
+        );
+    }
+
     Ok(ResolvedModule::Source {
         code,
         name: CompactString::from(module_name),

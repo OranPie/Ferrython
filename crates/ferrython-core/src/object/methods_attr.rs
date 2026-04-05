@@ -305,17 +305,6 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             // Property is always a data descriptor — VM calls fget
                             return Some(v.clone());
                         }
-                        PyObjectPayload::StaticMethod(func) => {
-                            return Some(func.clone());
-                        }
-                        PyObjectPayload::ClassMethod(func) => {
-                            return Some(Arc::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: inst.class.clone(),
-                                    method: func.clone(),
-                                }
-                            }));
-                        }
                         _ => {
                             // Check if this is a custom data descriptor (has __set__ or __delete__)
                             if is_data_descriptor(v) {
@@ -330,6 +319,21 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if let Some(v) = inst.attrs.read().get(name) { return Some(v.clone()); }
                 // Non-data descriptors and other class attrs
                 if let Some(v) = class_attr {
+                    // StaticMethod / ClassMethod are non-data descriptors (no __set__)
+                    match &v.payload {
+                        PyObjectPayload::StaticMethod(func) => {
+                            return Some(func.clone());
+                        }
+                        PyObjectPayload::ClassMethod(func) => {
+                            return Some(Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: inst.class.clone(),
+                                    method: func.clone(),
+                                }
+                            }));
+                        }
+                        _ => {}
+                    }
                     // cached_property: if instance has the cached value, return it
                     if let PyObjectPayload::Instance(ref cp_inst) = v.payload {
                         if cp_inst.attrs.read().contains_key("__cached_property_func__") {
