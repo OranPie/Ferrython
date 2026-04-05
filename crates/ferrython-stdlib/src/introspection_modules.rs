@@ -283,7 +283,9 @@ pub fn create_inspect_module() -> PyObjectRef {
         })),
         ("isclass", make_builtin(|args| {
             check_args("inspect.isclass", args, 1)?;
-            Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::Class(_))))
+            Ok(PyObject::bool_val(matches!(&args[0].payload,
+                PyObjectPayload::Class(_) | PyObjectPayload::BuiltinType(_)
+            )))
         })),
         ("ismethod", make_builtin(|args| {
             check_args("inspect.ismethod", args, 1)?;
