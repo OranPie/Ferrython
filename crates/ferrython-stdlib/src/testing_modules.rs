@@ -335,8 +335,10 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
     let mut ns = IndexMap::new();
     ns.insert(CompactString::from("name"), PyObject::str_val(logger_name.clone()));
-    let effective_level: Arc<RwLock<i64>> = Arc::new(RwLock::new(30)); // WARNING default
-    ns.insert(CompactString::from("level"), PyObject::int(30)); // WARNING default
+    let root_level = ROOT_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
+    let initial_level = if root_level > 0 { root_level } else { 30 };
+    let effective_level: Arc<RwLock<i64>> = Arc::new(RwLock::new(initial_level));
+    ns.insert(CompactString::from("level"), PyObject::int(initial_level));
     let handlers_list = PyObject::list(vec![]);
     ns.insert(CompactString::from("handlers"), handlers_list.clone());
 
