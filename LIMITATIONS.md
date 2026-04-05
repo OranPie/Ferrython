@@ -9,7 +9,7 @@
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| F-string nested same-quote | ❌ | `f"{'y' if c else 'n'}"` fails when inner quotes match outer |
+| F-string nested same-quote | ⚠️ | Matches CPython 3.8 behavior (rejected); Python 3.12+ allows it |
 | Type comments (PEP 484) | ❌ | All `type_comment` fields are `None` |
 | Encoding declarations (PEP 263) | ❌ | Ignored; UTF-8 assumed |
 | Non-ASCII in bytes literals | ❌ | Rejected at parse time |
@@ -39,7 +39,7 @@
 |---------|--------|-------|
 | `sys.exc_info()` | ✅ | Thread-local tracking, set on handler entry, cleared on PopExcept |
 | `__traceback__` attribute | ✅ | Proper linked traceback objects with tb_lineno, tb_filename, tb_name, tb_next |
-| `finally` return override | ⚠️ | `return` in `try` not always overridden by `return` in `finally` |
+| `finally` return override | ✅ | `return` in `finally` correctly overrides `return` in `try` |
 
 ### 3.3 I/O Redirection
 | Feature | Status | Notes |
@@ -54,7 +54,7 @@
 | `__code__` | ✅ | Returns actual CodeObject |
 | `__kwdefaults__` | ✅ | Returns keyword-only defaults dict |
 | `__globals__` | ✅ | Returns function's global namespace |
-| `type.__subclasses__()` | ❌ | Not tracked |
+| `type.__subclasses__()` | ✅ | Tracked via weak references |
 | `operator.length_hint()` | ✅ | Handles NativeFunction, NativeClosure, falls back to py_len() |
 | `dir()` completeness | ⚠️ | Missing imported names in some scopes |
 | Dict views (`.keys()`) | ✅ | Live view objects backed by shared Arc; support len/iter/contains/repr |
@@ -82,7 +82,7 @@
 |--------|-----------|--------------|
 | `asyncio` | `run()`, `gather()`, `sleep()`, `Queue` basic | Real scheduling, timeouts, cancellation |
 | `signal` | `signal.signal()` accepts handler | Handler never invoked; returns `SIG_DFL` |
-| `decimal` | Constructor, basic repr | Arithmetic, context, precision control |
+| `decimal` | Constructor, arithmetic (+, -, *, /), comparisons, quantize, repr | Context/precision control, advanced math (ln, sqrt, exp) |
 | `warnings` | `warn()` prints | `catch_warnings()` record list never populated |
 | `dis` | Basic disassembly | Incomplete instruction set display |
 | `numbers` | `Number` ABC exists | `Complex`, `Real`, `Rational` are stubs |
@@ -108,10 +108,8 @@
 ### 4.3 Missing Modules (ImportError)
 
 **Core**: `ctypes`, `cffi`, `mmap`, `fcntl`, `select`, `resource`
-**Compression**: `gzip`, `bz2`, `lzma`, `zlib`, `zipfile`, `tarfile`
-**Data**: `cmath`
-**Dev tools**: `pdb`, `doctest`, `pydoc`, `tracemalloc`, `faulthandler`
-**Unicode**: `unicodedata`
+**Compression**: `gzip`, `bz2`, `lzma`, `zipfile`, `tarfile` (zlib exists but simplified)
+**Dev tools**: `pdb`, `pydoc`, `tracemalloc`, `faulthandler`
 **Introspection**: `symtable`, `token`, `tokenize`, `code`
 
 ## 5. Performance Limitations
@@ -145,7 +143,7 @@
 ## 7. Test Results Summary
 
 - **CPython alignment tests**: ~1,343/1,350 pass (~99.5%)
-- **Fixture tests**: 84/84 pass (100%)
+- **Fixture tests**: 86/86 pass (100%)
 - **Known test failures by category**:
   - Enum tuple-value unpacking (Test 1069)
   - `asyncio.wait_for` timeout (Test 1230)

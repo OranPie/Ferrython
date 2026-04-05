@@ -1,7 +1,7 @@
 //! Introspection stdlib modules (warnings, traceback, inspect, dis)
 
 use compact_str::CompactString;
-use ferrython_core::error::PyException;
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods,
     make_module, make_builtin, check_args, check_args_min,
@@ -328,12 +328,136 @@ pub fn create_inspect_module() -> PyObjectRef {
     ])
 }
 
-// ── dis module (stub) ──
-
+// ── dis module ──
 
 pub fn create_dis_module() -> PyObjectRef {
+    use ferrython_bytecode::code::ConstantValue;
+    use ferrython_bytecode::opcode::Opcode;
+
+    fn dis_dis(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Err(PyException::type_error("dis() requires a function argument"));
+        }
+        let obj = &args[0];
+        let code = match &obj.payload {
+            PyObjectPayload::Function(pf) => pf.code.clone(),
+            PyObjectPayload::Code(c) => c.clone(),
+            _ => return Err(PyException::type_error(
+                format!("don't know how to disassemble {} objects", obj.type_name())
+            )),
+        };
+        disassemble_code(&code, 0);
+        Ok(PyObject::none())
+    }
+
+    fn disassemble_code(code: &ferrython_bytecode::CodeObject, indent: usize) {
+        let pad = " ".repeat(indent);
+        // Find line number for each instruction using lnotab
+        let last_lineno = code.first_line_number;
+        let mut line_for_offset: Vec<u32> = Vec::with_capacity(code.instructions.len());
+        {
+            let mut line = code.first_line_number;
+            let mut lnotab_idx = 0;
+            for i in 0..code.instructions.len() {
+                while lnotab_idx + 1 < code.line_number_table.len() {
+                    let (off, ln) = code.line_number_table[lnotab_idx];
+                    if i >= off as usize {
+                        line = ln;
+                        lnotab_idx += 1;
+                    } else {
+                        break;
+                    }
+                }
+                line_for_offset.push(line);
+            }
+        }
+
+        let mut prev_line = 0u32;
+        for (i, instr) in code.instructions.iter().enumerate() {
+            let lineno = if i < line_for_offset.len() { line_for_offset[i] } else { last_lineno };
+            let line_str = if lineno != prev_line {
+                prev_line = lineno;
+                format!("{:>4}", lineno)
+            } else {
+                "    ".to_string()
+            };
+
+            let arg_desc = format_dis_arg(code, instr.op, instr.arg);
+            println!("{}{} {:>6} {:<24} {}", pad, line_str, i * 2, format!("{:?}", instr.op), arg_desc);
+        }
+
+        // Recurse into nested code objects
+        for c in &code.constants {
+            if let ConstantValue::Code(nested) = c {
+                println!();
+                println!("{}Disassembly of <code object {} at ...>:", pad, nested.name);
+                disassemble_code(nested, indent + 2);
+            }
+        }
+    }
+
+    fn format_dis_arg(code: &ferrython_bytecode::CodeObject, op: Opcode, arg: u32) -> String {
+        match op {
+            Opcode::LoadConst => {
+                if let Some(c) = code.constants.get(arg as usize) {
+                    match c {
+                        ConstantValue::Str(s) => format!("{:<4} ('{}')", arg, if s.len() > 30 { &s[..27] } else { s }),
+                        ConstantValue::Integer(n) => format!("{:<4} ({})", arg, n),
+                        ConstantValue::Float(f) => format!("{:<4} ({})", arg, f),
+                        ConstantValue::None => format!("{:<4} (None)", arg),
+                        ConstantValue::Bool(b) => format!("{:<4} ({})", arg, b),
+                        ConstantValue::Code(c) => format!("{:<4} (<code object {}>)", arg, c.name),
+                        ConstantValue::Tuple(t) => format!("{:<4} (tuple/{})", arg, t.len()),
+                        _ => format!("{}", arg),
+                    }
+                } else { format!("{}", arg) }
+            }
+            Opcode::LoadName | Opcode::StoreName | Opcode::DeleteName
+            | Opcode::LoadGlobal | Opcode::StoreGlobal | Opcode::DeleteGlobal
+            | Opcode::LoadAttr | Opcode::StoreAttr | Opcode::DeleteAttr
+            | Opcode::ImportName | Opcode::ImportFrom => {
+                if let Some(n) = code.names.get(arg as usize) {
+                    format!("{:<4} ({})", arg, n)
+                } else { format!("{}", arg) }
+            }
+            Opcode::LoadFast | Opcode::StoreFast | Opcode::DeleteFast => {
+                if let Some(n) = code.varnames.get(arg as usize) {
+                    format!("{:<4} ({})", arg, n)
+                } else { format!("{}", arg) }
+            }
+            Opcode::LoadDeref | Opcode::StoreDeref | Opcode::LoadClosure => {
+                let nc = code.cellvars.len();
+                let idx = arg as usize;
+                if idx < nc {
+                    code.cellvars.get(idx).map_or(format!("{}", arg), |n| format!("{:<4} (cell: {})", arg, n))
+                } else {
+                    code.freevars.get(idx - nc).map_or(format!("{}", arg), |n| format!("{:<4} (free: {})", arg, n))
+                }
+            }
+            Opcode::CompareOp => {
+                let op_name = match arg {
+                    0 => "<", 1 => "<=", 2 => "==", 3 => "!=", 4 => ">", 5 => ">=",
+                    6 => "in", 7 => "not in", 8 => "is", 9 => "is not",
+                    10 => "exception match", _ => "?",
+                };
+                format!("{:<4} ({})", arg, op_name)
+            }
+            Opcode::JumpAbsolute | Opcode::JumpForward
+            | Opcode::PopJumpIfTrue | Opcode::PopJumpIfFalse
+            | Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop
+            | Opcode::SetupExcept | Opcode::SetupFinally
+            | Opcode::ForIter => {
+                format!("{:<4} (to {})", arg, arg)
+            }
+            _ => {
+                if arg != 0 { format!("{}", arg) } else { String::new() }
+            }
+        }
+    }
+
     make_module("dis", vec![
-        ("dis", make_builtin(|_| { Ok(PyObject::none()) })),
+        ("dis", make_builtin(dis_dis)),
+        ("disassemble", make_builtin(dis_dis)),
     ])
 }
 

@@ -1,6 +1,7 @@
 //! Attribute lookup methods and descriptor protocol helpers.
 
 use crate::error::{PyException, ExceptionKind};
+use crate::intern;
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
@@ -26,7 +27,10 @@ pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRe
         let result = lookup_in_class_mro_uncached(cd, name);
 
         // Populate cache (cache both hits and misses)
-        cd.method_cache.write().insert(CompactString::from(name), result.clone());
+        // Use interned CompactString for dunder names to avoid allocation
+        let key = intern::try_intern(name)
+            .unwrap_or_else(|| CompactString::from(name));
+        cd.method_cache.write().insert(key, result.clone());
 
         return result;
     }
