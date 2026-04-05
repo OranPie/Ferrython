@@ -1133,14 +1133,20 @@ impl VirtualMachine {
         if args.is_empty() || args.len() > 3 {
             return Err(PyException::type_error("eval() takes 1 to 3 arguments"));
         }
-        let code_str = args[0].as_str().ok_or_else(||
-            PyException::type_error("eval() arg 1 must be a string"))?;
-        let wrapped = format!("__eval_result__ = ({})", code_str);
-        let module = ferrython_parser::parse(&wrapped, "<string>")
-            .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?;
-        let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
-        let code = compiler.compile_module(&module)
-            .map_err(|_| PyException::syntax_error("eval: compilation failed"))?;
+        // Accept either a string or a code object (from compile())
+        let code = if let PyObjectPayload::Code(co) = &args[0].payload {
+            (**co).clone()
+        } else {
+            let code_str = args[0].as_str().ok_or_else(||
+                PyException::type_error("eval() arg 1 must be a string, bytes or code object"))?;
+            let wrapped = format!("__eval_result__ = ({})", code_str);
+            let module = ferrython_parser::parse(&wrapped, "<string>")
+                .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?;
+            let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
+            compiler.compile_module(&module)
+                .map_err(|_| PyException::syntax_error("eval: compilation failed"))?
+        };
+        let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
         if args.len() >= 2 {
             if let PyObjectPayload::Dict(ref map) = args[1].payload {
                 let mut new_globals = IndexMap::new();
@@ -1154,7 +1160,11 @@ impl VirtualMachine {
                 }
                 drop(m);
                 let shared = Arc::new(RwLock::new(new_globals));
-                self.execute_with_globals(code, shared.clone())?;
+                let exec_result = self.execute_with_globals(code, shared.clone())?;
+                if is_code_obj {
+                    // Code objects from compile(mode='eval') return their result directly
+                    return Ok(exec_result);
+                }
                 let result = shared.read().get("__eval_result__").cloned()
                     .unwrap_or_else(PyObject::none);
                 let results = shared.read();
@@ -1168,7 +1178,10 @@ impl VirtualMachine {
             }
         } else {
             let globals = self.call_stack.last().unwrap().globals.clone();
-            self.execute_with_globals(code, globals.clone())?;
+            let exec_result = self.execute_with_globals(code, globals.clone())?;
+            if is_code_obj {
+                return Ok(exec_result);
+            }
             let result = globals.read().get("__eval_result__").cloned()
                 .unwrap_or_else(PyObject::none);
             Ok(result)

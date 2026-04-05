@@ -1393,13 +1393,49 @@ impl Parser {
                 // Extract expression text between { and }
                 i += 1; // skip {
                 let mut depth = 1;
-                let mut paren_depth = 0; // track () [] to avoid treating : inside them as format spec
+                let mut paren_depth = 0; // track () [] {} to avoid treating : inside them as format spec
                 let mut expr_text = String::new();
                 let mut conversion: Option<char> = None;
                 let mut format_spec = String::new();
                 let mut in_format_spec = false;
+                let mut in_string: Option<char> = None; // tracks if inside 'x' or "x"
                 while i < chars.len() && depth > 0 {
                     let c = chars[i];
+
+                    // Track string literals — skip everything inside quotes
+                    if let Some(quote) = in_string {
+                        if c == '\\' && i + 1 < chars.len() {
+                            // Escaped character inside string — push both and skip
+                            if in_format_spec {
+                                format_spec.push(c);
+                                format_spec.push(chars[i + 1]);
+                            } else {
+                                expr_text.push(c);
+                                expr_text.push(chars[i + 1]);
+                            }
+                            i += 2;
+                            continue;
+                        }
+                        if c == quote {
+                            in_string = None;
+                        }
+                        if in_format_spec {
+                            format_spec.push(c);
+                        } else {
+                            expr_text.push(c);
+                        }
+                        i += 1;
+                        continue;
+                    }
+
+                    // Not inside a string — check for quote start
+                    if (c == '\'' || c == '"') && !in_format_spec {
+                        in_string = Some(c);
+                        expr_text.push(c);
+                        i += 1;
+                        continue;
+                    }
+
                     if c == '{' { depth += 1; }
                     if c == '}' {
                         depth -= 1;
@@ -1424,8 +1460,7 @@ impl Parser {
                         }
                     }
                     if c == ':' && depth == 1 && paren_depth == 0 && !in_format_spec {
-                        // Only treat as format spec when not inside parens/brackets
-                        // This allows lambda colons and walrus := to pass through
+                        // Only treat as format spec when not inside parens/brackets/strings
                         in_format_spec = true;
                         i += 1;
                         continue;

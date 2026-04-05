@@ -503,8 +503,10 @@ impl<'src> Lexer<'src> {
             false
         };
 
-        // Read the raw f-string content, preserving {expr} blocks
+        // Read the raw f-string content, preserving {expr} blocks.
+        // Track brace depth so quotes inside {expr} don't terminate the f-string.
         let mut content = String::new();
+        let mut brace_depth: u32 = 0;
         loop {
             if self.is_at_end() {
                 return Err(ParseError::new(
@@ -513,7 +515,101 @@ impl<'src> Lexer<'src> {
                 ));
             }
             let c = self.peek_char();
-            if c == quote {
+
+            // Inside an expression — track nested braces and string literals
+            if brace_depth > 0 {
+                if c == '{' {
+                    brace_depth += 1;
+                    content.push(c);
+                    self.advance();
+                    continue;
+                }
+                if c == '}' {
+                    brace_depth -= 1;
+                    content.push(c);
+                    self.advance();
+                    continue;
+                }
+                // Skip over string literals inside expressions to avoid
+                // confusing their quotes with the f-string delimiter
+                if c == '\'' || c == '"' {
+                    let inner_quote = c;
+                    content.push(c);
+                    self.advance();
+                    // Check for triple-quoted string inside expression
+                    let inner_triple = !self.is_at_end()
+                        && self.peek_char() == inner_quote
+                        && self.peek_char_at(1) == Some(inner_quote);
+                    if inner_triple {
+                        content.push(self.peek_char()); self.advance();
+                        content.push(self.peek_char()); self.advance();
+                        // Read until closing triple quote
+                        loop {
+                            if self.is_at_end() { break; }
+                            let ic = self.peek_char();
+                            if ic == '\\' {
+                                content.push(ic); self.advance();
+                                if !self.is_at_end() {
+                                    content.push(self.peek_char()); self.advance();
+                                }
+                                continue;
+                            }
+                            if ic == inner_quote
+                                && self.peek_char_at(1) == Some(inner_quote)
+                                && self.peek_char_at(2) == Some(inner_quote)
+                            {
+                                content.push(ic); self.advance();
+                                content.push(self.peek_char()); self.advance();
+                                content.push(self.peek_char()); self.advance();
+                                break;
+                            }
+                            content.push(ic);
+                            self.advance();
+                        }
+                    } else {
+                        // Single-quoted string — read until closing quote
+                        loop {
+                            if self.is_at_end() { break; }
+                            let ic = self.peek_char();
+                            if ic == '\\' {
+                                content.push(ic); self.advance();
+                                if !self.is_at_end() {
+                                    content.push(self.peek_char()); self.advance();
+                                }
+                                continue;
+                            }
+                            if ic == inner_quote {
+                                content.push(ic);
+                                self.advance();
+                                break;
+                            }
+                            content.push(ic);
+                            self.advance();
+                        }
+                    }
+                    continue;
+                }
+                content.push(c);
+                self.advance();
+                continue;
+            }
+
+            // Outside expression — normal f-string text
+            if c == '{' {
+                if self.peek_char_at(1) == Some('{') {
+                    // Escaped {{ — push literal { (but as {{ for parser to handle)
+                    content.push('{');
+                    content.push('{');
+                    self.advance(); self.advance();
+                    continue;
+                }
+                brace_depth = 1;
+                content.push(c);
+                self.advance();
+                continue;
+            }
+
+            if c == quote && brace_depth == 0 {
                 if triple {
                     if self.peek_char_at(1) == Some(quote)
                         && self.peek_char_at(2) == Some(quote)

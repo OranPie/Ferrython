@@ -57,7 +57,7 @@
 | `type.__subclasses__()` | ❌ | Not tracked |
 | `operator.length_hint()` | ✅ | Handles NativeFunction, NativeClosure, falls back to py_len() |
 | `dir()` completeness | ⚠️ | Missing imported names in some scopes |
-| Dict views (`.keys()`) | ⚠️ | Returns snapshot list, not live view object |
+| Dict views (`.keys()`) | ✅ | Live view objects backed by shared Arc; support len/iter/contains/repr |
 
 ### 3.5 Async Runtime
 | Feature | Status | Notes |
@@ -87,7 +87,7 @@
 | `dis` | Basic disassembly | Incomplete instruction set display |
 | `numbers` | `Number` ABC exists | `Complex`, `Real`, `Rational` are stubs |
 | `locale` | `getlocale()` returns C locale | No real locale support |
-| `inspect` | `isfunction()`, `isclass()` | `getmembers()`, `signature()` incomplete |
+| `inspect` | 17 functions: is*, getmembers, signature, getfullargspec, getdoc, getfile | Parameter/Signature classes are stubs |
 | `typing` | `TypeVar`, `Generic`, `Protocol` exist | All are no-op placeholders; `get_type_hints()` returns `{}` |
 
 ### 4.2 Incomplete Implementations
@@ -109,7 +109,7 @@
 
 **Core**: `ctypes`, `cffi`, `mmap`, `fcntl`, `select`, `resource`
 **Compression**: `gzip`, `bz2`, `lzma`, `zlib`, `zipfile`, `tarfile`
-**Data**: `array`, `fractions`, `cmath`
+**Data**: `cmath`
 **Dev tools**: `pdb`, `doctest`, `pydoc`, `tracemalloc`, `faulthandler`
 **Unicode**: `unicodedata`
 **Introspection**: `symtable`, `token`, `tokenize`, `code`
@@ -128,7 +128,7 @@
 | Pre-boxed constant cache | ✅ | Built once per function, shared across all frames via Arc |
 | Binary op fast paths | ✅ | int+int, float+float, str+str skip dunder dispatch |
 | Shared builtins | ✅ | Arc<IndexMap> — zero clone overhead per frame |
-| Attribute lookup | ⚠️ | Linear MRO scan every time; no method cache |
+| Attribute lookup | ✅ | Per-class method resolution cache; invalidated on namespace mutation |
 
 ## 6. Structural / Code Quality Issues
 
@@ -151,7 +151,7 @@
   - `asyncio.wait_for` timeout (Test 1230)
   - `asyncio.Queue` blocking get (Test 1340)
   - `super().__getattribute__` (Test 1260)
-  - Dict views not live (Test 1236, cosmetic)
+  - Dict views ✅ (Test 1236 — now live view objects)
 
 ---
 
