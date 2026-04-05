@@ -20,6 +20,11 @@ pub fn create_collections_module() -> PyObjectRef {
         ("deque", make_builtin(collections_deque)),
         ("most_common", make_builtin(collections_most_common)),
         ("ChainMap", PyObject::native_function("ChainMap", collections_chainmap)),
+        // Counter helper functions (usable as Counter.elements(c), Counter.update(c, other), etc.)
+        ("counter_elements", make_builtin(counter_elements)),
+        ("counter_update", make_builtin(counter_update)),
+        ("counter_subtract", make_builtin(counter_subtract)),
+        ("counter_total", make_builtin(counter_total)),
     ])
 }
 
@@ -127,6 +132,98 @@ fn collections_most_common(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         Ok(PyObject::list(result))
     } else {
         Err(PyException::type_error("most_common() argument must be a Counter"))
+    }
+}
+
+fn is_counter_internal_key(k: &HashableKey) -> bool {
+    matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__")
+}
+
+/// counter_elements(counter) -> list of elements repeated by their counts
+fn counter_elements(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("counter_elements requires a Counter")); }
+    if let PyObjectPayload::Dict(map) = &args[0].payload {
+        let r = map.read();
+        let mut result = Vec::new();
+        for (k, v) in r.iter() {
+            if is_counter_internal_key(k) { continue; }
+            let count = v.as_int().unwrap_or(0);
+            for _ in 0..count {
+                result.push(k.to_object());
+            }
+        }
+        Ok(PyObject::list(result))
+    } else {
+        Err(PyException::type_error("counter_elements requires a Counter"))
+    }
+}
+
+/// counter_update(counter, iterable_or_dict) -> None (mutates counter in-place)
+fn counter_update(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("counter_update requires counter and data")); }
+    if let PyObjectPayload::Dict(map) = &args[0].payload {
+        let mut w = map.write();
+        if let PyObjectPayload::Dict(other) = &args[1].payload {
+            let r = other.read();
+            for (k, v) in r.iter() {
+                if is_counter_internal_key(k) { continue; }
+                let existing = w.get(k).and_then(|x| x.as_int()).unwrap_or(0);
+                let add = v.as_int().unwrap_or(0);
+                w.insert(k.clone(), PyObject::int(existing + add));
+            }
+        } else {
+            let items = args[1].to_list()?;
+            for item in &items {
+                let key = item.to_hashable_key()?;
+                let existing = w.get(&key).and_then(|x| x.as_int()).unwrap_or(0);
+                w.insert(key, PyObject::int(existing + 1));
+            }
+        }
+        Ok(PyObject::none())
+    } else {
+        Err(PyException::type_error("counter_update requires a Counter as first argument"))
+    }
+}
+
+/// counter_subtract(counter, iterable_or_dict) -> None (mutates counter)
+fn counter_subtract(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("counter_subtract requires counter and data")); }
+    if let PyObjectPayload::Dict(map) = &args[0].payload {
+        let mut w = map.write();
+        if let PyObjectPayload::Dict(other) = &args[1].payload {
+            let r = other.read();
+            for (k, v) in r.iter() {
+                if is_counter_internal_key(k) { continue; }
+                let existing = w.get(k).and_then(|x| x.as_int()).unwrap_or(0);
+                let sub = v.as_int().unwrap_or(0);
+                w.insert(k.clone(), PyObject::int(existing - sub));
+            }
+        } else {
+            let items = args[1].to_list()?;
+            for item in &items {
+                let key = item.to_hashable_key()?;
+                let existing = w.get(&key).and_then(|x| x.as_int()).unwrap_or(0);
+                w.insert(key, PyObject::int(existing - 1));
+            }
+        }
+        Ok(PyObject::none())
+    } else {
+        Err(PyException::type_error("counter_subtract requires a Counter"))
+    }
+}
+
+/// counter_total(counter) -> int (sum of all counts)
+fn counter_total(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("counter_total requires a Counter")); }
+    if let PyObjectPayload::Dict(map) = &args[0].payload {
+        let r = map.read();
+        let total: i64 = r.iter()
+            .filter(|(k, _)| !is_counter_internal_key(k))
+            .map(|(_, v)| v.as_int().unwrap_or(0))
+            .sum();
+        Ok(PyObject::int(total))
+    } else {
+        Err(PyException::type_error("counter_total requires a Counter"))
     }
 }
 

@@ -126,6 +126,55 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
                 ))
             )))
         }
+        "__repr__" | "__str__" => {
+            let typename = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                cd.name.to_string()
+            } else {
+                "namedtuple".to_string()
+            };
+            if let Some(fields) = inst.class.get_attr("_fields") {
+                if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                    let attrs = inst.attrs.read();
+                    let parts: Vec<String> = field_names.iter()
+                        .map(|f| {
+                            let name = f.py_to_string();
+                            let val = attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
+                            format!("{}={}", name, val.py_to_string())
+                        })
+                        .collect();
+                    return Ok(PyObject::str_val(CompactString::from(format!("{}({})", typename, parts.join(", ")))));
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(format!("{}()", typename))))
+        }
+        "__eq__" => {
+            // Compare namedtuple instances by their _tuple values
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let other = &args[0];
+            let self_tuple = inst.attrs.read().get("_tuple").cloned();
+            let other_tuple = other.get_attr("_tuple");
+            if let (Some(st), Some(ot)) = (self_tuple, other_tuple) {
+                if let (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) = (&st.payload, &ot.payload) {
+                    if a.len() != b.len() { return Ok(PyObject::bool_val(false)); }
+                    for (av, bv) in a.iter().zip(b.iter()) {
+                        if !av.compare(bv, ferrython_core::object::CompareOp::Eq)?.is_truthy() {
+                            return Ok(PyObject::bool_val(false));
+                        }
+                    }
+                    return Ok(PyObject::bool_val(true));
+                }
+            }
+            Ok(PyObject::bool_val(false))
+        }
+        "__hash__" => {
+            // Simple hash based on field count
+            if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
+                if let PyObjectPayload::Tuple(items) = &tup.payload {
+                    return Ok(PyObject::int(items.len() as i64 * 31));
+                }
+            }
+            Ok(PyObject::int(0))
+        }
         _ => Err(PyException::attribute_error(format!("namedtuple has no attribute '{}'", method))),
     }
 }
