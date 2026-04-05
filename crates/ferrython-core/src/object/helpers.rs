@@ -786,6 +786,23 @@ pub(super) fn get_slice_impl(
             }
             Ok(PyObject::bytes(result))
         }
+        PyObjectPayload::Range { start: rstart, stop: rstop, step: rstep } => {
+            let len = if *rstep > 0 && *rstart < *rstop {
+                (rstop - rstart + rstep - 1) / rstep
+            } else if *rstep < 0 && *rstart > *rstop {
+                (rstart - rstop - rstep - 1) / (-rstep)
+            } else { 0 };
+            let (sv, ev, slice_step) = resolve_slice(start, stop, step, len);
+            let _new_step = rstep * slice_step;
+            let mut result = Vec::new();
+            let mut i = sv;
+            if slice_step > 0 {
+                while i < ev && i < len { result.push(PyObject::int(rstart + i * rstep)); i += slice_step; }
+            } else if slice_step < 0 {
+                while i > ev && i >= 0 { result.push(PyObject::int(rstart + i * rstep)); i += slice_step; }
+            }
+            Ok(PyObject::list(result))
+        }
         _ => Err(PyException::type_error(format!("'{}' object is not subscriptable", obj.type_name()))),
     }
 }
