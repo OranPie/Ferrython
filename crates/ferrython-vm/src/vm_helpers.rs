@@ -1065,15 +1065,15 @@ impl VirtualMachine {
             return Err(PyException::type_error("exec() takes 1 to 3 arguments"));
         }
         let code = if let PyObjectPayload::Code(co) = &args[0].payload {
-            (**co).clone()
+            Arc::clone(co)
         } else {
             let code_str = args[0].as_str().ok_or_else(||
                 PyException::type_error("exec() arg 1 must be a string or code object"))?;
             let module = ferrython_parser::parse(code_str, "<string>")
                 .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?;
             let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
-            compiler.compile_module(&module)
-                .map_err(|_| PyException::syntax_error("exec: compilation failed"))?
+            Arc::new(compiler.compile_module(&module)
+                .map_err(|_| PyException::syntax_error("exec: compilation failed"))?)
         };
         if args.len() >= 2 {
             if let PyObjectPayload::Dict(ref map) = args[1].payload {
@@ -1135,7 +1135,7 @@ impl VirtualMachine {
         }
         // Accept either a string or a code object (from compile())
         let code = if let PyObjectPayload::Code(co) = &args[0].payload {
-            (**co).clone()
+            Arc::clone(co)
         } else {
             let code_str = args[0].as_str().ok_or_else(||
                 PyException::type_error("eval() arg 1 must be a string, bytes or code object"))?;
@@ -1143,8 +1143,8 @@ impl VirtualMachine {
             let module = ferrython_parser::parse(&wrapped, "<string>")
                 .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?;
             let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
-            compiler.compile_module(&module)
-                .map_err(|_| PyException::syntax_error("eval: compilation failed"))?
+            Arc::new(compiler.compile_module(&module)
+                .map_err(|_| PyException::syntax_error("eval: compilation failed"))?)
         };
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
         if args.len() >= 2 {
@@ -1201,7 +1201,7 @@ impl VirtualMachine {
         let mut compiler = ferrython_compiler::Compiler::new(filename);
         let code = compiler.compile_module(&module)
             .map_err(|_| PyException::syntax_error("compile: compilation failed"))?;
-        Ok(PyObject::wrap(PyObjectPayload::Code(Box::new(code))))
+        Ok(PyObject::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))))
     }
 
     // ── Regex helpers (moved from vm_call.rs) ──

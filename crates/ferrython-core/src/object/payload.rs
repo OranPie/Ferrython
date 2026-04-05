@@ -44,7 +44,7 @@ pub enum PyObjectPayload {
     BuiltinType(CompactString),
     BoundMethod { receiver: PyObjectRef, method: PyObjectRef },
     BuiltinBoundMethod { receiver: PyObjectRef, method_name: CompactString },
-    Code(Box<ferrython_bytecode::CodeObject>),
+    Code(std::sync::Arc<ferrython_bytecode::CodeObject>),
     Class(ClassData),
     Instance(InstanceData),
     Module(ModuleData),

@@ -3,6 +3,7 @@
 use crate::opcode::Instruction;
 use bitflags::bitflags;
 use compact_str::CompactString;
+use std::sync::Arc;
 
 /// A constant value stored in the code object's constant pool.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,7 +18,8 @@ pub enum ConstantValue {
     Bytes(Vec<u8>),
     Ellipsis,
     /// A nested code object (for nested functions, classes, comprehensions).
-    Code(Box<CodeObject>),
+    /// Arc-wrapped to avoid deep clones on MAKE_FUNCTION.
+    Code(Arc<CodeObject>),
     /// A tuple of constants (used for default args, annotations, etc.).
     Tuple(Vec<ConstantValue>),
     /// frozenset of constants

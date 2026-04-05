@@ -262,6 +262,7 @@ impl PyFunction {
     /// Pre-convert all constants to PyObjectRef once.
     pub fn build_constant_cache(code: &CodeObject) -> Vec<PyObjectRef> {
         use ferrython_bytecode::code::ConstantValue;
+        use crate::object::PyObjectPayload;
         fn convert(c: &ConstantValue) -> PyObjectRef {
             match c {
                 ConstantValue::None => PyObject::none(),
@@ -273,7 +274,7 @@ impl PyFunction {
                 ConstantValue::Str(s) => PyObject::str_val(s.clone()),
                 ConstantValue::Bytes(b) => PyObject::bytes(b.clone()),
                 ConstantValue::Ellipsis => PyObject::ellipsis(),
-                ConstantValue::Code(co) => PyObject::code(*co.clone()),
+                ConstantValue::Code(co) => PyObject::wrap(PyObjectPayload::Code(Arc::clone(co))),
                 ConstantValue::Tuple(items) => {
                     PyObject::tuple(items.iter().map(|i| convert(i)).collect())
                 }

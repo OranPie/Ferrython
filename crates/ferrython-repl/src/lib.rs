@@ -102,7 +102,7 @@ pub fn run_repl() {
             Ok(module) => {
                 match ferrython_compiler::compile_interactive(&module, "<stdin>") {
                     Ok(code) => {
-                        match vm.execute_with_globals(code, globals.clone()) {
+                        match vm.execute_with_globals(std::sync::Arc::new(code), globals.clone()) {
                             Ok(_) => {}
                             Err(e) => eprintln!("{}", ferrython_debug::format_traceback(&e)),
                         }

@@ -2192,7 +2192,7 @@ impl VirtualMachine {
                     defaults = default_tuple.to_list().unwrap_or_default();
                 }
                 let code: Arc<CodeObject> = match &code_obj.payload {
-                    PyObjectPayload::Code(c) => Arc::new(*c.clone()),
+                    PyObjectPayload::Code(c) => Arc::clone(c),
                     _ => return Err(PyException::type_error(
                         "expected code object for MAKE_FUNCTION",
                     )),

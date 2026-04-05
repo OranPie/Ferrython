@@ -56,13 +56,13 @@ impl VirtualMachine {
             CompactString::from("__name__"),
             PyObject::str_val(CompactString::from("__main__")),
         );
-        self.execute_with_globals(code, globals)
+        self.execute_with_globals(Arc::new(code), globals)
     }
 
     /// Execute a code object with shared globals (for REPL).
-    pub fn execute_with_globals(&mut self, code: CodeObject, globals: SharedGlobals) -> PyResult<PyObjectRef> {
+    pub fn execute_with_globals(&mut self, code: Arc<CodeObject>, globals: SharedGlobals) -> PyResult<PyObjectRef> {
         self.install_hash_eq_dispatch();
-        let frame = Frame::new(Arc::new(code), globals, Arc::clone(&self.builtins));
+        let frame = Frame::new(code, globals, Arc::clone(&self.builtins));
         self.call_stack.push(frame);
         let result = self.run_frame();
         self.call_stack.pop();

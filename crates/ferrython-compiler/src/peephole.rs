@@ -14,7 +14,7 @@ pub fn optimize(code: &mut CodeObject) {
     // Recursively optimize nested code objects (functions, classes, comprehensions)
     for constant in &mut code.constants {
         if let ConstantValue::Code(inner) = constant {
-            optimize(inner);
+            optimize(std::sync::Arc::make_mut(inner));
         }
     }
 

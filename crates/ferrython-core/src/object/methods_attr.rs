@@ -957,7 +957,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             Some(PyObject::tuple(cells))
                         }
                     }
-                    "__code__" => Some(PyObject::code((*f.code).clone())),
+                    "__code__" => Some(PyObject::wrap(PyObjectPayload::Code(Arc::clone(&f.code)))),
                     "__kwdefaults__" => {
                         if f.kw_defaults.is_empty() { Some(PyObject::none()) }
                         else {
@@ -1476,7 +1476,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             ConstantValue::Str(s) => PyObject::str_val(s.clone()),
                             ConstantValue::Bytes(b) => PyObject::bytes(b.clone()),
                             ConstantValue::Ellipsis => PyObject::ellipsis(),
-                            ConstantValue::Code(co) => PyObject::code(*co.clone()),
+                            ConstantValue::Code(co) => PyObject::wrap(PyObjectPayload::Code(std::sync::Arc::clone(co))),
                             ConstantValue::Tuple(items) => {
                                 PyObject::tuple(items.iter().map(|i| cv_to_obj(i)).collect())
                             }
