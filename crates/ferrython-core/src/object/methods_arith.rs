@@ -12,6 +12,32 @@ use super::payload::*;
 use super::helpers::*;
 use super::methods::PyObjectMethods;
 
+/// Extract keys as HashableKey set from DictKeys or DictItems view.
+fn extract_view_keys(obj: &PyObjectRef) -> Option<IndexMap<HashableKey, PyObjectRef>> {
+    match &obj.payload {
+        PyObjectPayload::DictKeys(m) => {
+            let r = m.read();
+            Some(r.keys().map(|k| (k.clone(), k.to_object())).collect())
+        }
+        PyObjectPayload::DictItems(m) => {
+            let r = m.read();
+            Some(r.iter().map(|(k, v)| {
+                let tuple_obj = PyObject::tuple(vec![k.to_object(), v.clone()]);
+                let tuple_key = HashableKey::Tuple(vec![k.clone(), HashableKey::from_object(v).unwrap_or(HashableKey::None)]);
+                (tuple_key, tuple_obj)
+            }).collect())
+        }
+        PyObjectPayload::Set(s) => Some(s.read().clone()),
+        PyObjectPayload::FrozenSet(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Build a set result from an IndexMap of HashableKey.
+fn keys_to_set(keys: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
+    PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(keys))))
+}
+
 pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
         // Unwrap builtin subclass instances to their underlying values
         let ua = unwrap_builtin_subclass(a);
@@ -141,6 +167,16 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 let mut result = IndexMap::new();
                 for (k, v) in a.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            }
+            // DictKeys/DictItems set-like difference
+            (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
+            | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
+                if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
+                let ak = extract_view_keys(a).unwrap();
+                let bk = extract_view_keys(b).unwrap();
+                let mut result = IndexMap::new();
+                for (k, v) in ak.iter() { if !bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(keys_to_set(result))
             }
             // Counter - Counter: subtract counts, keep positive
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
@@ -541,6 +577,16 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                     )))
                 }
             }
+            // DictKeys/DictItems set-like intersection
+            (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
+            | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
+                if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
+                let ak = extract_view_keys(a).unwrap();
+                let bk = extract_view_keys(b).unwrap();
+                let mut result = IndexMap::new();
+                for (k, v) in ak.iter() { if bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(keys_to_set(result))
+            }
             _ => int_bitop(a, b, "&", |a, b| a & b),
         }
 }
@@ -610,6 +656,16 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                     Ok(PyObject::dict(result))
                 }
             }
+            // DictKeys/DictItems set-like union
+            (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
+            | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
+                if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
+                let ak = extract_view_keys(a).unwrap();
+                let bk = extract_view_keys(b).unwrap();
+                let mut result = ak;
+                for (k, v) in bk.iter() { result.entry(k.clone()).or_insert_with(|| v.clone()); }
+                Ok(keys_to_set(result))
+            }
             _ => int_bitop(a, b, "|", |a, b| a | b),
         }
 }
@@ -628,6 +684,17 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                 for (k, v) in a.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 for (k, v) in b.iter() { if !a.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            }
+            // DictKeys/DictItems set-like symmetric difference
+            (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
+            | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
+                if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
+                let ak = extract_view_keys(a).unwrap();
+                let bk = extract_view_keys(b).unwrap();
+                let mut result = IndexMap::new();
+                for (k, v) in ak.iter() { if !bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                for (k, v) in bk.iter() { if !ak.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(keys_to_set(result))
             }
             _ => int_bitop(a, b, "^", |a, b| a ^ b),
         }
