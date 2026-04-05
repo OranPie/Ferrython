@@ -5,6 +5,7 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods,
     make_module, make_builtin, check_args, check_args_min,
+    InstanceData,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -1058,5 +1059,235 @@ pub fn create_token_module() -> PyObjectRef {
             }
             PyObject::dict(map)
         }),
+    ])
+}
+
+/// Helper: create a simple namespace-like instance with the given attrs.
+fn make_ns(cls_name: &str, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
+    use std::sync::Arc;
+    use parking_lot::RwLock;
+    let cls = PyObject::class(CompactString::from(cls_name), vec![], IndexMap::new());
+    PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class: cls,
+        attrs: Arc::new(RwLock::new(attrs)),
+        dict_storage: None,
+    }))
+}
+
+// ── tokenize module ──
+
+pub fn create_tokenize_module() -> PyObjectRef {
+    fn tokenize_string(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        check_args("generate_tokens", args, 1)?;
+        let source = args[0].py_to_string();
+        let mut tokens = Vec::new();
+
+        for (lineno, line) in source.lines().enumerate() {
+            let lineno = lineno + 1;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                tokens.push(make_token_info(61, "", (lineno, 0), (lineno, line.len()), line));
+                continue;
+            }
+            if trimmed.starts_with('#') {
+                tokens.push(make_token_info(60, trimmed, (lineno, 0), (lineno, line.len()), line));
+                continue;
+            }
+            let mut col = 0;
+            let chars: Vec<char> = line.chars().collect();
+            while col < chars.len() {
+                if chars[col].is_whitespace() { col += 1; continue; }
+                let start_col = col;
+                if chars[col].is_alphabetic() || chars[col] == '_' {
+                    while col < chars.len() && (chars[col].is_alphanumeric() || chars[col] == '_') { col += 1; }
+                    let word: String = chars[start_col..col].iter().collect();
+                    tokens.push(make_token_info(1, &word, (lineno, start_col), (lineno, col), line));
+                } else if chars[col].is_ascii_digit() {
+                    while col < chars.len() && (chars[col].is_ascii_digit() || chars[col] == '.' || chars[col] == 'e' || chars[col] == 'E' || chars[col] == '_') { col += 1; }
+                    let num: String = chars[start_col..col].iter().collect();
+                    tokens.push(make_token_info(2, &num, (lineno, start_col), (lineno, col), line));
+                } else if chars[col] == '"' || chars[col] == '\'' {
+                    let quote = chars[col];
+                    col += 1;
+                    while col < chars.len() && chars[col] != quote { col += 1; }
+                    if col < chars.len() { col += 1; }
+                    let s: String = chars[start_col..col].iter().collect();
+                    tokens.push(make_token_info(3, &s, (lineno, start_col), (lineno, col), line));
+                } else {
+                    let op: String = chars[start_col..start_col+1].iter().collect();
+                    col += 1;
+                    tokens.push(make_token_info(54, &op, (lineno, start_col), (lineno, col), line));
+                }
+            }
+            tokens.push(make_token_info(4, "\n", (lineno, line.len()), (lineno, line.len()+1), line));
+        }
+        tokens.push(make_token_info(0, "", (0, 0), (0, 0), ""));
+        Ok(PyObject::list(tokens))
+    }
+
+    fn make_token_info(type_id: i64, string: &str, start: (usize, usize), end: (usize, usize), line: &str) -> PyObjectRef {
+        PyObject::tuple(vec![
+            PyObject::int(type_id),
+            PyObject::str_val(CompactString::from(string)),
+            PyObject::tuple(vec![PyObject::int(start.0 as i64), PyObject::int(start.1 as i64)]),
+            PyObject::tuple(vec![PyObject::int(end.0 as i64), PyObject::int(end.1 as i64)]),
+            PyObject::str_val(CompactString::from(line)),
+        ])
+    }
+
+    fn tokenize_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        check_args("open", args, 1)?;
+        let filename = args[0].py_to_string();
+        let content = std::fs::read_to_string(filename.as_str())
+            .map_err(|e| PyException::os_error(format!("{}", e)))?;
+        Ok(PyObject::str_val(CompactString::from(content)))
+    }
+
+    fn detect_encoding(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("utf-8")),
+            PyObject::list(vec![]),
+        ]))
+    }
+
+    make_module("tokenize", vec![
+        ("generate_tokens", make_builtin(tokenize_string)),
+        ("open", make_builtin(tokenize_open)),
+        ("detect_encoding", make_builtin(detect_encoding)),
+        ("ENDMARKER", PyObject::int(0)),
+        ("NAME", PyObject::int(1)),
+        ("NUMBER", PyObject::int(2)),
+        ("STRING", PyObject::int(3)),
+        ("NEWLINE", PyObject::int(4)),
+        ("INDENT", PyObject::int(5)),
+        ("DEDENT", PyObject::int(6)),
+        ("OP", PyObject::int(54)),
+        ("COMMENT", PyObject::int(60)),
+        ("NL", PyObject::int(61)),
+        ("ENCODING", PyObject::int(62)),
+        ("ERRORTOKEN", PyObject::int(59)),
+    ])
+}
+
+// ── symtable module ──
+
+pub fn create_symtable_module() -> PyObjectRef {
+    fn symtable_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        check_args_min("symtable", args, 2)?;
+        let source = args[0].py_to_string();
+        let filename = args[1].py_to_string();
+        let kind = if args.len() > 2 { args[2].py_to_string() } else { "exec".to_string() };
+
+        let mut symbols: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+        let mut locals: Vec<String> = Vec::new();
+        let mut globals: Vec<String> = Vec::new();
+
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if let Some(pos) = trimmed.find('=') {
+                if pos > 0 && !trimmed[..pos].contains('(') && !trimmed[..pos].contains('[') {
+                    let name = trimmed[..pos].trim();
+                    if name.chars().all(|c| c.is_alphanumeric() || c == '_') && !name.is_empty() {
+                        if !locals.contains(&name.to_string()) {
+                            locals.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            if trimmed.starts_with("global ") {
+                for name in trimmed[7..].split(',') {
+                    let name = name.trim().to_string();
+                    if !globals.contains(&name) { globals.push(name); }
+                }
+            }
+            if trimmed.starts_with("def ") || trimmed.starts_with("class ") {
+                let rest = if trimmed.starts_with("def ") { &trimmed[4..] } else { &trimmed[6..] };
+                if let Some(name_end) = rest.find(|c: char| !c.is_alphanumeric() && c != '_') {
+                    let name = rest[..name_end].to_string();
+                    if !locals.contains(&name) { locals.push(name); }
+                }
+            }
+        }
+
+        for name in &locals {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name.as_str())));
+            ns.insert(CompactString::from("is_local"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("is_global"), PyObject::bool_val(globals.contains(name)));
+            ns.insert(CompactString::from("is_referenced"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("is_imported"), PyObject::bool_val(false));
+            ns.insert(CompactString::from("is_parameter"), PyObject::bool_val(false));
+            ns.insert(CompactString::from("is_free"), PyObject::bool_val(false));
+            ns.insert(CompactString::from("is_assigned"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("is_namespace"), PyObject::bool_val(false));
+            symbols.insert(CompactString::from(name.as_str()), make_ns("Symbol", ns));
+        }
+
+        let mut st_ns = IndexMap::new();
+        st_ns.insert(CompactString::from("name"), PyObject::str_val(CompactString::from("top")));
+        st_ns.insert(CompactString::from("type"), PyObject::str_val(CompactString::from(kind.as_str())));
+        st_ns.insert(CompactString::from("filename"), PyObject::str_val(CompactString::from(filename.as_str())));
+        st_ns.insert(CompactString::from("get_symbols"),
+            PyObject::native_closure("SymbolTable.get_symbols", {
+                let syms = symbols.clone();
+                move |_: &[PyObjectRef]| {
+                    Ok(PyObject::list(syms.values().cloned().collect()))
+                }
+            })
+        );
+        st_ns.insert(CompactString::from("lookup"),
+            PyObject::native_closure("SymbolTable.lookup", {
+                let syms = symbols.clone();
+                move |args: &[PyObjectRef]| {
+                    check_args("lookup", args, 1)?;
+                    let name = args[0].py_to_string();
+                    match syms.get(name.as_str()) {
+                        Some(sym) => Ok(sym.clone()),
+                        None => Err(PyException::key_error(format!("symbol '{}' not found", name))),
+                    }
+                }
+            })
+        );
+        st_ns.insert(CompactString::from("get_identifiers"),
+            PyObject::native_closure("SymbolTable.get_identifiers", {
+                let syms = symbols;
+                move |_: &[PyObjectRef]| {
+                    Ok(PyObject::list(syms.keys().map(|k| PyObject::str_val(k.clone())).collect()))
+                }
+            })
+        );
+        st_ns.insert(CompactString::from("has_children"), PyObject::bool_val(false));
+        st_ns.insert(CompactString::from("get_children"),
+            make_builtin(|_: &[PyObjectRef]| Ok(PyObject::list(vec![]))),
+        );
+        Ok(make_ns("SymbolTable", st_ns))
+    }
+
+    fn symbol_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        check_args("Symbol", args, 1)?;
+        let name = args[0].py_to_string();
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name.as_str())));
+        ns.insert(CompactString::from("is_local"), PyObject::bool_val(false));
+        ns.insert(CompactString::from("is_global"), PyObject::bool_val(false));
+        ns.insert(CompactString::from("is_referenced"), PyObject::bool_val(false));
+        ns.insert(CompactString::from("is_imported"), PyObject::bool_val(false));
+        ns.insert(CompactString::from("is_parameter"), PyObject::bool_val(false));
+        ns.insert(CompactString::from("is_free"), PyObject::bool_val(false));
+        ns.insert(CompactString::from("is_assigned"), PyObject::bool_val(false));
+        ns.insert(CompactString::from("is_namespace"), PyObject::bool_val(false));
+        Ok(make_ns("Symbol", ns))
+    }
+
+    make_module("symtable", vec![
+        ("symtable", make_builtin(symtable_fn)),
+        ("Symbol", make_builtin(symbol_fn)),
+        ("DEF_GLOBAL", PyObject::int(1)),
+        ("DEF_LOCAL", PyObject::int(2)),
+        ("DEF_PARAM", PyObject::int(4)),
+        ("DEF_IMPORT", PyObject::int(8)),
+        ("DEF_FREE", PyObject::int(16)),
+        ("DEF_FREE_CLASS", PyObject::int(32)),
+        ("DEF_BOUND", PyObject::int(64)),
     ])
 }

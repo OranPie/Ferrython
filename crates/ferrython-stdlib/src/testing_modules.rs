@@ -1402,3 +1402,225 @@ pub fn create_timeit_module() -> PyObjectRef {
         ("default_repeat", PyObject::int(5)),
     ])
 }
+
+// ── faulthandler module ──
+
+pub fn create_faulthandler_module() -> PyObjectRef {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+
+    let enable = PyObject::native_closure("faulthandler.enable", move |_args: &[PyObjectRef]| {
+        ENABLED.store(true, Ordering::Relaxed);
+        Ok(PyObject::none())
+    });
+    let disable = PyObject::native_closure("faulthandler.disable", move |_: &[PyObjectRef]| {
+        ENABLED.store(false, Ordering::Relaxed);
+        Ok(PyObject::none())
+    });
+    let is_enabled = PyObject::native_closure("faulthandler.is_enabled", move |_: &[PyObjectRef]| {
+        Ok(PyObject::bool_val(ENABLED.load(Ordering::Relaxed)))
+    });
+    let dump_traceback = make_builtin(|_args: &[PyObjectRef]| {
+        eprintln!("Current thread (main thread):");
+        eprintln!("  File \"<unknown>\", line 0 in <module>");
+        Ok(PyObject::none())
+    });
+    let register_fn = make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::none())
+    });
+    let unregister_fn = make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none()));
+    let dump_traceback_later = make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()));
+    let cancel_dump = make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none()));
+
+    make_module("faulthandler", vec![
+        ("enable", enable),
+        ("disable", disable),
+        ("is_enabled", is_enabled),
+        ("dump_traceback", dump_traceback),
+        ("dump_traceback_later", dump_traceback_later),
+        ("cancel_dump_traceback_later", cancel_dump),
+        ("register", register_fn),
+        ("unregister", unregister_fn),
+    ])
+}
+
+// ── tracemalloc module ──
+
+pub fn create_tracemalloc_module() -> PyObjectRef {
+    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+    use parking_lot::RwLock;
+
+    static TRACING: AtomicBool = AtomicBool::new(false);
+    static NFRAME: AtomicI64 = AtomicI64::new(1);
+
+    // Snapshot data: list of (filename, lineno, size) triples
+    static ALLOCS: std::sync::LazyLock<RwLock<Vec<(String, i64, i64)>>> =
+        std::sync::LazyLock::new(|| RwLock::new(Vec::new()));
+
+    let start = PyObject::native_closure("tracemalloc.start", move |args: &[PyObjectRef]| {
+        let nframe = if !args.is_empty() {
+            args[0].as_int().unwrap_or(1).max(1)
+        } else { 1 };
+        NFRAME.store(nframe, Ordering::Relaxed);
+        TRACING.store(true, Ordering::Relaxed);
+        ALLOCS.write().clear();
+        Ok(PyObject::none())
+    });
+    let stop = PyObject::native_closure("tracemalloc.stop", move |_: &[PyObjectRef]| {
+        TRACING.store(false, Ordering::Relaxed);
+        Ok(PyObject::none())
+    });
+    let is_tracing = PyObject::native_closure("tracemalloc.is_tracing", move |_: &[PyObjectRef]| {
+        Ok(PyObject::bool_val(TRACING.load(Ordering::Relaxed)))
+    });
+    let get_traced_memory = PyObject::native_closure("tracemalloc.get_traced_memory", move |_: &[PyObjectRef]| {
+        // Return (current, peak) in bytes — use process RSS as estimate
+        let current = {
+            #[cfg(target_os = "linux")]
+            {
+                std::fs::read_to_string("/proc/self/statm")
+                    .ok()
+                    .and_then(|s| s.split_whitespace().nth(1).and_then(|v| v.parse::<i64>().ok()))
+                    .map(|pages| pages * 4096)
+                    .unwrap_or(0)
+            }
+            #[cfg(not(target_os = "linux"))]
+            { 0i64 }
+        };
+        Ok(PyObject::tuple(vec![PyObject::int(current), PyObject::int(current)]))
+    });
+    let get_tracemalloc_memory = make_builtin(|_: &[PyObjectRef]| {
+        Ok(PyObject::int(0))
+    });
+    let take_snapshot = PyObject::native_closure("tracemalloc.take_snapshot", move |_: &[PyObjectRef]| {
+        let allocs = ALLOCS.read().clone();
+        let traces = PyObject::list(
+            allocs.iter().map(|(f, l, s)| {
+                PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from(f.as_str())),
+                    PyObject::int(*l),
+                    PyObject::int(*s),
+                ])
+            }).collect()
+        );
+        Ok(make_module("Snapshot", vec![
+            ("traces", traces),
+            ("statistics", make_builtin(|_: &[PyObjectRef]| Ok(PyObject::list(vec![])))),
+            ("compare_to", make_builtin(|_: &[PyObjectRef]| Ok(PyObject::list(vec![])))),
+            ("filter_traces", make_builtin(|_: &[PyObjectRef]| {
+                Ok(make_module("_filtered", vec![
+                    ("traces", PyObject::list(vec![])),
+                    ("statistics", make_builtin(|_: &[PyObjectRef]| Ok(PyObject::list(vec![])))),
+                ]))
+            })),
+        ]))
+    });
+    let get_object_traceback = make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::none())
+    });
+    let clear_traces = PyObject::native_closure("tracemalloc.clear_traces", move |_: &[PyObjectRef]| {
+        ALLOCS.write().clear();
+        Ok(PyObject::none())
+    });
+
+    make_module("tracemalloc", vec![
+        ("start", start),
+        ("stop", stop),
+        ("is_tracing", is_tracing),
+        ("get_traced_memory", get_traced_memory),
+        ("get_tracemalloc_memory", get_tracemalloc_memory),
+        ("take_snapshot", take_snapshot),
+        ("get_object_traceback", get_object_traceback),
+        ("clear_traces", clear_traces),
+    ])
+}
+
+// ── pydoc module ──
+
+pub fn create_pydoc_module() -> PyObjectRef {
+    fn pydoc_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            println!("Welcome to Ferrython help utility!");
+            println!("Type help(object) to get help on an object.");
+            return Ok(PyObject::none());
+        }
+        let obj = &args[0];
+        match &obj.payload {
+            PyObjectPayload::Str(s) => {
+                println!("Help on topic '{}':", s);
+                println!("  (No detailed help available)");
+            }
+            PyObjectPayload::BuiltinType(name) => {
+                println!("Help on class {}:", name);
+                println!("  Built-in type '{}'", name);
+            }
+            PyObjectPayload::Function(f) => {
+                println!("Help on function {}:", f.name);
+                if let Some(doc) = obj.get_attr("__doc__") {
+                    if let PyObjectPayload::Str(s) = &doc.payload {
+                        println!("  {}", s);
+                    }
+                }
+            }
+            PyObjectPayload::Class(cd) => {
+                println!("Help on class {}:", cd.name);
+                let ns = cd.namespace.read();
+                if let Some(doc) = ns.get("__doc__") {
+                    if let PyObjectPayload::Str(s) = &doc.payload { println!("  {}", s); }
+                }
+                println!("\n  Methods:");
+                for (name, _) in ns.iter() {
+                    if !name.starts_with('_') {
+                        println!("    {}", name);
+                    }
+                }
+            }
+            PyObjectPayload::Module(entries) => {
+                println!("Help on module:");
+                let rd = entries.attrs.read();
+                if let Some(doc) = rd.get("__doc__") {
+                    if let PyObjectPayload::Str(s) = &doc.payload { println!("  {}", s); }
+                }
+                println!("\n  Contents:");
+                for (name, _) in rd.iter() {
+                    if !name.starts_with('_') {
+                        println!("    {}", name);
+                    }
+                }
+            }
+            _ => {
+                println!("Help on {} object:", obj.type_name());
+                println!("  Type: {}", obj.type_name());
+            }
+        }
+        Ok(PyObject::none())
+    }
+
+    fn render_doc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Ok(PyObject::str_val(CompactString::from("")));
+        }
+        let obj = &args[0];
+        let type_name = obj.type_name();
+        Ok(PyObject::str_val(CompactString::from(format!("Help on {} object", type_name))))
+    }
+
+    fn getdoc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Ok(PyObject::none());
+        }
+        if let Some(doc) = args[0].get_attr("__doc__") {
+            if !matches!(&doc.payload, PyObjectPayload::None) {
+                return Ok(doc);
+            }
+        }
+        Ok(PyObject::none())
+    }
+
+    make_module("pydoc", vec![
+        ("help", make_builtin(pydoc_help)),
+        ("render_doc", make_builtin(render_doc)),
+        ("getdoc", make_builtin(getdoc)),
+        ("Helper", make_builtin(pydoc_help)),
+    ])
+}

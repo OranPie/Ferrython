@@ -9,6 +9,7 @@ use ferrython_core::object::{
     has_descriptor_get, is_data_descriptor, lookup_in_class_mro, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
 };
+use ferrython_core::intern;
 use std::sync::Arc;
 
 // ── Group 1: Stack + LoadConst ───────────────────────────────────────
@@ -279,7 +280,7 @@ impl VirtualMachine {
                             method: ga,
                         }
                     });
-                    let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
+                    let name_arg = PyObject::str_val(intern::intern_or_new(name.as_str()));
                     match self.call_object(method, vec![name_arg]) {
                         Ok(result) => {
                             self.vm_push(result);
@@ -288,7 +289,7 @@ impl VirtualMachine {
                         Err(e) if e.kind == ExceptionKind::AttributeError => {
                             // Fall through to __getattr__
                             if let Some(ga2) = obj.get_attr("__getattr__") {
-                                let name_arg2 = PyObject::str_val(CompactString::from(name.as_str()));
+                                let name_arg2 = PyObject::str_val(intern::intern_or_new(name.as_str()));
                                 let result = self.call_object(ga2, vec![name_arg2])?;
                                 self.vm_push(result);
                                 return Ok(None);
@@ -320,7 +321,7 @@ impl VirtualMachine {
                     if let Some(func) = func {
                         let result = self.call_object(func, vec![obj.clone()])?;
                         if let PyObjectPayload::Instance(ref inst) = obj.payload {
-                            inst.attrs.write().insert(CompactString::from(name.as_str()), result.clone());
+                            inst.attrs.write().insert(intern::intern_or_new(name.as_str()), result.clone());
                         }
                         self.vm_push(result);
                     } else {
@@ -376,7 +377,7 @@ impl VirtualMachine {
                 }
                 if let PyObjectPayload::Instance(_) = &obj.payload {
                     if let Some(ga) = obj.get_attr("__getattr__") {
-                        let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
+                        let name_arg = PyObject::str_val(intern::intern_or_new(name.as_str()));
                         let result = self.call_object(ga, vec![name_arg])?;
                         self.vm_push(result);
                         return Ok(None);

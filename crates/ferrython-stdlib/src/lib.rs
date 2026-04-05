@@ -232,6 +232,12 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "profile" => Some(testing_modules::create_profile_module()),
         "cProfile" => Some(testing_modules::create_cprofile_module()),
         "timeit" => Some(testing_modules::create_timeit_module()),
+        "faulthandler" => Some(testing_modules::create_faulthandler_module()),
+        "tracemalloc" => Some(testing_modules::create_tracemalloc_module()),
+        "pydoc" => Some(testing_modules::create_pydoc_module()),
+        // Introspection (extended)
+        "tokenize" => Some(introspection_modules::create_tokenize_module()),
+        "symtable" => Some(introspection_modules::create_symtable_module()),
         // Persistence
         "shelve" => Some(serial_modules::create_shelve_module()),
         _ => None,
