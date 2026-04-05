@@ -198,6 +198,38 @@ impl VirtualMachine {
                         self.execute_one(instr) // version mismatch
                     }
                 }
+                // Inline PopJumpIfFalse for primitive types (hot in conditionals/loops)
+                Opcode::PopJumpIfFalse => {
+                    let v = frame.stack.pop().expect("stack underflow");
+                    let is_falsy = match &v.payload {
+                        PyObjectPayload::Bool(b) => !b,
+                        PyObjectPayload::None => true,
+                        PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                        _ => !self.vm_is_truthy(&v)?,
+                    };
+                    if is_falsy {
+                        self.call_stack.last_mut().unwrap().ip = instr.arg as usize;
+                    }
+                    Ok(None)
+                }
+                Opcode::PopJumpIfTrue => {
+                    let v = frame.stack.pop().expect("stack underflow");
+                    let is_truthy = match &v.payload {
+                        PyObjectPayload::Bool(b) => *b,
+                        PyObjectPayload::None => false,
+                        PyObjectPayload::Int(PyInt::Small(n)) => *n != 0,
+                        _ => self.vm_is_truthy(&v)?,
+                    };
+                    if is_truthy {
+                        self.call_stack.last_mut().unwrap().ip = instr.arg as usize;
+                    }
+                    Ok(None)
+                }
+                // Inline unconditional jumps (trivial but saves dispatch)
+                Opcode::JumpForward | Opcode::JumpAbsolute => {
+                    frame.ip = instr.arg as usize;
+                    Ok(None)
+                }
                 _ => self.execute_one(instr),
             };
 
