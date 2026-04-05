@@ -175,6 +175,20 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
             }
             Ok(PyObject::int(0))
         }
+        "__contains__" => {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
+                return Ok(PyObject::bool_val(tup.contains(&args[0])?));
+            }
+            Ok(PyObject::bool_val(false))
+        }
+        "__getitem__" => {
+            if args.is_empty() { return Err(PyException::type_error("__getitem__ requires an argument")); }
+            if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
+                return tup.get_item(&args[0]);
+            }
+            Err(PyException::index_error("index out of range"))
+        }
         _ => Err(PyException::attribute_error(format!("namedtuple has no attribute '{}'", method))),
     }
 }

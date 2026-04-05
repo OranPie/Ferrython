@@ -120,7 +120,9 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
         if name == "_fields" {
             return inst.class.get_attr("_fields");
         }
-        if matches!(name, "_asdict" | "_replace" | "_make" | "__len__" | "__iter__") {
+        if matches!(name, "_asdict" | "_replace" | "_make" | "__len__" | "__iter__"
+            | "__repr__" | "__str__" | "__eq__" | "__hash__" | "__contains__" | "__getitem__")
+        {
             return Some(make_bound(name));
         }
     }
