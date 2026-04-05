@@ -109,14 +109,14 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                 let idx = key.to_int()?;
                 let len = items.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
-                if actual < 0 || actual >= len { return Err(PyException::index_error("index out of range")); }
+                if actual < 0 || actual >= len { return Err(PyException::index_error("list index out of range")); }
                 Ok(items[actual as usize].clone())
             }
             PyObjectPayload::Tuple(items) => {
                 let idx = key.to_int()?;
                 let len = items.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
-                if actual < 0 || actual >= len { return Err(PyException::index_error("index out of range")); }
+                if actual < 0 || actual >= len { return Err(PyException::index_error("tuple index out of range")); }
                 Ok(items[actual as usize].clone())
             }
             PyObjectPayload::Dict(map) => {

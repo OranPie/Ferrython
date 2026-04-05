@@ -2105,6 +2105,16 @@ impl VirtualMachine {
         }
 
         self.call_stack.push(frame);
+        // Check recursion limit before running
+        let limit = ferrython_stdlib::get_recursion_limit() as usize;
+        if self.call_stack.len() > limit {
+            if let Some(frame) = self.call_stack.pop() {
+                frame.recycle(&mut self.frame_pool);
+            }
+            return Err(PyException::recursion_error(
+                "maximum recursion depth exceeded"
+            ));
+        }
         let result = self.run_frame();
         if let Some(frame) = self.call_stack.pop() {
             frame.recycle(&mut self.frame_pool);
