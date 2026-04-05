@@ -130,6 +130,7 @@ fixture_test!(test_phase65, "test_phase65.py");
 fixture_test!(test_phase66, "test_phase66.py");
 fixture_test!(test_phase67, "test_phase67.py");
 fixture_test!(test_phase68, "test_phase68.py");
+fixture_test!(test_phase69, "test_phase69.py");
 
 // Expand tests
 fixture_test!(test_expand17, "test_expand17.py");

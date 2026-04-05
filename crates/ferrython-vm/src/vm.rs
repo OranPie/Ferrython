@@ -246,6 +246,13 @@ impl VirtualMachine {
                     if exc.traceback.is_empty() {
                         self.attach_traceback(&mut exc);
                     }
+                    // Implicit chaining: if there's an active exception and the
+                    // new one doesn't already have context, set __context__
+                    if exc.context.is_none() {
+                        if let Some(ref active) = self.active_exception {
+                            exc.context = Some(Box::new(active.clone()));
+                        }
+                    }
                     if let Some(handler_ip) = self.unwind_except() {
                         // Store active exception for bare `raise` re-raise
                         self.active_exception = Some(exc.clone());
@@ -300,6 +307,10 @@ impl VirtualMachine {
                             Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
                         } else {
                             Self::store_exc_attr(&exc_value, "__context__", PyObject::none());
+                        }
+                        // Store __suppress_context__ (True when explicit cause is set)
+                        if exc.cause.is_some() {
+                            Self::store_exc_attr(&exc_value, "__suppress_context__", PyObject::bool_val(true));
                         }
                         // Store __traceback__ on the exception value
                         let tb_obj = Self::build_traceback_object(&exc.traceback);
