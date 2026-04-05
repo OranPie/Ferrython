@@ -27,3 +27,4 @@ zip = { workspace = true }
 bzip2 = { workspace = true }
 xz2 = { workspace = true }
 tar = { workspace = true }
+libc = { workspace = true }

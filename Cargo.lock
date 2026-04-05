@@ -360,6 +360,7 @@ dependencies = [
  "ferrython-traceback",
  "flate2",
  "indexmap",
+ "libc",
  "md-5",
  "num-bigint",
  "num-traits",
