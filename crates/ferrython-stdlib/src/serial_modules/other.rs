@@ -191,8 +191,11 @@ pub fn create_struct_module() -> PyObjectRef {
     make_module("struct", vec![
         ("pack", make_builtin(struct_pack)),
         ("unpack", make_builtin(struct_unpack)),
+        ("unpack_from", make_builtin(struct_unpack_from)),
+        ("iter_unpack", make_builtin(struct_iter_unpack)),
         ("calcsize", make_builtin(struct_calcsize)),
         ("Struct", make_builtin(struct_struct_ctor)),
+        ("error", PyObject::class(CompactString::from("error"), vec![], indexmap::IndexMap::new())),
     ])
 }
 
@@ -215,12 +218,25 @@ fn struct_struct_ctor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             full_args.extend_from_slice(args);
             struct_pack(&full_args)
         }));
-        let fmt_for_unpack = fmt_str;
+        let fmt_for_unpack = fmt_str.clone();
         w.insert(CompactString::from("unpack"), PyObject::native_closure("unpack", move |args| {
             if args.is_empty() {
                 return Err(PyException::type_error("Struct.unpack() requires a buffer"));
             }
             struct_unpack(&[PyObject::str_val(CompactString::from(&fmt_for_unpack)), args[0].clone()])
+        }));
+        let fmt_for_uf = fmt_str.clone();
+        w.insert(CompactString::from("unpack_from"), PyObject::native_closure("unpack_from", move |args| {
+            let mut full_args = vec![PyObject::str_val(CompactString::from(&fmt_for_uf))];
+            full_args.extend_from_slice(args);
+            struct_unpack_from(&full_args)
+        }));
+        let fmt_for_iu = fmt_str;
+        w.insert(CompactString::from("iter_unpack"), PyObject::native_closure("iter_unpack", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("Struct.iter_unpack() requires a buffer"));
+            }
+            struct_iter_unpack(&[PyObject::str_val(CompactString::from(&fmt_for_iu)), args[0].clone()])
         }));
     }
     Ok(inst)
@@ -407,6 +423,42 @@ fn struct_unpack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         unpack_one_format(c, count, &data, &mut offset, &mut result, little_endian);
     }
     Ok(PyObject::tuple(result))
+}
+
+/// struct.unpack_from(fmt, buffer, offset=0)
+fn struct_unpack_from(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("unpack_from requires format and buffer")); }
+    let data = match &args[1].payload {
+        PyObjectPayload::Bytes(b) => b.clone(),
+        _ => return Err(PyException::type_error("unpack_from requires bytes buffer")),
+    };
+    let start_offset = if args.len() > 2 { args[2].as_int().unwrap_or(0) as usize } else { 0 };
+    if start_offset > data.len() {
+        return Err(PyException::runtime_error("unpack_from offset out of range"));
+    }
+    let sliced = &data[start_offset..];
+    struct_unpack(&[args[0].clone(), PyObject::bytes(sliced.to_vec())])
+}
+
+/// struct.iter_unpack(fmt, buffer) → iterator of tuples
+fn struct_iter_unpack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("iter_unpack requires format and buffer")); }
+    let fmt_obj = &args[0];
+    let data = match &args[1].payload {
+        PyObjectPayload::Bytes(b) => b.clone(),
+        _ => return Err(PyException::type_error("iter_unpack requires bytes buffer")),
+    };
+    let size = struct_calcsize(&[fmt_obj.clone()])?.as_int().unwrap_or(0) as usize;
+    if size == 0 { return Err(PyException::runtime_error("iter_unpack format has zero size")); }
+    let mut results = Vec::new();
+    let mut offset = 0;
+    while offset + size <= data.len() {
+        let chunk = PyObject::bytes(data[offset..offset + size].to_vec());
+        let tup = struct_unpack(&[fmt_obj.clone(), chunk])?;
+        results.push(tup);
+        offset += size;
+    }
+    Ok(PyObject::list(results))
 }
 
 fn unpack_one_format(c: char, count: usize, data: &[u8], offset: &mut usize, result: &mut Vec<PyObjectRef>, little_endian: bool) {
