@@ -1285,6 +1285,32 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
             }
             PyObjectPayload::Super { cls, instance } => {
+                // super().__class__ → the 'super' type itself
+                if name == "__class__" {
+                    return Some(PyObject::builtin_type(CompactString::from("super")));
+                }
+                // super().__getattribute__(name) → delegate to super's MRO lookup
+                if name == "__getattribute__" {
+                    let super_obj = obj.clone();
+                    return Some(Arc::new(PyObject {
+                        payload: PyObjectPayload::NativeClosure {
+                            name: CompactString::from("super.__getattribute__"),
+                            func: Arc::new(move |args: &[PyObjectRef]| {
+                                if args.is_empty() {
+                                    return Err(PyException::type_error(
+                                        "__getattribute__() requires at least 1 argument"
+                                    ));
+                                }
+                                let attr_name = args[0].py_to_string();
+                                super_obj.get_attr(&attr_name).ok_or_else(|| {
+                                    PyException::attribute_error(format!(
+                                        "'super' object has no attribute '{}'", attr_name
+                                    ))
+                                })
+                            }),
+                        }
+                    }));
+                }
                 // super() proxy: look up in the RUNTIME class MRO, skipping up to and including cls
                 let runtime_cls = match &instance.payload {
                     PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
