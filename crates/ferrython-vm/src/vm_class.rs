@@ -55,7 +55,7 @@ impl VirtualMachine {
 
         // Build MRO: [self_class, ...linearized_parents, object]
         // Simple C3-like: for single inheritance just chain; for multiple use bases order
-        let mro = Self::compute_mro(&bases);
+        let mro = Self::compute_mro(&bases)?;
         let cls = PyObject::wrap(PyObjectPayload::Class(ClassData::new(
             class_name, bases.clone(), namespace, mro, None,
         )));
@@ -372,7 +372,7 @@ impl VirtualMachine {
             // Metaclass provided: call metaclass.__new__(mcs, name, bases, namespace_dict)
             // which should return the class object.
             let bases_list: Vec<PyObjectRef> = bases.clone();
-            let mro = Self::compute_mro(&bases_list);
+            let mro = Self::compute_mro(&bases_list)?;
             
             // Build namespace dict for passing to __new__
             let ns_dict = {
@@ -493,8 +493,7 @@ impl VirtualMachine {
             Ok(cls)
         } else {
             // No metaclass: build normally
-            let mro = Self::compute_mro(&bases);
-            let cls = PyObject::wrap(PyObjectPayload::Class(ClassData::new(
+            let mro = Self::compute_mro(&bases)?;            let cls = PyObject::wrap(PyObjectPayload::Class(ClassData::new(
                 class_name, bases.clone(), namespace, mro, None,
             )));
             // __init_subclass__: bind to new subclass (cls), not parent
@@ -594,11 +593,11 @@ impl VirtualMachine {
         Ok(())
     }
 
-    /// Compute a simple MRO from bases (includes bases and their ancestors, NOT self).
-    /// C3 linearization for MRO computation (matches CPython).
-    pub(crate) fn compute_mro(bases: &[PyObjectRef]) -> Vec<PyObjectRef> {
+    /// Compute MRO from bases using C3 linearization (matches CPython).
+    /// Returns `TypeError` for inconsistent MRO (same as CPython).
+    pub(crate) fn compute_mro(bases: &[PyObjectRef]) -> PyResult<Vec<PyObjectRef>> {
         if bases.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
         // Build linearizations: L(base) for each base, plus the bases list itself
         let mut linearizations: Vec<Vec<PyObjectRef>> = Vec::new();
@@ -614,7 +613,7 @@ impl VirtualMachine {
         Self::c3_merge(&mut linearizations)
     }
 
-    pub(crate) fn c3_merge(linearizations: &mut Vec<Vec<PyObjectRef>>) -> Vec<PyObjectRef> {
+    pub(crate) fn c3_merge(linearizations: &mut Vec<Vec<PyObjectRef>>) -> PyResult<Vec<PyObjectRef>> {
         let mut result = Vec::new();
         loop {
             // Remove empty lists
@@ -644,11 +643,13 @@ impl VirtualMachine {
                     }
                 }
             } else {
-                // C3 linearization failure — fall back to DFS
-                break;
+                // C3 linearization failure — raise TypeError like CPython
+                return Err(PyException::type_error(
+                    "Cannot create a consistent method resolution order (MRO)"
+                ));
             }
         }
-        result
+        Ok(result)
     }
 
 }
