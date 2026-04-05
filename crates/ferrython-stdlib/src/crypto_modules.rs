@@ -362,23 +362,10 @@ pub fn create_hmac_module() -> PyObjectRef {
     }
 
     fn simple_hash(data: &[u8], algo: &str) -> Vec<u8> {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        // Use Rust's built-in hasher as a simplified substitute
-        // (Real HMAC would need proper SHA implementation)
-        let mut hasher = DefaultHasher::new();
-        data.hash(&mut hasher);
-        algo.hash(&mut hasher);
-        let h = hasher.finish();
-        let mut result = Vec::new();
-        for i in 0..4 {
-            let mut hasher2 = DefaultHasher::new();
-            data.hash(&mut hasher2);
-            (h.wrapping_add(i as u64)).hash(&mut hasher2);
-            let v = hasher2.finish();
-            result.extend_from_slice(&v.to_be_bytes());
-        }
-        result
+        compute_digest(algo, data).map(|(_, bytes)| bytes).unwrap_or_else(|_| {
+            // Fallback: use sha256 if unknown algorithm
+            compute_digest("sha256", data).map(|(_, b)| b).unwrap_or_default()
+        })
     }
 
     fn hmac_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

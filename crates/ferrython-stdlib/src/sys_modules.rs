@@ -923,6 +923,7 @@ pub fn create_os_path_module() -> PyObjectRef {
         ("exists", make_builtin(os_path_exists)),
         ("isfile", make_builtin(os_path_isfile)),
         ("isdir", make_builtin(os_path_isdir)),
+        ("islink", make_builtin(os_path_islink)),
         ("basename", make_builtin(os_path_basename)),
         ("dirname", make_builtin(os_path_dirname)),
         ("abspath", make_builtin(os_path_abspath)),
@@ -931,11 +932,17 @@ pub fn create_os_path_module() -> PyObjectRef {
         ("isabs", make_builtin(os_path_isabs)),
         ("normpath", make_builtin(os_path_normpath)),
         ("expanduser", make_builtin(os_path_expanduser)),
+        ("expandvars", make_builtin(os_path_expandvars)),
         ("getsize", make_builtin(os_path_getsize)),
+        ("getmtime", make_builtin(os_path_getmtime)),
+        ("getctime", make_builtin(os_path_getctime)),
+        ("getatime", make_builtin(os_path_getatime)),
         ("sep", PyObject::str_val(CompactString::from(std::path::MAIN_SEPARATOR.to_string()))),
         ("realpath", make_builtin(os_path_realpath)),
         ("relpath", make_builtin(os_path_relpath)),
         ("commonpath", make_builtin(os_path_commonpath)),
+        ("commonprefix", make_builtin(os_path_commonprefix)),
+        ("samefile", make_builtin(os_path_samefile)),
     ])
 }
 
@@ -1167,7 +1174,101 @@ fn os_path_commonpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::str_val(CompactString::from(result)))
 }
 
-// ── string module ──
+fn os_path_getmtime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.getmtime", args, 1)?;
+    let s = args[0].py_to_string();
+    let meta = std::fs::metadata(&s).map_err(|_| PyException::file_not_found_error(format!("No such file: '{}'", s)))?;
+    let mtime = meta.modified().map_err(|_| PyException::runtime_error("getmtime failed"))?;
+    let epoch = mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    Ok(PyObject::float(epoch.as_secs_f64()))
+}
+
+fn os_path_getctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.getctime", args, 1)?;
+    let s = args[0].py_to_string();
+    let meta = std::fs::metadata(&s).map_err(|_| PyException::file_not_found_error(format!("No such file: '{}'", s)))?;
+    // On Unix, ctime is metadata change time (use created or modified as fallback)
+    let ctime = meta.created().or_else(|_| meta.modified())
+        .map_err(|_| PyException::runtime_error("getctime failed"))?;
+    let epoch = ctime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    Ok(PyObject::float(epoch.as_secs_f64()))
+}
+
+fn os_path_getatime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.getatime", args, 1)?;
+    let s = args[0].py_to_string();
+    let meta = std::fs::metadata(&s).map_err(|_| PyException::file_not_found_error(format!("No such file: '{}'", s)))?;
+    let atime = meta.accessed().map_err(|_| PyException::runtime_error("getatime failed"))?;
+    let epoch = atime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    Ok(PyObject::float(epoch.as_secs_f64()))
+}
+
+fn os_path_expandvars(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.expandvars", args, 1)?;
+    let s = args[0].py_to_string();
+    let mut result = String::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'{' {
+                i += 1; // skip {
+                let start = i;
+                while i < bytes.len() && bytes[i] != b'}' { i += 1; }
+                let var = &s[start..i];
+                if i < bytes.len() { i += 1; } // skip }
+                result.push_str(&std::env::var(var).unwrap_or(format!("${{{}}}", var)));
+            } else {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') { i += 1; }
+                let var = &s[start..i];
+                if var.is_empty() {
+                    result.push('$');
+                } else {
+                    result.push_str(&std::env::var(var).unwrap_or(format!("${}", var)));
+                }
+            }
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn os_path_commonprefix(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.commonprefix", args, 1)?;
+    let paths = args[0].to_list()?;
+    if paths.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+    let strs: Vec<String> = paths.iter().map(|p| p.py_to_string()).collect();
+    let first = strs[0].as_bytes();
+    let mut prefix_len = first.len();
+    for s in &strs[1..] {
+        let b = s.as_bytes();
+        prefix_len = prefix_len.min(b.len());
+        for i in 0..prefix_len {
+            if first[i] != b[i] { prefix_len = i; break; }
+        }
+    }
+    Ok(PyObject::str_val(CompactString::from(&strs[0][..prefix_len])))
+}
+
+fn os_path_samefile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("samefile() requires 2 arguments")); }
+    let a = std::fs::canonicalize(args[0].py_to_string());
+    let b = std::fs::canonicalize(args[1].py_to_string());
+    match (a, b) {
+        (Ok(pa), Ok(pb)) => Ok(PyObject::bool_val(pa == pb)),
+        _ => Ok(PyObject::bool_val(false)),
+    }
+}
+
+fn os_path_islink(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.path.islink", args, 1)?;
+    let s = args[0].py_to_string();
+    Ok(PyObject::bool_val(std::fs::symlink_metadata(&s).map(|m| m.file_type().is_symlink()).unwrap_or(false)))
+}
 
 
 pub fn create_platform_module() -> PyObjectRef {
