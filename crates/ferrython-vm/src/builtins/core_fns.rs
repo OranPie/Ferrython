@@ -1245,6 +1245,16 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
         }
         // Any type is subclass of object
         (_, PyObjectPayload::BuiltinType(b)) if b.as_str() == "object" => true,
+        // BuiltinType vs ABC Class: check _abc_builtin_types registry
+        (PyObjectPayload::BuiltinType(type_name), PyObjectPayload::Class(sup_cd)) => {
+            if let Some(registry) = sup_cd.namespace.read().get("_abc_builtin_types") {
+                if let PyObjectPayload::Set(set) = &registry.payload {
+                    let key = HashableKey::Str(CompactString::from(type_name.as_str()));
+                    return set.read().contains_key(&key);
+                }
+            }
+            false
+        }
         _ => false,
     }
 }

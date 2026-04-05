@@ -607,37 +607,47 @@ pub fn create_types_module() -> PyObjectRef {
 // ── collections.abc module ──
 
 pub fn create_collections_abc_module() -> PyObjectRef {
-    let make_abc = |name: &str| -> PyObjectRef {
+    // Create ABC class with a set of builtin type names that are virtual subclasses.
+    // This enables `issubclass(dict, Mapping)` etc. without needing metaclass dispatch.
+    let make_abc = |name: &str, builtin_types: &[&str]| -> PyObjectRef {
         let mut ns = IndexMap::new();
         ns.insert(CompactString::from("__abstractmethods__"), PyObject::set(IndexMap::new()));
+        if !builtin_types.is_empty() {
+            let mut type_set = IndexMap::new();
+            for t in builtin_types {
+                let key = ferrython_core::types::HashableKey::Str(CompactString::from(*t));
+                type_set.insert(key, PyObject::str_val(CompactString::from(*t)));
+            }
+            ns.insert(CompactString::from("_abc_builtin_types"), PyObject::set(type_set));
+        }
         PyObject::class(CompactString::from(name), vec![], ns)
     };
     make_module("collections.abc", vec![
-        ("Hashable", make_abc("Hashable")),
-        ("Iterable", make_abc("Iterable")),
-        ("Iterator", make_abc("Iterator")),
-        ("Reversible", make_abc("Reversible")),
-        ("Generator", make_abc("Generator")),
-        ("Sized", make_abc("Sized")),
-        ("Container", make_abc("Container")),
-        ("Callable", make_abc("Callable")),
-        ("Collection", make_abc("Collection")),
-        ("Sequence", make_abc("Sequence")),
-        ("MutableSequence", make_abc("MutableSequence")),
-        ("ByteString", make_abc("ByteString")),
-        ("Set", make_abc("Set")),
-        ("MutableSet", make_abc("MutableSet")),
-        ("Mapping", make_abc("Mapping")),
-        ("MutableMapping", make_abc("MutableMapping")),
-        ("MappingView", make_abc("MappingView")),
-        ("KeysView", make_abc("KeysView")),
-        ("ItemsView", make_abc("ItemsView")),
-        ("ValuesView", make_abc("ValuesView")),
-        ("Awaitable", make_abc("Awaitable")),
-        ("Coroutine", make_abc("Coroutine")),
-        ("AsyncIterable", make_abc("AsyncIterable")),
-        ("AsyncIterator", make_abc("AsyncIterator")),
-        ("AsyncGenerator", make_abc("AsyncGenerator")),
+        ("Hashable",        make_abc("Hashable", &["int", "float", "str", "bool", "bytes", "tuple", "frozenset", "NoneType"])),
+        ("Iterable",        make_abc("Iterable", &["list", "tuple", "dict", "set", "frozenset", "str", "bytes", "bytearray", "range"])),
+        ("Iterator",        make_abc("Iterator", &[])),
+        ("Reversible",      make_abc("Reversible", &["list", "dict", "range"])),
+        ("Generator",       make_abc("Generator", &[])),
+        ("Sized",           make_abc("Sized", &["list", "tuple", "dict", "set", "frozenset", "str", "bytes", "bytearray", "range"])),
+        ("Container",       make_abc("Container", &["list", "tuple", "dict", "set", "frozenset", "str", "bytes", "bytearray", "range"])),
+        ("Callable",        make_abc("Callable", &[])),
+        ("Collection",      make_abc("Collection", &["list", "tuple", "dict", "set", "frozenset", "str", "bytes", "bytearray", "range"])),
+        ("Sequence",        make_abc("Sequence", &["list", "tuple", "str", "bytes", "bytearray", "range"])),
+        ("MutableSequence", make_abc("MutableSequence", &["list", "bytearray"])),
+        ("ByteString",      make_abc("ByteString", &["bytes", "bytearray"])),
+        ("Set",             make_abc("Set", &["set", "frozenset"])),
+        ("MutableSet",      make_abc("MutableSet", &["set"])),
+        ("Mapping",         make_abc("Mapping", &["dict"])),
+        ("MutableMapping",  make_abc("MutableMapping", &["dict"])),
+        ("MappingView",     make_abc("MappingView", &[])),
+        ("KeysView",        make_abc("KeysView", &[])),
+        ("ItemsView",       make_abc("ItemsView", &[])),
+        ("ValuesView",      make_abc("ValuesView", &[])),
+        ("Awaitable",       make_abc("Awaitable", &[])),
+        ("Coroutine",       make_abc("Coroutine", &[])),
+        ("AsyncIterable",   make_abc("AsyncIterable", &[])),
+        ("AsyncIterator",   make_abc("AsyncIterator", &[])),
+        ("AsyncGenerator",  make_abc("AsyncGenerator", &[])),
     ])
 }
 

@@ -138,7 +138,13 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             PyObjectPayload::ByteArray(b) => {
                 format!("bytearray({})", format_bytes_literal(b, "b"))
             }
-            PyObjectPayload::List(items) => format_collection("[", "]", &items.read()),
+            PyObjectPayload::List(items) => {
+                let ptr = Arc::as_ptr(obj) as usize;
+                if !repr_enter(ptr) { return "[...]".into(); }
+                let result = format_collection("[", "]", &items.read());
+                repr_leave(ptr);
+                result
+            }
             PyObjectPayload::Tuple(items) => {
                 if items.len() == 1 { format!("({},)", items[0].repr()) }
                 else { format_collection("(", ")", items) }
@@ -146,13 +152,25 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             PyObjectPayload::Set(m) => {
                 let m = m.read();
                 if m.is_empty() { "set()".into() }
-                else { format_set("{", "}", &m) }
+                else {
+                    let ptr = Arc::as_ptr(obj) as usize;
+                    if !repr_enter(ptr) { return "set(...)".into(); }
+                    let result = format_set("{", "}", &m);
+                    repr_leave(ptr);
+                    result
+                }
             }
             PyObjectPayload::FrozenSet(m) => {
                 if m.is_empty() { "frozenset()".into() }
                 else { format!("frozenset({})", format_set("{", "}", m)) }
             }
-            PyObjectPayload::Dict(m) => format_dict(&m.read()),
+            PyObjectPayload::Dict(m) => {
+                let ptr = Arc::as_ptr(obj) as usize;
+                if !repr_enter(ptr) { return "{...}".into(); }
+                let result = format_dict(&m.read());
+                repr_leave(ptr);
+                result
+            }
             PyObjectPayload::InstanceDict(attrs) => {
                 let attrs = attrs.read();
                 let mut parts = Vec::new();

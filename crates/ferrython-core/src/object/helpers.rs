@@ -4,10 +4,28 @@ use crate::error::{PyException, PyResult};
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::payload::*;
 use super::methods::PyObjectMethods;
+
+// ── Recursive repr guard ──
+// Prevents infinite recursion when repr()ing self-referential structures
+// like `lst = []; lst.append(lst)`.
+thread_local! {
+    static REPR_ACTIVE: std::cell::RefCell<HashSet<usize>> = std::cell::RefCell::new(HashSet::new());
+}
+
+/// Enter repr for an object identified by its pointer. Returns true if this is
+/// a new entry (safe to proceed). Returns false if already active (cycle detected).
+pub fn repr_enter(ptr: usize) -> bool {
+    REPR_ACTIVE.with(|set| set.borrow_mut().insert(ptr))
+}
+
+pub fn repr_leave(ptr: usize) {
+    REPR_ACTIVE.with(|set| { set.borrow_mut().remove(&ptr); });
+}
 
 // ── Helpers ──
 

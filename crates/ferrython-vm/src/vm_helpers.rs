@@ -203,11 +203,14 @@ impl VirtualMachine {
                 Ok(obj.repr())
             }
             PyObjectPayload::List(items) => {
+                let ptr = Arc::as_ptr(obj) as usize;
+                if !ferrython_core::object::repr_enter(ptr) { return Ok("[...]".to_string()); }
                 let items = items.read().clone();
                 let mut parts = Vec::new();
                 for item in &items {
                     parts.push(self.vm_repr(item)?);
                 }
+                ferrython_core::object::repr_leave(ptr);
                 Ok(format!("[{}]", parts.join(", ")))
             }
             PyObjectPayload::Tuple(items) => {
@@ -222,6 +225,8 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::Dict(m) => {
+                let ptr = Arc::as_ptr(obj) as usize;
+                if !ferrython_core::object::repr_enter(ptr) { return Ok("{...}".to_string()); }
                 let m = m.read().clone();
                 let mut parts = Vec::new();
                 for (k, v) in &m {
@@ -234,15 +239,19 @@ impl VirtualMachine {
                     let vr = self.vm_repr(v)?;
                     parts.push(format!("{}: {}", kr, vr));
                 }
+                ferrython_core::object::repr_leave(ptr);
                 Ok(format!("{{{}}}", parts.join(", ")))
             }
             PyObjectPayload::Set(m) => {
+                let ptr = Arc::as_ptr(obj) as usize;
+                if !ferrython_core::object::repr_enter(ptr) { return Ok("set(...)".to_string()); }
                 let m = m.read().clone();
-                if m.is_empty() { return Ok("set()".to_string()); }
+                if m.is_empty() { ferrython_core::object::repr_leave(ptr); return Ok("set()".to_string()); }
                 let mut parts = Vec::new();
                 for v in m.values() {
                     parts.push(self.vm_repr(v)?);
                 }
+                ferrython_core::object::repr_leave(ptr);
                 Ok(format!("{{{}}}", parts.join(", ")))
             }
             _ => Ok(obj.repr()),
