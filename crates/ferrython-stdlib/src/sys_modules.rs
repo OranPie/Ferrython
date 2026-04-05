@@ -1028,8 +1028,18 @@ pub fn create_getpass_module() -> PyObjectRef {
     fn getpass_getuser(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let user = std::env::var("USER")
             .or_else(|_| std::env::var("LOGNAME"))
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_else(|_| "unknown".to_string());
+            .or_else(|_| std::env::var("USERNAME"));
+        let user = match user {
+            Ok(u) => u,
+            Err(_) => {
+                // Last resort: try whoami command (unix)
+                std::process::Command::new("whoami")
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            }
+        };
         Ok(PyObject::str_val(CompactString::from(user)))
     }
 

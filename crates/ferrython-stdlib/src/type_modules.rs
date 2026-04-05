@@ -72,8 +72,17 @@ pub fn create_typing_module() -> PyObjectRef {
                     let mut attrs = IndexMap::new();
                     attrs.insert(CompactString::from("__origin__"), PyObject::str_val(CompactString::from(origin_display.as_str())));
                     attrs.insert(CompactString::from("__args__"), args_tuple);
-                    attrs.insert(CompactString::from("__repr__"), PyObject::str_val(CompactString::from(&repr)));
-                    attrs.insert(CompactString::from("__str__"), PyObject::str_val(CompactString::from(&repr)));
+                    // __repr__ and __str__ must be callable (not plain strings)
+                    let repr_clone = repr.clone();
+                    attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+                        "__repr__",
+                        move |_args| Ok(PyObject::str_val(CompactString::from(repr_clone.as_str()))),
+                    ));
+                    let str_clone = repr.clone();
+                    attrs.insert(CompactString::from("__str__"), PyObject::native_closure(
+                        "__str__",
+                        move |_args| Ok(PyObject::str_val(CompactString::from(str_clone.as_str()))),
+                    ));
                     Ok(PyObject::instance_with_attrs(cls, attrs))
                 }
             },

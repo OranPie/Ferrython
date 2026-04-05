@@ -184,10 +184,29 @@ fn build_socket_object(
                     guard.tcp_stream = Some(stream);
                     Ok(PyObject::none())
                 }
-                Err(e) => Err(PyException::os_error(format!(
-                    "[Errno 111] Connection refused: {}",
-                    e
-                ))),
+                Err(e) => {
+                    use std::io::ErrorKind;
+                    let exc = match e.kind() {
+                        ErrorKind::ConnectionRefused => PyException::new(
+                            ExceptionKind::ConnectionRefusedError,
+                            format!("[Errno 111] Connection refused: {}", e),
+                        ),
+                        ErrorKind::ConnectionReset => PyException::new(
+                            ExceptionKind::ConnectionResetError,
+                            format!("[Errno 104] Connection reset: {}", e),
+                        ),
+                        ErrorKind::ConnectionAborted => PyException::new(
+                            ExceptionKind::ConnectionAbortedError,
+                            format!("[Errno 103] Connection aborted: {}", e),
+                        ),
+                        ErrorKind::TimedOut => PyException::new(
+                            ExceptionKind::TimeoutError,
+                            format!("[Errno 110] Connection timed out: {}", e),
+                        ),
+                        _ => PyException::os_error(format!("{}", e)),
+                    };
+                    Err(exc)
+                }
             }
         }),
     );

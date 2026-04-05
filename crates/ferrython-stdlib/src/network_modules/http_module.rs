@@ -533,49 +533,30 @@ fn urllib_parse_urlparse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let url = args[0].py_to_string();
     let p = parse_url_string(&url);
-    // Return a named-tuple-like object with 6 components:
-    // (scheme, netloc, path, params, query, fragment)
-    let result = PyObject::tuple(vec![
-        PyObject::str_val(CompactString::from(p.scheme)),
-        PyObject::str_val(CompactString::from(p.netloc)),
-        PyObject::str_val(CompactString::from(p.path)),
-        PyObject::str_val(CompactString::from("")), // params (rarely used)
-        PyObject::str_val(CompactString::from(p.query)),
-        PyObject::str_val(CompactString::from(p.fragment)),
-    ]);
 
-    // Also expose as a module with named attrs for attribute access
+    // Build a ParseResult-like object with both named attributes and tuple behavior
+    let scheme = PyObject::str_val(CompactString::from(&p.scheme));
+    let netloc = PyObject::str_val(CompactString::from(&p.netloc));
+    let path = PyObject::str_val(CompactString::from(&p.path));
+    let params = PyObject::str_val(CompactString::from(""));
+    let query = PyObject::str_val(CompactString::from(&p.query));
+    let fragment = PyObject::str_val(CompactString::from(&p.fragment));
+
+    let components = vec![
+        scheme.clone(), netloc.clone(), path.clone(),
+        params.clone(), query.clone(), fragment.clone(),
+    ];
+
+    let cls = PyObject::class(CompactString::from("ParseResult"), vec![], IndexMap::new());
     let mut attrs = IndexMap::new();
-    let pr = parse_url_string(&url);
-    attrs.insert(
-        CompactString::from("scheme"),
-        PyObject::str_val(CompactString::from(pr.scheme)),
-    );
-    attrs.insert(
-        CompactString::from("netloc"),
-        PyObject::str_val(CompactString::from(pr.netloc)),
-    );
-    attrs.insert(
-        CompactString::from("path"),
-        PyObject::str_val(CompactString::from(pr.path)),
-    );
-    attrs.insert(
-        CompactString::from("params"),
-        PyObject::str_val(CompactString::from("")),
-    );
-    attrs.insert(
-        CompactString::from("query"),
-        PyObject::str_val(CompactString::from(pr.query)),
-    );
-    attrs.insert(
-        CompactString::from("fragment"),
-        PyObject::str_val(CompactString::from(pr.fragment)),
-    );
-    attrs.insert(
-        CompactString::from("hostname"),
-        PyObject::str_val(CompactString::from(pr.host)),
-    );
-    attrs.insert(CompactString::from("port"), PyObject::int(pr.port as i64));
+    attrs.insert(CompactString::from("scheme"), scheme);
+    attrs.insert(CompactString::from("netloc"), netloc);
+    attrs.insert(CompactString::from("path"), path);
+    attrs.insert(CompactString::from("params"), params);
+    attrs.insert(CompactString::from("query"), query);
+    attrs.insert(CompactString::from("fragment"), fragment);
+    attrs.insert(CompactString::from("hostname"), PyObject::str_val(CompactString::from(&p.host)));
+    attrs.insert(CompactString::from("port"), PyObject::int(p.port as i64));
 
     // geturl()
     let url_c = url.clone();
@@ -586,10 +567,48 @@ fn urllib_parse_urlparse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }),
     );
 
-    // Iteration support — when used as a tuple, return the 6 components
-    // For now, return the simple tuple since that's the most common usage
-    let _ = attrs; // We build the named attrs but return the tuple for simplicity
-    Ok(result)
+    // __iter__ for tuple-like unpacking
+    let iter_components = components.clone();
+    attrs.insert(
+        CompactString::from("__iter__"),
+        PyObject::native_closure("__iter__", move |_args| {
+            Ok(PyObject::tuple(iter_components.clone()))
+        }),
+    );
+
+    // __getitem__ for indexing
+    let idx_components = components.clone();
+    attrs.insert(
+        CompactString::from("__getitem__"),
+        PyObject::native_closure("__getitem__", move |args| {
+            let idx = if !args.is_empty() { args[0].as_int().unwrap_or(0) } else { 0 };
+            let i = if idx < 0 { (6 + idx) as usize } else { idx as usize };
+            idx_components.get(i).cloned().ok_or_else(|| {
+                PyException::index_error("tuple index out of range")
+            })
+        }),
+    );
+
+    // __len__
+    attrs.insert(
+        CompactString::from("__len__"),
+        PyObject::native_closure("__len__", move |_args| Ok(PyObject::int(6))),
+    );
+
+    // __repr__
+    let repr_components = components;
+    attrs.insert(
+        CompactString::from("__repr__"),
+        PyObject::native_closure("__repr__", move |_args| {
+            let parts: Vec<String> = repr_components.iter().map(|c| format!("'{}'", c.py_to_string())).collect();
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "ParseResult(scheme={}, netloc={}, path={}, params={}, query={}, fragment={})",
+                parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+            ))))
+        }),
+    );
+
+    Ok(PyObject::instance_with_attrs(cls, attrs))
 }
 
 fn urllib_parse_urljoin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
