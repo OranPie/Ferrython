@@ -2,7 +2,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin, check_args,
+    make_module, make_builtin,
 };
 use ferrython_core::types::HashableKey;
 
@@ -312,12 +312,87 @@ fn try_call_default(default: &PyObjectRef, obj: &PyObjectRef) -> PyResult<Option
 }
 
 fn json_loads(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("json.loads", args, 1)?;
+    if args.is_empty() {
+        return Err(PyException::type_error("json.loads requires a string argument"));
+    }
     let s = match &args[0].payload {
         PyObjectPayload::Str(s) => s.to_string(),
+        PyObjectPayload::Bytes(b) => String::from_utf8_lossy(b).to_string(),
         _ => return Err(PyException::type_error("json.loads requires a string")),
     };
-    parse_json_value(&s, &mut 0)
+    
+    // Extract kwargs if present
+    let kwargs = args.last().and_then(|a| {
+        if let PyObjectPayload::Dict(d) = &a.payload { Some(d.read().clone()) } else { None }
+    });
+    let object_hook = kwargs.as_ref().and_then(|kw| {
+        kw.get(&HashableKey::Str(CompactString::from("object_hook"))).cloned()
+    }).filter(|v| !matches!(&v.payload, PyObjectPayload::None));
+    let parse_float = kwargs.as_ref().and_then(|kw| {
+        kw.get(&HashableKey::Str(CompactString::from("parse_float"))).cloned()
+    }).filter(|v| !matches!(&v.payload, PyObjectPayload::None));
+    let parse_int = kwargs.as_ref().and_then(|kw| {
+        kw.get(&HashableKey::Str(CompactString::from("parse_int"))).cloned()
+    }).filter(|v| !matches!(&v.payload, PyObjectPayload::None));
+    
+    let result = parse_json_value(&s, &mut 0)?;
+    
+    // Apply hooks if provided
+    if object_hook.is_some() || parse_float.is_some() || parse_int.is_some() {
+        apply_json_hooks(&result, &object_hook, &parse_float, &parse_int)
+    } else {
+        Ok(result)
+    }
+}
+
+fn apply_json_hooks(
+    value: &PyObjectRef,
+    object_hook: &Option<PyObjectRef>,
+    parse_float: &Option<PyObjectRef>,
+    parse_int: &Option<PyObjectRef>,
+) -> PyResult<PyObjectRef> {
+    match &value.payload {
+        PyObjectPayload::Dict(d) => {
+            // Recursively apply hooks to values
+            let rd = d.read();
+            let mut new_map = indexmap::IndexMap::new();
+            for (k, v) in rd.iter() {
+                let new_v = apply_json_hooks(v, object_hook, parse_float, parse_int)?;
+                new_map.insert(k.clone(), new_v);
+            }
+            let new_dict = PyObject::dict(new_map);
+            // Apply object_hook to the dict
+            if let Some(hook) = object_hook {
+                try_call_default(hook, &new_dict).map(|r| r.unwrap_or(new_dict))
+            } else {
+                Ok(new_dict)
+            }
+        }
+        PyObjectPayload::List(items) => {
+            let r = items.read();
+            let new_items: Vec<PyObjectRef> = r.iter()
+                .map(|item| apply_json_hooks(item, object_hook, parse_float, parse_int))
+                .collect::<PyResult<Vec<_>>>()?;
+            Ok(PyObject::list(new_items))
+        }
+        PyObjectPayload::Float(_) => {
+            if let Some(pf) = parse_float {
+                let s = PyObject::str_val(CompactString::from(value.py_to_string()));
+                try_call_default(pf, &s).map(|r| r.unwrap_or_else(|| value.clone()))
+            } else {
+                Ok(value.clone())
+            }
+        }
+        PyObjectPayload::Int(_) => {
+            if let Some(pi) = parse_int {
+                let s = PyObject::str_val(CompactString::from(value.py_to_string()));
+                try_call_default(pi, &s).map(|r| r.unwrap_or_else(|| value.clone()))
+            } else {
+                Ok(value.clone())
+            }
+        }
+        _ => Ok(value.clone()),
+    }
 }
 
 /// json.dump(obj, fp, **kwargs) — serialize obj as JSON and write to fp.write()

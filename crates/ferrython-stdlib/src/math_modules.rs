@@ -1161,28 +1161,101 @@ pub fn create_random_module() -> PyObjectRef {
         ("choices", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("random.choices requires at least 1 argument")); }
             let items = args[0].to_list()?;
-            // Extract k from kwargs dict (last arg if it's a Dict) or positional
             let mut k = 1usize;
+            let mut weights: Option<Vec<f64>> = None;
             for arg in args.iter().skip(1) {
                 if let PyObjectPayload::Dict(d) = &arg.payload {
                     let d = d.read();
                     if let Some(kv) = d.get(&HashableKey::Str(CompactString::from("k"))) {
                         k = kv.to_int()? as usize;
                     }
-                } else {
-                    // weights positional arg — ignore for now (CPython: population, weights, *, cum_weights, k)
+                    if let Some(wv) = d.get(&HashableKey::Str(CompactString::from("weights"))) {
+                        let wl = wv.to_list()?;
+                        weights = Some(wl.iter().map(|w| w.to_float().unwrap_or(1.0)).collect());
+                    }
+                    if let Some(cwv) = d.get(&HashableKey::Str(CompactString::from("cum_weights"))) {
+                        let cwl = cwv.to_list()?;
+                        let cw: Vec<f64> = cwl.iter().map(|w| w.to_float().unwrap_or(0.0)).collect();
+                        // Convert cumulative weights back to regular weights
+                        let mut w = Vec::with_capacity(cw.len());
+                        for i in 0..cw.len() {
+                            w.push(if i == 0 { cw[0] } else { cw[i] - cw[i-1] });
+                        }
+                        weights = Some(w);
+                    }
                 }
             }
             if items.is_empty() {
                 return Err(PyException::value_error("Cannot choose from an empty population"));
             }
             let mut result = Vec::with_capacity(k);
-            for _ in 0..k {
-                let idx = (simple_random() * items.len() as f64) as usize;
-                result.push(items[idx.min(items.len()-1)].clone());
+            if let Some(ref w) = weights {
+                let total: f64 = w.iter().sum();
+                for _ in 0..k {
+                    let mut r = simple_random() * total;
+                    let mut chosen = items.len() - 1;
+                    for (i, &weight) in w.iter().enumerate() {
+                        r -= weight;
+                        if r <= 0.0 { chosen = i; break; }
+                    }
+                    result.push(items[chosen.min(items.len()-1)].clone());
+                }
+            } else {
+                for _ in 0..k {
+                    let idx = (simple_random() * items.len() as f64) as usize;
+                    result.push(items[idx.min(items.len()-1)].clone());
+                }
             }
             Ok(PyObject::list(result))
         })),
+        ("gauss", make_builtin(|args| {
+            let mu = if !args.is_empty() { args[0].to_float()? } else { 0.0 };
+            let sigma = if args.len() > 1 { args[1].to_float()? } else { 1.0 };
+            // Box-Muller transform
+            let u1 = simple_random().max(1e-10);
+            let u2 = simple_random();
+            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+            Ok(PyObject::float(mu + sigma * z))
+        })),
+        ("normalvariate", make_builtin(|args| {
+            let mu = if !args.is_empty() { args[0].to_float()? } else { 0.0 };
+            let sigma = if args.len() > 1 { args[1].to_float()? } else { 1.0 };
+            let u1 = simple_random().max(1e-10);
+            let u2 = simple_random();
+            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+            Ok(PyObject::float(mu + sigma * z))
+        })),
+        ("expovariate", make_builtin(|args| {
+            check_args("random.expovariate", args, 1)?;
+            let lambd = args[0].to_float()?;
+            if lambd == 0.0 { return Err(PyException::value_error("expovariate: lambd must not be 0")); }
+            let u = simple_random().max(1e-10);
+            Ok(PyObject::float(-u.ln() / lambd))
+        })),
+        ("triangular", make_builtin(|args| {
+            let low = if !args.is_empty() { args[0].to_float()? } else { 0.0 };
+            let high = if args.len() > 1 { args[1].to_float()? } else { 1.0 };
+            let mode = if args.len() > 2 { args[2].to_float()? } else { (low + high) / 2.0 };
+            let u = simple_random();
+            let c = (mode - low) / (high - low);
+            if u < c {
+                Ok(PyObject::float(low + (u * (high - low) * (mode - low)).sqrt()))
+            } else {
+                Ok(PyObject::float(high - ((1.0 - u) * (high - low) * (high - mode)).sqrt()))
+            }
+        })),
+        ("getrandbits", make_builtin(|args| {
+            check_args("random.getrandbits", args, 1)?;
+            let k = args[0].to_int()? as u32;
+            if k == 0 { return Ok(PyObject::int(0)); }
+            let mut result: i64 = 0;
+            for _ in 0..k.min(62) {
+                result = (result << 1) | (if simple_random() < 0.5 { 1 } else { 0 });
+            }
+            Ok(PyObject::int(result))
+        })),
+        ("getstate", make_builtin(|_| Ok(PyObject::none()))),
+        ("setstate", make_builtin(|_| Ok(PyObject::none()))),
     ])
 }
 
