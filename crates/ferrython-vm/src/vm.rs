@@ -7,7 +7,7 @@ use ferrython_bytecode::code::{CodeObject, CodeFlags};
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
 };
 use ferrython_core::types::{PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
@@ -395,6 +395,96 @@ impl VirtualMachine {
                         }
                     } else {
                         self.execute_one(instr)
+                    }
+                }
+                // Inline ForIter fast path for simple iterators (Range, List, Tuple)
+                Opcode::ForIter => {
+                    let stack_len = frame.stack.len();
+                    if stack_len > 0 {
+                        let iter = &frame.stack[stack_len - 1];
+                        if let PyObjectPayload::Iterator(ref iter_data_arc) = iter.payload {
+                            let mut data = iter_data_arc.lock().unwrap();
+                            match &mut *data {
+                                IteratorData::Range { current, stop, step } => {
+                                    let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
+                                    if done {
+                                        drop(data);
+                                        frame.stack.pop();
+                                        frame.ip = instr.arg as usize;
+                                    } else {
+                                        let v = PyObject::int(*current);
+                                        *current += *step;
+                                        drop(data);
+                                        frame.stack.push(v);
+                                    }
+                                    Ok(None)
+                                }
+                                IteratorData::List { items, index } => {
+                                    if *index < items.len() {
+                                        let v = items[*index].clone();
+                                        *index += 1;
+                                        drop(data);
+                                        frame.stack.push(v);
+                                    } else {
+                                        drop(data);
+                                        frame.stack.pop();
+                                        frame.ip = instr.arg as usize;
+                                    }
+                                    Ok(None)
+                                }
+                                IteratorData::Tuple { items, index } => {
+                                    if *index < items.len() {
+                                        let v = items[*index].clone();
+                                        *index += 1;
+                                        drop(data);
+                                        frame.stack.push(v);
+                                    } else {
+                                        drop(data);
+                                        frame.stack.pop();
+                                        frame.ip = instr.arg as usize;
+                                    }
+                                    Ok(None)
+                                }
+                                _ => {
+                                    drop(data);
+                                    self.execute_one(instr)
+                                }
+                            }
+                        } else {
+                            self.execute_one(instr)
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline UnpackSequence for tuples and lists
+                Opcode::UnpackSequence => {
+                    let count = instr.arg as usize;
+                    let seq = frame.stack.pop().expect("stack underflow");
+                    match &seq.payload {
+                        PyObjectPayload::Tuple(items) if items.len() == count => {
+                            for item in items.iter().rev() {
+                                frame.stack.push(item.clone());
+                            }
+                            Ok(None)
+                        }
+                        PyObjectPayload::List(items_arc) => {
+                            let items = items_arc.read();
+                            if items.len() == count {
+                                for item in items.iter().rev() {
+                                    frame.stack.push(item.clone());
+                                }
+                                Ok(None)
+                            } else {
+                                drop(items);
+                                frame.stack.push(seq);
+                                self.execute_one(instr)
+                            }
+                        }
+                        _ => {
+                            frame.stack.push(seq);
+                            self.execute_one(instr)
+                        }
                     }
                 }
                 _ => self.execute_one(instr),
