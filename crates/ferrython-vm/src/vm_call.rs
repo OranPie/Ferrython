@@ -321,41 +321,41 @@ impl VirtualMachine {
             }
         }
         // Check for abstract methods (ABC support)
+        // Walk the full MRO to collect abstract markers, then check if
+        // the concrete class (or any class earlier in MRO) overrides them.
         if let PyObjectPayload::Class(cd) = &cls.payload {
+            let is_abstract_marker = |val: &PyObjectRef| -> bool {
+                if let PyObjectPayload::Tuple(items) = &val.payload {
+                    items.len() == 2 && items[0].as_str() == Some("__abstract__")
+                } else {
+                    false
+                }
+            };
             let mut abstract_names: Vec<String> = Vec::new();
             // Check this class's own namespace for abstract markers
             {
                 let ns = cd.namespace.read();
                 for (name, val) in ns.iter() {
-                    if let PyObjectPayload::Tuple(items) = &val.payload {
-                        if items.len() == 2 {
-                            if let Some(s) = items[0].as_str() {
-                                if s == "__abstract__" {
-                                    abstract_names.push(name.to_string());
-                                }
-                            }
-                        }
+                    if is_abstract_marker(val) {
+                        abstract_names.push(name.to_string());
                     }
                 }
             }
-            // Also check base classes for abstract methods not overridden
-            for base in &cd.bases {
-                if let PyObjectPayload::Class(base_cd) = &base.payload {
-                    let base_ns = base_cd.namespace.read();
-                    for (name, val) in base_ns.iter() {
-                        if let PyObjectPayload::Tuple(items) = &val.payload {
-                            if items.len() == 2 {
-                                if let Some(s) = items[0].as_str() {
-                                    if s == "__abstract__" {
-                                        let overridden = cd.namespace.read().get(name.as_str())
-                                            .map(|v| !matches!(&v.payload, PyObjectPayload::Tuple(t) if t.len() == 2 && t[0].as_str() == Some("__abstract__")))
-                                            .unwrap_or(false);
-                                        if !overridden && !abstract_names.contains(&name.to_string()) {
-                                            abstract_names.push(name.to_string());
-                                        }
-                                    }
-                                }
-                            }
+            // Walk full MRO (bases + their bases) for inherited abstract methods
+            for ancestor in &cd.mro {
+                if let PyObjectPayload::Class(ancestor_cd) = &ancestor.payload {
+                    let ancestor_ns = ancestor_cd.namespace.read();
+                    for (name, val) in ancestor_ns.iter() {
+                        if !is_abstract_marker(val) {
+                            continue;
+                        }
+                        // Check if any class from the concrete class up through
+                        // the MRO (before this ancestor) provides a concrete override
+                        let overridden = cd.namespace.read().get(name.as_str())
+                            .map(|v| !is_abstract_marker(v))
+                            .unwrap_or(false);
+                        if !overridden && !abstract_names.contains(&name.to_string()) {
+                            abstract_names.push(name.to_string());
                         }
                     }
                 }
@@ -600,7 +600,7 @@ impl VirtualMachine {
             if let PyObjectPayload::Instance(inst) = &instance.payload {
                 let mut attrs = inst.attrs.write();
                 if !attrs.contains_key("args") {
-                    attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args.clone()));
+                    attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args));
                 }
             }
         }
@@ -673,13 +673,8 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         match &func.payload {
             PyObjectPayload::Function(pyfunc) => {
-                let code = pyfunc.code.clone();
                 let globals = pyfunc.globals.clone();
-                let defaults = pyfunc.defaults.clone();
-                let kw_defaults = pyfunc.kw_defaults.clone();
-                let closure = pyfunc.closure.clone();
-                let constant_cache = pyfunc.constant_cache.clone();
-                self.call_function_kw(&code, pos_args, kwargs, &defaults, &kw_defaults, globals, &closure, &constant_cache)
+                self.call_function_kw(&pyfunc.code, pos_args, kwargs, &pyfunc.defaults, &pyfunc.kw_defaults, globals, &pyfunc.closure, &pyfunc.constant_cache)
             }
             PyObjectPayload::BoundMethod { receiver, method } => {
                 let mut bound_args = vec![receiver.clone()];
@@ -1070,13 +1065,10 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         match &func.payload {
             PyObjectPayload::Function(pyfunc) => {
-                let code = pyfunc.code.clone();
+                // Borrow fields directly from the Arc-backed func instead of cloning
+                // expensive Vec/IndexMap payloads. Only globals needs cloning (moved into frame).
                 let globals = pyfunc.globals.clone();
-                let defaults = pyfunc.defaults.clone();
-                let kw_defaults = pyfunc.kw_defaults.clone();
-                let closure = pyfunc.closure.clone();
-                let constant_cache = pyfunc.constant_cache.clone();
-                self.call_function(&code, args, &defaults, &kw_defaults, globals, &closure, &constant_cache)
+                self.call_function(&pyfunc.code, args, &pyfunc.defaults, &pyfunc.kw_defaults, globals, &pyfunc.closure, &pyfunc.constant_cache)
             }
             PyObjectPayload::BuiltinFunction(name) | PyObjectPayload::BuiltinType(name) => {
                 if name.as_str() == "__build_class__" {
@@ -1330,11 +1322,13 @@ impl VirtualMachine {
                         }
                     }
                     "enumerate" => {
-                        let mut resolved = args.clone();
-                        if !resolved.is_empty() {
-                            resolved[0] = self.resolve_iterable(&resolved[0])?;
+                        if !args.is_empty() {
+                            let mut resolved = Vec::with_capacity(args.len());
+                            resolved.push(self.resolve_iterable(&args[0])?);
+                            resolved.extend_from_slice(&args[1..]);
+                            return builtins::dispatch("enumerate", &resolved);
                         }
-                        return builtins::dispatch("enumerate", &resolved);
+                        return builtins::dispatch("enumerate", &args);
                     }
                     "zip" => {
                         // Pre-resolve custom __iter__ before dispatching to zip
@@ -1933,23 +1927,23 @@ impl VirtualMachine {
                 }
                 if name.as_str() == "itertools.groupby" {
                     let mut key_fn = None;
-                    let mut iterable_args = args.clone();
+                    let mut iterable_end = args.len();
                     // Check last arg for kwargs dict with "key"
                     if let Some(last) = args.last() {
                         if let PyObjectPayload::Dict(map) = &last.payload {
                             let map_r = map.read();
                             key_fn = map_r.get(&HashableKey::Str(CompactString::from("key"))).cloned();
                             if key_fn.is_some() {
-                                iterable_args = args[..args.len()-1].to_vec();
+                                iterable_end = args.len() - 1;
                             }
                         }
                     }
                     // Check for positional key arg (2nd arg, not a dict)
-                    if key_fn.is_none() && iterable_args.len() >= 2 {
-                        key_fn = Some(iterable_args[1].clone());
-                        iterable_args = vec![iterable_args[0].clone()];
+                    if key_fn.is_none() && iterable_end >= 2 {
+                        key_fn = Some(args[1].clone());
+                        iterable_end = 1;
                     }
-                    return self.vm_itertools_groupby(&iterable_args, key_fn);
+                    return self.vm_itertools_groupby(&args[..iterable_end], key_fn);
                 }
                 if name.as_str() == "itertools.filterfalse" && args.len() >= 2 {
                     return self.vm_itertools_filterfalse(&args);
@@ -1991,8 +1985,9 @@ impl VirtualMachine {
                 if name.is_empty() && !args.is_empty()
                     && matches!(&args[0].payload, PyObjectPayload::Generator(_))
                 {
-                    let mut resolved = args.clone();
-                    resolved[0] = PyObject::list(self.collect_iterable(&args[0])?);
+                    let mut resolved = Vec::with_capacity(args.len());
+                    resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
+                    resolved.extend_from_slice(&args[1..]);
                     return func(&resolved);
                 }
                 func(&args)
