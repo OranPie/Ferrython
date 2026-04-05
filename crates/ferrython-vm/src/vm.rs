@@ -4,6 +4,7 @@ use crate::builtins;
 use crate::frame::{BlockKind, Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
 use ferrython_bytecode::code::CodeObject;
+use ferrython_bytecode::opcode::Opcode;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -89,7 +90,40 @@ impl VirtualMachine {
 
             if profiling { self.profiler.start_instruction(instr.op); }
 
-            match self.execute_one(instr) {
+            // Inline the hottest opcodes to avoid execute_one dispatch overhead
+            let result = match instr.op {
+                Opcode::LoadFast => {
+                    let idx = instr.arg as usize;
+                    match frame.locals.get(idx).and_then(|v| v.as_ref()) {
+                        Some(val) => { frame.stack.push(val.clone()); Ok(None) }
+                        None => Err(PyException::name_error(format!(
+                            "local variable '{}' referenced before assignment",
+                            frame.code.varnames.get(idx).map(|s| s.as_str()).unwrap_or("?")
+                        ))),
+                    }
+                }
+                Opcode::StoreFast => {
+                    let val = frame.stack.pop().expect("stack underflow");
+                    frame.locals[instr.arg as usize] = Some(val);
+                    Ok(None)
+                }
+                Opcode::LoadConst => {
+                    let obj = frame.constant_cache[instr.arg as usize].clone();
+                    frame.stack.push(obj);
+                    Ok(None)
+                }
+                Opcode::PopTop => {
+                    frame.stack.pop();
+                    Ok(None)
+                }
+                Opcode::ReturnValue => {
+                    let val = frame.stack.pop().expect("stack underflow");
+                    Ok(Some(val))
+                }
+                _ => self.execute_one(instr),
+            };
+
+            match result {
                 Ok(Some(ret)) => {
                     if profiling { self.profiler.end_instruction(instr.op); }
                     return Ok(ret);
