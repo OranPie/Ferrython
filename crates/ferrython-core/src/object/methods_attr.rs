@@ -1333,6 +1333,23 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                             }
                                         }));
                                     }
+                                    // Unwrap descriptors: ClassMethod → bind to class,
+                                    // StaticMethod → return raw function
+                                    if let PyObjectPayload::ClassMethod(func) = &v.payload {
+                                        let bound_cls = match &instance.payload {
+                                            PyObjectPayload::Instance(inst) => inst.class.clone(),
+                                            _ => instance.clone(),
+                                        };
+                                        return Some(Arc::new(PyObject {
+                                            payload: PyObjectPayload::BoundMethod {
+                                                receiver: bound_cls,
+                                                method: func.clone(),
+                                            }
+                                        }));
+                                    }
+                                    if let PyObjectPayload::StaticMethod(func) = &v.payload {
+                                        return Some(func.clone());
+                                    }
                                     return Some(v.clone());
                                 }
                             }
@@ -1387,6 +1404,21 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                                         method: v.clone(),
                                                     }
                                                 }));
+                                            }
+                                            if let PyObjectPayload::ClassMethod(func) = &v.payload {
+                                                let bound_cls = match &instance.payload {
+                                                    PyObjectPayload::Instance(inst) => inst.class.clone(),
+                                                    _ => instance.clone(),
+                                                };
+                                                return Some(Arc::new(PyObject {
+                                                    payload: PyObjectPayload::BoundMethod {
+                                                        receiver: bound_cls,
+                                                        method: func.clone(),
+                                                    }
+                                                }));
+                                            }
+                                            if let PyObjectPayload::StaticMethod(func) = &v.payload {
+                                                return Some(func.clone());
                                             }
                                             return Some(v.clone());
                                         }
