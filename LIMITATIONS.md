@@ -31,7 +31,7 @@
 ### 3.1 Descriptor Protocol
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `super().__getattribute__` | ❌ | `super()` doesn't proxy `__getattribute__` |
+| `super().__getattribute__` | ✅ | Proxies to MRO-based lookup via NativeClosure |
 | Data descriptor priority edge cases | ⚠️ | Most cases work; some MRO edge cases may differ |
 
 ### 3.2 Exception Handling
@@ -71,7 +71,7 @@
 ### 3.6 Enum
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Tuple-value auto-unpacking | ❌ | `EARTH = (mass, radius)` doesn't unpack into `__init__(self, mass, radius)` |
+| Tuple-value auto-unpacking | ✅ | `EARTH = (mass, radius)` correctly unpacks into `__init__` |
 | `IntEnum` / `IntFlag` | ⚠️ | Basic support; some operator edge cases |
 
 ## 4. Standard Library Limitations
@@ -83,8 +83,8 @@
 | `asyncio` | `run()`, `gather()`, `sleep()`, `Queue` basic | Real scheduling, timeouts, cancellation |
 | `signal` | `signal.signal()` accepts handler | Handler never invoked; returns `SIG_DFL` |
 | `decimal` | Constructor, arithmetic (+, -, *, /), comparisons, quantize, repr | Context/precision control, advanced math (ln, sqrt, exp) |
-| `warnings` | `warn()` prints | `catch_warnings()` record list never populated |
-| `dis` | Basic disassembly | Incomplete instruction set display |
+| `warnings` | `warn()` prints, `catch_warnings(record=True)` captures | Context/filter management |
+| `dis` | Full bytecode disassembly with line numbers, args, jump targets | Output uses Rust stdout (not capturable via sys.stdout) |
 | `numbers` | `Number` ABC exists | `Complex`, `Real`, `Rational` are stubs |
 | `locale` | `getlocale()` returns C locale | No real locale support |
 | `inspect` | 17 functions: is*, getmembers, signature, getfullargspec, getdoc, getfile | Parameter/Signature classes are stubs |
@@ -121,7 +121,7 @@
 | No bytecode caching (`.pyc`) | ❌ | Every import re-parses and re-compiles |
 | Arc-based refcounting overhead | ⚠️ | Atomic ops on every clone/drop |
 | GC cycle detection | ⚠️ | Only covers `Instance` objects; `Dict`/`List` cycles not reclaimed |
-| String interning | ❌ | No interning; every string allocation is fresh |
+| String interning | ⚠️ | `intern.rs` covers ~80 dunder names in method cache; general identifiers not yet interned |
 | Small-int caching | ✅ | Pre-allocated int pool for -5..=256 (matches CPython) |
 | Pre-boxed constant cache | ✅ | Built once per function, shared across all frames via Arc |
 | Binary op fast paths | ✅ | int+int, float+float, str+str skip dunder dispatch |
@@ -143,13 +143,10 @@
 ## 7. Test Results Summary
 
 - **CPython alignment tests**: ~1,343/1,350 pass (~99.5%)
-- **Fixture tests**: 86/86 pass (100%)
+- **Fixture tests**: 87/87 pass (100%)
 - **Known test failures by category**:
-  - Enum tuple-value unpacking (Test 1069)
   - `asyncio.wait_for` timeout (Test 1230)
   - `asyncio.Queue` blocking get (Test 1340)
-  - `super().__getattribute__` (Test 1260)
-  - Dict views ✅ (Test 1236 — now live view objects)
 
 ---
 
