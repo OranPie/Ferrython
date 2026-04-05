@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use super::payload::*;
 use super::methods::PyObjectMethods;
+use super::methods::CompareOp;
 
 // ── Recursive repr guard ──
 // Prevents infinite recursion when repr()ing self-referential structures
@@ -1044,6 +1045,92 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                 }
             }
             Ok(PyObject::bool_val(false))
+        })),
+        // Arithmetic dunder wrappers for builtin types (unbound method access)
+        (_, "__add__") => Some(PyObject::native_function("__add__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__add__ takes 2 arguments")); }
+            args[0].add(&args[1])
+        })),
+        (_, "__sub__") => Some(PyObject::native_function("__sub__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__sub__ takes 2 arguments")); }
+            args[0].sub(&args[1])
+        })),
+        (_, "__mul__") => Some(PyObject::native_function("__mul__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__mul__ takes 2 arguments")); }
+            args[0].mul(&args[1])
+        })),
+        (_, "__truediv__") => Some(PyObject::native_function("__truediv__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__truediv__ takes 2 arguments")); }
+            args[0].true_div(&args[1])
+        })),
+        (_, "__floordiv__") => Some(PyObject::native_function("__floordiv__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__floordiv__ takes 2 arguments")); }
+            args[0].floor_div(&args[1])
+        })),
+        (_, "__mod__") => Some(PyObject::native_function("__mod__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__mod__ takes 2 arguments")); }
+            args[0].modulo(&args[1])
+        })),
+        (_, "__eq__") => Some(PyObject::native_function("__eq__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__eq__ takes 2 arguments")); }
+            args[0].compare(&args[1], CompareOp::Eq)
+        })),
+        (_, "__ne__") => Some(PyObject::native_function("__ne__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__ne__ takes 2 arguments")); }
+            args[0].compare(&args[1], CompareOp::Ne)
+        })),
+        (_, "__lt__") => Some(PyObject::native_function("__lt__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__lt__ takes 2 arguments")); }
+            args[0].compare(&args[1], CompareOp::Lt)
+        })),
+        (_, "__le__") => Some(PyObject::native_function("__le__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__le__ takes 2 arguments")); }
+            args[0].compare(&args[1], CompareOp::Le)
+        })),
+        (_, "__gt__") => Some(PyObject::native_function("__gt__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__gt__ takes 2 arguments")); }
+            args[0].compare(&args[1], CompareOp::Gt)
+        })),
+        (_, "__ge__") => Some(PyObject::native_function("__ge__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__ge__ takes 2 arguments")); }
+            args[0].compare(&args[1], CompareOp::Ge)
+        })),
+        (_, "__neg__") => Some(PyObject::native_function("__neg__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__neg__ takes 1 argument")); }
+            args[0].negate()
+        })),
+        (_, "__abs__") => Some(PyObject::native_function("__abs__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__abs__ takes 1 argument")); }
+            args[0].py_abs()
+        })),
+        (_, "__len__") => Some(PyObject::native_function("__len__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__len__ takes 1 argument")); }
+            Ok(PyObject::int(args[0].py_len()? as i64))
+        })),
+        (_, "__contains__") => Some(PyObject::native_function("__contains__", |args| {
+            if args.len() != 2 { return Err(PyException::type_error("__contains__ takes 2 arguments")); }
+            Ok(PyObject::bool_val(args[0].contains(&args[1])?))
+        })),
+        (_, "__repr__") => Some(PyObject::native_function("__repr__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__repr__ takes 1 argument")); }
+            Ok(PyObject::str_val(CompactString::from(args[0].repr())))
+        })),
+        (_, "__str__") => Some(PyObject::native_function("__str__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__str__ takes 1 argument")); }
+            Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
+        })),
+        (_, "__hash__") => Some(PyObject::native_function("__hash__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__hash__ takes 1 argument")); }
+            use std::hash::{Hash, Hasher};
+            use std::collections::hash_map::DefaultHasher;
+            let hk = args[0].to_hashable_key()?;
+            let mut hasher = DefaultHasher::new();
+            hk.hash(&mut hasher);
+            Ok(PyObject::int(hasher.finish() as i64))
+        })),
+        (_, "__bool__") => Some(PyObject::native_function("__bool__", |args| {
+            if args.len() != 1 { return Err(PyException::type_error("__bool__ takes 1 argument")); }
+            Ok(PyObject::bool_val(args[0].is_truthy()))
         })),
         _ => None,
     }
