@@ -172,11 +172,14 @@ fn math_isfinite(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::bool_val(args[0].to_float()?.is_finite()))
 }
 fn math_gcd(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("math.gcd", args, 2)?;
-    let mut a = args[0].to_int()?.abs();
-    let mut b = args[1].to_int()?.abs();
-    while b != 0 { let t = b; b = a % b; a = t; }
-    Ok(PyObject::int(a))
+    if args.is_empty() { return Ok(PyObject::int(0)); }
+    if args.len() == 1 { return Ok(PyObject::int(args[0].to_int()?.abs())); }
+    let mut result = args[0].to_int()?.abs();
+    for arg in &args[1..] {
+        let mut b = arg.to_int()?.abs();
+        while b != 0 { let t = b; b = result % b; result = t; }
+    }
+    Ok(PyObject::int(result))
 }
 fn math_factorial(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.factorial", args, 1)?;

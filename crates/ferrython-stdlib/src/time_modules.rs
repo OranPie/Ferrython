@@ -899,28 +899,27 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
             }
         ));
 
-        // strftime(format) -> str
+        // strftime(format) -> str (using shared format_time with full format codes)
         let (y2, mo2, da2, h2, mi2, s2) = (year, month, day, hour, minute, second);
+        let ord = ymd_to_ordinal(year, month, day);
+        let wd = ((ord + 6) % 7) as i64; // 0=Mon
+        let wd_for_fmt = wd;
+        let yday_for_fmt = {
+            let md = days_in_month(year);
+            let mut yd = day;
+            for i in 0..(month - 1) as usize { if i < 12 { yd += md[i]; } }
+            yd
+        };
         w.insert(CompactString::from("strftime"), PyObject::native_closure(
             "datetime.strftime", move |args: &[PyObjectRef]| {
                 if args.is_empty() { return Err(PyException::type_error("strftime requires format string")); }
                 let fmt = args[0].py_to_string();
-                let result = fmt
-                    .replace("%Y", &format!("{:04}", y2))
-                    .replace("%m", &format!("{:02}", mo2))
-                    .replace("%d", &format!("{:02}", da2))
-                    .replace("%H", &format!("{:02}", h2))
-                    .replace("%M", &format!("{:02}", mi2))
-                    .replace("%S", &format!("{:02}", s2))
-                    .replace("%y", &format!("{:02}", y2 % 100))
-                    .replace("%%", "%");
+                let result = format_time(&fmt, y2, mo2, da2, h2, mi2, s2, wd_for_fmt, yday_for_fmt);
                 Ok(PyObject::str_val(CompactString::from(result)))
             }
         ));
 
         // weekday() -> int (0=Monday, 6=Sunday)
-        let ord = ymd_to_ordinal(year, month, day);
-        let wd = ((ord + 6) % 7) as i64; // 0=Mon
         w.insert(CompactString::from("weekday"), PyObject::native_closure(
             "datetime.weekday", move |_: &[PyObjectRef]| {
                 Ok(PyObject::int(wd))
@@ -979,6 +978,39 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
                     PyObject::int(h), PyObject::int(mi), PyObject::int(s),
                     PyObject::int(wd), PyObject::int(0), PyObject::int(-1),
                 ]))
+            }
+        ));
+
+        // replace(**kwargs) -> datetime with replaced fields
+        let (ry, rmo, rda, rh, rmi, rs, rus) = (year, month, day, hour, minute, second, microsecond);
+        w.insert(CompactString::from("replace"), PyObject::native_closure(
+            "datetime.replace", move |args: &[PyObjectRef]| {
+                let mut ny = ry; let mut nmo = rmo; let mut nda = rda;
+                let mut nh = rh; let mut nmi = rmi; let mut ns = rs; let mut nus = rus;
+                // Accept kwargs dict
+                if let Some(last) = args.last() {
+                    if let PyObjectPayload::Dict(kw) = &last.payload {
+                        let r = kw.read();
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("year"))) { ny = v.as_int().unwrap_or(ny); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("month"))) { nmo = v.as_int().unwrap_or(nmo); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("day"))) { nda = v.as_int().unwrap_or(nda); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("hour"))) { nh = v.as_int().unwrap_or(nh); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("minute"))) { nmi = v.as_int().unwrap_or(nmi); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("second"))) { ns = v.as_int().unwrap_or(ns); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("microsecond"))) { nus = v.as_int().unwrap_or(nus); }
+                    }
+                }
+                // Also accept positional args: year, month, day, hour, minute, second, microsecond
+                if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::Dict(_)) {
+                    if args.len() > 0 { ny = args[0].as_int().unwrap_or(ny); }
+                    if args.len() > 1 { nmo = args[1].as_int().unwrap_or(nmo); }
+                    if args.len() > 2 { nda = args[2].as_int().unwrap_or(nda); }
+                    if args.len() > 3 { nh = args[3].as_int().unwrap_or(nh); }
+                    if args.len() > 4 { nmi = args[4].as_int().unwrap_or(nmi); }
+                    if args.len() > 5 { ns = args[5].as_int().unwrap_or(ns); }
+                    if args.len() > 6 { nus = args[6].as_int().unwrap_or(nus); }
+                }
+                Ok(make_datetime_instance(ny, nmo, nda, nh, nmi, ns, nus))
             }
         ));
     }
@@ -1087,24 +1119,26 @@ fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
             }
         ));
 
-        // strftime(format) -> str
+        // strftime(format) -> str (using shared format_time with full codes)
+        let ord = ymd_to_ordinal(year, month, day);
+        let wd = ((ord + 6) % 7) as i64;
+        let yday_d = {
+            let md = days_in_month(y);
+            let mut yd = da;
+            for i in 0..(mo - 1) as usize { if i < 12 { yd += md[i]; } }
+            yd
+        };
+        let wd_d = wd;
         w.insert(CompactString::from("strftime"), PyObject::native_closure(
             "date.strftime", move |args: &[PyObjectRef]| {
                 if args.is_empty() { return Err(PyException::type_error("strftime requires format string")); }
                 let fmt = args[0].py_to_string();
-                let result = fmt
-                    .replace("%Y", &format!("{:04}", y))
-                    .replace("%m", &format!("{:02}", mo))
-                    .replace("%d", &format!("{:02}", da))
-                    .replace("%y", &format!("{:02}", y % 100))
-                    .replace("%%", "%");
+                let result = format_time(&fmt, y, mo, da, 0, 0, 0, wd_d, yday_d);
                 Ok(PyObject::str_val(CompactString::from(result)))
             }
         ));
 
         // weekday() -> int (0=Monday)
-        let ord = ymd_to_ordinal(year, month, day);
-        let wd = ((ord + 6) % 7) as i64;
         w.insert(CompactString::from("weekday"), PyObject::native_closure(
             "date.weekday", move |_: &[PyObjectRef]| { Ok(PyObject::int(wd)) }
         ));
@@ -1131,6 +1165,28 @@ fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
         w.insert(CompactString::from("toordinal"), PyObject::native_closure(
             "date.toordinal", move |_: &[PyObjectRef]| {
                 Ok(PyObject::int(ymd_to_ordinal(y, mo, da)))
+            }
+        ));
+
+        // replace(**kwargs) -> date with replaced fields
+        let (ry, rmo, rda) = (year, month, day);
+        w.insert(CompactString::from("replace"), PyObject::native_closure(
+            "date.replace", move |args: &[PyObjectRef]| {
+                let mut ny = ry; let mut nmo = rmo; let mut nda = rda;
+                if let Some(last) = args.last() {
+                    if let PyObjectPayload::Dict(kw) = &last.payload {
+                        let r = kw.read();
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("year"))) { ny = v.as_int().unwrap_or(ny); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("month"))) { nmo = v.as_int().unwrap_or(nmo); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("day"))) { nda = v.as_int().unwrap_or(nda); }
+                    }
+                }
+                if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::Dict(_)) {
+                    if args.len() > 0 { ny = args[0].as_int().unwrap_or(ny); }
+                    if args.len() > 1 { nmo = args[1].as_int().unwrap_or(nmo); }
+                    if args.len() > 2 { nda = args[2].as_int().unwrap_or(nda); }
+                }
+                Ok(make_date_instance(ny, nmo, nda))
             }
         ));
     }
@@ -1212,6 +1268,42 @@ fn make_timedelta_with_ops(days: i64, seconds: i64, microseconds: i64, total_sec
     td_ns.insert(CompactString::from("__sub__"), make_builtin(timedelta_sub));
     td_ns.insert(CompactString::from("__radd__"), make_builtin(timedelta_add));
     td_ns.insert(CompactString::from("__mul__"), make_builtin(timedelta_mul));
+    td_ns.insert(CompactString::from("__eq__"), make_builtin(|args: &[PyObjectRef]| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a_ts = args[0].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(f64::NAN);
+        let b_ts = args[1].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(f64::NAN);
+        Ok(PyObject::bool_val((a_ts - b_ts).abs() < 1e-9))
+    }));
+    td_ns.insert(CompactString::from("__ne__"), make_builtin(|args: &[PyObjectRef]| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(true)); }
+        let a_ts = args[0].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(f64::NAN);
+        let b_ts = args[1].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(f64::NAN);
+        Ok(PyObject::bool_val((a_ts - b_ts).abs() >= 1e-9))
+    }));
+    td_ns.insert(CompactString::from("__lt__"), make_builtin(|args: &[PyObjectRef]| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a_ts = args[0].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(0.0);
+        let b_ts = args[1].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(0.0);
+        Ok(PyObject::bool_val(a_ts < b_ts))
+    }));
+    td_ns.insert(CompactString::from("__le__"), make_builtin(|args: &[PyObjectRef]| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a_ts = args[0].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(0.0);
+        let b_ts = args[1].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(0.0);
+        Ok(PyObject::bool_val(a_ts <= b_ts))
+    }));
+    td_ns.insert(CompactString::from("__gt__"), make_builtin(|args: &[PyObjectRef]| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a_ts = args[0].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(0.0);
+        let b_ts = args[1].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(0.0);
+        Ok(PyObject::bool_val(a_ts > b_ts))
+    }));
+    td_ns.insert(CompactString::from("__ge__"), make_builtin(|args: &[PyObjectRef]| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a_ts = args[0].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(0.0);
+        let b_ts = args[1].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(0.0);
+        Ok(PyObject::bool_val(a_ts >= b_ts))
+    }));
     let class = PyObject::class(CompactString::from("timedelta"), vec![], td_ns);
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
@@ -1226,6 +1318,43 @@ fn make_timedelta_with_ops(days: i64, seconds: i64, microseconds: i64, total_sec
         w.insert(CompactString::from("microseconds"), PyObject::int(microseconds));
         w.insert(CompactString::from("_total_seconds"), PyObject::float(total_secs));
         w.insert(CompactString::from("_total_us"), PyObject::int(days * 86_400_000_000 + seconds * 1_000_000 + microseconds));
+        // total_seconds() as a callable method
+        let ts = total_secs;
+        w.insert(CompactString::from("total_seconds"), PyObject::native_closure(
+            "total_seconds", move |_args: &[PyObjectRef]| Ok(PyObject::float(ts))
+        ));
+        // __repr__ / __str__
+        let repr = if microseconds != 0 {
+            format!("datetime.timedelta(days={}, seconds={}, microseconds={})", days, seconds, microseconds)
+        } else if seconds != 0 {
+            format!("datetime.timedelta(days={}, seconds={})", days, seconds)
+        } else {
+            format!("datetime.timedelta(days={})", days)
+        };
+        let repr2 = repr.clone();
+        w.insert(CompactString::from("__repr__"), PyObject::native_closure(
+            "__repr__", move |_: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from(&repr)))
+        ));
+        w.insert(CompactString::from("__str__"), PyObject::native_closure(
+            "__str__", move |_: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from(&repr2)))
+        ));
+        // __bool__: timedelta is falsy only when all zero
+        let is_nonzero = days != 0 || seconds != 0 || microseconds != 0;
+        w.insert(CompactString::from("__bool__"), PyObject::native_closure(
+            "__bool__", move |_: &[PyObjectRef]| Ok(PyObject::bool_val(is_nonzero))
+        ));
+        // __neg__
+        let (nd, ns, nus) = (-days, -seconds, -microseconds);
+        let nts = -total_secs;
+        w.insert(CompactString::from("__neg__"), PyObject::native_closure(
+            "__neg__", move |_: &[PyObjectRef]| make_timedelta_with_ops(nd, ns, nus, nts)
+        ));
+        // __abs__
+        let (ad, as_, aus) = (days.abs(), seconds.abs(), microseconds.abs());
+        let ats = total_secs.abs();
+        w.insert(CompactString::from("__abs__"), PyObject::native_closure(
+            "__abs__", move |_: &[PyObjectRef]| make_timedelta_with_ops(ad, as_, aus, ats)
+        ));
     }
     Ok(inst)
 }
