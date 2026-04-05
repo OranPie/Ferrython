@@ -685,6 +685,16 @@ impl VirtualMachine {
                         if let Some(val) = &exc.value {
                             Self::store_exc_attr(&exc_value, "value", val.clone());
                         }
+                        // Store OSError attributes (.errno, .strerror, .filename) if present
+                        if let Some(info) = &exc.os_error_info {
+                            Self::store_exc_attr(&exc_value, "errno", PyObject::int(info.errno as i64));
+                            Self::store_exc_attr(&exc_value, "strerror", PyObject::str_val(CompactString::from(info.strerror.as_str())));
+                            if let Some(fname) = &info.filename {
+                                Self::store_exc_attr(&exc_value, "filename", PyObject::str_val(CompactString::from(fname.as_str())));
+                            } else {
+                                Self::store_exc_attr(&exc_value, "filename", PyObject::none());
+                            }
+                        }
                         // Attach __cause__ from exception chaining (raise X from Y)
                         if let Some(cause) = &exc.cause {
                             let cause_obj = if let Some(corig) = &cause.original {

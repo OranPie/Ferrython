@@ -243,6 +243,16 @@ pub struct PyException {
     pub context: Option<Box<PyException>>,
     /// Value carried by StopIteration (generator return value).
     pub value: Option<PyObjectRef>,
+    /// OSError details: (errno, strerror, filename) — populated by `from_io_error`.
+    pub os_error_info: Option<OsErrorInfo>,
+}
+
+/// Details for OSError and its subclasses (FileNotFoundError, PermissionError, etc.).
+#[derive(Debug, Clone)]
+pub struct OsErrorInfo {
+    pub errno: i32,
+    pub strerror: String,
+    pub filename: Option<String>,
 }
 
 /// A single entry in a Python traceback.
@@ -255,10 +265,10 @@ pub struct TracebackEntry {
 
 impl PyException {
     pub fn new(kind: ExceptionKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into(), original: None, traceback: Vec::new(), cause: None, context: None, value: None }
+        Self { kind, message: message.into(), original: None, traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
     }
     pub fn with_original(kind: ExceptionKind, message: impl Into<String>, obj: PyObjectRef) -> Self {
-        Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None, value: None }
+        Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
     }
     pub fn type_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::TypeError, msg) }
     pub fn value_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::ValueError, msg) }
@@ -274,6 +284,33 @@ impl PyException {
     pub fn os_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::OSError, msg) }
     pub fn file_not_found_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::FileNotFoundError, msg) }
     pub fn permission_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::PermissionError, msg) }
+
+    /// Create an OSError (or appropriate subclass) from a `std::io::Error`, with
+    /// `.errno`, `.strerror`, and `.filename` attributes like CPython.
+    pub fn from_io_error(err: &std::io::Error, filename: Option<&str>) -> Self {
+        use std::io::ErrorKind;
+        let errno = err.raw_os_error().unwrap_or(0);
+        let strerror = err.to_string();
+        let kind = match err.kind() {
+            ErrorKind::NotFound => ExceptionKind::FileNotFoundError,
+            ErrorKind::PermissionDenied => ExceptionKind::PermissionError,
+            ErrorKind::AlreadyExists => ExceptionKind::FileExistsError,
+            ErrorKind::TimedOut => ExceptionKind::TimeoutError,
+            _ => ExceptionKind::OSError,
+        };
+        let msg = if let Some(fname) = filename {
+            format!("[Errno {}] {}: '{}'", errno, strerror, fname)
+        } else {
+            format!("[Errno {}] {}", errno, strerror)
+        };
+        let mut exc = Self::new(kind, msg);
+        exc.os_error_info = Some(OsErrorInfo {
+            errno,
+            strerror,
+            filename: filename.map(|s| s.to_string()),
+        });
+        exc
+    }
     pub fn assertion_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::AssertionError, msg) }
     pub fn not_implemented_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::NotImplementedError, msg) }
     pub fn recursion_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::RecursionError, msg) }

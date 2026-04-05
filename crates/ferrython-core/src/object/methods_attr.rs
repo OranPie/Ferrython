@@ -892,6 +892,10 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "__traceback__" => {
                         attrs.read().get("__traceback__").cloned().or_else(|| Some(PyObject::none()))
                     }
+                    // OSError attributes: .errno, .strerror, .filename
+                    "errno" | "strerror" | "filename" if kind.is_subclass_of(&ExceptionKind::OSError) => {
+                        attrs.read().get(name).cloned().or_else(|| Some(PyObject::none()))
+                    }
                     _ => {
                         // Check user-set attrs (e.g., __cause__)
                         attrs.read().get(name).cloned()

@@ -134,18 +134,15 @@
 
 | Module | What was fixed |
 |--------|---------------|
+| `json.JSONDecodeError` | Proper `ValueError` subclass; `except json.JSONDecodeError` works |
+| `json.dumps` `default=` | Python function callbacks via VM interception; pre-processes object tree |
+| `json.dump` `default=` | Same as `json.dumps`; file output with custom serialization |
+| `super()` in `@classmethod` | Now properly unwraps ClassMethod/StaticMethod descriptors |
+| `super()` in `@staticmethod` | Raw function returned correctly through super proxy |
 | `json.dump/load` | File dispatch: NativeFunction write/read now receives self arg correctly |
 | In-place operators | `list +=`, `list *=`, `set \|=`, `set -=`, `set &=`, `set ^=` preserve identity |
 | `namedtuple` | `defaults=` kwarg now parsed and applied (right-aligned to fields) |
-| `namedtuple` | `_tuple` includes default values; `_field_defaults` dict stored in class |
 | `hashlib` | Now supports `update()`, `digest()`, `hexdigest()`, `copy()` (incremental hashing) |
-| `hmac` | Fixed to use proper SHA algorithms (was using Rust DefaultHasher) |
-| `glob` | Added `**` recursive directory traversal, `escape()` |
-| `os.path` | Added `getmtime`, `getctime`, `getatime`, `expandvars`, `commonprefix`, `samefile`, `islink` |
-| `string` | Added `Formatter` class (format/vformat), `capwords()` |
-| `decimal` | `getcontext().prec = N` now takes effect on division |
-| `difflib` | `get_close_matches` now uses proper LCS-based similarity ratio |
-| `socket` | Added `gettimeout()`, `getblocking()`, `setblocking()`, `fileno()` |
 | `enum` | `auto()` per-class counter, CPython `repr` format `<Class.Name: value>` |
 | `argparse` | Subparsers, mutually exclusive groups |
 | `struct` | `unpack_from()`, `iter_unpack()`, `struct.error` exception |

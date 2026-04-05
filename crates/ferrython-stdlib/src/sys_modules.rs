@@ -1094,7 +1094,7 @@ fn os_path_getsize(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let s = args[0].py_to_string();
     match std::fs::metadata(&s) {
         Ok(m) => Ok(PyObject::int(m.len() as i64)),
-        Err(_e) => Err(PyException::file_not_found_error(format!("No such file: '{}'", s))),
+        Err(e) => Err(PyException::from_io_error(&e, Some(&s))),
     }
 }
 
@@ -1197,7 +1197,7 @@ fn os_path_commonpath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn os_path_getmtime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.getmtime", args, 1)?;
     let s = args[0].py_to_string();
-    let meta = std::fs::metadata(&s).map_err(|_| PyException::file_not_found_error(format!("No such file: '{}'", s)))?;
+    let meta = std::fs::metadata(&s).map_err(|e| PyException::from_io_error(&e, Some(&s)))?;
     let mtime = meta.modified().map_err(|_| PyException::runtime_error("getmtime failed"))?;
     let epoch = mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     Ok(PyObject::float(epoch.as_secs_f64()))
@@ -1206,7 +1206,7 @@ fn os_path_getmtime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn os_path_getctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.getctime", args, 1)?;
     let s = args[0].py_to_string();
-    let meta = std::fs::metadata(&s).map_err(|_| PyException::file_not_found_error(format!("No such file: '{}'", s)))?;
+    let meta = std::fs::metadata(&s).map_err(|e| PyException::from_io_error(&e, Some(&s)))?;
     // On Unix, ctime is metadata change time (use created or modified as fallback)
     let ctime = meta.created().or_else(|_| meta.modified())
         .map_err(|_| PyException::runtime_error("getctime failed"))?;
@@ -1217,7 +1217,7 @@ fn os_path_getctime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn os_path_getatime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.path.getatime", args, 1)?;
     let s = args[0].py_to_string();
-    let meta = std::fs::metadata(&s).map_err(|_| PyException::file_not_found_error(format!("No such file: '{}'", s)))?;
+    let meta = std::fs::metadata(&s).map_err(|e| PyException::from_io_error(&e, Some(&s)))?;
     let atime = meta.accessed().map_err(|_| PyException::runtime_error("getatime failed"))?;
     let epoch = atime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     Ok(PyObject::float(epoch.as_secs_f64()))

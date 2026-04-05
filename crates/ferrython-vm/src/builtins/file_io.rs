@@ -68,10 +68,11 @@ impl FileState {
     fn new(path: &str, mode: &str) -> PyResult<Self> {
         let is_binary = mode.contains('b');
         let (content, binary_content) = if mode.contains('r') || mode.contains('+') {
-            if mode.contains('r') && !std::path::Path::new(path).exists() {
-                return Err(PyException::file_not_found_error(format!(
-                    "[Errno 2] No such file or directory: '{}'", path
-                )));
+            if mode.contains('r') {
+                // Use from_io_error for proper errno/strerror/filename attributes
+                if let Err(e) = std::fs::metadata(path) {
+                    return Err(PyException::from_io_error(&e, Some(path)));
+                }
             }
             if is_binary {
                 let bytes = std::fs::read(path).unwrap_or_default();
