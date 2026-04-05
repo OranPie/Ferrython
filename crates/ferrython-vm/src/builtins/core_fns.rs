@@ -1124,6 +1124,18 @@ pub(super) fn builtin_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     _ => {}
                 }
             }
+            // Try as general iterable (range, generator, etc.)
+            if let Ok(items) = args[0].to_list() {
+                let mut result = Vec::with_capacity(items.len());
+                for item in items {
+                    let v = item.to_int().map_err(|_| PyException::type_error("an integer is required"))?;
+                    if v < 0 || v > 255 {
+                        return Err(PyException::value_error("bytes must be in range(0, 256)"));
+                    }
+                    result.push(v as u8);
+                }
+                return Ok(PyObject::bytes(result));
+            }
             Err(PyException::type_error("cannot convert to bytes"))
         }
     }

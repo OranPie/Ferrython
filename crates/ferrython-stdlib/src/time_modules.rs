@@ -1331,12 +1331,32 @@ fn make_timedelta_with_ops(days: i64, seconds: i64, microseconds: i64, total_sec
         } else {
             format!("datetime.timedelta(days={})", days)
         };
-        let repr2 = repr.clone();
+        // CPython __str__ format: [D day[s], ]H:MM:SS[.UUUUUU]
+        // After normalization: days can be negative, seconds in [0,86400), microseconds in [0,1000000)
+        let str_val = {
+            let hh = seconds / 3600;
+            let mm = (seconds % 3600) / 60;
+            let ss = seconds % 60;
+            let mut s = String::new();
+            if days != 0 {
+                if days == 1 || days == -1 {
+                    s.push_str(&format!("{} day, ", days));
+                } else {
+                    s.push_str(&format!("{} days, ", days));
+                }
+            }
+            if microseconds != 0 {
+                s.push_str(&format!("{}:{:02}:{:02}.{:06}", hh, mm, ss, microseconds));
+            } else {
+                s.push_str(&format!("{}:{:02}:{:02}", hh, mm, ss));
+            }
+            s
+        };
         w.insert(CompactString::from("__repr__"), PyObject::native_closure(
             "__repr__", move |_: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from(&repr)))
         ));
         w.insert(CompactString::from("__str__"), PyObject::native_closure(
-            "__str__", move |_: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from(&repr2)))
+            "__str__", move |_: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from(&str_val)))
         ));
         // __bool__: timedelta is falsy only when all zero
         let is_nonzero = days != 0 || seconds != 0 || microseconds != 0;

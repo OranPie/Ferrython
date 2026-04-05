@@ -2002,50 +2002,36 @@ fn gzip_extract_bytes(obj: &PyObjectRef) -> PyResult<Vec<u8>> {
 // ── zlib module ──
 
 pub fn create_zlib_module() -> PyObjectRef {
-    // zlib compress/decompress using DEFLATE stored blocks (same as gzip internals)
     let compress_fn = make_builtin(|args: &[PyObjectRef]| {
+        use flate2::write::ZlibEncoder;
+        use std::io::Write;
         if args.is_empty() {
             return Err(PyException::type_error("zlib.compress requires data argument"));
         }
         let data = gzip_extract_bytes(&args[0])?;
-        // zlib format: 2-byte header + deflate data + 4-byte adler32
-        let mut out = Vec::with_capacity(6 + data.len() + 5);
-        // CMF = 0x78 (deflate, window 32K), FLG = 0x01 (no dict, level 0)
-        out.push(0x78);
-        out.push(0x01);
-        // DEFLATE stored blocks
-        let mut offset = 0;
-        while offset < data.len() {
-            let remaining = data.len() - offset;
-            let block_len = remaining.min(65535);
-            let is_final: u8 = if offset + block_len >= data.len() { 0x01 } else { 0x00 };
-            out.push(is_final);
-            let len16 = block_len as u16;
-            out.extend_from_slice(&len16.to_le_bytes());
-            out.extend_from_slice(&(!len16).to_le_bytes());
-            out.extend_from_slice(&data[offset..offset + block_len]);
-            offset += block_len;
-        }
-        if data.is_empty() {
-            out.extend_from_slice(&[0x01, 0x00, 0x00, 0xff, 0xff]);
-        }
-        // Adler-32 checksum
-        let adler = zlib_adler32(&data);
-        out.extend_from_slice(&adler.to_be_bytes());
-        Ok(PyObject::bytes(out))
+        let level = if args.len() > 1 {
+            args[1].to_int().unwrap_or(6).max(-1).min(9)
+        } else { 6 };
+        let flate_level = if level == -1 { 6 } else { level as u32 };
+        let mut encoder = ZlibEncoder::new(Vec::new(), flate2::Compression::new(flate_level));
+        encoder.write_all(&data).map_err(|e| PyException::runtime_error(format!("zlib.compress: {}", e)))?;
+        let compressed = encoder.finish().map_err(|e| PyException::runtime_error(format!("zlib.compress: {}", e)))?;
+        Ok(PyObject::bytes(compressed))
     });
 
     let decompress_fn = make_builtin(|args: &[PyObjectRef]| {
+        use flate2::write::ZlibDecoder;
+        use std::io::Write;
         if args.is_empty() {
             return Err(PyException::type_error("zlib.decompress requires data argument"));
         }
         let data = gzip_extract_bytes(&args[0])?;
-        if data.len() < 6 {
+        if data.len() < 2 {
             return Err(PyException::runtime_error("zlib.decompress: incomplete data"));
         }
-        // Skip 2-byte zlib header
-        let deflate_data = &data[2..data.len()-4]; // skip header and adler32 trailer
-        let result = deflate_decompress_stored(deflate_data)?;
+        let mut decoder = ZlibDecoder::new(Vec::new());
+        decoder.write_all(&data).map_err(|e| PyException::runtime_error(format!("zlib.decompress: {}", e)))?;
+        let result = decoder.finish().map_err(|e| PyException::runtime_error(format!("zlib.decompress: {}", e)))?;
         Ok(PyObject::bytes(result))
     });
 
@@ -2114,29 +2100,4 @@ fn gzip_crc32_with_init(data: &[u8], init: u32) -> u32 {
     !crc
 }
 
-fn deflate_decompress_stored(data: &[u8]) -> PyResult<Vec<u8>> {
-    let mut result = Vec::new();
-    let mut pos = 0;
-    loop {
-        if pos >= data.len() { break; }
-        let bfinal = data[pos] & 1;
-        let btype = (data[pos] >> 1) & 3;
-        pos += 1;
-        if btype == 0 {
-            // Stored block
-            if pos + 4 > data.len() { break; }
-            let len = u16::from_le_bytes([data[pos], data[pos+1]]) as usize;
-            pos += 4; // skip len and nlen
-            if pos + len > data.len() {
-                result.extend_from_slice(&data[pos..]);
-                break;
-            }
-            result.extend_from_slice(&data[pos..pos+len]);
-            pos += len;
-        } else {
-            return Err(PyException::runtime_error("zlib.decompress: compressed data not supported (only stored blocks)"));
-        }
-        if bfinal != 0 { break; }
-    }
-    Ok(result)
-}
+
