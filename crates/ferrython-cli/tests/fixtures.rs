@@ -170,3 +170,6 @@ fixture_test!(test_phase73, "test_phase73.py");
 
 // Phase 74: Pure Python stdlib (reprlib) + Rust stdlib verification
 fixture_test!(test_phase74, "test_phase74.py");
+
+// Phase 75: Pure Python stdlib modules (colorsys, gettext, keyword) + Rust decimal/datetime improvements
+fixture_test!(test_phase75, "test_phase75.py");

@@ -212,7 +212,7 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
     if inst.attrs.read().contains_key("__datetime__") {
         if matches!(name, "strftime" | "isoformat" | "timestamp" | "replace" | "date" | "time"
             | "timetuple" | "weekday" | "isoweekday" | "toordinal" | "ctime" | "__str__" | "__repr__"
-            | "astimezone" | "utcoffset" | "tzname")
+            | "astimezone" | "utcoffset" | "tzname" | "isocalendar")
         {
             return Some(make_bound(name));
         }

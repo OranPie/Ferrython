@@ -697,6 +697,13 @@ pub fn create_decimal_module() -> PyObjectRef {
         dec_ns.insert(CompactString::from("__repr__"), make_builtin(decimal_str));
         dec_ns.insert(CompactString::from("__hash__"), make_builtin(decimal_hash));
         dec_ns.insert(CompactString::from("quantize"), make_builtin(decimal_quantize));
+        dec_ns.insert(CompactString::from("sqrt"), make_builtin(decimal_sqrt));
+        dec_ns.insert(CompactString::from("ln"), make_builtin(decimal_ln));
+        dec_ns.insert(CompactString::from("exp"), make_builtin(decimal_exp));
+        dec_ns.insert(CompactString::from("is_zero"), make_builtin(decimal_is_zero));
+        dec_ns.insert(CompactString::from("is_nan"), make_builtin(decimal_is_nan));
+        dec_ns.insert(CompactString::from("is_infinite"), make_builtin(decimal_is_infinite));
+        dec_ns.insert(CompactString::from("to_eng_string"), make_builtin(decimal_to_eng_string));
         let class = PyObject::class(CompactString::from("Decimal"), vec![], dec_ns);
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
@@ -934,6 +941,71 @@ pub fn create_decimal_module() -> PyObjectRef {
         Ok(PyObject::int(f.to_bits() as i64))
     }
 
+    fn decimal_sqrt(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        if s == "NaN" { return Ok(make_decimal("NaN")); }
+        let f: f64 = s.parse().unwrap_or(0.0);
+        if f < 0.0 { return Err(PyException::value_error("Square root of negative number")); }
+        let result = f.sqrt();
+        Ok(make_decimal(&format!("{}", result)))
+    }
+
+    fn decimal_ln(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        if s == "NaN" { return Ok(make_decimal("NaN")); }
+        let f: f64 = s.parse().unwrap_or(0.0);
+        if f <= 0.0 { return Err(PyException::value_error("ln of non-positive number")); }
+        let result = f.ln();
+        Ok(make_decimal(&format!("{}", result)))
+    }
+
+    fn decimal_exp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        if s == "NaN" { return Ok(make_decimal("NaN")); }
+        let f: f64 = s.parse().unwrap_or(0.0);
+        let result = f.exp();
+        Ok(make_decimal(&format!("{}", result)))
+    }
+
+    fn decimal_is_zero(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        let (_, digits, _) = decimal_parse(&s);
+        Ok(PyObject::bool_val(digits == 0))
+    }
+
+    fn decimal_is_nan(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        Ok(PyObject::bool_val(s == "NaN"))
+    }
+
+    fn decimal_is_infinite(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        Ok(PyObject::bool_val(s == "Infinity" || s == "-Infinity"))
+    }
+
+    fn decimal_to_eng_string(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let s = get_decimal_str(&args[0]).unwrap_or_else(|| "0".to_string());
+        if s == "NaN" || s == "Infinity" || s == "-Infinity" {
+            return Ok(PyObject::str_val(CompactString::from(&s)));
+        }
+        let f: f64 = s.parse().unwrap_or(0.0);
+        if f == 0.0 {
+            return Ok(PyObject::str_val(CompactString::from("0")));
+        }
+        let neg = f < 0.0;
+        let abs_f = f.abs();
+        let exp10 = abs_f.log10().floor() as i32;
+        // Engineering notation: exponent is multiple of 3
+        let eng_exp = (exp10.div_euclid(3)) * 3;
+        let mantissa = abs_f / 10f64.powi(eng_exp);
+        let result = if eng_exp == 0 {
+            if neg { format!("-{}", mantissa) } else { format!("{}", mantissa) }
+        } else {
+            if neg { format!("-{}E+{}", mantissa, eng_exp) } else { format!("{}E+{}", mantissa, eng_exp) }
+        };
+        Ok(PyObject::str_val(CompactString::from(&result)))
+    }
+
     /// quantize(self, exp, rounding=None) — round to the scale of exp
     fn decimal_quantize(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 { return Err(PyException::type_error("quantize requires 2 args")); }
@@ -1032,7 +1104,24 @@ pub fn create_decimal_module() -> PyObjectRef {
         ("ROUND_DOWN", PyObject::str_val(CompactString::from("ROUND_DOWN"))),
         ("ROUND_UP", PyObject::str_val(CompactString::from("ROUND_UP"))),
         ("ROUND_05UP", PyObject::str_val(CompactString::from("ROUND_05UP"))),
-        ("getcontext", make_builtin(|_| Ok(PyObject::none()))),
+        ("getcontext", make_builtin(|_| {
+            // Return a basic context object with default precision
+            let mut ctx_ns = IndexMap::new();
+            ctx_ns.insert(CompactString::from("prec"), PyObject::int(28));
+            ctx_ns.insert(CompactString::from("rounding"), PyObject::str_val(CompactString::from("ROUND_HALF_EVEN")));
+            ctx_ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
+            ctx_ns.insert(CompactString::from("Emax"), PyObject::int(999999));
+            ctx_ns.insert(CompactString::from("capitals"), PyObject::int(1));
+            ctx_ns.insert(CompactString::from("clamp"), PyObject::int(0));
+            let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
+            let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+                class: cls,
+                attrs: Arc::new(RwLock::new(ctx_ns)),
+                dict_storage: None,
+            }));
+            Ok(inst)
+        })),
+        ("setcontext", make_builtin(|_| Ok(PyObject::none()))),
         ("InvalidOperation", PyObject::str_val(CompactString::from("InvalidOperation"))),
     ])
 }
