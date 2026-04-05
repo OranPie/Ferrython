@@ -13,6 +13,15 @@ use indexmap::IndexMap;
 
 
 pub fn create_warnings_module() -> PyObjectRef {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use parking_lot::RwLock;
+
+    // Global recording state: when catch_warnings(record=True) is active,
+    // warn() appends to this list instead of printing to stderr.
+    static RECORDING: AtomicBool = AtomicBool::new(false);
+    static RECORD_LIST: std::sync::LazyLock<RwLock<Option<PyObjectRef>>> =
+        std::sync::LazyLock::new(|| RwLock::new(None));
+
     // warn(message, category=UserWarning, stacklevel=1)
     let warn_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() { return Ok(PyObject::none()); }
@@ -27,41 +36,50 @@ pub fn create_warnings_module() -> PyObjectRef {
         } else {
             "UserWarning".to_string()
         };
-        // Print warning in CPython format: filename:lineno: category: message
-        eprintln!("<stdin>:1: {}: {}", category, message);
-        Ok(PyObject::none())
-    });
 
-    // filterwarnings(action, message="", category=Warning, module="", lineno=0, append=False)
-    let filter_warnings_fn = make_builtin(|_args: &[PyObjectRef]| {
-        // Store filter — basic implementation accepts but doesn't enforce
-        Ok(PyObject::none())
-    });
-
-    // simplefilter(action, category=Warning, append=False)
-    let simple_filter_fn = make_builtin(|_args: &[PyObjectRef]| {
-        Ok(PyObject::none())
-    });
-
-    // catch_warnings(record=False) — context manager that saves/restores warning filters
-    // When record=True, __enter__ returns a list that collects WarningMessage objects
-    let catch_warnings_fn = make_builtin(|args: &[PyObjectRef]| {
-        // Check for record=True (positional arg or kwarg)
-        let record = if !args.is_empty() {
-            args[0].is_truthy()
+        if RECORDING.load(Ordering::Relaxed) {
+            // Recording mode: append a WarningMessage-like object to the list
+            let guard = RECORD_LIST.read();
+            if let Some(ref list_obj) = *guard {
+                let cls = PyObject::class(CompactString::from("WarningMessage"), vec![], IndexMap::new());
+                let mut attrs = IndexMap::new();
+                attrs.insert(CompactString::from("message"), args[0].clone());
+                attrs.insert(CompactString::from("category"), PyObject::str_val(CompactString::from(&category)));
+                attrs.insert(CompactString::from("filename"), PyObject::str_val(CompactString::from("<stdin>")));
+                attrs.insert(CompactString::from("lineno"), PyObject::int(1));
+                let warning_obj = PyObject::instance_with_attrs(cls, attrs);
+                if let PyObjectPayload::List(items) = &list_obj.payload {
+                    items.write().push(warning_obj);
+                }
+            }
         } else {
-            false
-        };
+            eprintln!("<stdin>:1: {}: {}", category, message);
+        }
+        Ok(PyObject::none())
+    });
+
+    // filterwarnings / simplefilter stubs
+    let filter_warnings_fn = make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()));
+    let simple_filter_fn = make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()));
+
+    // catch_warnings(record=False)
+    let catch_warnings_fn = make_builtin(|args: &[PyObjectRef]| {
+        let record = if !args.is_empty() { args[0].is_truthy() } else { false };
+
         let cls = PyObject::class(CompactString::from("catch_warnings"), vec![], IndexMap::new());
         let mut attrs = IndexMap::new();
         let warning_list = PyObject::list(vec![]);
         attrs.insert(CompactString::from("_record"), PyObject::bool_val(record));
         attrs.insert(CompactString::from("_warnings"), warning_list.clone());
+
         if record {
-            // __enter__ returns the warning list for `with ... as w:`
             let wl = warning_list.clone();
+            let enter_list = warning_list.clone();
             attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
                 "catch_warnings.__enter__", move |_args: &[PyObjectRef]| {
+                    // Activate recording mode and set the shared list
+                    RECORDING.store(true, Ordering::Relaxed);
+                    *RECORD_LIST.write() = Some(enter_list.clone());
                     Ok(wl.clone())
                 }
             ));
@@ -73,11 +91,16 @@ pub fn create_warnings_module() -> PyObjectRef {
                 }
             ));
         }
+
         attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
             "catch_warnings.__exit__", |_args: &[PyObjectRef]| {
+                // Deactivate recording mode
+                RECORDING.store(false, Ordering::Relaxed);
+                *RECORD_LIST.write() = None;
                 Ok(PyObject::bool_val(false))
             }
         ));
+
         Ok(PyObject::instance_with_attrs(cls, attrs))
     });
 
