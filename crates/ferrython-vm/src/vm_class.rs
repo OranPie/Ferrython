@@ -429,6 +429,7 @@ impl VirtualMachine {
                             metaclass: Some(meta.clone()),
                             method_cache: Arc::new(RwLock::new(IndexMap::new())),
                             subclasses: Arc::new(RwLock::new(Vec::new())),
+                            slots: cd.slots.clone(),
                         }))
                     } else {
                         result

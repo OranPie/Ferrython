@@ -448,49 +448,17 @@ impl VirtualMachine {
         }
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
-                // Check __slots__ restriction — accumulate from entire MRO
-                let has_slots = {
-                    let mut all_slots: Vec<String> = Vec::new();
-                    let mut found_any = false;
-                    // Collect __slots__ from the class and all bases in MRO
-                    let classes_to_check: Vec<PyObjectRef> = {
-                        let mut v = vec![inst.class.clone()];
-                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                            v.extend(cd.mro.clone());
-                            v.extend(cd.bases.clone());
-                        }
-                        v
-                    };
-                    for cls in &classes_to_check {
-                        if let PyObjectPayload::Class(cd) = &cls.payload {
-                            if let Some(slots) = cd.namespace.read().get("__slots__").cloned() {
-                                if matches!(&slots.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
-                                    found_any = true;
-                                    if let Ok(items) = slots.to_list() {
-                                        for item in &items {
-                                            let s = item.py_to_string();
-                                            if !all_slots.contains(&s) {
-                                                all_slots.push(s);
-                                            }
-                                        }
-                                    }
-                                }
+                // Check __slots__ restriction via ClassData.slots field
+                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    if let Some(allowed) = cd.collect_all_slots() {
+                        // If __dict__ is in slots, allow any attribute
+                        if !allowed.iter().any(|s| s.as_str() == "__dict__") {
+                            if !allowed.iter().any(|s| s.as_str() == name.as_str()) {
+                                return Err(PyException::attribute_error(format!(
+                                    "'{}' object has no attribute '{}'",
+                                    cd.name, name
+                                )));
                             }
-                        }
-                    }
-                    if found_any { Some(all_slots) } else { None }
-                };
-                if let Some(allowed_names) = has_slots {
-                    // If __dict__ is in slots, allow any attribute
-                    if !allowed_names.iter().any(|s| s == "__dict__") {
-                        if !allowed_names.iter().any(|s| s == name.as_str()) {
-                            return Err(PyException::attribute_error(format!(
-                                "'{}' object has no attribute '{}'",
-                                inst.class.get_attr("__name__")
-                                    .map(|n| n.py_to_string())
-                                    .unwrap_or_else(|| "object".to_string()),
-                                name
-                            )));
                         }
                     }
                 }

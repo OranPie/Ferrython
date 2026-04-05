@@ -1,6 +1,7 @@
 //! Core Python object types — PyObject, PyObjectPayload, and supporting data types.
 
 use crate::error::{PyResult, ExceptionKind};
+use crate::object::methods::PyObjectMethods;
 use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
@@ -209,6 +210,8 @@ pub struct ClassData {
     pub method_cache: Arc<RwLock<IndexMap<CompactString, Option<PyObjectRef>>>>,
     /// Weak references to direct subclasses (for type.__subclasses__()).
     pub subclasses: Arc<RwLock<Vec<std::sync::Weak<PyObject>>>>,
+    /// `__slots__` declared on *this* class (None means no __slots__ declared).
+    pub slots: Option<Vec<CompactString>>,
 }
 
 impl ClassData {
@@ -219,6 +222,23 @@ impl ClassData {
         mro: Vec<PyObjectRef>,
         metaclass: Option<PyObjectRef>,
     ) -> Self {
+        // Extract __slots__ from the namespace if present
+        let slots: Option<Vec<CompactString>> = namespace.get("__slots__").and_then(|s| {
+            match &s.payload {
+                PyObjectPayload::List(items) => {
+                    let items = items.read();
+                    Some(items.iter().map(|item: &PyObjectRef| CompactString::from(item.py_to_string())).collect::<Vec<_>>())
+                }
+                PyObjectPayload::Tuple(items) => {
+                    Some(items.iter().map(|item: &PyObjectRef| CompactString::from(item.py_to_string())).collect::<Vec<_>>())
+                }
+                PyObjectPayload::Str(s) => {
+                    // Single string slot: __slots__ = "x"
+                    Some(vec![s.clone()])
+                }
+                _ => None,
+            }
+        });
         Self {
             name,
             bases,
@@ -227,6 +247,45 @@ impl ClassData {
             metaclass,
             method_cache: Arc::new(RwLock::new(IndexMap::new())),
             subclasses: Arc::new(RwLock::new(Vec::new())),
+            slots,
+        }
+    }
+
+    /// Collect all allowed slot names from this class and its MRO.
+    /// Returns `None` if no class in the hierarchy defines `__slots__`.
+    pub fn collect_all_slots(&self) -> Option<Vec<CompactString>> {
+        let mut all_slots: Vec<CompactString> = Vec::new();
+        let mut found_any = false;
+
+        if let Some(ref s) = self.slots {
+            found_any = true;
+            for name in s {
+                if !all_slots.contains(name) {
+                    all_slots.push(name.clone());
+                }
+            }
+        }
+        for cls in &self.mro {
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                if let Some(ref s) = cd.slots {
+                    found_any = true;
+                    for name in s {
+                        if !all_slots.contains(name) {
+                            all_slots.push(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        if found_any { Some(all_slots) } else { None }
+    }
+
+    /// Whether `__dict__` is allowed on instances of this class.
+    pub fn has_dict_slot(&self) -> bool {
+        if let Some(ref slots) = self.collect_all_slots() {
+            slots.iter().any(|s| s.as_str() == "__dict__")
+        } else {
+            true // no __slots__ → __dict__ is always available
         }
     }
 

@@ -253,38 +253,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     return Some(inst.class.clone());
                 }
                 if name == "__dict__" {
-                    // If __slots__ is defined without __dict__ in it, raise AttributeError
-                    let has_slots_no_dict = {
-                        let mut found_slots = false;
-                        let mut dict_in_slots = false;
-                        let classes: Vec<PyObjectRef> = {
-                            let mut v = vec![inst.class.clone()];
-                            if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                v.extend(cd.mro.clone());
-                                v.extend(cd.bases.clone());
-                            }
-                            v
-                        };
-                        for cls in &classes {
-                            if let PyObjectPayload::Class(cd) = &cls.payload {
-                                if let Some(slots) = cd.namespace.read().get("__slots__").cloned() {
-                                    if matches!(&slots.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
-                                        found_slots = true;
-                                        if let Ok(items) = slots.to_list() {
-                                            for item in &items {
-                                                if item.py_to_string() == "__dict__" {
-                                                    dict_in_slots = true;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                    // If __slots__ is defined without __dict__ in it, block access
+                    if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                        if !cd.has_dict_slot() {
+                            return None; // Will trigger AttributeError
                         }
-                        found_slots && !dict_in_slots
-                    };
-                    if has_slots_no_dict {
-                        return None; // Will trigger AttributeError
                     }
                     return Some(PyObject::wrap(PyObjectPayload::InstanceDict(inst.attrs.clone())));
                 }
