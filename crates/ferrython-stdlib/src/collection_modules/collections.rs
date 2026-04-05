@@ -13,13 +13,13 @@ use std::sync::Arc;
 
 pub fn create_collections_module() -> PyObjectRef {
     make_module("collections", vec![
-        ("OrderedDict", make_builtin(collections_ordered_dict)),
-        ("defaultdict", make_builtin(collections_defaultdict)),
-        ("Counter", make_builtin(collections_counter)),
+        ("OrderedDict", PyObject::native_function("collections.OrderedDict", collections_ordered_dict)),
+        ("defaultdict", PyObject::native_function("collections.defaultdict", collections_defaultdict)),
+        ("Counter", PyObject::native_function("collections.Counter", collections_counter)),
         ("namedtuple", make_builtin(collections_namedtuple)),
-        ("deque", make_builtin(collections_deque)),
+        ("deque", PyObject::native_function("collections.deque", collections_deque)),
         ("most_common", make_builtin(collections_most_common)),
-        ("ChainMap", PyObject::native_function("ChainMap", collections_chainmap)),
+        ("ChainMap", PyObject::native_function("collections.ChainMap", collections_chainmap)),
         // Counter helper functions (usable as Counter.elements(c), Counter.update(c, other), etc.)
         ("counter_elements", make_builtin(counter_elements)),
         ("counter_update", make_builtin(counter_update)),
