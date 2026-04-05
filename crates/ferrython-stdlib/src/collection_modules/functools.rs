@@ -233,6 +233,13 @@ fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRe
                 None => PyObject::none(),
             });
             w.insert(CompactString::from("currsize"), PyObject::int(currsize));
+            let h = hits; let m = misses; let ms = info_maxsize; let cs = currsize;
+            w.insert(CompactString::from("__repr__"), PyObject::native_closure("CacheInfo.__repr__", move |_args| {
+                let ms_str = match ms { Some(n) => n.to_string(), None => "None".to_string() };
+                Ok(PyObject::str_val(CompactString::from(
+                    format!("CacheInfo(hits={}, misses={}, maxsize={}, currsize={})", h, m, ms_str, cs)
+                )))
+            }));
         }
         Ok(info)
     });

@@ -11,6 +11,28 @@ use indexmap::IndexMap;
 
 use super::apply_format_spec_str;
 
+/// Extract a named kwarg from a trailing Dict argument (if present).
+fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
+    if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(d) = &last.payload {
+            let d = d.read();
+            let key = HashableKey::Str(CompactString::from(name));
+            return d.get(&key).cloned();
+        }
+    }
+    None
+}
+
+/// Return positional args (everything except a trailing kwargs Dict).
+fn positional_args(args: &[PyObjectRef]) -> &[PyObjectRef] {
+    if let Some(last) = args.last() {
+        if matches!(&last.payload, PyObjectPayload::Dict(_)) {
+            return &args[..args.len() - 1];
+        }
+    }
+    args
+}
+
 fn normalize_index(idx: i64, len: i64) -> usize {
     if idx < 0 {
         (len + idx).max(0) as usize
@@ -54,44 +76,64 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             Ok(PyObject::str_val(CompactString::from(s.trim_end())))
         }
         "split" => {
-            let maxsplit: Option<usize> = if args.len() > 1 {
-                args[1].as_int().map(|n| n as usize)
-            } else { None };
-            let parts: Vec<&str> = if args.is_empty() {
-                match maxsplit {
-                    Some(n) => s.splitn(n + 1, char::is_whitespace).collect(),
-                    None => s.split_whitespace().collect(),
-                }
-            } else if let Some(sep) = args[0].as_str() {
-                match maxsplit {
-                    Some(n) => s.splitn(n + 1, sep).collect(),
-                    None => s.split(sep).collect(),
-                }
-            } else if matches!(&args[0].payload, PyObjectPayload::None) {
-                match maxsplit {
-                    Some(n) => s.splitn(n + 1, char::is_whitespace).collect(),
-                    None => s.split_whitespace().collect(),
-                }
+            let pos = positional_args(args);
+            let maxsplit: Option<usize> = if pos.len() > 1 {
+                pos[1].as_int().map(|n| n as usize)
             } else {
-                return Err(PyException::type_error("split() argument must be str or None"));
+                extract_kwarg(args, "maxsplit").and_then(|v| v.as_int().map(|n| n as usize))
+            };
+            let sep_arg = pos.first();
+            let parts: Vec<&str> = match sep_arg {
+                None => match maxsplit {
+                    Some(n) => s.splitn(n + 1, char::is_whitespace).filter(|p| !p.is_empty()).collect(),
+                    None => s.split_whitespace().collect(),
+                },
+                Some(a) if matches!(&a.payload, PyObjectPayload::None) => match maxsplit {
+                    Some(n) => s.splitn(n + 1, char::is_whitespace).filter(|p| !p.is_empty()).collect(),
+                    None => s.split_whitespace().collect(),
+                },
+                Some(a) => {
+                    let sep = a.as_str().ok_or_else(|| PyException::type_error("split() argument must be str or None"))?;
+                    match maxsplit {
+                        Some(n) => s.splitn(n + 1, sep).collect(),
+                        None => s.split(sep).collect(),
+                    }
+                }
             };
             Ok(PyObject::list(parts.iter().map(|p| PyObject::str_val(CompactString::from(*p))).collect()))
         }
         "rsplit" => {
-            let max_split = if args.len() > 1 { args[1].to_int().unwrap_or(-1) } else { -1 };
-            let parts: Vec<&str> = if args.is_empty() {
-                s.rsplit_terminator(char::is_whitespace).collect()
-            } else if let Some(sep) = args[0].as_str() {
-                if max_split < 0 {
-                    s.rsplit(sep).collect()
-                } else {
-                    s.rsplitn(max_split as usize + 1, sep).collect()
-                }
+            let pos = positional_args(args);
+            let maxsplit: Option<usize> = if pos.len() > 1 {
+                pos[1].as_int().map(|n| n as usize)
             } else {
-                return Err(PyException::type_error("rsplit() argument must be str"));
+                extract_kwarg(args, "maxsplit").and_then(|v| v.as_int().map(|n| n as usize))
             };
-            // rsplit collects right-to-left; reverse to get left-to-right order like CPython
-            Ok(PyObject::list(parts.iter().rev().map(|p| PyObject::str_val(CompactString::from(*p))).collect()))
+            let sep_arg = pos.first();
+            let is_none_sep = sep_arg.is_none() || sep_arg.map_or(false, |a| matches!(&a.payload, PyObjectPayload::None));
+            if is_none_sep {
+                let words: Vec<&str> = s.split_whitespace().collect();
+                let result = match maxsplit {
+                    Some(n) if n < words.len() => {
+                        // rejoin leftmost words, then keep the last n
+                        let boundary = words.len() - n;
+                        let mut out: Vec<String> = Vec::with_capacity(n + 1);
+                        out.push(words[..boundary].join(" "));
+                        for w in &words[boundary..] { out.push((*w).to_string()); }
+                        out
+                    }
+                    _ => words.iter().map(|w| w.to_string()).collect(),
+                };
+                Ok(PyObject::list(result.iter().map(|p| PyObject::str_val(CompactString::from(p.as_str()))).collect()))
+            } else {
+                let sep = sep_arg.unwrap().as_str().ok_or_else(|| PyException::type_error("rsplit() argument must be str or None"))?;
+                let mut parts: Vec<&str> = match maxsplit {
+                    Some(n) => s.rsplitn(n + 1, sep).collect(),
+                    None => s.rsplit(sep).collect(),
+                };
+                parts.reverse();
+                Ok(PyObject::list(parts.iter().map(|p| PyObject::str_val(CompactString::from(*p))).collect()))
+            }
         }
         "join" => {
             check_args_min("join", args, 1)?;
