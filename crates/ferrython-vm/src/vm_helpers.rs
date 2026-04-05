@@ -288,6 +288,85 @@ impl VirtualMachine {
         Ok(acc)
     }
 
+    /// VM-level singledispatch call: dispatch based on first arg's type
+    pub(crate) fn vm_singledispatch_call_instance(&mut self, dispatcher: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Err(PyException::type_error("singledispatch function requires at least 1 argument"));
+        }
+        let type_name_str = args[0].type_name();
+        let default = dispatcher.get_attr("__default__")
+            .ok_or_else(|| PyException::runtime_error("singledispatch: no default function"))?;
+        let registry = dispatcher.get_attr("__registry__");
+
+        // Look up handler by type name in registry
+        let handler = if let Some(ref reg) = registry {
+            if let PyObjectPayload::Dict(ref map) = reg.payload {
+                let m = map.read();
+                m.get(&HashableKey::Str(CompactString::from(&*type_name_str)))
+                    .cloned()
+                    .unwrap_or_else(|| default.clone())
+            } else {
+                default.clone()
+            }
+        } else {
+            default.clone()
+        };
+
+        self.call_object(handler, args.to_vec())
+    }
+
+    /// VM-level singledispatch.register: register(type) returns decorator
+    pub(crate) fn vm_singledispatch_register(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        // args[0] = self (dispatcher), args[1] = type, args[2..] = optional func
+        if args.len() < 2 {
+            return Err(PyException::type_error("register() requires a type argument"));
+        }
+        let dispatcher = args[0].clone();
+        let type_obj = &args[1];
+        // Extract the actual type name: check for __name__ first (for class types),
+        // then fall back to py_to_string
+        let type_name = type_obj.get_attr("__name__")
+            .map(|n| n.py_to_string().to_string())
+            .unwrap_or_else(|| {
+                let s = type_obj.py_to_string().to_string();
+                // Strip "<class '...'>" wrapper if present
+                if s.starts_with("<class '") && s.ends_with("'>") {
+                    s[8..s.len()-2].to_string()
+                } else {
+                    s
+                }
+            });
+
+        if args.len() >= 3 {
+            // register(type, func) — direct registration
+            let func = args[2].clone();
+            if let Some(reg) = dispatcher.get_attr("__registry__") {
+                if let PyObjectPayload::Dict(ref map) = reg.payload {
+                    map.write().insert(HashableKey::Str(CompactString::from(&*type_name)), func.clone());
+                }
+            }
+            return Ok(func);
+        }
+
+        // register(type) → return decorator closure that captures dispatcher + type_name
+        let tn = type_name.to_string();
+        Ok(PyObject::native_closure(
+            "singledispatch.register_decorator",
+            move |deco_args| {
+                if deco_args.is_empty() {
+                    return Err(PyException::type_error("register decorator requires 1 argument"));
+                }
+                let func = deco_args[0].clone();
+                if let Some(reg) = dispatcher.get_attr("__registry__") {
+                    if let PyObjectPayload::Dict(ref map) = reg.payload {
+                        map.write().insert(HashableKey::Str(CompactString::from(&tn)), func.clone());
+                    }
+                }
+                Ok(func)
+            },
+        ))
+    }
+
     /// VM-level itertools.islice: lazily takes items from any iterable (including generators).
     pub(crate) fn vm_itertools_islice(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
@@ -1218,8 +1297,18 @@ impl VirtualMachine {
                 drop(m);
                 let shared = Arc::new(RwLock::new(new_globals));
                 let exec_result = self.execute_with_globals(code, shared.clone())?;
+                // Check for __eval_result__ in globals (set by compile(mode='eval'))
+                if let Some(val) = shared.read().get("__eval_result__").cloned() {
+                    if !is_code_obj {
+                        let results = shared.read();
+                        let mut m = map.write();
+                        for (k, v) in results.iter() {
+                            m.insert(HashableKey::Str(k.clone()), v.clone());
+                        }
+                    }
+                    return Ok(val);
+                }
                 if is_code_obj {
-                    // Code objects from compile(mode='eval') return their result directly
                     return Ok(exec_result);
                 }
                 let result = shared.read().get("__eval_result__").cloned()
@@ -1236,6 +1325,10 @@ impl VirtualMachine {
         } else {
             let globals = self.call_stack.last().unwrap().globals.clone();
             let exec_result = self.execute_with_globals(code, globals.clone())?;
+            // Check for __eval_result__ in globals (set by compile(mode='eval'))
+            if let Some(val) = globals.read().get("__eval_result__").cloned() {
+                return Ok(val);
+            }
             if is_code_obj {
                 return Ok(exec_result);
             }
@@ -1252,8 +1345,14 @@ impl VirtualMachine {
         let source = args[0].as_str().ok_or_else(||
             PyException::type_error("compile() arg 1 must be a string"))?;
         let filename = args[1].py_to_string();
-        let _mode = args[2].py_to_string();
-        let module = ferrython_parser::parse(source, &filename)
+        let mode = args[2].py_to_string();
+        // In "eval" mode, wrap as assignment so eval() can extract the result
+        let effective_source = if mode == "eval" {
+            format!("__eval_result__ = ({})", source)
+        } else {
+            source.to_string()
+        };
+        let module = ferrython_parser::parse(&effective_source, &filename)
             .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
         let mut compiler = ferrython_compiler::Compiler::new(filename);
         let code = compiler.compile_module(&module)

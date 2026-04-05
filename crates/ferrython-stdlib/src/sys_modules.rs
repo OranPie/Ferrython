@@ -335,6 +335,7 @@ pub fn create_os_module() -> PyObjectRef {
         ("remove", make_builtin(os_remove)),
         ("unlink", make_builtin(os_remove)),
         ("rmdir", make_builtin(os_rmdir)),
+        ("removedirs", make_builtin(os_removedirs)),
         ("rename", make_builtin(os_rename)),
         ("path", create_os_path_module()),
         ("getenv", make_builtin(os_getenv)),
@@ -637,6 +638,25 @@ fn os_rmdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.rmdir", args, 1)?;
     std::fs::remove_dir(args[0].py_to_string())
         .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    Ok(PyObject::none())
+}
+fn os_removedirs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.removedirs", args, 1)?;
+    let path_str = args[0].py_to_string();
+    let mut path = std::path::PathBuf::from(&*path_str);
+    // Remove the leaf directory first
+    std::fs::remove_dir(&path)
+        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    // Walk up, removing empty parent directories until one fails
+    while let Some(parent) = path.parent() {
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        if std::fs::remove_dir(parent).is_err() {
+            break;
+        }
+        path = parent.to_path_buf();
+    }
     Ok(PyObject::none())
 }
 fn os_rename(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

@@ -1216,6 +1216,9 @@ impl VirtualMachine {
                         return Ok(PyObject::exception_instance_with_args(kind.clone(), msg, pos_args));
                     }
                     PyObjectPayload::Instance(_) => {
+                        if func.get_attr("__singledispatch__").is_some() {
+                            return self.vm_singledispatch_call_instance(&func, &pos_args);
+                        }
                         if let Some(method) = func.get_attr("__call__") {
                             return self.call_object_kw(method, pos_args, kwargs);
                         }
@@ -2132,6 +2135,10 @@ impl VirtualMachine {
                 if name.as_str() == "itertools.islice" {
                     return self.vm_itertools_islice(&args);
                 }
+                // singledispatch.register: register(type) → decorator
+                if name.as_str() == "singledispatch.register" {
+                    return self.vm_singledispatch_register(&args);
+                }
                 // type.__call__(cls, *args) — standard class instantiation protocol
                 if name.as_str() == "__type_call__" {
                     if args.is_empty() {
@@ -2310,6 +2317,10 @@ impl VirtualMachine {
                     }
                 }
                 // Callable instances: check for __call__
+                if func.get_attr("__singledispatch__").is_some() {
+                    // singledispatch: dispatch based on first arg type
+                    return self.vm_singledispatch_call_instance(&func, &args);
+                }
                 if let Some(method) = func.get_attr("__call__") {
                     self.call_object(method, args)
                 } else {

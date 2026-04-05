@@ -7,6 +7,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use parking_lot::RwLock;
 use std::sync::Arc;
 
 pub fn create_functools_module() -> PyObjectRef {
@@ -93,11 +94,7 @@ pub fn create_functools_module() -> PyObjectRef {
             Ok(inst)
         })),
         ("total_ordering", make_builtin(functools_total_ordering)),
-        ("singledispatch", make_builtin(|args| {
-            // Stub — return the function unchanged to enable imports
-            if args.is_empty() { return Err(PyException::type_error("singledispatch requires 1 argument")); }
-            Ok(args[0].clone())
-        })),
+        ("singledispatch", make_builtin(functools_singledispatch)),
         ("update_wrapper", PyObject::native_function("functools.update_wrapper", |args| {
             // update_wrapper(wrapper, wrapped) — copy attrs from wrapped to wrapper
             if args.len() < 2 { return Err(PyException::type_error("update_wrapper requires at least 2 arguments")); }
@@ -280,4 +277,54 @@ fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRe
             is_special: true, dict_storage: None,
         }),
     })
+}
+
+/// functools.singledispatch — creates a single-dispatch generic function
+/// The dispatcher Instance has __registry__ (dict of type→handler), __default__ (fallback),
+/// and a __call__ NativeFunction intercepted at the VM level for actual dispatch.
+fn functools_singledispatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("singledispatch requires 1 argument"));
+    }
+    let default_func = args[0].clone();
+
+    // Build the dispatcher Instance
+    let mut cls_ns = IndexMap::new();
+
+    // register(type) → decorator that adds handler to __registry__
+    cls_ns.insert(CompactString::from("register"), PyObject::native_function(
+        "singledispatch.register", |_args| {
+            // Stub — actual dispatch handled by VM intercept
+            Err(PyException::type_error("singledispatch.register needs VM access"))
+        },
+    ));
+
+    // __call__ — intercepted by VM for actual dispatch
+    cls_ns.insert(CompactString::from("__call__"), PyObject::native_function(
+        "singledispatch.__call__", |_args| {
+            Err(PyException::type_error("singledispatch.__call__ should be VM-intercepted"))
+        },
+    ));
+
+    let class = PyObject::class(CompactString::from("singledispatch"), vec![], cls_ns);
+    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        class,
+        attrs: Arc::new(RwLock::new(IndexMap::new())),
+        is_special: true, dict_storage: None,
+    }));
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("__singledispatch__"), PyObject::bool_val(true));
+        w.insert(CompactString::from("__default__"), default_func.clone());
+        // __registry__ as a Dict
+        let registry = PyObject::dict(IndexMap::new());
+        if let PyObjectPayload::Dict(ref map) = registry.payload {
+            map.write().insert(HashableKey::Str(CompactString::from("object")), default_func.clone());
+        }
+        w.insert(CompactString::from("__registry__"), registry);
+        if let Some(name) = default_func.get_attr("__name__") {
+            w.insert(CompactString::from("__name__"), name);
+        }
+    }
+    Ok(inst)
 }
