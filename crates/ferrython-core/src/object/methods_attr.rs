@@ -765,6 +765,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             ExceptionKind::ConnectionRefusedError => Some(ExceptionKind::ConnectionError),
                             ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
                             ExceptionKind::UnicodeEncodeError => Some(ExceptionKind::ValueError),
+                            ExceptionKind::JSONDecodeError => Some(ExceptionKind::ValueError),
                             ExceptionKind::ModuleNotFoundError => Some(ExceptionKind::ImportError),
                             ExceptionKind::NotImplementedError | ExceptionKind::RecursionError => {
                                 Some(ExceptionKind::RuntimeError)
@@ -819,6 +820,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 ExceptionKind::ConnectionRefusedError => ExceptionKind::ConnectionError,
                                 ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
                                 ExceptionKind::UnicodeEncodeError => ExceptionKind::ValueError,
+                                ExceptionKind::JSONDecodeError => ExceptionKind::ValueError,
                                 ExceptionKind::ModuleNotFoundError => ExceptionKind::ImportError,
                                 ExceptionKind::NotImplementedError | ExceptionKind::RecursionError => ExceptionKind::RuntimeError,
                                 ExceptionKind::UnboundLocalError => ExceptionKind::NameError,

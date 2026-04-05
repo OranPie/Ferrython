@@ -77,6 +77,8 @@ pub enum ExceptionKind {
     // Indentation
     IndentationError,
     TabError,
+    // Module-specific subclasses
+    JSONDecodeError,
 }
 
 impl fmt::Display for ExceptionKind {
@@ -118,7 +120,8 @@ impl ExceptionKind {
             ),
             ExceptionKind::ValueError => matches!(self,
                 ExceptionKind::ValueError | ExceptionKind::UnicodeError |
-                ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError
+                ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError |
+                ExceptionKind::JSONDecodeError
             ),
             ExceptionKind::UnicodeError => matches!(self,
                 ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
@@ -218,6 +221,7 @@ impl ExceptionKind {
             "PendingDeprecationWarning" => Some(Self::PendingDeprecationWarning),
             "IndentationError" => Some(Self::IndentationError),
             "TabError" => Some(Self::TabError),
+            "JSONDecodeError" | "json.JSONDecodeError" => Some(Self::JSONDecodeError),
             _ => None,
         }
     }
@@ -275,6 +279,7 @@ impl PyException {
     pub fn recursion_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::RecursionError, msg) }
     pub fn unbound_local_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::UnboundLocalError, msg) }
     pub fn syntax_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::SyntaxError, msg) }
+    pub fn json_decode_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::JSONDecodeError, msg) }
     pub fn system_exit(code: PyObjectRef) -> Self {
         let mut exc = Self::new(ExceptionKind::SystemExit, "");
         exc.value = Some(code);

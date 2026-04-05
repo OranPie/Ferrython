@@ -941,6 +941,10 @@ impl VirtualMachine {
                 ExceptionKind::from_name(name).unwrap_or(ExceptionKind::RuntimeError)
             }
             PyObjectPayload::Class(cd) => {
+                // Check if the class name itself maps to a known exception kind
+                if let Some(kind) = ExceptionKind::from_name(&cd.name) {
+                    return kind;
+                }
                 for base in &cd.bases {
                     let kind = Self::find_exception_kind(base);
                     if !matches!(kind, ExceptionKind::RuntimeError) {
@@ -1050,7 +1054,8 @@ pub(crate) fn exception_kind_matches(actual: &ExceptionKind, expected: &Exceptio
         ),
         ExceptionKind::ValueError => matches!(actual,
             ExceptionKind::ValueError | ExceptionKind::UnicodeError |
-            ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError
+            ExceptionKind::UnicodeDecodeError | ExceptionKind::UnicodeEncodeError |
+            ExceptionKind::JSONDecodeError
         ),
         ExceptionKind::Warning => matches!(actual,
             ExceptionKind::Warning | ExceptionKind::DeprecationWarning |

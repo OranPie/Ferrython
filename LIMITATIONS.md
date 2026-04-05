@@ -1,7 +1,7 @@
 # Ferrython — Known Limitations
 
 > Comprehensive inventory of gaps between Ferrython and CPython 3.8.
-> Updated: 155+ stdlib modules, 137 tests (125 fixture + 12 unit), 15 crates, ~64K lines Rust.
+> Updated: 155+ stdlib modules, 125 fixture tests (all passing), 15 crates, ~64K lines Rust.
 
 ---
 
@@ -95,6 +95,7 @@
 |---------|--------|-------|
 | Metaclass with `__prepare__` | ⚠️ | Parses but namespace is always a plain dict |
 | Metaclass conflict resolution | ❌ | Not implemented |
+| `__class__` implicit cell (PEP 3135) | ❌ | `__class__` in methods not auto-injected by compiler |
 | `__slots__` `__dict__` prevention | ⚠️ | Restriction enforced but `__dict__` not prevented |
 | GC generations | ⚠️ | Three generations present; not differentiated during collection |
 
@@ -133,6 +134,10 @@
 
 | Module | What was fixed |
 |--------|---------------|
+| `json.dump/load` | File dispatch: NativeFunction write/read now receives self arg correctly |
+| In-place operators | `list +=`, `list *=`, `set \|=`, `set -=`, `set &=`, `set ^=` preserve identity |
+| `namedtuple` | `defaults=` kwarg now parsed and applied (right-aligned to fields) |
+| `namedtuple` | `_tuple` includes default values; `_field_defaults` dict stored in class |
 | `hashlib` | Now supports `update()`, `digest()`, `hexdigest()`, `copy()` (incremental hashing) |
 | `hmac` | Fixed to use proper SHA algorithms (was using Rust DefaultHasher) |
 | `glob` | Added `**` recursive directory traversal, `escape()` |

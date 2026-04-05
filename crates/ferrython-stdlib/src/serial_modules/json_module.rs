@@ -445,7 +445,7 @@ fn json_load(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn parse_json_value(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
     skip_ws(s, pos);
-    if *pos >= s.len() { return Err(PyException::value_error("Unexpected end of JSON")); }
+    if *pos >= s.len() { return Err(PyException::json_decode_error("Unexpected end of JSON")); }
     let ch = s.as_bytes()[*pos] as char;
     match ch {
         '"' => parse_json_string(s, pos),
@@ -485,18 +485,18 @@ fn parse_json_string(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
         }
         *pos += 1;
     }
-    Err(PyException::value_error("Unterminated string"))
+    Err(PyException::json_decode_error("Unterminated string"))
 }
 
 fn parse_json_bool(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
     if s[*pos..].starts_with("true") { *pos += 4; return Ok(PyObject::bool_val(true)); }
     if s[*pos..].starts_with("false") { *pos += 5; return Ok(PyObject::bool_val(false)); }
-    Err(PyException::value_error("Invalid JSON"))
+    Err(PyException::json_decode_error("Invalid JSON"))
 }
 
 fn parse_json_null(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
     if s[*pos..].starts_with("null") { *pos += 4; return Ok(PyObject::none()); }
-    Err(PyException::value_error("Invalid JSON"))
+    Err(PyException::json_decode_error("Invalid JSON"))
 }
 
 fn parse_json_number(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
@@ -515,10 +515,10 @@ fn parse_json_number(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
     }
     let num_str = &s[start..*pos];
     if is_float {
-        let f: f64 = num_str.parse().map_err(|_| PyException::value_error("Invalid number"))?;
+        let f: f64 = num_str.parse().map_err(|_| PyException::json_decode_error("Invalid number"))?;
         Ok(PyObject::float(f))
     } else {
-        let i: i64 = num_str.parse().map_err(|_| PyException::value_error("Invalid number"))?;
+        let i: i64 = num_str.parse().map_err(|_| PyException::json_decode_error("Invalid number"))?;
         Ok(PyObject::int(i))
     }
 }
@@ -535,7 +535,7 @@ fn parse_json_array(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
         if s.as_bytes()[*pos] == b']' { *pos += 1; return Ok(PyObject::list(items)); }
         if s.as_bytes()[*pos] == b',' { *pos += 1; } else { break; }
     }
-    Err(PyException::value_error("Invalid JSON array"))
+    Err(PyException::json_decode_error("Invalid JSON array"))
 }
 
 fn parse_json_object(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
@@ -548,7 +548,7 @@ fn parse_json_object(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
         skip_ws(s, pos);
         let key = parse_json_string(s, pos)?;
         skip_ws(s, pos);
-        if *pos >= s.len() || s.as_bytes()[*pos] != b':' { return Err(PyException::value_error("Expected ':'")); }
+        if *pos >= s.len() || s.as_bytes()[*pos] != b':' { return Err(PyException::json_decode_error("Expected ':'")); }
         *pos += 1;
         let value = parse_json_value(s, pos)?;
         let hk = HashableKey::Str(CompactString::from(key.py_to_string()));
@@ -561,5 +561,5 @@ fn parse_json_object(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
         if s.as_bytes()[*pos] == b'}' { *pos += 1; return Ok(dict); }
         if s.as_bytes()[*pos] == b',' { *pos += 1; } else { break; }
     }
-    Err(PyException::value_error("Invalid JSON object"))
+    Err(PyException::json_decode_error("Invalid JSON object"))
 }

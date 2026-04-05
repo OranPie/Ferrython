@@ -397,10 +397,8 @@ impl VirtualMachine {
                                 exception_kind_matches(kind_a, kind_b)
                             }
                             PyObjectPayload::Class(_cls_b) => {
-                                // A built-in exception type (like ValueError) can never be
-                                // an instance/subclass of a user-defined exception class
-                                // (like AppError), even if they share a common ancestor
-                                false
+                                let kind_b = Self::find_exception_kind(b_item);
+                                exception_kind_matches(kind_a, &kind_b)
                             }
                             PyObjectPayload::BuiltinType(name) => {
                                 if let Some(kind_b) = ExceptionKind::from_name(name) {
