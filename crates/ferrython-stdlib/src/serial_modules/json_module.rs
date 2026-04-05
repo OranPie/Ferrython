@@ -10,8 +10,15 @@ pub fn create_json_module() -> PyObjectRef {
     make_module("json", vec![
         ("dumps", make_builtin(json_dumps)),
         ("loads", make_builtin(json_loads)),
+        ("dump", make_builtin(json_dump)),
+        ("load", make_builtin(json_load)),
         ("JSONEncoder", make_builtin(json_encoder_ctor)),
         ("JSONDecoder", make_builtin(json_decoder_ctor)),
+        ("JSONDecodeError", PyObject::class(
+            CompactString::from("JSONDecodeError"),
+            vec![],
+            indexmap::IndexMap::new(),
+        )),
     ])
 }
 
@@ -311,6 +318,54 @@ fn json_loads(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         _ => return Err(PyException::type_error("json.loads requires a string")),
     };
     parse_json_value(&s, &mut 0)
+}
+
+/// json.dump(obj, fp, **kwargs) — serialize obj as JSON and write to fp.write()
+fn json_dump(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error(
+            "json.dump() missing required arguments: 'obj' and 'fp'",
+        ));
+    }
+    // Reuse json_dumps for serialization: pass obj + remaining kwargs
+    let mut dump_args = vec![args[0].clone()];
+    if args.len() > 2 {
+        dump_args.push(args[2].clone());
+    }
+    let json_str = json_dumps(&dump_args)?;
+    // Call fp.write(json_str)
+    let fp = &args[1];
+    if let Some(write_fn) = fp.get_attr("write") {
+        match &write_fn.payload {
+            PyObjectPayload::NativeFunction { func, .. } => { func(&[json_str])?; }
+            PyObjectPayload::NativeClosure { func, .. } => { func(&[json_str])?; }
+            _ => {} // user-defined write — best-effort
+        }
+    }
+    Ok(PyObject::none())
+}
+
+/// json.load(fp) — read JSON from fp.read() and deserialize
+fn json_load(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "json.load() missing required argument: 'fp'",
+        ));
+    }
+    let fp = &args[0];
+    if let Some(read_fn) = fp.get_attr("read") {
+        let data = match &read_fn.payload {
+            PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
+            PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+            _ => return Err(PyException::type_error("fp.read() is not callable")),
+        };
+        let s = match &data.payload {
+            PyObjectPayload::Str(s) => s.to_string(),
+            _ => return Err(PyException::type_error("fp.read() must return a string")),
+        };
+        return parse_json_value(&s, &mut 0);
+    }
+    Err(PyException::attribute_error("'fp' object has no attribute 'read'"))
 }
 
 fn parse_json_value(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {

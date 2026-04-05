@@ -1,10 +1,10 @@
 //! Logging, testing, and debugging stdlib modules
 
 use compact_str::CompactString;
-use ferrython_core::error::PyResult;
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin,
+    make_module, make_builtin, CompareOp,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -389,10 +389,270 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 // ── unittest module ──
 
+/// Helper: extract optional message from args at given index.
+fn assert_msg(args: &[PyObjectRef], idx: usize) -> String {
+    if args.len() > idx {
+        args[idx].py_to_string()
+    } else {
+        String::new()
+    }
+}
+
 pub fn create_unittest_module() -> PyObjectRef {
-    // Create TestCase class
+    // Build TestCase class with assert methods in the namespace so that
+    // subclass instances inherit them via MRO lookup.
     let mut tc_ns = IndexMap::new();
     tc_ns.insert(CompactString::from("__unittest_testcase__"), PyObject::bool_val(true));
+
+    // setUp / tearDown — default no-ops, subclasses override
+    tc_ns.insert(CompactString::from("setUp"), make_builtin(|_| Ok(PyObject::none())));
+    tc_ns.insert(CompactString::from("tearDown"), make_builtin(|_| Ok(PyObject::none())));
+
+    // assertEqual(a, b[, msg])
+    tc_ns.insert(CompactString::from("assertEqual"), PyObject::native_closure(
+        "assertEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertEqual requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Eq)?;
+            if !result.is_truthy() {
+                let msg = if args.len() > 2 { args[2].py_to_string() }
+                    else { format!("{} != {}", args[0].py_to_string(), args[1].py_to_string()) };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertNotEqual(a, b[, msg])
+    tc_ns.insert(CompactString::from("assertNotEqual"), PyObject::native_closure(
+        "assertNotEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertNotEqual requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Ne)?;
+            if !result.is_truthy() {
+                let msg = if args.len() > 2 { args[2].py_to_string() }
+                    else { format!("{} == {}", args[0].py_to_string(), args[1].py_to_string()) };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertTrue(x[, msg])
+    tc_ns.insert(CompactString::from("assertTrue"), PyObject::native_closure(
+        "assertTrue", |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("assertTrue requires 1 argument"));
+            }
+            if !args[0].is_truthy() {
+                let msg = assert_msg(args, 1);
+                let msg = if msg.is_empty() { format!("{} is not true", args[0].py_to_string()) } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertFalse(x[, msg])
+    tc_ns.insert(CompactString::from("assertFalse"), PyObject::native_closure(
+        "assertFalse", |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("assertFalse requires 1 argument"));
+            }
+            if args[0].is_truthy() {
+                let msg = assert_msg(args, 1);
+                let msg = if msg.is_empty() { format!("{} is not false", args[0].py_to_string()) } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertIs(a, b[, msg])
+    tc_ns.insert(CompactString::from("assertIs"), PyObject::native_closure(
+        "assertIs", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertIs requires 2 arguments"));
+            }
+            if !Arc::ptr_eq(&args[0], &args[1]) {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} is not {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertIsNot(a, b[, msg])
+    tc_ns.insert(CompactString::from("assertIsNot"), PyObject::native_closure(
+        "assertIsNot", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertIsNot requires 2 arguments"));
+            }
+            if Arc::ptr_eq(&args[0], &args[1]) {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} is {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertIsNone(x[, msg])
+    tc_ns.insert(CompactString::from("assertIsNone"), PyObject::native_closure(
+        "assertIsNone", |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("assertIsNone requires 1 argument"));
+            }
+            if !matches!(args[0].payload, PyObjectPayload::None) {
+                let msg = assert_msg(args, 1);
+                let msg = if msg.is_empty() { format!("{} is not None", args[0].py_to_string()) } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertIsNotNone(x[, msg])
+    tc_ns.insert(CompactString::from("assertIsNotNone"), PyObject::native_closure(
+        "assertIsNotNone", |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("assertIsNotNone requires 1 argument"));
+            }
+            if matches!(args[0].payload, PyObjectPayload::None) {
+                let msg = assert_msg(args, 1);
+                let msg = if msg.is_empty() { "unexpectedly None".to_string() } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertIn(a, b[, msg])
+    tc_ns.insert(CompactString::from("assertIn"), PyObject::native_closure(
+        "assertIn", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertIn requires 2 arguments"));
+            }
+            let contained = args[1].contains(&args[0])?;
+            if !contained {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} not found in {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertNotIn(a, b[, msg])
+    tc_ns.insert(CompactString::from("assertNotIn"), PyObject::native_closure(
+        "assertNotIn", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertNotIn requires 2 arguments"));
+            }
+            let contained = args[1].contains(&args[0])?;
+            if contained {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} unexpectedly found in {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertGreater(a, b[, msg])
+    tc_ns.insert(CompactString::from("assertGreater"), PyObject::native_closure(
+        "assertGreater", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertGreater requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Gt)?;
+            if !result.is_truthy() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} not greater than {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertLess(a, b[, msg])
+    tc_ns.insert(CompactString::from("assertLess"), PyObject::native_closure(
+        "assertLess", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertLess requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Lt)?;
+            if !result.is_truthy() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} not less than {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertRaises(exc_type) — returns a context manager
+    tc_ns.insert(CompactString::from("assertRaises"), PyObject::native_closure(
+        "assertRaises", |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("assertRaises requires an exception type"));
+            }
+            let exc_type_name = match &args[0].payload {
+                PyObjectPayload::Class(cd) => cd.name.clone(),
+                PyObjectPayload::Str(s) => s.clone(),
+                _ => CompactString::from(args[0].py_to_string()),
+            };
+            // Build a context-manager object with __enter__ / __exit__
+            let cls = PyObject::class(
+                CompactString::from("_AssertRaisesContext"),
+                vec![],
+                IndexMap::new(),
+            );
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("expected"), PyObject::str_val(exc_type_name.clone()));
+                w.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                    "__enter__", |_args: &[PyObjectRef]| Ok(PyObject::none()),
+                ));
+                let etype = exc_type_name.clone();
+                w.insert(CompactString::from("__exit__"), PyObject::native_closure(
+                    "__exit__", move |args: &[PyObjectRef]| {
+                        // args: exc_type, exc_val, exc_tb (or None if no exception)
+                        let has_exc = if args.is_empty() {
+                            false
+                        } else {
+                            !matches!(args[0].payload, PyObjectPayload::None)
+                        };
+                        if !has_exc {
+                            return Err(PyException::assertion_error(
+                                format!("{} not raised", etype),
+                            ));
+                        }
+                        // Suppress the exception
+                        Ok(PyObject::bool_val(true))
+                    },
+                ));
+            }
+            Ok(inst)
+        },
+    ));
+
     let test_case = PyObject::class(CompactString::from("TestCase"), vec![], tc_ns);
 
     make_module("unittest", vec![
@@ -402,7 +662,6 @@ pub fn create_unittest_module() -> PyObjectRef {
         ("TestLoader", make_builtin(|_| Ok(PyObject::none()))),
         ("TextTestRunner", make_builtin(|_| Ok(PyObject::none()))),
         ("skip", make_builtin(|_args| {
-            // Return identity decorator
             Ok(make_builtin(|args| {
                 if args.is_empty() { Ok(PyObject::none()) } else { Ok(args[0].clone()) }
             }))
