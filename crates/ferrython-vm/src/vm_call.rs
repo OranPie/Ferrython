@@ -651,10 +651,17 @@ impl VirtualMachine {
                 };
                 let mut init_args = vec![instance.clone()];
                 init_args.extend(pos_args.clone());
-                if kwargs.is_empty() {
-                    self.call_object(init_fn, init_args)?;
+                let init_result = if kwargs.is_empty() {
+                    self.call_object(init_fn, init_args)?
                 } else {
-                    self.call_object_kw(init_fn, init_args, kwargs.clone())?;
+                    self.call_object_kw(init_fn, init_args, kwargs.clone())?
+                };
+                // CPython: __init__ must return None
+                if !matches!(&init_result.payload, PyObjectPayload::None) {
+                    return Err(PyException::type_error(
+                        "__init__() should return None, not '".to_string()
+                            + init_result.type_name() + "'"
+                    ));
                 }
             }
             // Dict subclass: populate dict_storage from pos_args/kwargs
