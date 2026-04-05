@@ -280,5 +280,19 @@ impl PyException {
     }
 }
 
+// ── Cross-crate error conversions ──
+
+impl From<ferrython_parser::ParseError> for PyException {
+    fn from(e: ferrython_parser::ParseError) -> Self {
+        PyException::syntax_error(format!("{}", e))
+    }
+}
+
+impl From<ferrython_compiler::CompileError> for PyException {
+    fn from(e: ferrython_compiler::CompileError) -> Self {
+        PyException::syntax_error(format!("{}", e))
+    }
+}
+
 /// Convenience result type used throughout the VM.
 pub type PyResult<T> = Result<T, PyException>;

@@ -40,6 +40,7 @@
 | `sys.exc_info()` | ✅ | Thread-local tracking, set on handler entry, cleared on PopExcept |
 | `__traceback__` attribute | ✅ | Proper linked traceback objects with tb_lineno, tb_filename, tb_name, tb_next |
 | `finally` return override | ✅ | `return` in `finally` correctly overrides `return` in `try` |
+| Unified error types | ✅ | `From<ParseError>` and `From<CompileError>` for `PyException`; enables `?` across error boundaries |
 
 ### 3.3 I/O Redirection
 | Feature | Status | Notes |
@@ -72,7 +73,12 @@
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Tuple-value auto-unpacking | ✅ | `EARTH = (mass, radius)` correctly unpacks into `__init__` |
-| `IntEnum` / `IntFlag` | ⚠️ | Basic support; some operator edge cases |
+| `IntEnum` / `IntFlag` | ✅ | Supports int comparisons and arithmetic |
+
+### 3.7 ABC Enforcement
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Abstract method enforcement | ✅ | Abstract methods enforced at instantiation time |
 
 ## 4. Standard Library Limitations
 
@@ -89,6 +95,8 @@
 | `locale` | `getlocale()` returns C locale | No real locale support |
 | `inspect` | 17 functions: is*, getmembers, signature, getfullargspec, getdoc, getfile | Parameter/Signature classes are stubs |
 | `typing` | `TypeVar`, `Generic`, `Protocol` exist | All are no-op placeholders; `get_type_hints()` returns `{}` |
+| `pathlib` | `Path` with 16 methods: exists, is_dir, is_file, mkdir, read_text, write_text, etc. | Advanced path operations |
+| `functools` | `lru_cache` fully implemented with maxsize, cache_info, cache_clear | `singledispatch`, `total_ordering` are stubs |
 
 ### 4.2 Incomplete Implementations
 
@@ -120,8 +128,8 @@
 | Function call overhead | ✅ | 1.2M calls/s (was 220K — Arc<CodeObject> + shared constant cache) |
 | No bytecode caching (`.pyc`) | ❌ | Every import re-parses and re-compiles |
 | Arc-based refcounting overhead | ⚠️ | Atomic ops on every clone/drop |
-| GC cycle detection | ⚠️ | Only covers `Instance` objects; `Dict`/`List` cycles not reclaimed |
-| String interning | ⚠️ | `intern.rs` covers ~80 dunder names in method cache; general identifiers not yet interned |
+| GC cycle detection | ✅ | Covers `Instance`, `Dict`, and `List` objects; trial deletion algorithm |
+| String interning | ✅ | `intern.rs` covers dunder names + `intern_or_new()` in hot paths |
 | Small-int caching | ✅ | Pre-allocated int pool for -5..=256 (matches CPython) |
 | Pre-boxed constant cache | ✅ | Built once per function, shared across all frames via Arc |
 | Binary op fast paths | ✅ | int+int, float+float, str+str skip dunder dispatch |
@@ -132,22 +140,22 @@
 
 | Issue | Location | Status | Notes |
 |-------|----------|--------|-------|
-| God files (>2,000 lines) | opcodes.rs, vm_call.rs, parser.rs | ⚠️ | opcodes.rs split into focused handlers; vm_call.rs helpers extracted |
-| Three incompatible error types | parser/compiler/VM | ❌ | No `From` impls between them |
-| `cargo test` for Python fixtures | tests/fixtures/ | ✅ | 84/84 wired via `cargo test -p ferrython-cli --test fixtures` |
+| God files (>2,000 lines) | opcodes.rs, vm_call.rs | ✅ | opcodes.rs split into focused handlers; vm_call.rs helpers extracted; parser.rs split into mod.rs, statements.rs, expressions.rs, arguments.rs |
+| Error type unification | parser/compiler/VM | ✅ | `From<ParseError>` and `From<CompileError>` for `PyException` in ferrython-core |
+| `cargo test` for Python fixtures | tests/fixtures/ | ✅ | 91/91 wired via `cargo test -p ferrython-cli --test fixtures` |
 | Import system scattered | opcodes.rs + vm_helpers.rs + vm_call.rs | ✅ | Consolidated into `vm_import.rs` |
 | Dead code | db_modules.rs | ⚠️ | 2 `#[allow(dead_code)]` on incomplete sqlite3 structs |
-| misc_modules.rs catch-all | stdlib crate | ✅ | Split from 1717 → 801 lines; modules redistributed to category files |
-| Debug tooling | ferrython-debug crate | ✅ | Profiler, breakpoints, disassembler, bytecode stats |
+| Module organization | stdlib crate | ✅ | network_modules split (socket, http); serial_modules split (json, csv, other); collection_modules split (collections, functools, itertools, operator, other) |
+| Debug tooling | ferrython-debug crate | ✅ | Profiler, breakpoints, disassembler (`--dis` disassembles to stderr then executes), bytecode stats |
 
 ## 7. Test Results Summary
 
 - **CPython alignment tests**: ~1,343/1,350 pass (~99.5%)
-- **Fixture tests**: 87/87 pass (100%)
+- **Fixture tests**: 91/91 pass (100%)
 - **Known test failures by category**:
   - `asyncio.wait_for` timeout (Test 1230)
   - `asyncio.Queue` blocking get (Test 1340)
 
 ---
 
-*Last updated after restructure session. See `ferrython-gaps.md` for the original feature-by-feature gap audit.*
+*Last updated after error unification + GC extension session. See `ferrython-gaps.md` for the original feature-by-feature gap audit.*

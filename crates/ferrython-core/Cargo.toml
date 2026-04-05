@@ -8,6 +8,8 @@ description = "Core runtime for Ferrython: object model, memory management, GIL"
 [dependencies]
 ferrython-gc = { workspace = true }
 ferrython-bytecode = { workspace = true }
+ferrython-parser = { workspace = true }
+ferrython-compiler = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }

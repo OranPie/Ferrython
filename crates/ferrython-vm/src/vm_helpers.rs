@@ -1073,7 +1073,7 @@ impl VirtualMachine {
                 .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?;
             let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
             Arc::new(compiler.compile_module(&module)
-                .map_err(|_| PyException::syntax_error("exec: compilation failed"))?)
+                .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?)
         };
         if args.len() >= 2 {
             if let PyObjectPayload::Dict(ref map) = args[1].payload {
@@ -1144,7 +1144,7 @@ impl VirtualMachine {
                 .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?;
             let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
             Arc::new(compiler.compile_module(&module)
-                .map_err(|_| PyException::syntax_error("eval: compilation failed"))?)
+                .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?)
         };
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
         if args.len() >= 2 {
@@ -1200,7 +1200,7 @@ impl VirtualMachine {
             .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
         let mut compiler = ferrython_compiler::Compiler::new(filename);
         let code = compiler.compile_module(&module)
-            .map_err(|_| PyException::syntax_error("compile: compilation failed"))?;
+            .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
         Ok(PyObject::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))))
     }
 

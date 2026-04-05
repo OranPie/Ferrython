@@ -166,18 +166,18 @@ fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize, default: Op
         PyObjectPayload::List(items) => {
             let r = items.read();
             if r.is_empty() { return Ok("[]".into()); }
-            let parts: Result<Vec<String>, _> = r.iter().map(|i| py_to_json_pretty(i, depth + 1, indent, default)).collect();
+            let parts: Result<Vec<String>, PyException> = r.iter().map(|i| py_to_json_pretty(i, depth + 1, indent, default)).collect();
             Ok(format!("[\n{}{}\n{}]", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
         }
         PyObjectPayload::Tuple(items) => {
             if items.is_empty() { return Ok("[]".into()); }
-            let parts: Result<Vec<String>, _> = items.iter().map(|i| py_to_json_pretty(i, depth + 1, indent, default)).collect();
+            let parts: Result<Vec<String>, PyException> = items.iter().map(|i| py_to_json_pretty(i, depth + 1, indent, default)).collect();
             Ok(format!("[\n{}{}\n{}]", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
         }
         PyObjectPayload::Dict(map) => {
             let r = map.read();
             if r.is_empty() { return Ok("{}".into()); }
-            let parts: Result<Vec<String>, _> = r.iter().map(|(k, v)| {
+            let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
                 let key_str = match k {
                     HashableKey::Str(s) => format!("\"{}\"", s),
                     HashableKey::Int(n) => format!("\"{}\"", n),
@@ -215,16 +215,16 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
         PyObjectPayload::Str(s) => Ok(format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"))),
         PyObjectPayload::List(items) => {
             let r = items.read();
-            let parts: Result<Vec<String>, _> = r.iter().map(|i| py_to_json_sep(i, item_sep, kv_sep, default)).collect();
+            let parts: Result<Vec<String>, PyException> = r.iter().map(|i| py_to_json_sep(i, item_sep, kv_sep, default)).collect();
             Ok(format!("[{}]", parts?.join(item_sep)))
         }
         PyObjectPayload::Tuple(items) => {
-            let parts: Result<Vec<String>, _> = items.iter().map(|i| py_to_json_sep(i, item_sep, kv_sep, default)).collect();
+            let parts: Result<Vec<String>, PyException> = items.iter().map(|i| py_to_json_sep(i, item_sep, kv_sep, default)).collect();
             Ok(format!("[{}]", parts?.join(item_sep)))
         }
         PyObjectPayload::Dict(map) => {
             let r = map.read();
-            let parts: Result<Vec<String>, _> = r.iter().map(|(k, v)| {
+            let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
                 let key_str = match k {
                     HashableKey::Str(s) => format!("\"{}\"", s),
                     HashableKey::Int(n) => format!("\"{}\"", n),
@@ -237,7 +237,7 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
         }
         PyObjectPayload::InstanceDict(attrs) => {
             let r = attrs.read();
-            let parts: Result<Vec<String>, _> = r.iter().map(|(k, v)| {
+            let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
                 let key_str = format!("\"{}\"", k);
                 let val_str = py_to_json_sep(v, item_sep, kv_sep, default)?;
                 Ok(format!("{}{}{}", key_str, kv_sep, val_str))
@@ -275,7 +275,7 @@ where
             .filter(|(k, _)| !k.starts_with('_'))
             .collect();
         if !public_attrs.is_empty() {
-            let parts: Result<Vec<String>, _> = public_attrs.iter().map(|(k, v)| {
+            let parts: Result<Vec<String>, PyException> = public_attrs.iter().map(|(k, v)| {
                 let val_str = recurse(v, default)?;
                 Ok(format!("\"{}\": {}", k, val_str))
             }).collect();
