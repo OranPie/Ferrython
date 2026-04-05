@@ -192,10 +192,10 @@ Missing: `help()`.
 | `socket` | Stubs; no real socket I/O |
 | `ssl` | OpenSSL version stub |
 | `csv.DictWriter` | ✅ Fixed — writeheader/writerow/writerows work |
-| `subprocess.Popen` | No streaming/pipe management |
+| `subprocess.Popen` | ✅ Fixed — communicate/wait/poll/kill/terminate/context manager |
 | `multiprocessing.Pool` | Stub |
 | `threading` sync | Only Thread works; RLock/Semaphore/Event stubs |
-| `warnings` | No filter management |
+| `warnings` | ✅ Fixed — filterwarnings/simplefilter/catch_warnings with real filters |
 | `typing.get_type_hints()` | Returns `{}` |
 
 ### 5.3 Missing Modules (ImportError) ❌

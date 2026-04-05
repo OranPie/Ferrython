@@ -16,29 +16,85 @@ pub fn create_warnings_module() -> PyObjectRef {
     use std::sync::atomic::{AtomicBool, Ordering};
     use parking_lot::RwLock;
 
+    // Global filter list: Vec<(action, message_pattern, category, module_pattern, lineno)>
+    // Actions: "default", "always", "ignore", "error", "module", "once"
+    type FilterEntry = (String, String, String, String, i64);
+    static FILTERS: std::sync::LazyLock<RwLock<Vec<FilterEntry>>> =
+        std::sync::LazyLock::new(|| RwLock::new(vec![
+            ("default".into(), "".into(), "Warning".into(), "".into(), 0),
+        ]));
+    // Track "once" warnings: set of (message, category, module)
+    static ONCE_SEEN: std::sync::LazyLock<RwLock<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(|| RwLock::new(std::collections::HashSet::new()));
+
     // Global recording state: when catch_warnings(record=True) is active,
     // warn() appends to this list instead of printing to stderr.
     static RECORDING: AtomicBool = AtomicBool::new(false);
     static RECORD_LIST: std::sync::LazyLock<RwLock<Option<PyObjectRef>>> =
         std::sync::LazyLock::new(|| RwLock::new(None));
 
+    fn match_filter(action: &str, msg: &str, cat: &str, module: &str, filter: &FilterEntry) -> bool {
+        let (_, msg_pat, cat_pat, mod_pat, lineno) = filter;
+        if !msg_pat.is_empty() && !msg.contains(msg_pat.as_str()) { return false; }
+        if !cat_pat.is_empty() && cat_pat != "Warning" && cat != cat_pat { return false; }
+        if !mod_pat.is_empty() && !module.contains(mod_pat.as_str()) { return false; }
+        if *lineno != 0 { return false; } // lineno filtering not supported
+        let _ = action;
+        true
+    }
+
     // warn(message, category=UserWarning, stacklevel=1)
     let warn_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() { return Ok(PyObject::none()); }
         let message = args[0].py_to_string();
-        let category = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
-            let cat = &args[1];
-            if let PyObjectPayload::Class(cd) = &cat.payload {
-                cd.name.to_string()
-            } else {
-                cat.py_to_string()
+        // category can be positional arg[1] or in kwargs dict
+        let category = get_kwarg(args, "category")
+            .map(|cat| {
+                if let PyObjectPayload::Class(cd) = &cat.payload { cd.name.to_string() }
+                else { cat.py_to_string() }
+            })
+            .unwrap_or_else(|| {
+                // Check positional arg[1] if it's not a dict
+                if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::Dict(_) | PyObjectPayload::None) {
+                    let cat = &args[1];
+                    if let PyObjectPayload::Class(cd) = &cat.payload { cd.name.to_string() }
+                    else { cat.py_to_string() }
+                } else {
+                    "UserWarning".to_string()
+                }
+            });
+
+        // Check filters
+        let module = "<stdin>";
+        let action = {
+            let filters = FILTERS.read();
+            let mut found = "default".to_string();
+            for f in filters.iter() {
+                if match_filter(&f.0, &message, &category, module, f) {
+                    found = f.0.clone();
+                    break;
+                }
             }
-        } else {
-            "UserWarning".to_string()
+            found
         };
 
+        match action.as_str() {
+            "ignore" => return Ok(PyObject::none()),
+            "error" => {
+                return Err(PyException::runtime_error(&format!("{}: {}", category, message)));
+            }
+            "once" => {
+                let key = format!("{}:{}:{}", message, category, module);
+                let mut seen = ONCE_SEEN.write();
+                if seen.contains(&key) {
+                    return Ok(PyObject::none());
+                }
+                seen.insert(key);
+            }
+            _ => {} // "default", "always", "module" — show the warning
+        }
+
         if RECORDING.load(Ordering::Relaxed) {
-            // Recording mode: append a WarningMessage-like object to the list
             let guard = RECORD_LIST.read();
             if let Some(ref list_obj) = *guard {
                 let cls = PyObject::class(CompactString::from("WarningMessage"), vec![], IndexMap::new());
@@ -58,9 +114,104 @@ pub fn create_warnings_module() -> PyObjectRef {
         Ok(PyObject::none())
     });
 
-    // filterwarnings / simplefilter stubs
-    let filter_warnings_fn = make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()));
-    let simple_filter_fn = make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()));
+    // Helper to extract kwarg from a kwargs dict
+    fn get_kwarg(args: &[PyObjectRef], key: &str) -> Option<PyObjectRef> {
+        for arg in args {
+            if let PyObjectPayload::Dict(kw_map) = &arg.payload {
+                let r = kw_map.read();
+                if let Some(v) = r.get(&HashableKey::Str(CompactString::from(key))) {
+                    return Some(v.clone());
+                }
+            }
+        }
+        None
+    }
+
+    fn get_kwarg_str(args: &[PyObjectRef], key: &str, default: &str) -> String {
+        get_kwarg(args, key).map(|v| v.py_to_string()).unwrap_or_else(|| default.to_string())
+    }
+
+    // filterwarnings(action, message="", category=Warning, module="", lineno=0, append=False)
+    let filter_warnings_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("filterwarnings", args, 1)?;
+        let action = args[0].py_to_string();
+        let message = get_kwarg_str(args, "message", "");
+        let category = get_kwarg(args, "category")
+            .map(|cat| {
+                if let PyObjectPayload::Class(cd) = &cat.payload { cd.name.to_string() }
+                else { cat.py_to_string() }
+            })
+            .unwrap_or_else(|| "Warning".to_string());
+        let module = get_kwarg_str(args, "module", "");
+        let lineno = get_kwarg(args, "lineno")
+            .and_then(|v| v.as_int().map(|i| i))
+            .unwrap_or(0);
+        let append = get_kwarg(args, "append").map(|v| v.is_truthy()).unwrap_or(false);
+
+        // Also handle positional args (after the action, skipping dict kwargs)
+        let non_dict_args: Vec<_> = args[1..].iter()
+            .filter(|a| !matches!(a.payload, PyObjectPayload::Dict(_)))
+            .collect();
+        let message = if !message.is_empty() { message }
+            else if !non_dict_args.is_empty() { non_dict_args[0].py_to_string() }
+            else { String::new() };
+
+        let entry = (action, message, category, module, lineno);
+        let mut filters = FILTERS.write();
+        if append {
+            filters.push(entry);
+        } else {
+            filters.insert(0, entry);
+        }
+        Ok(PyObject::none())
+    });
+
+    // simplefilter(action, category=Warning, lineno=0, append=False)
+    let simple_filter_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("simplefilter", args, 1)?;
+        let action = args[0].py_to_string();
+        let category = get_kwarg(args, "category")
+            .map(|cat| {
+                if let PyObjectPayload::Class(cd) = &cat.payload { cd.name.to_string() }
+                else { cat.py_to_string() }
+            })
+            .unwrap_or_else(|| {
+                // Positional: first non-dict after action
+                let non_dict: Vec<_> = args[1..].iter()
+                    .filter(|a| !matches!(a.payload, PyObjectPayload::Dict(_)))
+                    .collect();
+                if !non_dict.is_empty() && !matches!(non_dict[0].payload, PyObjectPayload::None) {
+                    if let PyObjectPayload::Class(cd) = &non_dict[0].payload { cd.name.to_string() }
+                    else { non_dict[0].py_to_string() }
+                } else {
+                    "Warning".to_string()
+                }
+            });
+        let lineno = get_kwarg(args, "lineno")
+            .and_then(|v| v.as_int().map(|i| i))
+            .unwrap_or(0);
+        let append = get_kwarg(args, "append").map(|v| v.is_truthy()).unwrap_or(false);
+
+        let entry = (action, String::new(), category, String::new(), lineno);
+        let mut filters = FILTERS.write();
+        if append {
+            filters.push(entry);
+        } else {
+            filters.insert(0, entry);
+        }
+        Ok(PyObject::none())
+    });
+
+    // resetwarnings()
+    let reset_fn = make_builtin(|_args: &[PyObjectRef]| {
+        FILTERS.write().clear();
+        FILTERS.write().push(("default".into(), "".into(), "Warning".into(), "".into(), 0));
+        ONCE_SEEN.write().clear();
+        Ok(PyObject::none())
+    });
+
+    // Build the initial filters list as a Python list for the `filters` attribute
+    let filters_list = PyObject::list(vec![]);
 
     // catch_warnings(record=False)
     let catch_warnings_fn = make_builtin(|args: &[PyObjectRef]| {
@@ -77,7 +228,6 @@ pub fn create_warnings_module() -> PyObjectRef {
             let enter_list = warning_list.clone();
             attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
                 "catch_warnings.__enter__", move |_args: &[PyObjectRef]| {
-                    // Activate recording mode and set the shared list
                     RECORDING.store(true, Ordering::Relaxed);
                     *RECORD_LIST.write() = Some(enter_list.clone());
                     Ok(wl.clone())
@@ -94,7 +244,6 @@ pub fn create_warnings_module() -> PyObjectRef {
 
         attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
             "catch_warnings.__exit__", |_args: &[PyObjectRef]| {
-                // Deactivate recording mode
                 RECORDING.store(false, Ordering::Relaxed);
                 *RECORD_LIST.write() = None;
                 Ok(PyObject::bool_val(false))
@@ -108,8 +257,9 @@ pub fn create_warnings_module() -> PyObjectRef {
         ("warn", warn_fn),
         ("filterwarnings", filter_warnings_fn),
         ("simplefilter", simple_filter_fn),
-        ("resetwarnings", make_builtin(|_| Ok(PyObject::none()))),
+        ("resetwarnings", reset_fn),
         ("catch_warnings", catch_warnings_fn),
+        ("filters", filters_list),
     ])
 }
 

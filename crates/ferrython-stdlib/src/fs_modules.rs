@@ -958,9 +958,7 @@ pub fn create_subprocess_module() -> PyObjectRef {
         ("call", make_builtin(subprocess_call)),
         ("check_output", make_builtin(subprocess_check_output)),
         ("check_call", make_builtin(subprocess_call)),
-        ("Popen", make_builtin(|_| {
-            Err(PyException::runtime_error("subprocess.Popen not implemented"))
-        })),
+        ("Popen", make_builtin(subprocess_popen)),
     ])
 }
 
@@ -1172,6 +1170,250 @@ fn subprocess_check_output(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         Ok(stdout)
     } else {
         Ok(PyObject::bytes(vec![]))
+    }
+}
+
+fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use std::sync::{Arc, Mutex};
+
+    if args.is_empty() {
+        return Err(PyException::type_error("Popen requires args"));
+    }
+    let cmd_parts: Vec<String> = args[0].to_list()?.iter().map(|a| a.py_to_string()).collect();
+    if cmd_parts.is_empty() {
+        return Err(PyException::value_error("empty command"));
+    }
+
+    // Parse kwargs from remaining args
+    let mut capture_stdout = false;
+    let mut capture_stderr = false;
+    let mut pipe_stdin = false;
+    let mut cwd: Option<String> = None;
+    let mut shell = false;
+    let mut text_mode = false;
+    let mut env_vars: Option<Vec<(String, String)>> = None;
+
+    for arg in &args[1..] {
+        if let PyObjectPayload::Dict(kw_map) = &arg.payload {
+            let r = kw_map.read();
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("stdout"))) {
+                capture_stdout = v.as_int().unwrap_or(0) == -1; // PIPE
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("stderr"))) {
+                capture_stderr = v.as_int().unwrap_or(0) == -1;
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("stdin"))) {
+                pipe_stdin = v.as_int().unwrap_or(0) == -1;
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("cwd"))) {
+                cwd = Some(v.py_to_string());
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("shell"))) {
+                shell = v.is_truthy();
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("text"))) {
+                text_mode = v.is_truthy();
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("universal_newlines"))) {
+                text_mode = text_mode || v.is_truthy();
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("env"))) {
+                if let PyObjectPayload::Dict(env_map) = &v.payload {
+                    let er = env_map.read();
+                    let mut pairs = Vec::new();
+                    for (k, val) in er.iter() {
+                        let key_str = match k {
+                            HashableKey::Str(s) => s.to_string(),
+                            _ => continue,
+                        };
+                        pairs.push((key_str, val.py_to_string()));
+                    }
+                    env_vars = Some(pairs);
+                }
+            }
+        }
+    }
+
+    let mut cmd = if shell {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(cmd_parts.join(" "));
+        c
+    } else {
+        let mut c = std::process::Command::new(&cmd_parts[0]);
+        c.args(&cmd_parts[1..]);
+        c
+    };
+
+    if let Some(dir) = cwd { cmd.current_dir(dir); }
+    if let Some(pairs) = env_vars {
+        cmd.env_clear();
+        for (k, v) in pairs { cmd.env(k, v); }
+    }
+    if capture_stdout { cmd.stdout(std::process::Stdio::piped()); }
+    if capture_stderr { cmd.stderr(std::process::Stdio::piped()); }
+    if pipe_stdin { cmd.stdin(std::process::Stdio::piped()); }
+
+    let child = cmd.spawn()
+        .map_err(|e| PyException::runtime_error(&format!("Popen: {e}")))?;
+    let child_arc = Arc::new(Mutex::new(Some(child)));
+
+    let cls = PyObject::class(CompactString::from("Popen"), vec![], IndexMap::new());
+    let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+    attrs.insert(CompactString::from("returncode"), PyObject::none());
+    attrs.insert(CompactString::from("args"), args[0].clone());
+    let is_text = text_mode;
+
+    // communicate(input=None)
+    {
+        let ch = child_arc.clone();
+        attrs.insert(CompactString::from("communicate"), PyObject::native_closure(
+            "Popen.communicate", move |args| {
+                // input can be positional arg[0] or in a kwargs dict
+                let mut input_data: Option<Vec<u8>> = None;
+                for arg in args.iter() {
+                    if let PyObjectPayload::Dict(kw_map) = &arg.payload {
+                        let r = kw_map.read();
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("input"))) {
+                            if !matches!(v.payload, PyObjectPayload::None) {
+                                input_data = Some(match &v.payload {
+                                    PyObjectPayload::Bytes(b) => b.clone(),
+                                    PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                                    _ => v.py_to_string().into_bytes(),
+                                });
+                            }
+                        }
+                    } else if !matches!(arg.payload, PyObjectPayload::None) && input_data.is_none() {
+                        input_data = Some(match &arg.payload {
+                            PyObjectPayload::Bytes(b) => b.clone(),
+                            PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                            _ => arg.py_to_string().into_bytes(),
+                        });
+                    }
+                }
+                let mut guard = ch.lock().unwrap();
+                if let Some(child) = guard.take() {
+                    if let Some(data) = input_data {
+                        let mut child = child;
+                        if let Some(ref mut stdin) = child.stdin {
+                            use std::io::Write;
+                            let _ = stdin.write_all(&data);
+                        }
+                        child.stdin.take(); // close stdin
+                        let out = child.wait_with_output()
+                            .map_err(|e| PyException::runtime_error(&format!("communicate: {e}")))?;
+                        let stdout = if is_text {
+                            PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stdout).as_ref()))
+                        } else {
+                            PyObject::bytes(out.stdout)
+                        };
+                        let stderr = if is_text {
+                            PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stderr).as_ref()))
+                        } else {
+                            PyObject::bytes(out.stderr)
+                        };
+                        Ok(PyObject::tuple(vec![stdout, stderr]))
+                    } else {
+                        let out = child.wait_with_output()
+                            .map_err(|e| PyException::runtime_error(&format!("communicate: {e}")))?;
+                        let stdout = if is_text {
+                            PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stdout).as_ref()))
+                        } else {
+                            PyObject::bytes(out.stdout)
+                        };
+                        let stderr = if is_text {
+                            PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stderr).as_ref()))
+                        } else {
+                            PyObject::bytes(out.stderr)
+                        };
+                        Ok(PyObject::tuple(vec![stdout, stderr]))
+                    }
+                } else {
+                    let empty = if is_text { PyObject::str_val(CompactString::new("")) } else { PyObject::bytes(vec![]) };
+                    Ok(PyObject::tuple(vec![empty.clone(), empty]))
+                }
+            }));
+    }
+
+    // wait(timeout=None)
+    {
+        let ch = child_arc.clone();
+        attrs.insert(CompactString::from("wait"), PyObject::native_closure(
+            "Popen.wait", move |_args| {
+                let mut guard = ch.lock().unwrap();
+                if let Some(ref mut child) = *guard {
+                    let status = child.wait()
+                        .map_err(|e| PyException::runtime_error(&format!("wait: {e}")))?;
+                    Ok(PyObject::int(status.code().unwrap_or(-1) as i64))
+                } else {
+                    Ok(PyObject::int(-1))
+                }
+            }));
+    }
+
+    // poll()
+    {
+        let ch = child_arc.clone();
+        attrs.insert(CompactString::from("poll"), PyObject::native_closure(
+            "Popen.poll", move |_args| {
+                let mut guard = ch.lock().unwrap();
+                if let Some(ref mut child) = *guard {
+                    match child.try_wait() {
+                        Ok(Some(status)) => Ok(PyObject::int(status.code().unwrap_or(-1) as i64)),
+                        Ok(None) => Ok(PyObject::none()),
+                        Err(e) => Err(PyException::runtime_error(&format!("poll: {e}"))),
+                    }
+                } else {
+                    Ok(PyObject::none())
+                }
+            }));
+    }
+
+    // kill()
+    {
+        let ch = child_arc.clone();
+        attrs.insert(CompactString::from("kill"), PyObject::native_closure(
+            "Popen.kill", move |_args| {
+                let mut guard = ch.lock().unwrap();
+                if let Some(ref mut child) = *guard {
+                    child.kill().map_err(|e| PyException::runtime_error(&format!("kill: {e}")))?;
+                }
+                Ok(PyObject::none())
+            }));
+    }
+
+    // terminate()
+    {
+        let ch = child_arc.clone();
+        attrs.insert(CompactString::from("terminate"), PyObject::native_closure(
+            "Popen.terminate", move |_args| {
+                let mut guard = ch.lock().unwrap();
+                if let Some(ref mut child) = *guard {
+                    child.kill().map_err(|e| PyException::runtime_error(&format!("terminate: {e}")))?;
+                }
+                Ok(PyObject::none())
+            }));
+    }
+
+    // __enter__ / __exit__ for context manager
+    {
+        let inst_ref = PyObject::instance_with_attrs(cls, attrs);
+        let ir = inst_ref.clone();
+        if let PyObjectPayload::Instance(data) = &inst_ref.payload {
+            let mut a = data.attrs.write();
+            a.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "Popen.__enter__", move |_args| Ok(ir.clone())));
+            let ch = child_arc.clone();
+            a.insert(CompactString::from("__exit__"), PyObject::native_closure(
+                "Popen.__exit__", move |_args| {
+                    let mut guard = ch.lock().unwrap();
+                    if let Some(ref mut child) = *guard {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    Ok(PyObject::bool_val(false))
+                }));
+        }
+        return Ok(inst_ref);
     }
 }
 
