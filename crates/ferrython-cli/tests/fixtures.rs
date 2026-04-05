@@ -167,3 +167,6 @@ fixture_test!(test_cpython_compat101, "test_cpython_compat101.py");
 
 // Phase 73: __contains__, __missing__, __len__/__bool__ protocols
 fixture_test!(test_phase73, "test_phase73.py");
+
+// Phase 74: Pure Python stdlib (reprlib) + Rust stdlib verification
+fixture_test!(test_phase74, "test_phase74.py");

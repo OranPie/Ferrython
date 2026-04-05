@@ -37,16 +37,59 @@ pub enum ResolvedModule {
 static SEARCH_PATHS: LazyLock<RwLock<Vec<PathBuf>>> = LazyLock::new(|| {
     let mut paths = Vec::new();
 
+    // ── stdlib/Lib (pure Python standard library) ──
+    // Priority: builtin Rust → Python stdlib/Lib → user PYTHONPATH → current dir
+    // (Rust builtins are checked first in resolve_module, before search paths.)
+
+    // Strategy 1: FERRYTHON_STDLIB env variable (explicit override)
+    if let Ok(stdlib) = std::env::var("FERRYTHON_STDLIB") {
+        let p = PathBuf::from(stdlib);
+        if p.is_dir() {
+            paths.push(p);
+        }
+    }
+
+    // Strategy 2: Relative to current exe — walk up ancestors looking for stdlib/Lib.
+    // Handles: target/release/ferrython (2 up), target/release/deps/test-bin (3 up), etc.
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..5 {
+            if let Some(ref d) = dir {
+                let candidate = d.join("stdlib/Lib");
+                if let Ok(canon) = candidate.canonicalize() {
+                    if canon.is_dir() && !paths.contains(&canon) {
+                        paths.push(canon);
+                        break;
+                    }
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Strategy 3: Relative to current working directory (./stdlib/Lib)
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidate = cwd.join("stdlib/Lib");
+        if candidate.is_dir() {
+            let canon = candidate.canonicalize().unwrap_or(candidate);
+            if !paths.contains(&canon) {
+                paths.push(canon);
+            }
+        }
+    }
+
     // Read PYTHONPATH environment variable
     if let Ok(pypath) = std::env::var("PYTHONPATH") {
         for p in std::env::split_paths(&pypath) {
-            if p.is_dir() {
+            if p.is_dir() && !paths.contains(&p) {
                 paths.push(p);
             }
         }
     }
 
-    // Current directory is always searched
+    // Current directory is always searched last
     paths.push(PathBuf::from("."));
 
     RwLock::new(paths)
