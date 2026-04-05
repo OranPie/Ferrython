@@ -8,7 +8,8 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use std::sync::Mutex;
+use parking_lot::RwLock;
+use std::sync::{Arc, Mutex};
 
 /// Extract the `_path` string from a pathlib instance (args[0] = self).
 fn get_path_str(inst: &PyObjectRef) -> String {
@@ -584,9 +585,16 @@ pub fn create_io_module() -> PyObjectRef {
         ("SEEK_SET", PyObject::int(0)),
         ("SEEK_CUR", PyObject::int(1)),
         ("SEEK_END", PyObject::int(2)),
+        ("DEFAULT_BUFFER_SIZE", PyObject::int(8192)),
+        ("open", make_builtin(|args| {
+            // io.open is an alias for builtins.open
+            if args.is_empty() { return Err(PyException::type_error("open() requires at least 1 argument")); }
+            Err(PyException::not_implemented_error("io.open() — use builtins.open()"))
+        })),
     ])
 }
 
+/// Build a StringIO instance with methods attached to its instance dict.
 fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let initial = if args.is_empty() { String::new() } else { args[0].py_to_string() };
     let cls = PyObject::class(CompactString::from("StringIO"), vec![], IndexMap::new());
@@ -594,13 +602,133 @@ fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Instance(inst_data) = &inst.payload {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__stringio__"), PyObject::bool_val(true));
-        attrs.insert(CompactString::from("_buffer"), PyObject::str_val(CompactString::from(&initial)));
-        attrs.insert(CompactString::from("_pos"), PyObject::int(0));
         attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
+
+        let buf: Arc<RwLock<String>> = Arc::new(RwLock::new(initial));
+        let pos: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
+
+        // write(s) → int
+        let b = buf.clone(); let p = pos.clone();
+        attrs.insert(CompactString::from("write"), PyObject::native_closure("StringIO.write", move |a: &[PyObjectRef]| {
+            if a.is_empty() { return Err(PyException::type_error("write() takes 1 argument")); }
+            let s = a[0].py_to_string();
+            let len = s.len();
+            let mut bw = b.write(); let mut pw = p.write();
+            let cur = *pw;
+            if cur >= bw.len() {
+                bw.push_str(&s);
+            } else {
+                let end = cur + len;
+                if end <= bw.len() {
+                    bw.replace_range(cur..end, &s);
+                } else {
+                    bw.truncate(cur);
+                    bw.push_str(&s);
+                }
+            }
+            *pw = cur + len;
+            Ok(PyObject::int(len as i64))
+        }));
+
+        // read(size=-1) → str
+        let b = buf.clone(); let p = pos.clone();
+        attrs.insert(CompactString::from("read"), PyObject::native_closure("StringIO.read", move |a: &[PyObjectRef]| {
+            let size = if a.is_empty() { -1i64 } else { a[0].as_int().unwrap_or(-1) };
+            let br = b.read(); let mut pw = p.write();
+            let cur = *pw;
+            if cur >= br.len() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            let end = if size < 0 { br.len() } else { (cur + size as usize).min(br.len()) };
+            let result = &br[cur..end];
+            *pw = end;
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }));
+
+        // getvalue() → str
+        let b = buf.clone();
+        attrs.insert(CompactString::from("getvalue"), PyObject::native_closure("StringIO.getvalue", move |_: &[PyObjectRef]| {
+            Ok(PyObject::str_val(CompactString::from(b.read().as_str())))
+        }));
+
+        // seek(offset, whence=0) → int
+        let b = buf.clone(); let p = pos.clone();
+        attrs.insert(CompactString::from("seek"), PyObject::native_closure("StringIO.seek", move |a: &[PyObjectRef]| {
+            if a.is_empty() { return Err(PyException::type_error("seek() takes at least 1 argument")); }
+            let offset = a[0].as_int().unwrap_or(0);
+            let whence = if a.len() > 1 { a[1].as_int().unwrap_or(0) } else { 0 };
+            let br = b.read();
+            let mut pw = p.write();
+            let new_pos = match whence {
+                0 => offset.max(0) as usize,
+                1 => ((*pw as i64) + offset).max(0) as usize,
+                2 => ((br.len() as i64) + offset).max(0) as usize,
+                _ => return Err(PyException::value_error("invalid whence")),
+            };
+            *pw = new_pos;
+            Ok(PyObject::int(new_pos as i64))
+        }));
+
+        // tell() → int
+        let p = pos.clone();
+        attrs.insert(CompactString::from("tell"), PyObject::native_closure("StringIO.tell", move |_: &[PyObjectRef]| {
+            Ok(PyObject::int(*p.read() as i64))
+        }));
+
+        // truncate(size=None) → int
+        let b = buf.clone(); let p = pos.clone();
+        attrs.insert(CompactString::from("truncate"), PyObject::native_closure("StringIO.truncate", move |a: &[PyObjectRef]| {
+            let mut bw = b.write();
+            let size = if a.is_empty() || matches!(&a[0].payload, PyObjectPayload::None) {
+                *p.read()
+            } else {
+                a[0].as_int().unwrap_or(0) as usize
+            };
+            bw.truncate(size);
+            Ok(PyObject::int(size as i64))
+        }));
+
+        // readline() → str
+        let b = buf.clone(); let p = pos.clone();
+        attrs.insert(CompactString::from("readline"), PyObject::native_closure("StringIO.readline", move |_: &[PyObjectRef]| {
+            let br = b.read(); let mut pw = p.write();
+            let cur = *pw;
+            if cur >= br.len() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            let rest = &br[cur..];
+            let end = rest.find('\n').map(|i| cur + i + 1).unwrap_or(br.len());
+            *pw = end;
+            Ok(PyObject::str_val(CompactString::from(&br[cur..end])))
+        }));
+
+        // readlines() → list[str]
+        let b = buf.clone(); let p = pos.clone();
+        attrs.insert(CompactString::from("readlines"), PyObject::native_closure("StringIO.readlines", move |_: &[PyObjectRef]| {
+            let br = b.read(); let mut pw = p.write();
+            let cur = *pw;
+            if cur >= br.len() { return Ok(PyObject::list(vec![])); }
+            let rest = &br[cur..];
+            let lines: Vec<PyObjectRef> = rest.split_inclusive('\n')
+                .map(|line| PyObject::str_val(CompactString::from(line)))
+                .collect();
+            *pw = br.len();
+            Ok(PyObject::list(lines))
+        }));
+
+        // close()
+        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+
+        // closed property (always False for simplicity)
+        attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
+
+        // __enter__ / __exit__ for context manager
+        let inst_ref = inst.clone();
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("StringIO.__enter__", move |_: &[PyObjectRef]| {
+            Ok(inst_ref.clone())
+        }));
+        attrs.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
     }
     Ok(inst)
 }
 
+/// Build a BytesIO instance with methods attached.
 fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let initial = if args.is_empty() {
         vec![]
@@ -614,9 +742,104 @@ fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Instance(inst_data) = &inst.payload {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__bytesio__"), PyObject::bool_val(true));
-        attrs.insert(CompactString::from("_buffer"), PyObject::bytes(initial.clone()));
-        attrs.insert(CompactString::from("_pos"), PyObject::int(0));
         attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
+
+        let buf: Arc<RwLock<Vec<u8>>> = Arc::new(RwLock::new(initial));
+        let pos: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
+
+        // write(b) → int
+        let b = buf.clone(); let p = pos.clone();
+        attrs.insert(CompactString::from("write"), PyObject::native_closure("BytesIO.write", move |a: &[PyObjectRef]| {
+            if a.is_empty() { return Err(PyException::type_error("write() takes 1 argument")); }
+            let data = match &a[0].payload {
+                PyObjectPayload::Bytes(v) => v.clone(),
+                PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                _ => return Err(PyException::type_error("a bytes-like object is required")),
+            };
+            let len = data.len();
+            let mut bw = b.write(); let mut pw = p.write();
+            let cur = *pw;
+            if cur >= bw.len() {
+                bw.extend_from_slice(&data);
+            } else {
+                let end = cur + len;
+                if end <= bw.len() {
+                    bw[cur..end].copy_from_slice(&data);
+                } else {
+                    bw.truncate(cur);
+                    bw.extend_from_slice(&data);
+                }
+            }
+            *pw = cur + len;
+            Ok(PyObject::int(len as i64))
+        }));
+
+        // read(size=-1) → bytes
+        let b = buf.clone(); let p = pos.clone();
+        attrs.insert(CompactString::from("read"), PyObject::native_closure("BytesIO.read", move |a: &[PyObjectRef]| {
+            let size = if a.is_empty() { -1i64 } else { a[0].as_int().unwrap_or(-1) };
+            let br = b.read(); let mut pw = p.write();
+            let cur = *pw;
+            if cur >= br.len() { return Ok(PyObject::bytes(vec![])); }
+            let end = if size < 0 { br.len() } else { (cur + size as usize).min(br.len()) };
+            let result = br[cur..end].to_vec();
+            *pw = end;
+            Ok(PyObject::bytes(result))
+        }));
+
+        // getvalue() → bytes
+        let b = buf.clone();
+        attrs.insert(CompactString::from("getvalue"), PyObject::native_closure("BytesIO.getvalue", move |_: &[PyObjectRef]| {
+            Ok(PyObject::bytes(b.read().clone()))
+        }));
+
+        // seek(offset, whence=0) → int
+        let b = buf.clone(); let p = pos.clone();
+        attrs.insert(CompactString::from("seek"), PyObject::native_closure("BytesIO.seek", move |a: &[PyObjectRef]| {
+            if a.is_empty() { return Err(PyException::type_error("seek() takes at least 1 argument")); }
+            let offset = a[0].as_int().unwrap_or(0);
+            let whence = if a.len() > 1 { a[1].as_int().unwrap_or(0) } else { 0 };
+            let br = b.read();
+            let mut pw = p.write();
+            let new_pos = match whence {
+                0 => offset.max(0) as usize,
+                1 => ((*pw as i64) + offset).max(0) as usize,
+                2 => ((br.len() as i64) + offset).max(0) as usize,
+                _ => return Err(PyException::value_error("invalid whence")),
+            };
+            *pw = new_pos;
+            Ok(PyObject::int(new_pos as i64))
+        }));
+
+        // tell() → int
+        let p = pos.clone();
+        attrs.insert(CompactString::from("tell"), PyObject::native_closure("BytesIO.tell", move |_: &[PyObjectRef]| {
+            Ok(PyObject::int(*p.read() as i64))
+        }));
+
+        // truncate(size=None) → int
+        let b = buf.clone(); let p = pos.clone();
+        attrs.insert(CompactString::from("truncate"), PyObject::native_closure("BytesIO.truncate", move |a: &[PyObjectRef]| {
+            let mut bw = b.write();
+            let size = if a.is_empty() || matches!(&a[0].payload, PyObjectPayload::None) {
+                *p.read()
+            } else {
+                a[0].as_int().unwrap_or(0) as usize
+            };
+            bw.truncate(size);
+            Ok(PyObject::int(size as i64))
+        }));
+
+        // close()
+        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
+
+        // __enter__ / __exit__
+        let inst_ref = inst.clone();
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("BytesIO.__enter__", move |_: &[PyObjectRef]| {
+            Ok(inst_ref.clone())
+        }));
+        attrs.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
     }
     Ok(inst)
 }

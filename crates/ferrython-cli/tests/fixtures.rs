@@ -177,3 +177,4 @@ fixture_test!(test_phase75, "test_phase75.py");
 // Phase 76: More stdlib modules — unittest improvements + json enhancements
 fixture_test!(test_phase76, "test_phase76.py");
 fixture_test!(test_phase77, "test_phase77.py");
+fixture_test!(test_phase78, "test_phase78.py");

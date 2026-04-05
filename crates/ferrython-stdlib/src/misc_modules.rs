@@ -233,36 +233,30 @@ pub fn create_contextlib_module() -> PyObjectRef {
     });
 
     // redirect_stdout(new_target) — context manager that swaps sys.stdout
-    // The actual sys.stdout swap is handled by the VM when it detects the
-    // __redirect_stdout__ / __redirect_stderr__ markers on enter/exit.
+    // Uses the global STDOUT_OVERRIDE stack so print() picks it up.
     let redirect_stdout_fn = make_builtin(|args: &[PyObjectRef]| {
         let target = if !args.is_empty() { args[0].clone() } else { PyObject::none() };
         let cls = PyObject::class(CompactString::from("redirect_stdout"), vec![], IndexMap::new());
         let mut attrs = IndexMap::new();
         attrs.insert(CompactString::from("__redirect_stdout__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_new_target"), target.clone());
-        attrs.insert(CompactString::from("_old_target"), PyObject::none());
         let inst = PyObject::instance_with_attrs(cls, attrs);
-        // Add __enter__ and __exit__ as native closures on the instance
-        let inst_ref = inst.clone();
         if let PyObjectPayload::Instance(ref idata) = inst.payload {
-            let attrs_arc = idata.attrs.clone();
-            let attrs_arc2 = attrs_arc.clone();
+            let t = target.clone();
             idata.attrs.write().insert(CompactString::from("__enter__"), PyObject::native_closure(
                 "redirect_stdout.__enter__", move |_args| {
-                    let new_target = attrs_arc.read().get("_new_target").cloned()
-                        .unwrap_or_else(PyObject::none);
-                    Ok(new_target)
+                    crate::push_stdout_override(t.clone());
+                    Ok(t.clone())
                 }
             ));
             idata.attrs.write().insert(CompactString::from("__exit__"), PyObject::native_closure(
                 "redirect_stdout.__exit__", move |_args| {
-                    let _old = attrs_arc2.read().get("_old_target").cloned();
+                    crate::pop_stdout_override();
                     Ok(PyObject::bool_val(false))
                 }
             ));
         }
-        Ok(inst_ref)
+        Ok(inst)
     });
 
     // redirect_stderr(new_target) — same pattern for stderr
@@ -272,21 +266,18 @@ pub fn create_contextlib_module() -> PyObjectRef {
         let mut attrs = IndexMap::new();
         attrs.insert(CompactString::from("__redirect_stderr__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_new_target"), target.clone());
-        attrs.insert(CompactString::from("_old_target"), PyObject::none());
         let inst = PyObject::instance_with_attrs(cls, attrs);
         if let PyObjectPayload::Instance(ref idata) = inst.payload {
-            let attrs_arc = idata.attrs.clone();
-            let attrs_arc2 = attrs_arc.clone();
+            let t = target.clone();
             idata.attrs.write().insert(CompactString::from("__enter__"), PyObject::native_closure(
                 "redirect_stderr.__enter__", move |_args| {
-                    let new_target = attrs_arc.read().get("_new_target").cloned()
-                        .unwrap_or_else(PyObject::none);
-                    Ok(new_target)
+                    crate::push_stderr_override(t.clone());
+                    Ok(t.clone())
                 }
             ));
             idata.attrs.write().insert(CompactString::from("__exit__"), PyObject::native_closure(
                 "redirect_stderr.__exit__", move |_args| {
-                    let _old = attrs_arc2.read().get("_old_target").cloned();
+                    crate::pop_stderr_override();
                     Ok(PyObject::bool_val(false))
                 }
             ));

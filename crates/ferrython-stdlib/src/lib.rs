@@ -26,12 +26,45 @@ mod email_modules;
 mod compression_modules;
 
 use ferrython_core::object::PyObjectRef;
+use parking_lot::RwLock;
 
 pub use sys_modules::get_recursion_limit;
 pub use sys_modules::{set_exc_info, clear_exc_info, get_exc_info};
 pub use concurrency_modules::drain_deferred_calls;
 pub use async_modules::take_asyncio_run_coro;
 pub use import_modules::{take_import_module_request, take_reload_request, ImportModuleRequest, ReloadRequest};
+
+// ── Global stdout/stderr override for redirect_stdout/redirect_stderr ──
+// When set, print() writes here instead of real stdout.
+static STDOUT_OVERRIDE: std::sync::LazyLock<RwLock<Vec<PyObjectRef>>> =
+    std::sync::LazyLock::new(|| RwLock::new(Vec::new()));
+static STDERR_OVERRIDE: std::sync::LazyLock<RwLock<Vec<PyObjectRef>>> =
+    std::sync::LazyLock::new(|| RwLock::new(Vec::new()));
+
+/// Push a new stdout override (for redirect_stdout).
+pub fn push_stdout_override(target: PyObjectRef) {
+    STDOUT_OVERRIDE.write().push(target);
+}
+/// Pop the current stdout override (for redirect_stdout.__exit__).
+pub fn pop_stdout_override() -> Option<PyObjectRef> {
+    STDOUT_OVERRIDE.write().pop()
+}
+/// Get the current stdout override (None = use real stdout).
+pub fn get_stdout_override() -> Option<PyObjectRef> {
+    STDOUT_OVERRIDE.read().last().cloned()
+}
+/// Push a new stderr override.
+pub fn push_stderr_override(target: PyObjectRef) {
+    STDERR_OVERRIDE.write().push(target);
+}
+/// Pop the current stderr override.
+pub fn pop_stderr_override() -> Option<PyObjectRef> {
+    STDERR_OVERRIDE.write().pop()
+}
+/// Get the current stderr override.
+pub fn get_stderr_override() -> Option<PyObjectRef> {
+    STDERR_OVERRIDE.read().last().cloned()
+}
 
 /// Look up a built-in stdlib module by name.
 /// Returns `Some(module)` if found, `None` otherwise.

@@ -29,6 +29,10 @@ impl VirtualMachine {
                 | PyObjectPayload::BuiltinBoundMethod { .. } => {
                     self.call_object(write_fn, vec![text_obj])?;
                 }
+                // NativeClosure (e.g. StringIO.write): instance method stored on instance dict
+                PyObjectPayload::NativeClosure { .. } => {
+                    self.call_object(write_fn, vec![text_obj])?;
+                }
                 // Raw NativeFunction (e.g. default stdio): prepend self
                 _ => {
                     self.call_object(write_fn, vec![target.clone(), text_obj])?;
@@ -43,9 +47,9 @@ impl VirtualMachine {
 
     /// Resolve the output target for print(): file= kwarg > sys.stdout > native stdout.
     fn resolve_print_target(&self, explicit_file: Option<PyObjectRef>) -> Option<PyObjectRef> {
-        explicit_file.or_else(|| {
-            self.modules.get("sys").and_then(|s| s.get_attr("stdout"))
-        })
+        explicit_file
+            .or_else(|| ferrython_stdlib::get_stdout_override())
+            .or_else(|| self.modules.get("sys").and_then(|s| s.get_attr("stdout")))
     }
 
     /// str.format_map() with dict subclass mapping, supporting __missing__ via VM call dispatch.
