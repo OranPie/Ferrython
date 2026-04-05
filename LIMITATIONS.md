@@ -120,7 +120,7 @@
 | Module | Gap |
 |--------|-----|
 | `pickle` | Custom simplified format, not CPython wire-compatible; instance methods not restored on unpickle |
-| `socket` | `setsockopt()`, `fileno()` are stubs; no real socket I/O |
+| `socket` | `setsockopt()` is stub; UDP recvfrom/sendto not implemented |
 | `configparser.write()` | Returns string instead of writing to file-like object |
 | `subprocess.Popen` | Streaming/pipe management not implemented |
 | `sqlite3` | Basic query execution; missing cursor protocol details |

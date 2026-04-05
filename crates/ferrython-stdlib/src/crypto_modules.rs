@@ -26,91 +26,139 @@ pub fn create_hashlib_module() -> PyObjectRef {
     ])
 }
 
-fn make_hash_object(name: &str, data: Vec<u8>, digest_hex: String, digest_bytes: Vec<u8>, block_size: i64, digest_size: i64) -> PyObjectRef {
-    let class = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
-    let attrs = IndexMap::new();
+/// Compute digest for an algorithm name + data buffer.
+fn compute_digest(name: &str, data: &[u8]) -> PyResult<(String, Vec<u8>)> {
+    use digest::Digest;
+    match name {
+        "md5"    => { let mut h = md5::Md5::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha1"   => { let mut h = sha1::Sha1::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha224" => { let mut h = sha2::Sha224::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha256" => { let mut h = sha2::Sha256::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha384" => { let mut h = sha2::Sha384::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha512" => { let mut h = sha2::Sha512::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        _ => Err(PyException::value_error(format!("unsupported hash type {}", name))),
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn hash_block_size(name: &str) -> i64 {
+    match name { "sha384" | "sha512" => 128, _ => 64 }
+}
+
+fn hash_digest_size(name: &str) -> i64 {
+    match name { "md5" => 16, "sha1" => 20, "sha224" => 28, "sha256" => 32, "sha384" => 48, "sha512" => 64, _ => 0 }
+}
+
+/// Build a hash object with incremental update/digest/hexdigest/copy support.
+/// The accumulated data buffer is stored in a shared Arc<RwLock<Vec<u8>>>.
+fn make_hash_object(name: &str, data: Vec<u8>, _digest_hex: String, _digest_bytes: Vec<u8>, _block_size: i64, _digest_size: i64) -> PyObjectRef {
+    let algo = CompactString::from(name);
+    let buf = Arc::new(RwLock::new(data));
+    let class = PyObject::class(CompactString::from("_hashlib.HASH"), vec![], IndexMap::new());
+    let mut attrs = IndexMap::new();
+
+    attrs.insert(CompactString::from("name"), PyObject::str_val(algo.clone()));
+    attrs.insert(CompactString::from("block_size"), PyObject::int(hash_block_size(name)));
+    attrs.insert(CompactString::from("digest_size"), PyObject::int(hash_digest_size(name)));
+
+    // update(data) — append to internal buffer
+    let buf_c = buf.clone();
+    attrs.insert(CompactString::from("update"), PyObject::native_closure("update", move |args| {
+        if args.is_empty() { return Err(PyException::type_error("update() takes exactly 1 argument")); }
+        let new_data = extract_bytes(&args[0])?;
+        buf_c.write().extend_from_slice(&new_data);
+        Ok(PyObject::none())
+    }));
+
+    // digest() — compute and return bytes
+    let algo_c = algo.clone();
+    let buf_c = buf.clone();
+    attrs.insert(CompactString::from("digest"), PyObject::native_closure("digest", move |_args| {
+        let data = buf_c.read().clone();
+        let (_, digest_bytes) = compute_digest(&algo_c, &data)?;
+        Ok(PyObject::bytes(digest_bytes))
+    }));
+
+    // hexdigest() — compute and return hex string
+    let algo_c = algo.clone();
+    let buf_c = buf.clone();
+    attrs.insert(CompactString::from("hexdigest"), PyObject::native_closure("hexdigest", move |_args| {
+        let data = buf_c.read().clone();
+        let (hex, _) = compute_digest(&algo_c, &data)?;
+        Ok(PyObject::str_val(CompactString::from(hex)))
+    }));
+
+    // copy() — return independent hash with same accumulated state
+    let algo_c = algo.clone();
+    let buf_c = buf.clone();
+    attrs.insert(CompactString::from("copy"), PyObject::native_closure("copy", move |_args| {
+        let data = buf_c.read().clone();
+        let (hex, digest_bytes) = compute_digest(&algo_c, &data)?;
+        Ok(make_hash_object(&algo_c, data, hex, digest_bytes, 0, 0))
+    }));
+
+    // Legacy compatibility: _hexdigest / _digest attributes (compute on access would be ideal,
+    // but for backwards compat keep them — they reflect initial data only)
+    let algo_c = algo.clone();
+    let buf_c = buf.clone();
+    attrs.insert(CompactString::from("_hexdigest"), PyObject::native_closure("_hexdigest", move |_args| {
+        let data = buf_c.read().clone();
+        let (hex, _) = compute_digest(&algo_c, &data)?;
+        Ok(PyObject::str_val(CompactString::from(hex)))
+    }));
+    let algo_c = algo.clone();
+    let buf_c = buf.clone();
+    attrs.insert(CompactString::from("_digest"), PyObject::native_closure("_digest", move |_args| {
+        let data = buf_c.read().clone();
+        let (_, digest_bytes) = compute_digest(&algo_c, &data)?;
+        Ok(PyObject::bytes(digest_bytes))
+    }));
+
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
-        class: class.clone(),
+        class,
         attrs: Arc::new(RwLock::new(attrs)),
         is_special: true, dict_storage: None,
     }));
-    {
-        let a = if let PyObjectPayload::Instance(ref d) = inst.payload { d.attrs.clone() } else { unreachable!() };
-        let mut w = a.write();
-        w.insert(CompactString::from("_hexdigest"), PyObject::str_val(CompactString::from(&digest_hex)));
-        w.insert(CompactString::from("_digest"), PyObject::bytes(digest_bytes));
-        w.insert(CompactString::from("_data"), PyObject::bytes(data));
-        w.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name)));
-        w.insert(CompactString::from("block_size"), PyObject::int(block_size));
-        w.insert(CompactString::from("digest_size"), PyObject::int(digest_size));
-    }
     inst
 }
 
 fn hashlib_md5(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    use md5::Md5;
-    use digest::Digest;
     let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let mut hasher = Md5::new();
-    hasher.update(&data);
-    let result = hasher.finalize();
-    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-    Ok(make_hash_object("md5", data, hex, result.to_vec(), 64, 16))
+    let (hex, bytes) = compute_digest("md5", &data)?;
+    Ok(make_hash_object("md5", data, hex, bytes, 64, 16))
 }
 
 fn hashlib_sha1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    use sha1::Sha1;
-    use digest::Digest;
     let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let mut hasher = Sha1::new();
-    hasher.update(&data);
-    let result = hasher.finalize();
-    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-    Ok(make_hash_object("sha1", data, hex, result.to_vec(), 64, 20))
+    let (hex, bytes) = compute_digest("sha1", &data)?;
+    Ok(make_hash_object("sha1", data, hex, bytes, 64, 20))
 }
 
 fn hashlib_sha256(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    use sha2::Sha256;
-    use digest::Digest;
     let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let mut hasher = Sha256::new();
-    hasher.update(&data);
-    let result = hasher.finalize();
-    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-    Ok(make_hash_object("sha256", data, hex, result.to_vec(), 64, 32))
+    let (hex, bytes) = compute_digest("sha256", &data)?;
+    Ok(make_hash_object("sha256", data, hex, bytes, 64, 32))
 }
 
 fn hashlib_sha224(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    use sha2::Sha224;
-    use digest::Digest;
     let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let mut hasher = Sha224::new();
-    hasher.update(&data);
-    let result = hasher.finalize();
-    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-    Ok(make_hash_object("sha224", data, hex, result.to_vec(), 64, 28))
+    let (hex, bytes) = compute_digest("sha224", &data)?;
+    Ok(make_hash_object("sha224", data, hex, bytes, 64, 28))
 }
 
 fn hashlib_sha384(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    use sha2::Sha384;
-    use digest::Digest;
     let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let mut hasher = Sha384::new();
-    hasher.update(&data);
-    let result = hasher.finalize();
-    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-    Ok(make_hash_object("sha384", data, hex, result.to_vec(), 128, 48))
+    let (hex, bytes) = compute_digest("sha384", &data)?;
+    Ok(make_hash_object("sha384", data, hex, bytes, 128, 48))
 }
 
 fn hashlib_sha512(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    use sha2::Sha512;
-    use digest::Digest;
     let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let mut hasher = Sha512::new();
-    hasher.update(&data);
-    let result = hasher.finalize();
-    let hex = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-    Ok(make_hash_object("sha512", data, hex, result.to_vec(), 128, 64))
+    let (hex, bytes) = compute_digest("sha512", &data)?;
+    Ok(make_hash_object("sha512", data, hex, bytes, 128, 64))
 }
 
 fn hashlib_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

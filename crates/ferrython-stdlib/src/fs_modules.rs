@@ -666,7 +666,18 @@ pub fn create_glob_module() -> PyObjectRef {
     make_module("glob", vec![
         ("glob", make_builtin(glob_glob)),
         ("iglob", make_builtin(glob_glob)),
+        ("escape", make_builtin(glob_escape)),
     ])
+}
+
+fn glob_escape(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("escape requires a pathname")); }
+    let s = args[0].py_to_string();
+    let escaped: String = s.chars().map(|c| match c {
+        '*' | '?' | '[' => { let mut r = String::from('['); r.push(c); r.push(']'); r }
+        _ => c.to_string(),
+    }).collect();
+    Ok(PyObject::str_val(CompactString::from(escaped)))
 }
 
 fn glob_glob(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -674,13 +685,23 @@ fn glob_glob(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::type_error("glob requires a pattern"));
     }
     let pattern = args[0].py_to_string();
-    // Basic glob: handle *, ?, but not **
-    // Use std::fs for simple patterns
-    let path = std::path::Path::new(&pattern);
-    let dir = path.parent().unwrap_or(std::path::Path::new("."));
-    let file_pattern = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    // Check for recursive kwarg
+    let recursive = if args.len() > 1 { args[1].is_truthy() } else { pattern.contains("**") };
     
     let mut results = Vec::new();
+    if recursive && pattern.contains("**") {
+        glob_recursive(&pattern, &mut results)?;
+    } else {
+        glob_simple(&pattern, &mut results)?;
+    }
+    results.sort_by(|a, b| a.py_to_string().cmp(&b.py_to_string()));
+    Ok(PyObject::list(results))
+}
+
+fn glob_simple(pattern: &str, results: &mut Vec<PyObjectRef>) -> PyResult<()> {
+    let path = std::path::Path::new(pattern);
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let file_pattern = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -690,7 +711,47 @@ fn glob_glob(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }
     }
-    Ok(PyObject::list(results))
+    Ok(())
+}
+
+fn glob_recursive(pattern: &str, results: &mut Vec<PyObjectRef>) -> PyResult<()> {
+    // Split on ** to get prefix and suffix
+    // e.g. "src/**/*.rs" → prefix="src/", suffix="*.rs"
+    if let Some(star_pos) = pattern.find("**") {
+        let prefix = &pattern[..star_pos];
+        let suffix = &pattern[star_pos + 2..];
+        let suffix = suffix.strip_prefix('/').or_else(|| suffix.strip_prefix('\\')).unwrap_or(suffix);
+        let base_dir = if prefix.is_empty() { ".".to_string() } else {
+            prefix.trim_end_matches('/').trim_end_matches('\\').to_string()
+        };
+        let base_path = std::path::Path::new(&base_dir);
+        if base_path.is_dir() {
+            walk_dir_recursive(base_path, suffix, results);
+        }
+    } else {
+        glob_simple(pattern, results)?;
+    }
+    Ok(())
+}
+
+fn walk_dir_recursive(dir: &std::path::Path, file_pattern: &str, results: &mut Vec<PyObjectRef>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Match directory itself if pattern is empty
+                if file_pattern.is_empty() {
+                    results.push(PyObject::str_val(CompactString::from(path.to_string_lossy().to_string())));
+                }
+                walk_dir_recursive(&path, file_pattern, results);
+            } else if !file_pattern.is_empty() {
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                if glob_match(file_pattern, &name) {
+                    results.push(PyObject::str_val(CompactString::from(path.to_string_lossy().to_string())));
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
