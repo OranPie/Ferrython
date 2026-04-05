@@ -987,7 +987,55 @@ impl VirtualMachine {
                             }
                             return Ok(PyObject::dict(map));
                         }
-                        _ => {}
+                        "enumerate" => {
+                            let start = kwargs.iter().find(|(k, _)| k.as_str() == "start")
+                                .map(|(_, v)| v.clone())
+                                .unwrap_or_else(|| PyObject::int(0));
+                            let mut all_args = pos_args;
+                            all_args.push(start);
+                            return self.call_object(func, all_args);
+                        }
+                        "open" => {
+                            // open(file, mode='r', buffering=-1, encoding=None, ...)
+                            let mut all_args = pos_args;
+                            if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "mode") {
+                                while all_args.len() < 2 { all_args.push(PyObject::str_val(CompactString::from("r"))); }
+                                all_args[1] = v.clone();
+                            }
+                            if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "encoding") {
+                                while all_args.len() < 4 { all_args.push(PyObject::none()); }
+                                all_args[3] = v.clone();
+                            }
+                            return self.call_object(func, all_args);
+                        }
+                        "type" => {
+                            // type(name, bases, dict) — 3-arg form with kwargs
+                            if !kwargs.is_empty() && pos_args.len() >= 3 {
+                                return self.call_object(func, pos_args);
+                            }
+                            let mut all_args = pos_args;
+                            let mut kw_map = IndexMap::new();
+                            for (k, v) in kwargs {
+                                kw_map.insert(HashableKey::Str(k), v);
+                            }
+                            if !kw_map.is_empty() {
+                                all_args.push(PyObject::dict(kw_map));
+                            }
+                            return self.call_object(func, all_args);
+                        }
+                        _ => {
+                            // Generic BuiltinFunction kwargs: pass as trailing dict
+                            if !kwargs.is_empty() {
+                                let mut all_args = pos_args;
+                                let mut kw_map = IndexMap::new();
+                                for (k, v) in kwargs {
+                                    kw_map.insert(HashableKey::Str(k), v);
+                                }
+                                all_args.push(PyObject::dict(kw_map));
+                                return self.call_object(func, all_args);
+                            }
+                            return self.call_object(func, pos_args);
+                        }
                     }
                 }
                 // Handle other payload types that support kwargs
@@ -1177,12 +1225,18 @@ impl VirtualMachine {
                     }
                     _ => {}
                 }
-                // Final fallback: merge kwargs into positional (lossy but functional)
-                let mut all_args = pos_args;
-                for (_, v) in kwargs {
-                    all_args.push(v);
+                // Final fallback: pass kwargs as trailing dict to preserve key names
+                if !kwargs.is_empty() {
+                    let mut all_args = pos_args;
+                    let mut kw_map = IndexMap::new();
+                    for (k, v) in kwargs {
+                        kw_map.insert(HashableKey::Str(k), v);
+                    }
+                    all_args.push(PyObject::dict(kw_map));
+                    self.call_object(func, all_args)
+                } else {
+                    self.call_object(func, pos_args)
                 }
-                self.call_object(func, all_args)
             }
         }
     }
