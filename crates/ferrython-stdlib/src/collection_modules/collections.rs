@@ -4,6 +4,7 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     InstanceData,
     make_module, make_builtin,
+    CompareOp,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -241,16 +242,263 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         items
     };
+    
+    let data = Arc::new(RwLock::new(items));
+    
+    // Build instance methods that share the data list
+    let mut cls_ns = IndexMap::new();
+    
+    // append(x)
+    let d = data.clone();
+    let ml = maxlen;
+    cls_ns.insert(CompactString::from("append"), PyObject::native_closure(
+        "deque.append", move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("append requires argument")); }
+            let mut w = d.write();
+            w.push(args[0].clone());
+            if let Some(m) = ml { while w.len() > m { w.remove(0); } }
+            Ok(PyObject::none())
+        }
+    ));
+    
+    // appendleft(x)
+    let d = data.clone();
+    let ml = maxlen;
+    cls_ns.insert(CompactString::from("appendleft"), PyObject::native_closure(
+        "deque.appendleft", move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("appendleft requires argument")); }
+            let mut w = d.write();
+            w.insert(0, args[0].clone());
+            if let Some(m) = ml { while w.len() > m { w.pop(); } }
+            Ok(PyObject::none())
+        }
+    ));
+    
+    // pop()
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("pop"), PyObject::native_closure(
+        "deque.pop", move |_: &[PyObjectRef]| {
+            let mut w = d.write();
+            w.pop().ok_or_else(|| PyException::index_error("pop from an empty deque"))
+        }
+    ));
+    
+    // popleft()
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("popleft"), PyObject::native_closure(
+        "deque.popleft", move |_: &[PyObjectRef]| {
+            let mut w = d.write();
+            if w.is_empty() { return Err(PyException::index_error("pop from an empty deque")); }
+            Ok(w.remove(0))
+        }
+    ));
+    
+    // extend(iterable)
+    let d = data.clone();
+    let ml = maxlen;
+    cls_ns.insert(CompactString::from("extend"), PyObject::native_closure(
+        "deque.extend", move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("extend requires argument")); }
+            let items = args[0].to_list()?;
+            let mut w = d.write();
+            w.extend(items);
+            if let Some(m) = ml { while w.len() > m { w.remove(0); } }
+            Ok(PyObject::none())
+        }
+    ));
+    
+    // extendleft(iterable)
+    let d = data.clone();
+    let ml = maxlen;
+    cls_ns.insert(CompactString::from("extendleft"), PyObject::native_closure(
+        "deque.extendleft", move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("extendleft requires argument")); }
+            let items = args[0].to_list()?;
+            let mut w = d.write();
+            for item in items.into_iter().rev() {
+                w.insert(0, item);
+            }
+            if let Some(m) = ml { while w.len() > m { w.pop(); } }
+            Ok(PyObject::none())
+        }
+    ));
+    
+    // rotate(n=1)
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("rotate"), PyObject::native_closure(
+        "deque.rotate", move |args: &[PyObjectRef]| {
+            let n = if args.is_empty() { 1i64 } else { args[0].to_int()? };
+            let mut w = d.write();
+            let len = w.len();
+            if len == 0 { return Ok(PyObject::none()); }
+            let n = ((n % len as i64) + len as i64) as usize % len;
+            if n > 0 {
+                let split_point = len - n;
+                let mut rotated = w[split_point..].to_vec();
+                rotated.extend_from_slice(&w[..split_point]);
+                *w = rotated;
+            }
+            Ok(PyObject::none())
+        }
+    ));
+    
+    // clear()
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("clear"), PyObject::native_closure(
+        "deque.clear", move |_: &[PyObjectRef]| {
+            d.write().clear();
+            Ok(PyObject::none())
+        }
+    ));
+    
+    // count(x)
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("count"), PyObject::native_closure(
+        "deque.count", move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("count requires argument")); }
+            let target = &args[0];
+            let r = d.read();
+            let c = r.iter().filter(|item| {
+                item.compare(target, CompareOp::Eq).map(|v| v.is_truthy()).unwrap_or(false)
+            }).count();
+            Ok(PyObject::int(c as i64))
+        }
+    ));
+    
+    // index(x)
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("index"), PyObject::native_closure(
+        "deque.index", move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("index requires argument")); }
+            let target = &args[0];
+            let r = d.read();
+            for (i, item) in r.iter().enumerate() {
+                if item.compare(target, CompareOp::Eq).map(|v| v.is_truthy()).unwrap_or(false) { return Ok(PyObject::int(i as i64)); }
+            }
+            Err(PyException::value_error("value not in deque"))
+        }
+    ));
+    
+    // remove(x)
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("remove"), PyObject::native_closure(
+        "deque.remove", move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("remove requires argument")); }
+            let target = &args[0];
+            let mut w = d.write();
+            let pos = w.iter().position(|item| {
+                item.compare(target, CompareOp::Eq).map(|v| v.is_truthy()).unwrap_or(false)
+            });
+            match pos {
+                Some(i) => { w.remove(i); Ok(PyObject::none()) }
+                None => Err(PyException::value_error("deque.remove(x): x not in deque"))
+            }
+        }
+    ));
+    
+    // reverse()
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("reverse"), PyObject::native_closure(
+        "deque.reverse", move |_: &[PyObjectRef]| {
+            d.write().reverse();
+            Ok(PyObject::none())
+        }
+    ));
+    
+    // copy()
+    let d = data.clone();
+    let ml2 = maxlen;
+    cls_ns.insert(CompactString::from("copy"), PyObject::native_closure(
+        "deque.copy", move |_: &[PyObjectRef]| {
+            let items = d.read().clone();
+            let mut new_args = vec![PyObject::list(items)];
+            if let Some(m) = ml2 { new_args.push(PyObject::int(m as i64)); }
+            collections_deque(&new_args)
+        }
+    ));
+    
+    // __len__()
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("__len__"), PyObject::native_closure(
+        "deque.__len__", move |_: &[PyObjectRef]| {
+            Ok(PyObject::int(d.read().len() as i64))
+        }
+    ));
+    
+    // __bool__()
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("__bool__"), PyObject::native_closure(
+        "deque.__bool__", move |_: &[PyObjectRef]| {
+            Ok(PyObject::bool_val(!d.read().is_empty()))
+        }
+    ));
+    
+    // __repr__()
+    let d = data.clone();
+    let ml3 = maxlen;
+    cls_ns.insert(CompactString::from("__repr__"), PyObject::native_closure(
+        "deque.__repr__", move |_: &[PyObjectRef]| {
+            let r = d.read();
+            let items_str: Vec<String> = r.iter().map(|i| i.py_to_string()).collect();
+            let base = format!("deque([{}])", items_str.join(", "));
+            if let Some(m) = ml3 {
+                Ok(PyObject::str_val(CompactString::from(format!("deque([{}], maxlen={})", items_str.join(", "), m))))
+            } else {
+                Ok(PyObject::str_val(CompactString::from(base)))
+            }
+        }
+    ));
+    
+    // __iter__()
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("__iter__"), PyObject::native_closure(
+        "deque.__iter__", move |_: &[PyObjectRef]| {
+            Ok(PyObject::list(d.read().clone()))
+        }
+    ));
+    
+    // __contains__(x) - needed for 'in' operator
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("__contains__"), PyObject::native_closure(
+        "deque.__contains__", move |args: &[PyObjectRef]| {
+            // Called as unbound method: args = [self, value] or directly: args = [value]
+            let target = if args.len() >= 2 { &args[1] } else if !args.is_empty() { &args[0] } else { return Ok(PyObject::bool_val(false)); };
+            let r = d.read();
+            for item in r.iter() {
+                if item.compare(target, CompareOp::Eq).map(|v| v.is_truthy()).unwrap_or(false) {
+                    return Ok(PyObject::bool_val(true));
+                }
+            }
+            Ok(PyObject::bool_val(false))
+        }
+    ));
+    
+    // __getitem__(index)
+    let d = data.clone();
+    cls_ns.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+        "deque.__getitem__", move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("__getitem__ requires index")); }
+            let idx = args[0].to_int()?;
+            let r = d.read();
+            let len = r.len() as i64;
+            let actual = if idx < 0 { len + idx } else { idx };
+            if actual < 0 || actual >= len {
+                return Err(PyException::index_error("deque index out of range"));
+            }
+            Ok(r[actual as usize].clone())
+        }
+    ));
+    
     let deque_cls = PyObject::class(
         CompactString::from("deque"),
         vec![],
-        IndexMap::new(),
+        cls_ns,
     );
     let inst = PyObject::instance(deque_cls);
     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
-        attrs.insert(CompactString::from("_data"), PyObject::list(items));
+        attrs.insert(CompactString::from("_data"), PyObject::list(data.read().clone()));
         attrs.insert(
             CompactString::from("__maxlen__"),
             match maxlen {
@@ -258,6 +506,15 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 None => PyObject::none(),
             },
         );
+        // Also install instance methods directly on attrs for attribute access
+        if let PyObjectPayload::Class(ref cd) = inst_data.class.payload {
+            let ns = cd.namespace.read();
+            for (name, val) in ns.iter() {
+                if !name.starts_with("_data") && !name.starts_with("__deque") && !name.starts_with("__maxlen") {
+                    attrs.insert(name.clone(), val.clone());
+                }
+            }
+        }
     }
     Ok(inst)
 }
