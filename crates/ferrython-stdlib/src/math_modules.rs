@@ -708,6 +708,13 @@ pub fn create_decimal_module() -> PyObjectRef {
     use parking_lot::RwLock;
     use std::sync::Arc;
     use ferrython_core::object::InstanceData;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static DECIMAL_PREC: AtomicU32 = AtomicU32::new(28);
+
+    fn get_prec() -> u32 {
+        DECIMAL_PREC.load(Ordering::Relaxed)
+    }
 
     fn make_decimal(s: &str) -> PyObjectRef {
         let mut dec_ns = IndexMap::new();
@@ -917,8 +924,14 @@ pub fn create_decimal_module() -> PyObjectRef {
         let b = decimal_parse(&b_str);
         if b.1 == 0 { return Err(PyException::zero_division_error("decimal division by zero")); }
         let neg = a.0 != b.0;
-        let precision = 28u32;
-        let a_scaled = a.1 * 10i128.pow(precision);
+        // Cap precision to avoid i128 overflow (i128 has ~38 digits of range)
+        let precision = get_prec().min(36);
+        let a_scaled = a.1.checked_mul(10i128.pow(precision))
+            .unwrap_or_else(|| {
+                // Fallback: reduce precision to fit
+                let safe_prec = 18u32.min(precision);
+                a.1 * 10i128.pow(safe_prec)
+            });
         let result = a_scaled / b.1;
         let total_scale = a.2 + precision - b.2;
         Ok(make_decimal(&decimal_format(neg, result, total_scale)))
@@ -1200,15 +1213,37 @@ pub fn create_decimal_module() -> PyObjectRef {
         ("ROUND_UP", PyObject::str_val(CompactString::from("ROUND_UP"))),
         ("ROUND_05UP", PyObject::str_val(CompactString::from("ROUND_05UP"))),
         ("getcontext", make_builtin(|_| {
-            // Return a basic context object with default precision
+            use std::sync::atomic::Ordering;
+            let current_prec = DECIMAL_PREC.load(Ordering::Relaxed);
             let mut ctx_ns = IndexMap::new();
-            ctx_ns.insert(CompactString::from("prec"), PyObject::int(28));
+            ctx_ns.insert(CompactString::from("prec"), PyObject::int(current_prec as i64));
             ctx_ns.insert(CompactString::from("rounding"), PyObject::str_val(CompactString::from("ROUND_HALF_EVEN")));
             ctx_ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
             ctx_ns.insert(CompactString::from("Emax"), PyObject::int(999999));
             ctx_ns.insert(CompactString::from("capitals"), PyObject::int(1));
             ctx_ns.insert(CompactString::from("clamp"), PyObject::int(0));
-            let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
+            // Add __setattr__ to intercept prec assignment
+            let cls_ns = {
+                let mut ns = IndexMap::new();
+                ns.insert(CompactString::from("__setattr__"), make_builtin(|args| {
+                    use std::sync::atomic::Ordering;
+                    if args.len() < 3 { return Ok(PyObject::none()); }
+                    let attr_name = args[1].py_to_string();
+                    if attr_name == "prec" {
+                        let new_prec = args[2].to_int()? as u32;
+                        DECIMAL_PREC.store(new_prec, Ordering::Relaxed);
+                        // Also update the instance attribute
+                        if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                            inst.attrs.write().insert(CompactString::from("prec"), PyObject::int(new_prec as i64));
+                        }
+                    } else if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                        inst.attrs.write().insert(CompactString::from(attr_name), args[2].clone());
+                    }
+                    Ok(PyObject::none())
+                }));
+                ns
+            };
+            let cls = PyObject::class(CompactString::from("Context"), vec![], cls_ns);
             let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: cls,
                 attrs: Arc::new(RwLock::new(ctx_ns)),

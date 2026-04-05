@@ -25,7 +25,117 @@ pub fn create_string_module() -> PyObjectRef {
         ("whitespace", PyObject::str_val(CompactString::from(" \t\n\r\x0b\x0c"))),
         ("printable", PyObject::str_val(CompactString::from("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\x0b\x0c"))),
         ("Template", PyObject::native_function("string.Template", template_new)),
+        ("Formatter", create_formatter_class()),
+        ("capwords", make_builtin(string_capwords)),
     ])
+}
+
+fn string_capwords(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("capwords() requires a string")); }
+    let s = args[0].py_to_string();
+    let sep = if args.len() > 1 { Some(args[1].py_to_string()) } else { None };
+    let result: String = match sep {
+        Some(ref sep_str) => s.split(sep_str.as_str())
+            .map(|w| { let mut c = w.chars(); match c.next() { None => String::new(), Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase() }})
+            .collect::<Vec<_>>().join(sep_str),
+        None => s.split_whitespace()
+            .map(|w| { let mut c = w.chars(); match c.next() { None => String::new(), Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase() }})
+            .collect::<Vec<_>>().join(" "),
+    };
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn create_formatter_class() -> PyObjectRef {
+    let mut ns = IndexMap::new();
+    ns.insert(CompactString::from("format"), make_builtin(formatter_format));
+    ns.insert(CompactString::from("vformat"), make_builtin(formatter_format));
+    PyObject::class(CompactString::from("Formatter"), vec![], ns)
+}
+
+fn formatter_format(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // args[0] = self (Formatter instance), args[1] = format_string, rest = positional/kwargs
+    if args.len() < 2 { return Err(PyException::type_error("format() requires a format string")); }
+    let fmt_str = args[1].py_to_string();
+    let pos_args = if args.len() > 2 { &args[2..] } else { &[] as &[PyObjectRef] };
+    // Check if last arg is a kwargs dict
+    let (pos_args_final, kwargs) = if let Some(last) = pos_args.last() {
+        if let PyObjectPayload::Dict(map) = &last.payload {
+            (&pos_args[..pos_args.len()-1], Some(map.read().clone()))
+        } else {
+            (pos_args, None)
+        }
+    } else {
+        (pos_args, None)
+    };
+    let result = format_string_impl(&fmt_str, pos_args_final, &kwargs)?;
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn format_string_impl(
+    fmt: &str,
+    pos_args: &[PyObjectRef],
+    kwargs: &Option<IndexMap<HashableKey, PyObjectRef>>,
+) -> PyResult<String> {
+    let mut result = String::new();
+    let mut auto_idx = 0usize;
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '{' {
+            if i + 1 < chars.len() && chars[i+1] == '{' {
+                result.push('{');
+                i += 2;
+                continue;
+            }
+            i += 1;
+            let start = i;
+            let mut depth = 1;
+            while i < chars.len() && depth > 0 {
+                if chars[i] == '{' { depth += 1; }
+                if chars[i] == '}' { depth -= 1; }
+                if depth > 0 { i += 1; }
+            }
+            let field: String = chars[start..i].iter().collect();
+            i += 1; // skip }
+            // Parse field_name:format_spec
+            let (field_name, _format_spec) = if let Some(colon) = field.find(':') {
+                (&field[..colon], &field[colon+1..])
+            } else {
+                (field.as_str(), "")
+            };
+            let value = if field_name.is_empty() {
+                if auto_idx < pos_args.len() {
+                    let v = pos_args[auto_idx].clone();
+                    auto_idx += 1;
+                    v
+                } else {
+                    return Err(PyException::index_error("Replacement index out of range"));
+                }
+            } else if let Ok(idx) = field_name.parse::<usize>() {
+                if idx < pos_args.len() { pos_args[idx].clone() }
+                else { return Err(PyException::index_error("Replacement index out of range")); }
+            } else if let Some(ref kw) = kwargs {
+                kw.get(&HashableKey::Str(CompactString::from(field_name)))
+                    .cloned()
+                    .ok_or_else(|| PyException::key_error(format!("'{}'", field_name)))?
+            } else {
+                return Err(PyException::key_error(format!("'{}'", field_name)));
+            };
+            result.push_str(&value.py_to_string());
+        } else if chars[i] == '}' {
+            if i + 1 < chars.len() && chars[i+1] == '}' {
+                result.push('}');
+                i += 2;
+                continue;
+            }
+            result.push('}');
+            i += 1;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    Ok(result)
 }
 
 fn template_substitute(template: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>, safe: bool) -> PyResult<String> {
