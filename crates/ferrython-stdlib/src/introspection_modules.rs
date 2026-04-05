@@ -253,7 +253,7 @@ pub fn create_inspect_module() -> PyObjectRef {
             Ok(PyObject::bool_val(matches!(&args[0].payload,
                 PyObjectPayload::Function(_) | PyObjectPayload::BoundMethod { .. } |
                 PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } |
-                PyObjectPayload::BuiltinBoundMethod { .. })))
+                PyObjectPayload::BuiltinBoundMethod { .. } | PyObjectPayload::BuiltinFunction(_))))
         })),
         ("isabstract", make_builtin(|args| {
             check_args("inspect.isabstract", args, 1)?;
@@ -348,6 +348,79 @@ pub fn create_inspect_module() -> PyObjectRef {
         // Parameter and Signature classes (simplified placeholders for compatibility)
         ("Parameter", PyObject::class(CompactString::from("Parameter"), vec![], IndexMap::new())),
         ("Signature", PyObject::class(CompactString::from("Signature"), vec![], IndexMap::new())),
+        ("getsource", make_builtin(|args| {
+            check_args("inspect.getsource", args, 1)?;
+            let filename = match &args[0].payload {
+                PyObjectPayload::Function(f) => f.code.filename.clone(),
+                PyObjectPayload::Module(m) => {
+                    if let Some(f) = m.attrs.read().get("__file__") {
+                        CompactString::from(f.py_to_string())
+                    } else {
+                        return Err(PyException::runtime_error("could not find source"));
+                    }
+                }
+                _ => return Err(PyException::runtime_error("could not find source")),
+            };
+            match std::fs::read_to_string(filename.as_str()) {
+                Ok(src) => {
+                    // For functions, extract from first_line_number
+                    if let PyObjectPayload::Function(f) = &args[0].payload {
+                        let lines: Vec<&str> = src.lines().collect();
+                        let start = (f.code.first_line_number as usize).saturating_sub(1);
+                        if start < lines.len() {
+                            // Find the end of the function by indentation
+                            let indent = lines[start].len() - lines[start].trim_start().len();
+                            let mut end = start + 1;
+                            while end < lines.len() {
+                                let line = lines[end];
+                                if line.trim().is_empty() { end += 1; continue; }
+                                let line_indent = line.len() - line.trim_start().len();
+                                if line_indent <= indent && !line.trim().is_empty() { break; }
+                                end += 1;
+                            }
+                            let func_src = lines[start..end].join("\n");
+                            return Ok(PyObject::str_val(CompactString::from(func_src)));
+                        }
+                    }
+                    Ok(PyObject::str_val(CompactString::from(src)))
+                }
+                Err(_) => Err(PyException::runtime_error("could not read source file")),
+            }
+        })),
+        ("getsourcelines", make_builtin(|args| {
+            check_args("inspect.getsourcelines", args, 1)?;
+            let filename = match &args[0].payload {
+                PyObjectPayload::Function(f) => Some((f.code.filename.clone(), f.code.first_line_number)),
+                _ => None,
+            };
+            if let Some((fname, lineno)) = filename {
+                match std::fs::read_to_string(fname.as_str()) {
+                    Ok(src) => {
+                        let lines: Vec<PyObjectRef> = src.lines()
+                            .skip(lineno.saturating_sub(1) as usize)
+                            .take_while(|l| !l.is_empty() || l.trim().is_empty())
+                            .map(|l| PyObject::str_val(CompactString::from(format!("{}\n", l))))
+                            .collect();
+                        Ok(PyObject::tuple(vec![PyObject::list(lines), PyObject::int(lineno as i64)]))
+                    }
+                    Err(_) => Err(PyException::runtime_error("could not read source")),
+                }
+            } else {
+                Err(PyException::runtime_error("could not find source lines"))
+            }
+        })),
+        ("currentframe", make_builtin(|_| Ok(PyObject::none()))),
+        ("stack", make_builtin(|_| Ok(PyObject::list(vec![])))),
+        ("getmro", make_builtin(|args| {
+            check_args("inspect.getmro", args, 1)?;
+            if let PyObjectPayload::Class(cd) = &args[0].payload {
+                let mut mro = vec![args[0].clone()];
+                mro.extend(cd.mro.iter().cloned());
+                Ok(PyObject::tuple(mro))
+            } else {
+                Err(PyException::type_error("argument is not a class"))
+            }
+        })),
     ])
 }
 
