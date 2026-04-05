@@ -353,6 +353,43 @@ pub fn create_os_module() -> PyObjectRef {
         ("isatty", make_builtin(os_isatty)),
         ("chdir", make_builtin(os_chdir)),
         ("system", make_builtin(os_system)),
+        ("getppid", make_builtin(|_| {
+            Ok(PyObject::int(std::process::id() as i64)) // Approximate with current PID
+        })),
+        ("urandom", make_builtin(|args| {
+            let n = if args.is_empty() { 16 } else { args[0].as_int().unwrap_or(16) as usize };
+            let mut buf = vec![0u8; n];
+            #[cfg(unix)]
+            {
+                use std::io::Read;
+                if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+                    let _ = f.read_exact(&mut buf);
+                }
+            }
+            Ok(PyObject::bytes(buf))
+        })),
+        ("access", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let path = args[0].py_to_string();
+            Ok(PyObject::bool_val(std::path::Path::new(&path).exists()))
+        })),
+        ("umask", make_builtin(|_| Ok(PyObject::int(0o022)))),
+        ("getlogin", make_builtin(|_| {
+            let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME"))
+                .unwrap_or_else(|_| String::from(""));
+            Ok(PyObject::str_val(CompactString::from(user)))
+        })),
+        ("devnull", PyObject::str_val(CompactString::from(if cfg!(windows) { "nul" } else { "/dev/null" }))),
+        ("F_OK", PyObject::int(0)),
+        ("R_OK", PyObject::int(4)),
+        ("W_OK", PyObject::int(2)),
+        ("X_OK", PyObject::int(1)),
+        ("O_RDONLY", PyObject::int(0)),
+        ("O_WRONLY", PyObject::int(1)),
+        ("O_RDWR", PyObject::int(2)),
+        ("O_CREAT", PyObject::int(0o100)),
+        ("O_TRUNC", PyObject::int(0o1000)),
+        ("O_APPEND", PyObject::int(0o2000)),
     ])
 }
 

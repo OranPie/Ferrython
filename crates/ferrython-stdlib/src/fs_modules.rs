@@ -154,6 +154,109 @@ pub fn create_pathlib_module() -> PyObjectRef {
         Ok(PyObject::none())
     }));
 
+    // rmdir()
+    path_ns.insert(CompactString::from("rmdir"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("rmdir requires self")); }
+        let path = get_path_str(&args[0]);
+        std::fs::remove_dir(&path)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        Ok(PyObject::none())
+    }));
+
+    // touch(exist_ok=True) — create empty file
+    path_ns.insert(CompactString::from("touch"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("touch requires self")); }
+        let path = get_path_str(&args[0]);
+        let p = std::path::Path::new(&path);
+        if !p.exists() {
+            std::fs::File::create(&path)
+                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        }
+        Ok(PyObject::none())
+    }));
+
+    // rename(target) -> Path
+    path_ns.insert(CompactString::from("rename"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("rename requires self and target")); }
+        let src = get_path_str(&args[0]);
+        let dst = args[1].py_to_string();
+        std::fs::rename(&src, &dst)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}' -> '{}'", e, src, dst)))?;
+        make_path_instance(&dst)
+    }));
+
+    // is_symlink() -> bool
+    path_ns.insert(CompactString::from("is_symlink"), make_builtin(|args| {
+        if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+        let path = get_path_str(&args[0]);
+        Ok(PyObject::bool_val(std::path::Path::new(&path).is_symlink()))
+    }));
+
+    // stat() -> os.stat_result-like object
+    path_ns.insert(CompactString::from("stat"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("stat requires self")); }
+        let path = get_path_str(&args[0]);
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        let cls = PyObject::class(CompactString::from("stat_result"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("st_size"), PyObject::int(meta.len() as i64));
+            w.insert(CompactString::from("st_mode"), PyObject::int(0o644));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                w.insert(CompactString::from("st_mode"), PyObject::int(meta.mode() as i64));
+                w.insert(CompactString::from("st_ino"), PyObject::int(meta.ino() as i64));
+                w.insert(CompactString::from("st_dev"), PyObject::int(meta.dev() as i64));
+                w.insert(CompactString::from("st_nlink"), PyObject::int(meta.nlink() as i64));
+                w.insert(CompactString::from("st_uid"), PyObject::int(meta.uid() as i64));
+                w.insert(CompactString::from("st_gid"), PyObject::int(meta.gid() as i64));
+                w.insert(CompactString::from("st_atime"), PyObject::float(meta.atime() as f64));
+                w.insert(CompactString::from("st_mtime"), PyObject::float(meta.mtime() as f64));
+                w.insert(CompactString::from("st_ctime"), PyObject::float(meta.ctime() as f64));
+            }
+        }
+        Ok(inst)
+    }));
+
+    // with_name(name) -> Path
+    path_ns.insert(CompactString::from("with_name"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("with_name requires self and name")); }
+        let path = get_path_str(&args[0]);
+        let new_name = args[1].py_to_string();
+        let p = std::path::Path::new(&path);
+        let parent = p.parent().unwrap_or(std::path::Path::new(""));
+        let new_path = parent.join(&new_name);
+        make_path_instance(&new_path.to_string_lossy())
+    }));
+
+    // with_suffix(suffix) -> Path
+    path_ns.insert(CompactString::from("with_suffix"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("with_suffix requires self and suffix")); }
+        let path = get_path_str(&args[0]);
+        let new_suffix = args[1].py_to_string();
+        let p = std::path::Path::new(&path);
+        let new_path = p.with_extension(new_suffix.trim_start_matches('.'));
+        make_path_instance(&new_path.to_string_lossy())
+    }));
+
+    // open(mode='r') -> file-like object
+    path_ns.insert(CompactString::from("open"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("open requires self")); }
+        let path = get_path_str(&args[0]);
+        let mode = if args.len() > 1 { args[1].py_to_string() } else { "r".to_string() };
+        // Delegate to builtins.open logic — return file-like object
+        let content = if mode.contains('r') {
+            std::fs::read_to_string(&path)
+                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?
+        } else {
+            String::new()
+        };
+        Ok(PyObject::str_val(CompactString::from(content)))
+    }));
+
     // __truediv__(other) -> Path  (the / operator)
     path_ns.insert(CompactString::from("__truediv__"), make_builtin(|args| {
         if args.len() < 2 { return Err(PyException::type_error("__truediv__ requires self and other")); }
