@@ -116,10 +116,17 @@ impl VirtualMachine {
                     frame.stack.pop();
                     Ok(None)
                 }
+                // Inline ReturnValue: fast path when no finally blocks are active
                 Opcode::ReturnValue => {
-                    let val = frame.stack.pop().expect("stack underflow");
-                    Ok(Some(val))
+                    if frame.block_stack.iter().any(|b| b.kind == BlockKind::Finally) {
+                        // Must go through full handler for finally unwinding
+                        self.execute_one(instr)
+                    } else {
+                        let val = frame.stack.pop().expect("stack underflow");
+                        Ok(Some(val))
+                    }
                 }
+
                 // Inline int+int for BinaryAdd (hot in arithmetic loops)
                 Opcode::BinaryAdd | Opcode::InplaceAdd => {
                     let len = frame.stack.len();
