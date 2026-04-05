@@ -150,7 +150,11 @@ impl VirtualMachine {
             PyObjectPayload::Instance(inst) => {
                 // Check for custom __repr__ (skip BuiltinBoundMethod from builtin bases)
                 if let Some(repr_method) = Self::resolve_instance_dunder(obj, "__repr__") {
-                    let result = self.call_object(repr_method, vec![])?;
+                    let args = match &repr_method.payload {
+                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
+                        _ => vec![],
+                    };
+                    let result = self.call_object(repr_method, args)?;
                     return Ok(result.py_to_string());
                 }
                 // Dataclass auto-repr (before __builtin_value__ delegation)

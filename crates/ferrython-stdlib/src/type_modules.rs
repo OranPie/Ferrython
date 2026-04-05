@@ -1,7 +1,7 @@
 //! Type-system stdlib modules (typing, abc, enum, types, collections.abc)
 
 use compact_str::CompactString;
-use ferrython_core::error::PyException;
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min, CompareOp,
@@ -511,6 +511,28 @@ pub fn create_enum_module() -> PyObjectRef {
 
 // ── types module ──
 
+fn compare_namespaces(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
+    match (&a.payload, &b.payload) {
+        (PyObjectPayload::Instance(ref sd), PyObjectPayload::Instance(ref od)) => {
+            let sa = sd.attrs.read();
+            let oa = od.attrs.read();
+            let self_user: Vec<_> = sa.iter().filter(|(k, _)| !k.starts_with('_')).collect();
+            let other_user: Vec<_> = oa.iter().filter(|(k, _)| !k.starts_with('_')).collect();
+            if self_user.len() != other_user.len() { return Ok(PyObject::bool_val(false)); }
+            for (k, v) in &self_user {
+                if let Some(ov) = oa.get(*k) {
+                    let eq = v.compare(ov, CompareOp::Eq)?;
+                    if !eq.is_truthy() { return Ok(PyObject::bool_val(false)); }
+                } else {
+                    return Ok(PyObject::bool_val(false));
+                }
+            }
+            Ok(PyObject::bool_val(true))
+        }
+        _ => Ok(PyObject::bool_val(false)),
+    }
+}
+
 pub fn create_types_module() -> PyObjectRef {
     make_module("types", vec![
         ("NoneType", PyObject::builtin_type(CompactString::from("NoneType"))),
@@ -528,7 +550,38 @@ pub fn create_types_module() -> PyObjectRef {
         ("AsyncGeneratorType", PyObject::builtin_type(CompactString::from("async_generator"))),
         ("MappingProxyType", PyObject::builtin_type(CompactString::from("mappingproxy"))),
         ("SimpleNamespace", make_builtin(|args| {
-            let cls = PyObject::class(CompactString::from("SimpleNamespace"), vec![], IndexMap::new());
+            // Build class-level __repr__ and __eq__ so the VM can dispatch them
+            let mut methods = IndexMap::new();
+            methods.insert(CompactString::from("__repr__"), PyObject::native_closure(
+                "SimpleNamespace.__repr__", |repr_args: &[PyObjectRef]| {
+                    if repr_args.is_empty() {
+                        return Ok(PyObject::str_val(CompactString::from("namespace()")));
+                    }
+                    let self_obj = &repr_args[0];
+                    if let PyObjectPayload::Instance(ref d) = self_obj.payload {
+                        let attrs = d.attrs.read();
+                        let parts: Vec<String> = attrs.iter()
+                            .filter(|(k, _)| !k.starts_with('_'))
+                            .map(|(k, v)| format!("{}={}", k, v.repr()))
+                            .collect();
+                        Ok(PyObject::str_val(CompactString::from(format!("namespace({})", parts.join(", ")))))
+                    } else {
+                        Ok(PyObject::str_val(CompactString::from("namespace()")))
+                    }
+                },
+            ));
+            methods.insert(CompactString::from("__eq__"), PyObject::native_closure(
+                "SimpleNamespace.__eq__", |eq_args: &[PyObjectRef]| {
+                    // When called via == operator: args = [self, other]
+                    // When called via ns1.__eq__(ns2): args = [ns2] (no self)
+                    // We handle the 2-arg case here; 1-arg case handled at instance level
+                    if eq_args.len() < 2 {
+                        return Ok(PyObject::bool_val(false));
+                    }
+                    compare_namespaces(&eq_args[0], &eq_args[1])
+                },
+            ));
+            let cls = PyObject::class(CompactString::from("SimpleNamespace"), vec![], methods);
             let inst = PyObject::instance(cls);
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(kw) = &last.payload {
@@ -542,35 +595,28 @@ pub fn create_types_module() -> PyObjectRef {
                     }
                 }
             }
-            // Add __eq__ for equality comparison via __dict__
+            // Install per-instance __eq__ capturing self for ns.__eq__(other) calls
             if let PyObjectPayload::Instance(ref d) = inst.payload {
-                let attrs_ref = d.attrs.clone();
+                let self_ref = d.attrs.clone();
                 let mut attrs = d.attrs.write();
                 attrs.insert(CompactString::from("__eq__"), PyObject::native_closure(
                     "SimpleNamespace.__eq__", move |eq_args: &[PyObjectRef]| {
                         if eq_args.is_empty() {
                             return Ok(PyObject::bool_val(false));
                         }
-                        let other = &eq_args[0];
-                        if let PyObjectPayload::Instance(ref other_d) = other.payload {
-                            let self_attrs = attrs_ref.read();
-                            let other_attrs = other_d.attrs.read();
-                            // Compare all non-dunder attributes
-                            let self_user: Vec<_> = self_attrs.iter()
-                                .filter(|(k, _)| !k.starts_with("__"))
-                                .collect();
-                            let other_user: Vec<_> = other_attrs.iter()
-                                .filter(|(k, _)| !k.starts_with("__"))
-                                .collect();
-                            if self_user.len() != other_user.len() {
-                                return Ok(PyObject::bool_val(false));
-                            }
+                        // When called as ns.__eq__(other), eq_args[0] is other
+                        // Build a fake self from our captured attrs
+                        let other = &eq_args[eq_args.len() - 1];
+                        if let PyObjectPayload::Instance(ref od) = other.payload {
+                            let sa = self_ref.read();
+                            let oa = od.attrs.read();
+                            let self_user: Vec<_> = sa.iter().filter(|(k, _)| !k.starts_with('_')).collect();
+                            let other_user: Vec<_> = oa.iter().filter(|(k, _)| !k.starts_with('_')).collect();
+                            if self_user.len() != other_user.len() { return Ok(PyObject::bool_val(false)); }
                             for (k, v) in &self_user {
-                                if let Some(ov) = other_attrs.get(*k) {
+                                if let Some(ov) = oa.get(*k) {
                                     let eq = v.compare(ov, CompareOp::Eq)?;
-                                    if !eq.is_truthy() {
-                                        return Ok(PyObject::bool_val(false));
-                                    }
+                                    if !eq.is_truthy() { return Ok(PyObject::bool_val(false)); }
                                 } else {
                                     return Ok(PyObject::bool_val(false));
                                 }

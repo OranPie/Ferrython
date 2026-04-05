@@ -162,6 +162,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // OS-level
         "mmap" => Some(sys_modules::create_mmap_module()),
         "resource" => Some(sys_modules::create_resource_module()),
+        "fcntl" => Some(sys_modules::create_fcntl_module()),
         // Async
         "asyncio" => Some(ferrython_async::create_asyncio_module()),
         // Import system

@@ -1520,3 +1520,48 @@ pub fn create_resource_module() -> PyObjectRef {
         ("RUSAGE_CHILDREN", PyObject::int(-1)),
     ])
 }
+
+pub fn create_fcntl_module() -> PyObjectRef {
+    let fcntl_fn = make_builtin(|args: &[PyObjectRef]| {
+        let _ = check_args("fcntl", args, 2);
+        // Return 0 (success) — stub for file control operations
+        Ok(PyObject::int(0))
+    });
+
+    let flock_fn = make_builtin(|args: &[PyObjectRef]| {
+        let _ = check_args("flock", args, 2);
+        Ok(PyObject::none())
+    });
+
+    let lockf_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.len() < 2 { return Err(PyException::type_error(CompactString::from("lockf() requires at least 2 args"))); }
+        Ok(PyObject::none())
+    });
+
+    let ioctl_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.len() < 2 { return Err(PyException::type_error(CompactString::from("ioctl() requires at least 2 args"))); }
+        Ok(PyObject::int(0))
+    });
+
+    make_module("fcntl", vec![
+        ("fcntl", fcntl_fn),
+        ("flock", flock_fn),
+        ("lockf", lockf_fn),
+        ("ioctl", ioctl_fn),
+        // Lock constants
+        ("LOCK_SH", PyObject::int(1)),
+        ("LOCK_EX", PyObject::int(2)),
+        ("LOCK_NB", PyObject::int(4)),
+        ("LOCK_UN", PyObject::int(8)),
+        // fcntl constants
+        ("F_DUPFD", PyObject::int(0)),
+        ("F_GETFD", PyObject::int(1)),
+        ("F_SETFD", PyObject::int(2)),
+        ("F_GETFL", PyObject::int(3)),
+        ("F_SETFL", PyObject::int(4)),
+        ("F_GETLK", PyObject::int(5)),
+        ("F_SETLK", PyObject::int(6)),
+        ("F_SETLKW", PyObject::int(7)),
+        ("FD_CLOEXEC", PyObject::int(1)),
+    ])
+}

@@ -981,8 +981,35 @@ pub fn create_difflib_module() -> PyObjectRef {
             PyObjectPayload::List(items) => items.read().iter().map(|i| i.py_to_string()).collect(),
             _ => return Err(PyException::type_error("expected list")),
         };
-        let from_file = if args.len() > 2 { args[2].py_to_string() } else { String::new() };
-        let to_file = if args.len() > 3 { args[3].py_to_string() } else { String::new() };
+        // Extract fromfile/tofile from positional or keyword args
+        let mut from_file = String::new();
+        let mut to_file = String::new();
+        let mut n_context = 3usize;
+        // Check kwargs (trailing dict)
+        if let Some(last) = args.last() {
+            if let PyObjectPayload::Dict(kw) = &last.payload {
+                let kw = kw.read();
+                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("fromfile"))) {
+                    from_file = v.py_to_string();
+                }
+                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("tofile"))) {
+                    to_file = v.py_to_string();
+                }
+                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("n"))) {
+                    n_context = v.to_int().unwrap_or(3) as usize;
+                }
+            }
+        }
+        // Positional overrides
+        for (i, arg) in args.iter().enumerate().skip(2) {
+            if matches!(&arg.payload, PyObjectPayload::Dict(_)) { break; }
+            match i {
+                2 => from_file = arg.py_to_string(),
+                3 => to_file = arg.py_to_string(),
+                4 => n_context = arg.to_int().unwrap_or(3) as usize,
+                _ => break,
+            }
+        }
 
         let mut result = Vec::new();
         if !from_file.is_empty() || !to_file.is_empty() {
@@ -1011,7 +1038,7 @@ pub fn create_difflib_module() -> PyObjectRef {
                 }
             }
         }
-        let _ = max_len;
+        let _ = (max_len, n_context);
         Ok(PyObject::list(result))
     }
 
