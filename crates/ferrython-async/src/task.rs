@@ -209,6 +209,13 @@ pub fn create_task_object(coroutine: &PyObjectRef) -> PyObjectRef {
         },
     ));
 
+    // __await__ — makes Task awaitable; returns the coroutine for await to drive
+    let coro = coroutine.clone();
+    attrs.insert(CompactString::from("__await__"), PyObject::native_closure(
+        "Task.__await__",
+        move |_| Ok(coro.clone()),
+    ));
+
     PyObject::instance_with_attrs(task_cls, attrs)
 }
 
@@ -317,6 +324,33 @@ pub fn create_future_object() -> PyObjectRef {
     attrs.insert(CompactString::from("cancelled"), PyObject::native_closure(
         "Future.cancelled",
         move |_| Ok(PyObject::bool_val(*s.read() == TaskState::Cancelled)),
+    ));
+
+    // __await__ — makes Future awaitable. For our sequential model,
+    // return a finished coroutine-like that yields the result when done.
+    let s = state.clone();
+    let r = result.clone();
+    let e = exception.clone();
+    attrs.insert(CompactString::from("__await__"), PyObject::native_closure(
+        "Future.__await__",
+        move |_| {
+            match *s.read() {
+                TaskState::Finished => {
+                    if let Some(exc) = e.read().clone() {
+                        Err(exc)
+                    } else {
+                        Ok(r.read().clone().unwrap_or_else(PyObject::none))
+                    }
+                }
+                TaskState::Cancelled => {
+                    Err(PyException::new(ExceptionKind::RuntimeError, "Future was cancelled"))
+                }
+                TaskState::Pending => {
+                    // In sequential mode, return None (will be iterated once)
+                    Ok(PyObject::none())
+                }
+            }
+        },
     ));
 
     PyObject::instance_with_attrs(future_cls, attrs)
