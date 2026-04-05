@@ -129,6 +129,13 @@ impl VirtualMachine {
         // Enum metaclass behavior: transform class attributes into enum members
         self.process_enum_class(&cls, &bases)?;
 
+        // Register as subclass of each base (for type.__subclasses__())
+        for base in &bases {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                bcd.subclasses.write().push(Arc::downgrade(&cls));
+            }
+        }
+
         Ok(cls)
     }
 
@@ -420,6 +427,7 @@ impl VirtualMachine {
                             mro: cd.mro.clone(),
                             metaclass: Some(meta.clone()),
                             method_cache: Arc::new(RwLock::new(IndexMap::new())),
+                            subclasses: Arc::new(RwLock::new(Vec::new())),
                         }))
                     } else {
                         result
@@ -494,6 +502,14 @@ impl VirtualMachine {
             if let Some((ref cellvar_names, ref cells)) = class_cell_info {
                 Self::patch_class_cell(cellvar_names, cells, &cls);
             }
+            // Register as subclass of each base
+            if let PyObjectPayload::Class(cd) = &cls.payload {
+                for base in &cd.bases {
+                    if let PyObjectPayload::Class(bcd) = &base.payload {
+                        bcd.subclasses.write().push(Arc::downgrade(&cls));
+                    }
+                }
+            }
             Ok(cls)
         } else {
             // No metaclass: build normally
@@ -534,6 +550,12 @@ impl VirtualMachine {
             // Populate __class__ cell (PEP 3135)
             if let Some((ref cellvar_names, ref cells)) = class_cell_info {
                 Self::patch_class_cell(cellvar_names, cells, &cls);
+            }
+            // Register as subclass of each base
+            for base in &bases {
+                if let PyObjectPayload::Class(bcd) = &base.payload {
+                    bcd.subclasses.write().push(Arc::downgrade(&cls));
+                }
             }
             Ok(cls)
         }

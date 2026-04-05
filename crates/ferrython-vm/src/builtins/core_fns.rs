@@ -115,6 +115,7 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         mro: cd.mro.clone(),
                         metaclass: Some(mcs.clone()),
                         method_cache: Arc::new(RwLock::new(IndexMap::new())),
+                        subclasses: Arc::new(RwLock::new(Vec::new())),
                     })));
                 }
             }

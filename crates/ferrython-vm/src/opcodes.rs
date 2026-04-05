@@ -2366,6 +2366,12 @@ impl VirtualMachine {
                     // Normal exit (no exception)
                     self.vm_pop(); // pop None
                     let exit_fn = self.vm_pop();
+
+                    // Restore redirected streams before calling __exit__
+                    if let PyObjectPayload::BoundMethod { receiver, .. } = &exit_fn.payload {
+                        self.restore_redirect(receiver);
+                    }
+
                     if let PyObjectPayload::Generator(gen_arc) = &exit_fn.payload {
                         match self.resume_generator(gen_arc, PyObject::none()) {
                             Ok(_) => {}
@@ -2396,6 +2402,12 @@ impl VirtualMachine {
                     let exc_val = if !self.vm_frame().stack.is_empty() { self.vm_pop() } else { PyObject::none() };
                     let exc_tb = if !self.vm_frame().stack.is_empty() { self.vm_pop() } else { PyObject::none() };
                     let exit_fn = self.vm_pop();
+
+                    // Restore redirected streams before calling __exit__
+                    if let PyObjectPayload::BoundMethod { receiver, .. } = &exit_fn.payload {
+                        self.restore_redirect(receiver);
+                    }
+
                     if let PyObjectPayload::Generator(gen_arc) = &exit_fn.payload {
                         // Throw exception into generator so its except clauses can catch it
                         let exc_kind = match &exc_type.payload {
@@ -2693,11 +2705,61 @@ impl VirtualMachine {
                 (bound, vec![])
             };
             let enter_result = self.call_object(enter_method, enter_args)?;
+
+            // Handle redirect_stdout/redirect_stderr: swap sys.stdout/stderr
+            if let PyObjectPayload::Instance(ref inst) = ctx_mgr.payload {
+                let is_redirect_stdout = inst.attrs.read().contains_key("__redirect_stdout__");
+                let is_redirect_stderr = inst.attrs.read().contains_key("__redirect_stderr__");
+                let stream_name = if is_redirect_stdout { Some("stdout") }
+                    else if is_redirect_stderr { Some("stderr") }
+                    else { None };
+                if let Some(sname) = stream_name {
+                    // Save old stream
+                    let old_stream = self.modules.get("sys")
+                        .and_then(|s| s.get_attr(sname))
+                        .unwrap_or_else(PyObject::none);
+                    inst.attrs.write().insert(
+                        CompactString::from("_old_target"), old_stream);
+                    // Set new stream
+                    let new_target = inst.attrs.read().get("_new_target").cloned()
+                        .unwrap_or_else(PyObject::none);
+                    if let Some(sys_mod) = self.modules.get("sys") {
+                        if let PyObjectPayload::Module(md) = &sys_mod.payload {
+                            md.attrs.write().insert(
+                                CompactString::from(sname), new_target);
+                        }
+                    }
+                }
+            }
+
             let frame = self.vm_frame();
             frame.push_block(BlockKind::With, arg as usize);
             frame.push(enter_result);
         }
         Ok(None)
+    }
+
+    /// Restore sys.stdout or sys.stderr when exiting a redirect context manager.
+    fn restore_redirect(&mut self, ctx_mgr: &PyObjectRef) {
+        if let PyObjectPayload::Instance(inst) = &ctx_mgr.payload {
+            let attrs = inst.attrs.read();
+            let is_stdout = attrs.contains_key("__redirect_stdout__");
+            let is_stderr = attrs.contains_key("__redirect_stderr__");
+            let stream_name = if is_stdout { Some("stdout") }
+                else if is_stderr { Some("stderr") }
+                else { None };
+            if let Some(sname) = stream_name {
+                if let Some(old_target) = attrs.get("_old_target").cloned() {
+                    drop(attrs);
+                    if let Some(sys_mod) = self.modules.get("sys") {
+                        if let PyObjectPayload::Module(md) = &sys_mod.payload {
+                            md.attrs.write().insert(
+                                CompactString::from(sname), old_target);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

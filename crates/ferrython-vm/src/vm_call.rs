@@ -1740,6 +1740,27 @@ impl VirtualMachine {
                         return Ok(PyObject::none());
                     }
                 }
+                // Class introspection methods
+                if let PyObjectPayload::Class(cd) = &receiver.payload {
+                    match method_name.as_str() {
+                        "__subclasses__" => {
+                            let subs = cd.subclasses.read();
+                            let alive: Vec<PyObjectRef> = subs.iter()
+                                .filter_map(|w| w.upgrade())
+                                .collect();
+                            drop(subs);
+                            // Prune dead weak refs periodically
+                            cd.subclasses.write().retain(|w| w.strong_count() > 0);
+                            return Ok(PyObject::list(alive));
+                        }
+                        "mro" => {
+                            let mut mro_list = vec![receiver.clone()];
+                            mro_list.extend(cd.mro.iter().cloned());
+                            return Ok(PyObject::list(mro_list));
+                        }
+                        _ => {}
+                    }
+                }
                 // Property descriptor methods: setter/getter/deleter
                 if let PyObjectPayload::Property { fget, fset, fdel } = &receiver.payload {
                     if args.len() == 1 {

@@ -413,6 +413,25 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                     return Some(PyObject::str_val(cd.name.clone()));
                 }
+                if name == "__subclasses__" {
+                    let subs = cd.subclasses.clone();
+                    return Some(PyObject::native_closure("__subclasses__", move |_args| {
+                        let refs = subs.read();
+                        let alive: Vec<PyObjectRef> = refs.iter()
+                            .filter_map(|w| w.upgrade())
+                            .collect();
+                        Ok(PyObject::list(alive))
+                    }));
+                }
+                if name == "mro" {
+                    let self_cls = obj.clone();
+                    let mro_data = cd.mro.clone();
+                    return Some(PyObject::native_closure("mro", move |_args| {
+                        let mut mro_list = vec![self_cls.clone()];
+                        mro_list.extend(mro_data.iter().cloned());
+                        Ok(PyObject::list(mro_list))
+                    }));
+                }
                 // Check own namespace first, then bases
                 if let Some(v) = cd.namespace.read().get(name).cloned() {
                     match &v.payload {

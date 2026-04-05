@@ -207,6 +207,8 @@ pub struct ClassData {
     /// Per-class method resolution cache: avoids repeated MRO scans for the same attr name.
     /// Cleared on any namespace mutation (class attr assignment).
     pub method_cache: Arc<RwLock<IndexMap<CompactString, Option<PyObjectRef>>>>,
+    /// Weak references to direct subclasses (for type.__subclasses__()).
+    pub subclasses: Arc<RwLock<Vec<std::sync::Weak<PyObject>>>>,
 }
 
 impl ClassData {
@@ -224,6 +226,7 @@ impl ClassData {
             mro,
             metaclass,
             method_cache: Arc::new(RwLock::new(IndexMap::new())),
+            subclasses: Arc::new(RwLock::new(Vec::new())),
         }
     }
 

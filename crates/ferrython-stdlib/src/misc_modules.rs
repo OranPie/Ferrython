@@ -232,42 +232,66 @@ pub fn create_contextlib_module() -> PyObjectRef {
         Ok(PyObject::instance_with_attrs(cls, attrs))
     });
 
-    // redirect_stdout(new_target) — context manager stub
+    // redirect_stdout(new_target) — context manager that swaps sys.stdout
+    // The actual sys.stdout swap is handled by the VM when it detects the
+    // __redirect_stdout__ / __redirect_stderr__ markers on enter/exit.
     let redirect_stdout_fn = make_builtin(|args: &[PyObjectRef]| {
         let target = if !args.is_empty() { args[0].clone() } else { PyObject::none() };
         let cls = PyObject::class(CompactString::from("redirect_stdout"), vec![], IndexMap::new());
         let mut attrs = IndexMap::new();
-        let t = target.clone();
-        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
-            "redirect_stdout.__enter__", move |_args: &[PyObjectRef]| {
-                Ok(t.clone())
-            }
-        ));
-        attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
-            "redirect_stdout.__exit__", |_args: &[PyObjectRef]| {
-                Ok(PyObject::bool_val(false))
-            }
-        ));
-        Ok(PyObject::instance_with_attrs(cls, attrs))
+        attrs.insert(CompactString::from("__redirect_stdout__"), PyObject::bool_val(true));
+        attrs.insert(CompactString::from("_new_target"), target.clone());
+        attrs.insert(CompactString::from("_old_target"), PyObject::none());
+        let inst = PyObject::instance_with_attrs(cls, attrs);
+        // Add __enter__ and __exit__ as native closures on the instance
+        let inst_ref = inst.clone();
+        if let PyObjectPayload::Instance(ref idata) = inst.payload {
+            let attrs_arc = idata.attrs.clone();
+            let attrs_arc2 = attrs_arc.clone();
+            idata.attrs.write().insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "redirect_stdout.__enter__", move |_args| {
+                    let new_target = attrs_arc.read().get("_new_target").cloned()
+                        .unwrap_or_else(PyObject::none);
+                    Ok(new_target)
+                }
+            ));
+            idata.attrs.write().insert(CompactString::from("__exit__"), PyObject::native_closure(
+                "redirect_stdout.__exit__", move |_args| {
+                    let _old = attrs_arc2.read().get("_old_target").cloned();
+                    Ok(PyObject::bool_val(false))
+                }
+            ));
+        }
+        Ok(inst_ref)
     });
 
-    // redirect_stderr(new_target) — context manager stub
+    // redirect_stderr(new_target) — same pattern for stderr
     let redirect_stderr_fn = make_builtin(|args: &[PyObjectRef]| {
         let target = if !args.is_empty() { args[0].clone() } else { PyObject::none() };
         let cls = PyObject::class(CompactString::from("redirect_stderr"), vec![], IndexMap::new());
         let mut attrs = IndexMap::new();
-        let t = target.clone();
-        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
-            "redirect_stderr.__enter__", move |_args: &[PyObjectRef]| {
-                Ok(t.clone())
-            }
-        ));
-        attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
-            "redirect_stderr.__exit__", |_args: &[PyObjectRef]| {
-                Ok(PyObject::bool_val(false))
-            }
-        ));
-        Ok(PyObject::instance_with_attrs(cls, attrs))
+        attrs.insert(CompactString::from("__redirect_stderr__"), PyObject::bool_val(true));
+        attrs.insert(CompactString::from("_new_target"), target.clone());
+        attrs.insert(CompactString::from("_old_target"), PyObject::none());
+        let inst = PyObject::instance_with_attrs(cls, attrs);
+        if let PyObjectPayload::Instance(ref idata) = inst.payload {
+            let attrs_arc = idata.attrs.clone();
+            let attrs_arc2 = attrs_arc.clone();
+            idata.attrs.write().insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "redirect_stderr.__enter__", move |_args| {
+                    let new_target = attrs_arc.read().get("_new_target").cloned()
+                        .unwrap_or_else(PyObject::none);
+                    Ok(new_target)
+                }
+            ));
+            idata.attrs.write().insert(CompactString::from("__exit__"), PyObject::native_closure(
+                "redirect_stderr.__exit__", move |_args| {
+                    let _old = attrs_arc2.read().get("_old_target").cloned();
+                    Ok(PyObject::bool_val(false))
+                }
+            ));
+        }
+        Ok(inst)
     });
 
     make_module("contextlib", vec![
