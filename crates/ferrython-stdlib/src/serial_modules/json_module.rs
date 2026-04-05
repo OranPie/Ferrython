@@ -412,7 +412,7 @@ fn json_dump(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let fp = &args[1];
     if let Some(write_fn) = fp.get_attr("write") {
         match &write_fn.payload {
-            PyObjectPayload::NativeFunction { func, .. } => { func(&[json_str])?; }
+            PyObjectPayload::NativeFunction { func, .. } => { func(&[fp.clone(), json_str])?; }
             PyObjectPayload::NativeClosure { func, .. } => { func(&[json_str])?; }
             _ => {} // user-defined write — best-effort
         }
@@ -430,7 +430,7 @@ fn json_load(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let fp = &args[0];
     if let Some(read_fn) = fp.get_attr("read") {
         let data = match &read_fn.payload {
-            PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
+            PyObjectPayload::NativeFunction { func, .. } => func(&[fp.clone()])?,
             PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
             _ => return Err(PyException::type_error("fp.read() is not callable")),
         };

@@ -184,6 +184,20 @@ impl VirtualMachine {
             }
             Opcode::InplaceAdd => {
                 if let Some(r) = self.try_inplace_dunder(&a, &b, "__iadd__", "__add__")? { r }
+                else if let PyObjectPayload::List(items) = &a.payload {
+                    // list += iterable → extend in-place (same identity)
+                    let new_items = b.to_list()?;
+                    items.write().extend(new_items);
+                    a.clone()
+                }
+                else if let PyObjectPayload::Set(set) = &a.payload {
+                    // set |= iterable → update in-place
+                    if let PyObjectPayload::Set(other) = &b.payload {
+                        let other_items: Vec<_> = other.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                        set.write().extend(other_items);
+                    }
+                    a.clone()
+                }
                 else { with_enum_fallback!(a, b, add) }
             }
             Opcode::BinarySubtract => {
@@ -192,6 +206,15 @@ impl VirtualMachine {
             }
             Opcode::InplaceSubtract => {
                 if let Some(r) = self.try_inplace_dunder(&a, &b, "__isub__", "__sub__")? { r }
+                else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) = (&a.payload, &b.payload) {
+                    let keys_to_remove: Vec<_> = other.read().keys().cloned().collect();
+                    let mut w = set.write();
+                    for k in keys_to_remove {
+                        w.shift_remove(&k);
+                    }
+                    drop(w);
+                    a.clone()
+                }
                 else { with_enum_fallback!(a, b, sub) }
             }
             Opcode::BinaryMultiply => {
@@ -200,6 +223,18 @@ impl VirtualMachine {
             }
             Opcode::InplaceMultiply => {
                 if let Some(r) = self.try_inplace_dunder(&a, &b, "__imul__", "__mul__")? { r }
+                else if let (PyObjectPayload::List(items), PyObjectPayload::Int(n)) = (&a.payload, &b.payload) {
+                    // list *= n → repeat in-place
+                    let n = n.to_i64().unwrap_or(0).max(0) as usize;
+                    let mut w = items.write();
+                    let orig: Vec<_> = w.clone();
+                    w.clear();
+                    for _ in 0..n {
+                        w.extend_from_slice(&orig);
+                    }
+                    drop(w);
+                    a.clone()
+                }
                 else { with_enum_fallback!(a, b, mul) }
             }
             Opcode::BinaryTrueDivide => {
@@ -237,16 +272,53 @@ impl VirtualMachine {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__rshift__", Some("__rrshift__"))? { r }
                 else { with_enum_fallback!(a, b, rshift) }
             }
-            Opcode::BinaryAnd | Opcode::InplaceAnd => {
+            Opcode::BinaryAnd => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__and__", Some("__rand__"))? { r }
                 else { with_enum_fallback!(a, b, bit_and) }
             }
-            Opcode::BinaryOr | Opcode::InplaceOr => {
+            Opcode::InplaceAnd => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__iand__", "__and__")? { r }
+                else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) = (&a.payload, &b.payload) {
+                    let other_keys: indexmap::IndexSet<_> = other.read().keys().cloned().collect();
+                    set.write().retain(|k, _| other_keys.contains(k));
+                    a.clone()
+                }
+                else { with_enum_fallback!(a, b, bit_and) }
+            }
+            Opcode::BinaryOr => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__or__", Some("__ror__"))? { r }
                 else { with_enum_fallback!(a, b, bit_or) }
             }
-            Opcode::BinaryXor | Opcode::InplaceXor => {
+            Opcode::InplaceOr => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ior__", "__or__")? { r }
+                else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) = (&a.payload, &b.payload) {
+                    let items: Vec<_> = other.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    set.write().extend(items);
+                    a.clone()
+                }
+                else { with_enum_fallback!(a, b, bit_or) }
+            }
+            Opcode::BinaryXor => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__xor__", Some("__rxor__"))? { r }
+                else { with_enum_fallback!(a, b, bit_xor) }
+            }
+            Opcode::InplaceXor => {
+                if let Some(r) = self.try_inplace_dunder(&a, &b, "__ixor__", "__xor__")? { r }
+                else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) = (&a.payload, &b.payload) {
+                    let other_read = other.read();
+                    let other_keys: indexmap::IndexSet<_> = other_read.keys().cloned().collect();
+                    let mut s = set.write();
+                    let my_keys: indexmap::IndexSet<_> = s.keys().cloned().collect();
+                    // Remove items in both, add items only in other
+                    s.retain(|k, _| !other_keys.contains(k));
+                    for (k, v) in other_read.iter() {
+                        if !my_keys.contains(k) {
+                            s.insert(k.clone(), v.clone());
+                        }
+                    }
+                    drop(s);
+                    a.clone()
+                }
                 else { with_enum_fallback!(a, b, bit_xor) }
             }
             Opcode::BinaryMatrixMultiply | Opcode::InplaceMatrixMultiply => {
