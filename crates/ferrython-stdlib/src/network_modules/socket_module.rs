@@ -502,6 +502,75 @@ fn build_socket_object(
     // ── setsockopt(level, optname, value) — stub ──
     let st = inner.clone();
     attrs.insert(
+        CompactString::from("gettimeout"),
+        PyObject::native_closure("gettimeout", {
+            let st2 = st.clone();
+            move |_args| {
+                let guard = lock_inner(&st2)?;
+                match guard.timeout {
+                    Some(d) => Ok(PyObject::float(d.as_secs_f64())),
+                    None => Ok(PyObject::none()),
+                }
+            }
+        }),
+    );
+    attrs.insert(
+        CompactString::from("getblocking"),
+        PyObject::native_closure("getblocking", {
+            let st2 = st.clone();
+            move |_args| {
+                let guard = lock_inner(&st2)?;
+                Ok(PyObject::bool_val(guard.timeout.is_none()))
+            }
+        }),
+    );
+    attrs.insert(
+        CompactString::from("setblocking"),
+        PyObject::native_closure("setblocking", {
+            let st2 = st.clone();
+            move |args| {
+                let blocking = if !args.is_empty() { args[0].is_truthy() } else { true };
+                let mut guard = lock_inner(&st2)?;
+                if blocking {
+                    guard.timeout = None;
+                } else {
+                    guard.timeout = Some(Duration::from_secs(0));
+                }
+                if let Some(ref stream) = guard.tcp_stream {
+                    stream.set_nonblocking(!blocking).ok();
+                }
+                if let Some(ref sock) = guard.udp_socket {
+                    sock.set_nonblocking(!blocking).ok();
+                }
+                Ok(PyObject::none())
+            }
+        }),
+    );
+    attrs.insert(
+        CompactString::from("fileno"),
+        PyObject::native_closure("fileno", {
+            let st2 = st.clone();
+            move |_args| {
+                let guard = lock_inner(&st2)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::io::AsRawFd;
+                    if let Some(ref stream) = guard.tcp_stream {
+                        return Ok(PyObject::int(stream.as_raw_fd() as i64));
+                    }
+                    if let Some(ref sock) = guard.udp_socket {
+                        return Ok(PyObject::int(sock.as_raw_fd() as i64));
+                    }
+                    if let Some(ref listener) = guard.tcp_listener {
+                        return Ok(PyObject::int(listener.as_raw_fd() as i64));
+                    }
+                }
+                Ok(PyObject::int(-1))
+            }
+        }),
+    );
+    let st = inner.clone();
+    attrs.insert(
         CompactString::from("setsockopt"),
         PyObject::native_closure("setsockopt", move |args| {
             let level = if !args.is_empty() {
