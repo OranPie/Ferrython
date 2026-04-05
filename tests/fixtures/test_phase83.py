@@ -310,6 +310,104 @@ assert bool(Decimal('1.5'))
 checks += 1
 print("PASS decimal_zero")
 
+# ===== getopt (NO Rust counterpart - pure Python) =====
+import getopt
+
+# Test basic short options
+opts, args = getopt.getopt(['-v', '-o', 'outfile', 'infile'], 'vo:')
+assert ('-v', '') in opts, "getopt -v"
+assert ('-o', 'outfile') in opts, "getopt -o"
+assert args == ['infile'], "getopt remaining args: %s" % str(args)
+checks += 1
+print("PASS getopt_basic")
+
+# Test no options
+opts2, args2 = getopt.getopt(['file1', 'file2'], 'v')
+assert opts2 == [], "no opts expected"
+assert args2 == ['file1', 'file2']
+checks += 1
+print("PASS getopt_no_opts")
+
+# Test -- stops processing
+opts3, args3 = getopt.getopt(['-v', '--', '-o', 'file'], 'vo:')
+assert len(opts3) == 1, "only -v before --"
+assert args3 == ['-o', 'file'], "args after --: %s" % str(args3)
+checks += 1
+print("PASS getopt_dashdash")
+
+# Test long options
+opts4, args4 = getopt.getopt(['--verbose', '--output=test.txt', 'in.txt'],
+                              'vo:', ['verbose', 'output='])
+assert ('--verbose', '') in opts4, "long --verbose"
+assert ('--output', 'test.txt') in opts4, "long --output"
+assert args4 == ['in.txt']
+checks += 1
+print("PASS getopt_long")
+
+# Test error on unknown option
+try:
+    getopt.getopt(['-x'], 'vo:')
+    assert False, "should have raised GetoptError"
+except getopt.GetoptError as e:
+    assert 'x' in str(e)
+    checks += 1
+print("PASS getopt_error")
+
+# Test gnu_getopt
+opts5, args5 = getopt.gnu_getopt(['-v', 'file1', '-o', 'out', 'file2'], 'vo:')
+assert ('-v', '') in opts5, "gnu -v"
+assert ('-o', 'out') in opts5, "gnu -o"
+assert 'file1' in args5 and 'file2' in args5
+checks += 1
+print("PASS getopt_gnu")
+
+# Test combined short options
+opts6, args6 = getopt.getopt(['-abc'], 'abc')
+assert len(opts6) == 3, "combined -abc should give 3 opts, got %d" % len(opts6)
+checks += 1
+print("PASS getopt_combined")
+
+# Test short option with attached value
+opts7, args7 = getopt.getopt(['-ovalue'], 'o:')
+assert opts7 == [('-o', 'value')], "attached value: %s" % str(opts7)
+checks += 1
+print("PASS getopt_attached_value")
+
+# ===== codeop (NO Rust counterpart - pure Python) =====
+import codeop
+
+cc = codeop.CommandCompiler()
+result = cc("1 + 2", "<test>", "eval")
+assert result is not None, "complete expression should compile"
+checks += 1
+print("PASS codeop_compile")
+
+comp = codeop.Compile()
+code_obj = comp("x = 42", "<test>", "exec")
+assert code_obj is not None
+checks += 1
+print("PASS codeop_Compile")
+
+# ===== code (NO Rust counterpart - pure Python) =====
+import code
+
+interp = code.InteractiveInterpreter()
+assert isinstance(interp.locals, dict)
+assert '__name__' in interp.locals
+checks += 1
+print("PASS code_interpreter")
+
+console = code.InteractiveConsole()
+assert isinstance(console.locals, dict)
+assert console.buffer == []
+checks += 1
+print("PASS code_console")
+
+result2 = code.compile_command("x = 1", "<test>", "exec")
+assert result2 is not None, "compile_command should return code object"
+checks += 1
+print("PASS code_compile_command")
+
 # ===== Summary =====
 print()
 print("%d/%d checks passed" % (checks, checks))
