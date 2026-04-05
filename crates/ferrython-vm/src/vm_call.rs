@@ -255,10 +255,22 @@ impl VirtualMachine {
         }
 
         // Place keyword args at their correct parameter positions
+        // Build a name→index lookup for O(1) kwarg matching
         let posonlyarg_count = code.posonlyarg_count as usize;
         let mut extra_kwargs: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+        // Pre-build varname→index map for fast lookup when kwargs > 2
+        let varname_map: Option<std::collections::HashMap<&str, usize>> = if kwargs.len() > 2 {
+            Some(code.varnames.iter().enumerate().map(|(i, v)| (v.as_str(), i)).collect())
+        } else {
+            None
+        };
         for (name, val) in &kwargs {
-            if let Some(idx) = code.varnames.iter().position(|v| v.as_str() == name.as_str()) {
+            let found_idx = if let Some(ref map) = varname_map {
+                map.get(name.as_str()).copied()
+            } else {
+                code.varnames.iter().position(|v| v.as_str() == name.as_str())
+            };
+            if let Some(idx) = found_idx {
                 // Reject positional-only parameters passed as keyword arguments
                 if idx < posonlyarg_count {
                     return Err(PyException::type_error(format!(

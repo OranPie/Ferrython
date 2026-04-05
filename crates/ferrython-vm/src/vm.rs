@@ -230,6 +230,105 @@ impl VirtualMachine {
                     frame.ip = instr.arg as usize;
                     Ok(None)
                 }
+                // Inline BinarySub int fast path
+                Opcode::BinarySubtract | Opcode::InplaceSubtract => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let a = &frame.stack[len - 2];
+                        let b = &frame.stack[len - 1];
+                        match (&a.payload, &b.payload) {
+                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                let result = match x.checked_sub(*y) {
+                                    Some(r) => PyObject::int(r),
+                                    None => {
+                                        use num_bigint::BigInt;
+                                        PyObject::big_int(BigInt::from(*x) - BigInt::from(*y))
+                                    }
+                                };
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(result);
+                                Ok(None)
+                            }
+                            _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline BinaryMul int fast path
+                Opcode::BinaryMultiply | Opcode::InplaceMultiply => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let a = &frame.stack[len - 2];
+                        let b = &frame.stack[len - 1];
+                        match (&a.payload, &b.payload) {
+                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                let result = match x.checked_mul(*y) {
+                                    Some(r) => PyObject::int(r),
+                                    None => {
+                                        use num_bigint::BigInt;
+                                        PyObject::big_int(BigInt::from(*x) * BigInt::from(*y))
+                                    }
+                                };
+                                frame.stack.truncate(len - 2);
+                                frame.stack.push(result);
+                                Ok(None)
+                            }
+                            _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline LoadDeref (closure variable load — common in functional code)
+                Opcode::LoadDeref => {
+                    let idx = instr.arg as usize;
+                    let val = frame.cells[idx].read().clone();
+                    match val {
+                        Some(v) => { frame.stack.push(v); Ok(None) }
+                        None => {
+                            let n_cell = frame.code.cellvars.len();
+                            let name = if idx < n_cell {
+                                frame.code.cellvars[idx].clone()
+                            } else {
+                                frame.code.freevars[idx - n_cell].clone()
+                            };
+                            Err(PyException::name_error(format!(
+                                "free variable '{}' referenced before assignment in enclosing scope", name
+                            )))
+                        }
+                    }
+                }
+                // Inline StoreDeref
+                Opcode::StoreDeref => {
+                    let val = frame.stack.pop().expect("stack underflow");
+                    *frame.cells[instr.arg as usize].write() = Some(val);
+                    Ok(None)
+                }
+                // Inline BuildTuple (very common for returns, unpacking)
+                Opcode::BuildTuple => {
+                    let count = instr.arg as usize;
+                    if count == 0 {
+                        frame.stack.push(PyObject::tuple(vec![]));
+                    } else {
+                        let start = frame.stack.len() - count;
+                        let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
+                        frame.stack.push(PyObject::tuple(items));
+                    }
+                    Ok(None)
+                }
+                // Inline BuildList
+                Opcode::BuildList => {
+                    let count = instr.arg as usize;
+                    if count == 0 {
+                        frame.stack.push(PyObject::list(vec![]));
+                    } else {
+                        let start = frame.stack.len() - count;
+                        let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
+                        frame.stack.push(PyObject::list(items));
+                    }
+                    Ok(None)
+                }
                 _ => self.execute_one(instr),
             };
 
