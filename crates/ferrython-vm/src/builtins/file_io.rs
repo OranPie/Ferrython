@@ -81,6 +81,13 @@ impl FileState {
                 (text, Vec::new())
             }
         } else {
+            // "w" or "a" mode: create/truncate file on disk immediately
+            if mode.contains('w') {
+                let _ = std::fs::write(path, "");
+            } else if mode.contains('a') {
+                // Append mode: create if not exists
+                let _ = std::fs::OpenOptions::new().create(true).append(true).open(path);
+            }
             (String::new(), Vec::new())
         };
         Ok(Self {

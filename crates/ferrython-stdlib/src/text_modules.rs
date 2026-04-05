@@ -1759,7 +1759,34 @@ pub fn create_pprint_module() -> PyObjectRef {
     make_module("pprint", vec![
         ("pprint", make_builtin(|args| {
             if args.is_empty() { return Ok(PyObject::none()); }
-            println!("{}", args[0].py_to_string());
+            let text = args[0].py_to_string();
+            // Check for stream keyword in kwargs dict (last arg if Dict)
+            let mut stream_obj: Option<PyObjectRef> = None;
+            if let Some(last) = args.last() {
+                if let PyObjectPayload::Dict(kw) = &last.payload {
+                    let r = kw.read();
+                    if let Some(s) = r.get(&HashableKey::Str(CompactString::from("stream"))) {
+                        if !matches!(s.payload, PyObjectPayload::None) {
+                            stream_obj = Some(s.clone());
+                        }
+                    }
+                }
+            }
+            if let Some(stream) = stream_obj {
+                if let Some(write_fn) = stream.get_attr("write") {
+                    let line = format!("{}\n", text);
+                    let text_arg = PyObject::str_val(CompactString::from(&line));
+                    match &write_fn.payload {
+                        PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&[text_arg]); }
+                        PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[text_arg]); }
+                        _ => { println!("{}", text); }
+                    }
+                } else {
+                    println!("{}", text);
+                }
+            } else {
+                println!("{}", text);
+            }
             Ok(PyObject::none())
         })),
         ("pformat", make_builtin(|args| {
