@@ -627,23 +627,40 @@ fn urllib_parse_urljoin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     let bp = parse_url_string(&base);
 
-    let result = if url.starts_with('/') {
-        format!("{}://{}{}", bp.scheme, bp.netloc, url)
+    let raw_path = if url.starts_with('/') {
+        return Ok(PyObject::str_val(CompactString::from(
+            format!("{}://{}{}", bp.scheme, bp.netloc, normalize_path(&url))
+        )));
     } else if url.starts_with("//") {
-        format!("{}:{}", bp.scheme, url)
+        return Ok(PyObject::str_val(CompactString::from(
+            format!("{}:{}", bp.scheme, url)
+        )));
     } else if url.is_empty() {
-        base
+        return Ok(PyObject::str_val(CompactString::from(base)));
     } else {
-        // Relative path — resolve against base path
         let base_dir = if let Some(idx) = bp.path.rfind('/') {
             &bp.path[..=idx]
         } else {
             "/"
         };
-        format!("{}://{}{}{}", bp.scheme, bp.netloc, base_dir, url)
+        format!("{}{}", base_dir, url)
     };
 
+    let result = format!("{}://{}{}", bp.scheme, bp.netloc, normalize_path(&raw_path));
     Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn normalize_path(path: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "." | "" => { if segments.is_empty() { segments.push(""); } }
+            ".." => { if segments.len() > 1 { segments.pop(); } }
+            _ => segments.push(seg),
+        }
+    }
+    let result = segments.join("/");
+    if result.is_empty() { "/".to_string() } else { result }
 }
 
 fn urllib_parse_parse_qs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

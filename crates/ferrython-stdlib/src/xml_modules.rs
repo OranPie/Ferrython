@@ -270,266 +270,248 @@ fn escape_xml(s: &str) -> String {
 }
 
 // ── Convert XmlElement ↔ PyObject ──────────────────────────────────────
+//
+// Element objects store ALL mutable state in instance attrs + a shared children
+// list (Arc<RwLock<Vec<PyObjectRef>>>).  This eliminates the dual-state problem
+// where `child.text = "hello"` updated instance attrs but not the inner struct.
 
+use std::sync::RwLock;
+
+type ChildrenList = Arc<RwLock<Vec<PyObjectRef>>>;
+
+/// Convert a parsed XmlElement tree into a live PyObject Element.
 fn xml_element_to_pyobject(elem: &XmlElement) -> PyObjectRef {
-    let inner = Arc::new(Mutex::new(elem.clone()));
-    build_element_object(inner)
+    // Recursively convert children first
+    let child_objs: Vec<PyObjectRef> = elem.children.iter()
+        .map(|c| xml_element_to_pyobject(c))
+        .collect();
+    let children = Arc::new(RwLock::new(child_objs));
+    build_element_object(&elem.tag, &elem.text, &elem.tail, &elem.attrib, children)
 }
 
-fn build_element_object(inner: Arc<Mutex<XmlElement>>) -> PyObjectRef {
+/// Core builder: all Element methods operate on instance attrs + shared children list.
+fn build_element_object(
+    tag: &str, text: &str, tail: &str,
+    attrib: &[(String, String)],
+    children: ChildrenList,
+) -> PyObjectRef {
     let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("__etree_element__"), PyObject::bool_val(true));
 
-    // tag property
-    {
-        let guard = inner.lock().unwrap();
-        attrs.insert(CompactString::from("tag"), PyObject::str_val(CompactString::from(&guard.tag)));
-        attrs.insert(CompactString::from("text"),
-            if guard.text.is_empty() { PyObject::none() }
-            else { PyObject::str_val(CompactString::from(&guard.text)) });
-        attrs.insert(CompactString::from("tail"),
-            if guard.tail.is_empty() { PyObject::none() }
-            else { PyObject::str_val(CompactString::from(&guard.tail)) });
+    // Scalar attrs
+    attrs.insert(CompactString::from("tag"), PyObject::str_val(CompactString::from(tag)));
+    attrs.insert(CompactString::from("text"),
+        if text.is_empty() { PyObject::none() }
+        else { PyObject::str_val(CompactString::from(text)) });
+    attrs.insert(CompactString::from("tail"),
+        if tail.is_empty() { PyObject::none() }
+        else { PyObject::str_val(CompactString::from(tail)) });
 
-        // attrib as dict
-        let mut attrib_map = IndexMap::new();
-        for (k, v) in &guard.attrib {
-            attrib_map.insert(
-                HashableKey::Str(CompactString::from(k.as_str())),
-                PyObject::str_val(CompactString::from(v.as_str())),
-            );
-        }
-        attrs.insert(CompactString::from("attrib"), PyObject::dict(attrib_map));
+    // attrib dict
+    let mut attrib_map = IndexMap::new();
+    for (k, v) in attrib {
+        attrib_map.insert(
+            HashableKey::Str(CompactString::from(k.as_str())),
+            PyObject::str_val(CompactString::from(v.as_str())),
+        );
     }
+    attrs.insert(CompactString::from("attrib"), PyObject::dict(attrib_map));
 
-    // get(key, default=None)
-    let st = inner.clone();
+    // ── attrib helpers ────────────────────────────────────────────────
+    // get/set/keys/values/items read from the `attrib` dict in instance attrs,
+    // but we also keep a local attrib Vec for legacy compat.
+    let attrib_inner = Arc::new(Mutex::new(attrib.to_vec()));
+
+    let ai = attrib_inner.clone();
     attrs.insert(CompactString::from("get"), PyObject::native_closure("get", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("get() requires at least 1 argument"));
-        }
+        if args.is_empty() { return Err(PyException::type_error("get() requires at least 1 argument")); }
         let key = args[0].py_to_string();
         let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
-        let guard = st.lock().unwrap();
-        for (k, v) in &guard.attrib {
-            if k == &key {
-                return Ok(PyObject::str_val(CompactString::from(v.as_str())));
-            }
+        let guard = ai.lock().unwrap();
+        for (k, v) in guard.iter() {
+            if k == &key { return Ok(PyObject::str_val(CompactString::from(v.as_str()))); }
         }
         Ok(default)
     }));
 
-    // set(key, value)
-    let st = inner.clone();
+    let ai = attrib_inner.clone();
     attrs.insert(CompactString::from("set"), PyObject::native_closure("set", move |args| {
-        if args.len() < 2 {
-            return Err(PyException::type_error("set() requires 2 arguments"));
-        }
+        if args.len() < 2 { return Err(PyException::type_error("set() requires 2 arguments")); }
         let key = args[0].py_to_string();
         let val = args[1].py_to_string();
-        let mut guard = st.lock().unwrap();
-        for entry in &mut guard.attrib {
-            if entry.0 == key {
-                entry.1 = val;
-                return Ok(PyObject::none());
-            }
+        let mut guard = ai.lock().unwrap();
+        for entry in guard.iter_mut() {
+            if entry.0 == key { entry.1 = val; return Ok(PyObject::none()); }
         }
-        guard.attrib.push((key, val));
+        guard.push((key, val));
         Ok(PyObject::none())
     }));
 
-    // keys()
-    let st = inner.clone();
+    let ai = attrib_inner.clone();
     attrs.insert(CompactString::from("keys"), PyObject::native_closure("keys", move |_args| {
-        let guard = st.lock().unwrap();
-        let items: Vec<PyObjectRef> = guard.attrib.iter()
-            .map(|(k, _)| PyObject::str_val(CompactString::from(k.as_str())))
-            .collect();
+        let guard = ai.lock().unwrap();
+        let items: Vec<PyObjectRef> = guard.iter().map(|(k, _)| PyObject::str_val(CompactString::from(k.as_str()))).collect();
         Ok(PyObject::list(items))
     }));
 
-    // values()
-    let st = inner.clone();
+    let ai = attrib_inner.clone();
     attrs.insert(CompactString::from("values"), PyObject::native_closure("values", move |_args| {
-        let guard = st.lock().unwrap();
-        let items: Vec<PyObjectRef> = guard.attrib.iter()
-            .map(|(_, v)| PyObject::str_val(CompactString::from(v.as_str())))
-            .collect();
+        let guard = ai.lock().unwrap();
+        let items: Vec<PyObjectRef> = guard.iter().map(|(_, v)| PyObject::str_val(CompactString::from(v.as_str()))).collect();
         Ok(PyObject::list(items))
     }));
 
-    // items()
-    let st = inner.clone();
+    let ai = attrib_inner.clone();
     attrs.insert(CompactString::from("items"), PyObject::native_closure("items", move |_args| {
-        let guard = st.lock().unwrap();
-        let items: Vec<PyObjectRef> = guard.attrib.iter()
+        let guard = ai.lock().unwrap();
+        let items: Vec<PyObjectRef> = guard.iter()
             .map(|(k, v)| PyObject::tuple(vec![
                 PyObject::str_val(CompactString::from(k.as_str())),
                 PyObject::str_val(CompactString::from(v.as_str())),
-            ]))
-            .collect();
+            ])).collect();
         Ok(PyObject::list(items))
     }));
 
-    // find(match)
-    let st = inner.clone();
+    // ── Child navigation ──────────────────────────────────────────────
+
+    let ch = children.clone();
     attrs.insert(CompactString::from("find"), PyObject::native_closure("find", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("find() requires at least 1 argument"));
-        }
+        if args.is_empty() { return Err(PyException::type_error("find() requires at least 1 argument")); }
         let tag_match = args[0].py_to_string();
-        let guard = st.lock().unwrap();
-        for child in &guard.children {
-            if child.tag == tag_match {
-                return Ok(xml_element_to_pyobject(child));
+        let guard = ch.read().unwrap();
+        for child in guard.iter() {
+            if let Some(t) = child.get_attr("tag") {
+                if t.py_to_string() == tag_match { return Ok(child.clone()); }
             }
         }
         Ok(PyObject::none())
     }));
 
-    // findall(match)
-    let st = inner.clone();
+    let ch = children.clone();
     attrs.insert(CompactString::from("findall"), PyObject::native_closure("findall", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("findall() requires at least 1 argument"));
-        }
+        if args.is_empty() { return Err(PyException::type_error("findall() requires at least 1 argument")); }
         let tag_match = args[0].py_to_string();
-        let guard = st.lock().unwrap();
-        let mut results = Vec::new();
-        for child in &guard.children {
-            if child.tag == tag_match || tag_match == "*" {
-                results.push(xml_element_to_pyobject(child));
-            }
-        }
+        let guard = ch.read().unwrap();
+        let results: Vec<PyObjectRef> = guard.iter()
+            .filter(|c| {
+                c.get_attr("tag").map(|t| { let s = t.py_to_string(); s == tag_match || tag_match == "*" }).unwrap_or(false)
+            })
+            .cloned()
+            .collect();
         Ok(PyObject::list(results))
     }));
 
-    // findtext(match, default=None)
-    let st = inner.clone();
+    let ch = children.clone();
     attrs.insert(CompactString::from("findtext"), PyObject::native_closure("findtext", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("findtext() requires at least 1 argument"));
-        }
+        if args.is_empty() { return Err(PyException::type_error("findtext() requires at least 1 argument")); }
         let tag_match = args[0].py_to_string();
         let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
-        let guard = st.lock().unwrap();
-        for child in &guard.children {
-            if child.tag == tag_match {
-                return if child.text.is_empty() {
-                    Ok(PyObject::str_val(CompactString::from("")))
-                } else {
-                    Ok(PyObject::str_val(CompactString::from(&child.text)))
-                };
+        let guard = ch.read().unwrap();
+        for child in guard.iter() {
+            if let Some(t) = child.get_attr("tag") {
+                if t.py_to_string() == tag_match {
+                    let text = child.get_attr("text")
+                        .map(|t| if matches!(t.payload, PyObjectPayload::None) { String::new() } else { t.py_to_string() })
+                        .unwrap_or_default();
+                    return Ok(PyObject::str_val(CompactString::from(text)));
+                }
             }
         }
         Ok(default)
     }));
 
-    // iter(tag=None)
-    let st = inner.clone();
+    let ch = children.clone();
     attrs.insert(CompactString::from("iter"), PyObject::native_closure("iter", move |args| {
         let tag_filter = if !args.is_empty() {
             let s = args[0].py_to_string();
             if s == "None" { None } else { Some(s) }
-        } else {
-            None
-        };
-        let guard = st.lock().unwrap();
+        } else { None };
+        let guard = ch.read().unwrap();
         let mut results = Vec::new();
-        collect_elements_recursive(&guard, &tag_filter, &mut results);
+        collect_pyobject_elements(&guard, &tag_filter, &mut results);
         Ok(PyObject::list(results))
     }));
 
-    // append(subelement)
-    let st = inner.clone();
+    // ── Mutation ───────────────────────────────────────────────────────
+
+    let ch = children.clone();
     attrs.insert(CompactString::from("append"), PyObject::native_closure("append", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("append() requires 1 argument"));
-        }
-        let child_elem = pyobject_to_xml_element(&args[0])?;
-        let mut guard = st.lock().unwrap();
-        guard.children.push(child_elem);
+        if args.is_empty() { return Err(PyException::type_error("append() requires 1 argument")); }
+        ch.write().unwrap().push(args[0].clone());
         Ok(PyObject::none())
     }));
 
-    // remove(subelement)
-    let st = inner.clone();
+    let ch = children.clone();
     attrs.insert(CompactString::from("remove"), PyObject::native_closure("remove", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("remove() requires 1 argument"));
-        }
+        if args.is_empty() { return Err(PyException::type_error("remove() requires 1 argument")); }
         let child_tag = extract_element_tag(&args[0]);
-        let mut guard = st.lock().unwrap();
-        if let Some(idx) = guard.children.iter().position(|c| c.tag == child_tag) {
-            guard.children.remove(idx);
+        let mut guard = ch.write().unwrap();
+        if let Some(idx) = guard.iter().position(|c| extract_element_tag(c) == child_tag) {
+            guard.remove(idx);
         }
         Ok(PyObject::none())
     }));
 
-    // __len__
-    let st = inner.clone();
+    // ── Dunder methods ────────────────────────────────────────────────
+
+    let ch = children.clone();
     attrs.insert(CompactString::from("__len__"), PyObject::native_closure("__len__", move |_args| {
-        let guard = st.lock().unwrap();
-        Ok(PyObject::int(guard.children.len() as i64))
+        Ok(PyObject::int(ch.read().unwrap().len() as i64))
     }));
 
-    // __repr__
-    let st = inner.clone();
-    attrs.insert(CompactString::from("__repr__"), PyObject::native_closure("__repr__", move |_args| {
-        let guard = st.lock().unwrap();
-        Ok(PyObject::str_val(CompactString::from(
-            format!("<Element '{}' at 0x{:x}>", guard.tag, 0)
-        )))
-    }));
+    attrs.insert(CompactString::from("__repr__"), {
+        let tag_str = CompactString::from(tag);
+        PyObject::native_closure("__repr__", move |_args| {
+            Ok(PyObject::str_val(CompactString::from(format!("<Element '{}' at 0x0>", tag_str))))
+        })
+    });
 
-    // __iter__ — iterate over children
-    let st = inner.clone();
+    let ch = children.clone();
     attrs.insert(CompactString::from("__iter__"), PyObject::native_closure("__iter__", move |_args| {
-        let guard = st.lock().unwrap();
-        let children: Vec<PyObjectRef> = guard.children.iter()
-            .map(|c| xml_element_to_pyobject(c))
-            .collect();
-        Ok(PyObject::list(children))
+        let guard = ch.read().unwrap();
+        Ok(PyObject::list(guard.clone()))
     }));
 
-    // __getitem__ — index children
-    let st = inner.clone();
+    let ch = children.clone();
     attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure("__getitem__", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("__getitem__ requires 1 argument"));
-        }
+        if args.is_empty() { return Err(PyException::type_error("__getitem__ requires 1 argument")); }
         let idx = args[0].to_int().map_err(|_| PyException::type_error("index must be an integer"))?;
-        let guard = st.lock().unwrap();
-        let len = guard.children.len() as i64;
+        let guard = ch.read().unwrap();
+        let len = guard.len() as i64;
         let actual = if idx < 0 { len + idx } else { idx };
         if actual < 0 || actual >= len {
             return Err(PyException::new(ferrython_core::error::ExceptionKind::IndexError, "child index out of range"));
         }
-        Ok(xml_element_to_pyobject(&guard.children[actual as usize]))
-    }));
-
-    // __toxml__ — serialize using inner state (used by tostring)
-    let st = inner.clone();
-    attrs.insert(CompactString::from("__toxml__"), PyObject::native_closure("__toxml__", move |_args| {
-        let guard = st.lock().unwrap();
-        let s = element_to_string(&guard);
-        Ok(PyObject::str_val(CompactString::from(s)))
+        Ok(guard[actual as usize].clone())
     }));
 
     let cls = PyObject::class(CompactString::from("Element"), vec![], IndexMap::new());
     PyObject::instance_with_attrs(cls, attrs)
 }
 
-fn collect_elements_recursive(elem: &XmlElement, tag_filter: &Option<String>, results: &mut Vec<PyObjectRef>) {
-    let matches = match tag_filter {
-        Some(t) => elem.tag == *t,
-        None => true,
-    };
-    if matches {
-        results.push(xml_element_to_pyobject(elem));
-    }
-    for child in &elem.children {
-        collect_elements_recursive(child, tag_filter, results);
+/// Recursively collect matching PyObject elements for iter().
+fn collect_pyobject_elements(children: &[PyObjectRef], tag_filter: &Option<String>, results: &mut Vec<PyObjectRef>) {
+    for child in children {
+        let tag = child.get_attr("tag").map(|t| t.py_to_string()).unwrap_or_default();
+        let matches = match tag_filter {
+            Some(t) => tag == *t,
+            None => true,
+        };
+        if matches { results.push(child.clone()); }
+        // Recurse into child's children
+        if let PyObjectPayload::Instance(ref d) = child.payload {
+            let r = d.attrs.read();
+            if let Some(iter_fn) = r.get(&CompactString::from("__iter__")) {
+                if let PyObjectPayload::NativeClosure { func, .. } = &iter_fn.payload {
+                    if let Ok(list_obj) = func(&[]) {
+                        if let PyObjectPayload::List(items) = &list_obj.payload {
+                            let items = items.read();
+                            collect_pyobject_elements(&items, tag_filter, results);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -543,24 +525,17 @@ fn extract_element_tag(obj: &PyObjectRef) -> String {
     String::new()
 }
 
+/// Reconstruct an XmlElement tree from a live PyObject Element (reads instance attrs).
 fn pyobject_to_xml_element(obj: &PyObjectRef) -> PyResult<XmlElement> {
     if let PyObjectPayload::Instance(ref d) = obj.payload {
         let r = d.attrs.read();
-        let tag = r.get(&CompactString::from("tag"))
-            .map(|t| t.py_to_string())
-            .unwrap_or_default();
-        let text = r.get(&CompactString::from("text"))
-            .map(|t| {
-                if matches!(t.payload, PyObjectPayload::None) { String::new() }
-                else { t.py_to_string() }
-            })
-            .unwrap_or_default();
-        let tail = r.get(&CompactString::from("tail"))
-            .map(|t| {
-                if matches!(t.payload, PyObjectPayload::None) { String::new() }
-                else { t.py_to_string() }
-            })
-            .unwrap_or_default();
+        let tag = r.get(&CompactString::from("tag")).map(|t| t.py_to_string()).unwrap_or_default();
+        let text = r.get(&CompactString::from("text")).map(|t| {
+            if matches!(t.payload, PyObjectPayload::None) { String::new() } else { t.py_to_string() }
+        }).unwrap_or_default();
+        let tail = r.get(&CompactString::from("tail")).map(|t| {
+            if matches!(t.payload, PyObjectPayload::None) { String::new() } else { t.py_to_string() }
+        }).unwrap_or_default();
 
         let mut attrib = Vec::new();
         if let Some(attr_obj) = r.get(&CompactString::from("attrib")) {
@@ -574,7 +549,23 @@ fn pyobject_to_xml_element(obj: &PyObjectRef) -> PyResult<XmlElement> {
             }
         }
 
-        Ok(XmlElement { tag, text, tail, attrib, children: Vec::new() })
+        // Get children via __iter__ (returns the shared children list)
+        let mut children = Vec::new();
+        if let Some(iter_fn) = r.get(&CompactString::from("__iter__")) {
+            if let PyObjectPayload::NativeClosure { func, .. } = &iter_fn.payload {
+                if let Ok(list_obj) = func(&[]) {
+                    if let PyObjectPayload::List(items) = &list_obj.payload {
+                        for child_obj in items.read().iter() {
+                            if let Ok(child_elem) = pyobject_to_xml_element(child_obj) {
+                                children.push(child_elem);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(XmlElement { tag, text, tail, attrib, children })
     } else {
         Err(PyException::type_error("expected an Element object"))
     }
@@ -702,19 +693,27 @@ fn etree_tostring(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("tostring() requires 1 argument"));
     }
-    // Use __toxml__ method which has access to the inner state including children
-    if let PyObjectPayload::Instance(ref d) = args[0].payload {
-        let r = d.attrs.read();
-        if let Some(toxml_fn) = r.get(&CompactString::from("__toxml__")) {
-            if let PyObjectPayload::NativeClosure { func, .. } = &toxml_fn.payload {
-                return func(&[]);
+    // Check for encoding kwarg to determine return type
+    let mut encoding_str = String::new();
+    if args.len() > 1 {
+        if let Some(last) = args.last() {
+            if let PyObjectPayload::Dict(d) = &last.payload {
+                let r = d.read();
+                if let Some(enc) = r.get(&HashableKey::Str(CompactString::from("encoding"))) {
+                    encoding_str = enc.py_to_string();
+                }
             }
         }
     }
-    // Fallback: reconstruct from attrs
+    let return_str = encoding_str == "unicode";
+    // Reconstruct from PyObject attrs (handles text/tail set via Python assignment)
     let elem = pyobject_to_xml_element(&args[0])?;
-    let s = element_to_string(&elem);
-    Ok(PyObject::str_val(CompactString::from(s)))
+    let xml_str = element_to_string(&elem);
+    if return_str {
+        Ok(PyObject::str_val(CompactString::from(xml_str)))
+    } else {
+        Ok(PyObject::bytes(xml_str.into_bytes()))
+    }
 }
 
 fn etree_parse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -733,56 +732,50 @@ fn etree_parse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn build_element_tree(root: XmlElement) -> PyObjectRef {
-    let root_inner = Arc::new(Mutex::new(root));
+    let root_obj = xml_element_to_pyobject(&root);
 
     let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("__etree_tree__"), PyObject::bool_val(true));
 
     // getroot()
-    let st = root_inner.clone();
+    let ro = root_obj.clone();
     attrs.insert(CompactString::from("getroot"), PyObject::native_closure("getroot", move |_args| {
-        let guard = st.lock().unwrap();
-        Ok(xml_element_to_pyobject(&guard))
+        Ok(ro.clone())
     }));
 
-    // find(match)
-    let st = root_inner.clone();
+    // find(match) — delegate to root element
+    let ro = root_obj.clone();
     attrs.insert(CompactString::from("find"), PyObject::native_closure("find", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("find() requires 1 argument"));
-        }
-        let tag_match = args[0].py_to_string();
-        let guard = st.lock().unwrap();
-        for child in &guard.children {
-            if child.tag == tag_match {
-                return Ok(xml_element_to_pyobject(child));
+        if args.is_empty() { return Err(PyException::type_error("find() requires 1 argument")); }
+        if let PyObjectPayload::Instance(ref d) = ro.payload {
+            let r = d.attrs.read();
+            if let Some(find_fn) = r.get(&CompactString::from("find")) {
+                if let PyObjectPayload::NativeClosure { func, .. } = &find_fn.payload {
+                    return func(args);
+                }
             }
         }
         Ok(PyObject::none())
     }));
 
-    // findall(match)
-    let st = root_inner.clone();
+    // findall(match) — delegate to root element
+    let ro = root_obj.clone();
     attrs.insert(CompactString::from("findall"), PyObject::native_closure("findall", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("findall() requires 1 argument"));
-        }
-        let tag_match = args[0].py_to_string();
-        let guard = st.lock().unwrap();
-        let mut results = Vec::new();
-        for child in &guard.children {
-            if child.tag == tag_match || tag_match == "*" {
-                results.push(xml_element_to_pyobject(child));
+        if args.is_empty() { return Err(PyException::type_error("findall() requires 1 argument")); }
+        if let PyObjectPayload::Instance(ref d) = ro.payload {
+            let r = d.attrs.read();
+            if let Some(fa_fn) = r.get(&CompactString::from("findall")) {
+                if let PyObjectPayload::NativeClosure { func, .. } = &fa_fn.payload {
+                    return func(args);
+                }
             }
         }
-        Ok(PyObject::list(results))
+        Ok(PyObject::list(vec![]))
     }));
 
     // parse(source) — re-parse from string
     attrs.insert(CompactString::from("parse"), PyObject::native_closure("parse", move |args| {
-        if args.is_empty() {
-            return Err(PyException::type_error("parse() requires 1 argument"));
-        }
+        if args.is_empty() { return Err(PyException::type_error("parse() requires 1 argument")); }
         let text = args[0].py_to_string();
         let mut parser = XmlParser::new(&text);
         match parser.parse_document() {
