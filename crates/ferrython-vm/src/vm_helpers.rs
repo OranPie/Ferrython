@@ -983,18 +983,29 @@ impl VirtualMachine {
             });
             return Ok(());
         }
-        // Insertion sort with VM-level __lt__ calls
-        for i in 1..n {
-            let mut j = i;
-            while j > 0 {
-                let is_less = self.vm_lt(&items[j], &items[j - 1])?;
-                if is_less {
-                    items.swap(j, j - 1);
-                    j -= 1;
-                } else {
-                    break;
+        // Bottom-up merge sort with VM-level __lt__ calls — O(n log n)
+        let mut aux = items.clone();
+        let mut width = 1usize;
+        while width < n {
+            let mut i = 0;
+            while i < n {
+                let mid = (i + width).min(n);
+                let end = (i + 2 * width).min(n);
+                // Merge items[i..mid] and items[mid..end] into aux[i..end]
+                let (mut left, mut right) = (i, mid);
+                for k in i..end {
+                    if left < mid && (right >= end || !self.vm_lt(&items[right], &items[left])?) {
+                        aux[k] = items[left].clone();
+                        left += 1;
+                    } else {
+                        aux[k] = items[right].clone();
+                        right += 1;
+                    }
                 }
+                i += 2 * width;
             }
+            items.clone_from_slice(&aux);
+            width *= 2;
         }
         Ok(())
     }
