@@ -440,9 +440,32 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             false
         }
         PyObjectPayload::Class(target_cd) => {
+            // Check _abc_builtin_types registry (collections.abc uses this)
+            let obj_type = obj.type_name();
+            if let Some(registry) = target_cd.namespace.read().get("_abc_builtin_types") {
+                if let PyObjectPayload::Set(set) = &registry.payload {
+                    let key = HashableKey::Str(CompactString::from(obj_type));
+                    if set.read().contains_key(&key) {
+                        return true;
+                    }
+                }
+            }
             // Check collections.abc structural typing for Class-based ABCs
             if check_abc_structural(obj, target_cd.name.as_str()) {
                 return true;
+            }
+            // runtime_checkable Protocol check
+            if let Some(flag) = target_cd.namespace.read().get("_is_runtime_checkable") {
+                if flag.is_truthy() {
+                    if let Some(attrs) = target_cd.namespace.read().get("__protocol_attrs__") {
+                        if let PyObjectPayload::Tuple(required) = &attrs.payload {
+                            return required.iter().all(|attr_name| {
+                                let name = attr_name.py_to_string();
+                                obj.get_attr(&name).is_some()
+                            });
+                        }
+                    }
+                }
             }
             // User-defined class check: walk the instance's class MRO
             if let PyObjectPayload::Instance(inst) = &obj.payload {
@@ -528,11 +551,12 @@ fn exception_is_subclass_of(kind: ExceptionKind, target_name: &str) -> bool {
 fn check_abc_structural(obj: &PyObjectRef, abc_name: &str) -> bool {
     match abc_name {
         "Iterable" => {
-            matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range")
+            matches!(obj.type_name(), "list" | "tuple" | "str" | "dict" | "set" | "frozenset" | "bytes" | "bytearray" | "range" | "iterator" | "generator")
                 || obj.get_attr("__iter__").is_some()
         }
         "Iterator" => {
-            obj.get_attr("__next__").is_some()
+            matches!(obj.type_name(), "iterator" | "generator")
+                || obj.get_attr("__next__").is_some()
         }
         "Mapping" | "MutableMapping" => {
             matches!(obj.type_name(), "dict")

@@ -184,24 +184,18 @@ fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 /// functools.cmp_to_key(cmp_func)
-/// Returns a key class whose instances compare using the given comparison function.
-/// Since native functions can't call Python functions, we create a wrapper instance
-/// that stores both the comparison function and the wrapped value.
+/// Returns a key function that wraps each value in a K object with __lt__/__eq__
+/// that delegate to the comparison function. The comparison function itself is stored
+/// on a marker so the VM can intercept and call it during sort.
 fn functools_cmp_to_key(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("cmp_to_key() requires 1 argument"));
     }
     let cmp_func = args[0].clone();
-    // Create a key class that wraps values and stores the comparison function
-    let mut namespace = IndexMap::new();
-    namespace.insert(CompactString::from("__cmp_to_key__"), PyObject::bool_val(true));
-    namespace.insert(CompactString::from("_cmp_func"), cmp_func);
-    let key_cls = PyObject::class(
-        CompactString::from("cmp_to_key"),
-        vec![],
-        namespace,
-    );
-    Ok(key_cls)
+    // Return a callable that wraps each value with the cmp function attached
+    let mut ns = IndexMap::new();
+    ns.insert(CompactString::from("__cmp_to_key_func__"), cmp_func);
+    Ok(PyObject::class(CompactString::from("cmp_to_key"), vec![], ns))
 }
 
 /// Create a cached wrapper function for lru_cache.

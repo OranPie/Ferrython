@@ -682,13 +682,13 @@ pub fn create_collections_abc_module() -> PyObjectRef {
     };
     make_module("collections.abc", vec![
         ("Hashable",        make_abc("Hashable", &["int", "float", "str", "bool", "bytes", "tuple", "frozenset", "NoneType"])),
-        ("Iterable",        make_abc("Iterable", &["list", "tuple", "dict", "set", "frozenset", "str", "bytes", "bytearray", "range"])),
-        ("Iterator",        make_abc("Iterator", &[])),
+        ("Iterable",        make_abc("Iterable", &["list", "tuple", "dict", "set", "frozenset", "str", "bytes", "bytearray", "range", "iterator", "generator"])),
+        ("Iterator",        make_abc("Iterator", &["iterator", "generator"])),
         ("Reversible",      make_abc("Reversible", &["list", "dict", "range"])),
-        ("Generator",       make_abc("Generator", &[])),
+        ("Generator",       make_abc("Generator", &["generator"])),
         ("Sized",           make_abc("Sized", &["list", "tuple", "dict", "set", "frozenset", "str", "bytes", "bytearray", "range"])),
         ("Container",       make_abc("Container", &["list", "tuple", "dict", "set", "frozenset", "str", "bytes", "bytearray", "range"])),
-        ("Callable",        make_abc("Callable", &[])),
+        ("Callable",        make_abc("Callable", &["function", "builtin_function_or_method", "method"])),
         ("Collection",      make_abc("Collection", &["list", "tuple", "dict", "set", "frozenset", "str", "bytes", "bytearray", "range"])),
         ("Sequence",        make_abc("Sequence", &["list", "tuple", "str", "bytes", "bytearray", "range"])),
         ("MutableSequence", make_abc("MutableSequence", &["list", "bytearray"])),

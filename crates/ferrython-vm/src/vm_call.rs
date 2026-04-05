@@ -2369,6 +2369,32 @@ impl VirtualMachine {
         reverse: bool,
     ) -> PyResult<()> {
         if let Some(key) = key_fn {
+            // Check if key is a cmp_to_key class — use comparison function directly
+            if let PyObjectPayload::Class(cd) = &key.payload {
+                if let Some(cmp_func) = cd.namespace.read().get("__cmp_to_key_func__").cloned() {
+                    // Sort using comparison function: cmp(a, b) < 0 means a < b
+                    let mut indices: Vec<usize> = (0..items.len()).collect();
+                    for i in 1..indices.len() {
+                        let mut j = i;
+                        while j > 0 {
+                            let a = &items[indices[j]];
+                            let b = &items[indices[j - 1]];
+                            let result = self.call_object(cmp_func.clone(), vec![a.clone(), b.clone()])?;
+                            let cmp_val = result.to_int().unwrap_or(0);
+                            if cmp_val < 0 {
+                                indices.swap(j, j - 1);
+                                j -= 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    *items = indices.into_iter().map(|i| items[i].clone()).collect();
+                    if reverse { items.reverse(); }
+                    return Ok(());
+                }
+            }
+            // Normal key function sort
             let mut decorated: Vec<(PyObjectRef, PyObjectRef)> = Vec::new();
             for item in items.iter() {
                 let k = self.call_object(key.clone(), vec![item.clone()])?;
