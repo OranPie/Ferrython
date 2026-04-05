@@ -240,6 +240,27 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "symtable" => Some(introspection_modules::create_symtable_module()),
         // Persistence
         "shelve" => Some(serial_modules::create_shelve_module()),
+        // Context variables
+        "contextvars" => Some(misc_modules::create_contextvars_module()),
+        // MIME types
+        "mimetypes" => Some(misc_modules::create_mimetypes_module()),
+        // Readline
+        "readline" => Some(misc_modules::create_readline_module()),
+        // runpy
+        "runpy" => Some(misc_modules::create_runpy_module()),
+        // Network protocol stubs
+        "smtplib" => Some(network_modules::create_smtplib_module()),
+        "ftplib" => Some(network_modules::create_ftplib_module()),
+        "imaplib" => Some(network_modules::create_imaplib_module()),
+        "poplib" => Some(network_modules::create_poplib_module()),
+        "cgi" => Some(network_modules::create_cgi_module()),
+        // Additional modules
+        "cmd" => Some(misc_modules::create_cmd_module()),
+        "compileall" => Some(misc_modules::create_compileall_module()),
+        "pstats" => Some(misc_modules::create_pstats_module()),
+        "quopri" => Some(misc_modules::create_quopri_module()),
+        "stringprep" => Some(misc_modules::create_stringprep_module()),
+        "plistlib" => Some(misc_modules::create_plistlib_module()),
         _ => None,
     }
 }

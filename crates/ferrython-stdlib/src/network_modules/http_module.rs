@@ -1180,3 +1180,139 @@ pub fn create_ssl_module() -> PyObjectRef {
         ("OPENSSL_VERSION_NUMBER", PyObject::int(0x30000000)),
     ])
 }
+
+// ── smtplib module ──
+
+pub fn create_smtplib_module() -> PyObjectRef {
+    make_module("smtplib", vec![
+        ("SMTP", make_builtin(|args: &[PyObjectRef]| {
+            let host = if !args.is_empty() { args[0].py_to_string() } else { "localhost".to_string() };
+            let port = if args.len() > 1 { args[1].as_int().unwrap_or(25) } else { 25 };
+            let cls = PyObject::class(CompactString::from("SMTP"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                attrs.insert(CompactString::from("host"), PyObject::str_val(CompactString::from(host)));
+                attrs.insert(CompactString::from("port"), PyObject::int(port));
+                attrs.insert(CompactString::from("ehlo"), make_builtin(|_| Ok(PyObject::tuple(vec![PyObject::int(250), PyObject::str_val(CompactString::from("OK"))])))); 
+                attrs.insert(CompactString::from("login"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("sendmail"), make_builtin(|_| Ok(PyObject::dict(IndexMap::new()))));
+                attrs.insert(CompactString::from("send_message"), make_builtin(|_| Ok(PyObject::dict(IndexMap::new()))));
+                attrs.insert(CompactString::from("quit"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("starttls"), make_builtin(|_| Ok(PyObject::none())));
+            }
+            Ok(inst)
+        })),
+        ("SMTP_SSL", make_builtin(|_args: &[PyObjectRef]| {
+            Err(PyException::runtime_error("smtplib.SMTP_SSL: not connected (stub)"))
+        })),
+        ("SMTPException", PyObject::class(CompactString::from("SMTPException"), vec![], IndexMap::new())),
+        ("SMTPAuthenticationError", PyObject::class(CompactString::from("SMTPAuthenticationError"), vec![], IndexMap::new())),
+        ("SMTP_PORT", PyObject::int(25)),
+        ("SMTP_SSL_PORT", PyObject::int(465)),
+    ])
+}
+
+// ── ftplib module ──
+
+pub fn create_ftplib_module() -> PyObjectRef {
+    make_module("ftplib", vec![
+        ("FTP", make_builtin(|args: &[PyObjectRef]| {
+            let host = if !args.is_empty() { args[0].py_to_string() } else { String::new() };
+            let cls = PyObject::class(CompactString::from("FTP"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                attrs.insert(CompactString::from("host"), PyObject::str_val(CompactString::from(host)));
+                attrs.insert(CompactString::from("connect"), make_builtin(|_| Ok(PyObject::str_val(CompactString::from("220 FTP ready (stub)"))))); 
+                attrs.insert(CompactString::from("login"), make_builtin(|_| Ok(PyObject::str_val(CompactString::from("230 Login OK")))));
+                attrs.insert(CompactString::from("cwd"), make_builtin(|_| Ok(PyObject::str_val(CompactString::from("250 OK")))));
+                attrs.insert(CompactString::from("pwd"), make_builtin(|_| Ok(PyObject::str_val(CompactString::from("/")))));
+                attrs.insert(CompactString::from("nlst"), make_builtin(|_| Ok(PyObject::list(vec![]))));
+                attrs.insert(CompactString::from("dir"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("quit"), make_builtin(|_| Ok(PyObject::str_val(CompactString::from("221 Bye")))));
+                attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+            }
+            Ok(inst)
+        })),
+        ("FTP_TLS", make_builtin(|_| {
+            Err(PyException::not_implemented_error("ftplib.FTP_TLS"))
+        })),
+        ("error_reply", PyObject::class(CompactString::from("error_reply"), vec![], IndexMap::new())),
+        ("error_perm", PyObject::class(CompactString::from("error_perm"), vec![], IndexMap::new())),
+    ])
+}
+
+// ── imaplib module ──
+
+pub fn create_imaplib_module() -> PyObjectRef {
+    make_module("imaplib", vec![
+        ("IMAP4", make_builtin(|_args: &[PyObjectRef]| {
+            Err(PyException::runtime_error("imaplib.IMAP4: connection required (stub)"))
+        })),
+        ("IMAP4_SSL", make_builtin(|_args: &[PyObjectRef]| {
+            Err(PyException::runtime_error("imaplib.IMAP4_SSL: connection required (stub)"))
+        })),
+        ("IMAP4_PORT", PyObject::int(143)),
+        ("IMAP4_SSL_PORT", PyObject::int(993)),
+    ])
+}
+
+// ── poplib module ──
+
+pub fn create_poplib_module() -> PyObjectRef {
+    make_module("poplib", vec![
+        ("POP3", make_builtin(|_args: &[PyObjectRef]| {
+            Err(PyException::runtime_error("poplib.POP3: connection required (stub)"))
+        })),
+        ("POP3_SSL", make_builtin(|_args: &[PyObjectRef]| {
+            Err(PyException::runtime_error("poplib.POP3_SSL: connection required (stub)"))
+        })),
+        ("POP3_PORT", PyObject::int(110)),
+        ("POP3_SSL_PORT", PyObject::int(995)),
+    ])
+}
+
+// ── cgi module ──
+
+pub fn create_cgi_module() -> PyObjectRef {
+    make_module("cgi", vec![
+        ("parse_header", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("parse_header requires a string")); }
+            let line = args[0].py_to_string();
+            let parts: Vec<&str> = line.splitn(2, ';').collect();
+            let main_type = parts[0].trim().to_string();
+            let mut params = IndexMap::new();
+            if parts.len() > 1 {
+                for param in parts[1].split(';') {
+                    let kv: Vec<&str> = param.splitn(2, '=').collect();
+                    if kv.len() == 2 {
+                        let k = kv[0].trim().to_string();
+                        let v = kv[1].trim().trim_matches('"').to_string();
+                        params.insert(
+                            HashableKey::Str(CompactString::from(&k)),
+                            PyObject::str_val(CompactString::from(v)),
+                        );
+                    }
+                }
+            }
+            Ok(PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from(main_type)),
+                PyObject::dict(params),
+            ]))
+        })),
+        ("escape", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("escape requires a string")); }
+            let s = args[0].py_to_string();
+            let escaped = s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+            Ok(PyObject::str_val(CompactString::from(escaped)))
+        })),
+        ("FieldStorage", make_builtin(|_| {
+            Err(PyException::not_implemented_error("cgi.FieldStorage"))
+        })),
+        ("parse_qs", make_builtin(|_| {
+            Err(PyException::not_implemented_error("cgi.parse_qs (use urllib.parse.parse_qs)"))
+        })),
+    ])
+}

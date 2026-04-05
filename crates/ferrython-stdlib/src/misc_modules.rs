@@ -830,3 +830,407 @@ pub fn create_builtins_module() -> PyObjectRef {
     ])
 }
 
+// ── contextvars module ──
+
+pub fn create_contextvars_module() -> PyObjectRef {
+    make_module("contextvars", vec![
+        ("ContextVar", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("ContextVar() requires a name")); }
+            let name = args[0].py_to_string();
+            // Check for default kwarg in trailing dict
+            let default_val = if args.len() > 1 {
+                if let PyObjectPayload::Dict(kw) = &args[args.len()-1].payload {
+                    kw.read().get(&HashableKey::Str(CompactString::from("default")))
+                        .cloned()
+                } else {
+                    Some(args[1].clone())
+                }
+            } else { None };
+
+            let cls = PyObject::class(CompactString::from("ContextVar"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&name)));
+                let value: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(default_val.clone()));
+
+                let v = value.clone();
+                attrs.insert(CompactString::from("get"), PyObject::native_closure("ContextVar.get", move |a: &[PyObjectRef]| {
+                    if let Some(val) = v.read().as_ref() {
+                        Ok(val.clone())
+                    } else if !a.is_empty() {
+                        Ok(a[0].clone()) // default argument
+                    } else {
+                        Err(PyException::runtime_error("ContextVar has no value"))
+                    }
+                }));
+
+                let v = value.clone();
+                attrs.insert(CompactString::from("set"), PyObject::native_closure("ContextVar.set", move |a: &[PyObjectRef]| {
+                    if a.is_empty() { return Err(PyException::type_error("set() requires a value")); }
+                    let old = v.read().clone();
+                    *v.write() = Some(a[0].clone());
+                    // Return a Token
+                    let token_cls = PyObject::class(CompactString::from("Token"), vec![], IndexMap::new());
+                    let token = PyObject::instance(token_cls);
+                    if let PyObjectPayload::Instance(ref td) = token.payload {
+                        let mut ta = td.attrs.write();
+                        ta.insert(CompactString::from("old_value"), old.unwrap_or_else(PyObject::none));
+                        ta.insert(CompactString::from("var"), PyObject::str_val(CompactString::from(&name)));
+                    }
+                    Ok(token)
+                }));
+            }
+            Ok(inst)
+        })),
+        ("Context", make_builtin(|_| {
+            let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                attrs.insert(CompactString::from("run"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("copy"), make_builtin(|_| Ok(PyObject::none())));
+            }
+            Ok(inst)
+        })),
+        ("copy_context", make_builtin(|_| {
+            let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
+            Ok(PyObject::instance(cls))
+        })),
+        ("Token", PyObject::class(CompactString::from("Token"), vec![], IndexMap::new())),
+    ])
+}
+
+// ── mimetypes module ──
+
+pub fn create_mimetypes_module() -> PyObjectRef {
+    make_module("mimetypes", vec![
+        ("guess_type", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("guess_type requires a url")); }
+            let url = args[0].py_to_string();
+            let ext = url.rsplit('.').next().unwrap_or("");
+            let mime = match ext.to_lowercase().as_str() {
+                "html" | "htm" => "text/html",
+                "css" => "text/css",
+                "js" => "application/javascript",
+                "json" => "application/json",
+                "xml" => "application/xml",
+                "txt" => "text/plain",
+                "csv" => "text/csv",
+                "py" => "text/x-python",
+                "jpg" | "jpeg" => "image/jpeg",
+                "png" => "image/png",
+                "gif" => "image/gif",
+                "svg" => "image/svg+xml",
+                "ico" => "image/x-icon",
+                "webp" => "image/webp",
+                "pdf" => "application/pdf",
+                "zip" => "application/zip",
+                "gz" | "gzip" => "application/gzip",
+                "tar" => "application/x-tar",
+                "mp3" => "audio/mpeg",
+                "mp4" => "video/mp4",
+                "wav" => "audio/wav",
+                "woff" => "font/woff",
+                "woff2" => "font/woff2",
+                "ttf" => "font/ttf",
+                "otf" => "font/otf",
+                "wasm" => "application/wasm",
+                "yaml" | "yml" => "application/x-yaml",
+                "toml" => "application/toml",
+                "md" => "text/markdown",
+                "rs" => "text/x-rust",
+                _ => return Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none()])),
+            };
+            Ok(PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from(mime)),
+                PyObject::none(), // encoding
+            ]))
+        })),
+        ("guess_extension", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("guess_extension requires a type")); }
+            let mime = args[0].py_to_string();
+            let ext = match mime.as_str() {
+                "text/html" => ".html",
+                "text/css" => ".css",
+                "application/javascript" => ".js",
+                "application/json" => ".json",
+                "text/plain" => ".txt",
+                "image/jpeg" => ".jpg",
+                "image/png" => ".png",
+                "application/pdf" => ".pdf",
+                _ => return Ok(PyObject::none()),
+            };
+            Ok(PyObject::str_val(CompactString::from(ext)))
+        })),
+        ("init", make_builtin(|_| Ok(PyObject::none()))),
+        ("types_map", PyObject::dict(IndexMap::new())),
+    ])
+}
+
+// ── readline module ──
+
+pub fn create_readline_module() -> PyObjectRef {
+    // Stub readline — used by REPL but mostly no-ops in embedded context
+    make_module("readline", vec![
+        ("parse_and_bind", make_builtin(|_| Ok(PyObject::none()))),
+        ("set_completer", make_builtin(|_| Ok(PyObject::none()))),
+        ("get_completer", make_builtin(|_| Ok(PyObject::none()))),
+        ("set_completer_delims", make_builtin(|_| Ok(PyObject::none()))),
+        ("get_completer_delims", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(" \t\n`~!@#$%^&*()-=+[{]}\\|;:'\",<>/?"))
+        ))),
+        ("add_history", make_builtin(|_| Ok(PyObject::none()))),
+        ("clear_history", make_builtin(|_| Ok(PyObject::none()))),
+        ("get_history_length", make_builtin(|_| Ok(PyObject::int(-1)))),
+        ("set_history_length", make_builtin(|_| Ok(PyObject::none()))),
+        ("get_current_history_length", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("read_history_file", make_builtin(|_| Ok(PyObject::none()))),
+        ("write_history_file", make_builtin(|_| Ok(PyObject::none()))),
+        ("set_startup_hook", make_builtin(|_| Ok(PyObject::none()))),
+        ("set_pre_input_hook", make_builtin(|_| Ok(PyObject::none()))),
+    ])
+}
+
+// ── runpy module ──
+
+pub fn create_runpy_module() -> PyObjectRef {
+    make_module("runpy", vec![
+        ("run_module", make_builtin(|_| {
+            Err(PyException::not_implemented_error("runpy.run_module"))
+        })),
+        ("run_path", make_builtin(|_| {
+            Err(PyException::not_implemented_error("runpy.run_path"))
+        })),
+    ])
+}
+
+// ── cmd module ──
+
+pub fn create_cmd_module() -> PyObjectRef {
+    make_module("cmd", vec![
+        ("Cmd", make_builtin(|_| {
+            let cls = PyObject::class(CompactString::from("Cmd"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                attrs.insert(CompactString::from("prompt"), PyObject::str_val(CompactString::from("(Cmd) ")));
+                attrs.insert(CompactString::from("intro"), PyObject::none());
+                attrs.insert(CompactString::from("cmdloop"), make_builtin(|_| {
+                    Err(PyException::not_implemented_error("Cmd.cmdloop requires interactive I/O"))
+                }));
+                attrs.insert(CompactString::from("onecmd"), make_builtin(|args: &[PyObjectRef]| {
+                    if args.is_empty() { return Err(PyException::type_error("onecmd requires a string")); }
+                    Ok(PyObject::bool_val(false)) // not stop
+                }));
+                attrs.insert(CompactString::from("emptyline"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("default"), make_builtin(|args: &[PyObjectRef]| {
+                    let line = if !args.is_empty() { args[0].py_to_string() } else { String::new() };
+                    Err(PyException::runtime_error(&format!("*** Unknown syntax: {}", line)))
+                }));
+            }
+            Ok(inst)
+        })),
+    ])
+}
+
+// ── compileall module ──
+
+pub fn create_compileall_module() -> PyObjectRef {
+    make_module("compileall", vec![
+        ("compile_dir", make_builtin(|_| Ok(PyObject::bool_val(true)))),
+        ("compile_file", make_builtin(|_| Ok(PyObject::bool_val(true)))),
+        ("compile_path", make_builtin(|_| Ok(PyObject::bool_val(true)))),
+    ])
+}
+
+// ── pstats module ──
+
+pub fn create_pstats_module() -> PyObjectRef {
+    make_module("pstats", vec![
+        ("Stats", make_builtin(|args: &[PyObjectRef]| {
+            let cls = PyObject::class(CompactString::from("Stats"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                if !args.is_empty() {
+                    attrs.insert(CompactString::from("_data"), args[0].clone());
+                }
+                attrs.insert(CompactString::from("sort_stats"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("print_stats"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("print_callers"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("print_callees"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("strip_dirs"), make_builtin(|_| Ok(PyObject::none())));
+            }
+            Ok(inst)
+        })),
+        ("SortKey", {
+            let cls = PyObject::class(CompactString::from("SortKey"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                attrs.insert(CompactString::from("CALLS"), PyObject::str_val(CompactString::from("calls")));
+                attrs.insert(CompactString::from("CUMULATIVE"), PyObject::str_val(CompactString::from("cumulative")));
+                attrs.insert(CompactString::from("TIME"), PyObject::str_val(CompactString::from("time")));
+                attrs.insert(CompactString::from("NAME"), PyObject::str_val(CompactString::from("name")));
+            }
+            inst
+        }),
+    ])
+}
+
+// ── quopri module ──
+
+pub fn create_quopri_module() -> PyObjectRef {
+    make_module("quopri", vec![
+        ("encode", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("encode requires input")); }
+            let data = args[0].py_to_string();
+            let mut encoded = String::new();
+            for b in data.bytes() {
+                if (b == b'\t' || b == b' ' || (b >= 33 && b <= 126)) && b != b'=' {
+                    encoded.push(b as char);
+                } else {
+                    encoded.push_str(&format!("={:02X}", b));
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(encoded)))
+        })),
+        ("decode", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("decode requires input")); }
+            let data = args[0].py_to_string();
+            let mut decoded = Vec::new();
+            let bytes = data.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'=' && i + 2 < bytes.len() {
+                    if let Ok(val) = u8::from_str_radix(
+                        std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or("00"), 16
+                    ) {
+                        decoded.push(val);
+                        i += 3;
+                        continue;
+                    }
+                }
+                decoded.push(bytes[i]);
+                i += 1;
+            }
+            Ok(PyObject::str_val(CompactString::from(
+                String::from_utf8_lossy(&decoded).to_string()
+            )))
+        })),
+        ("encodestring", make_builtin(|args: &[PyObjectRef]| {
+            // Alias for encode
+            if args.is_empty() { return Err(PyException::type_error("encodestring requires input")); }
+            let data = args[0].py_to_string();
+            let mut encoded = String::new();
+            for b in data.bytes() {
+                if (b == b'\t' || b == b' ' || (b >= 33 && b <= 126)) && b != b'=' {
+                    encoded.push(b as char);
+                } else {
+                    encoded.push_str(&format!("={:02X}", b));
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(encoded)))
+        })),
+        ("decodestring", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("decodestring requires input")); }
+            let data = args[0].py_to_string();
+            let mut decoded = Vec::new();
+            let bytes = data.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'=' && i + 2 < bytes.len() {
+                    if let Ok(val) = u8::from_str_radix(
+                        std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or("00"), 16
+                    ) {
+                        decoded.push(val);
+                        i += 3;
+                        continue;
+                    }
+                }
+                decoded.push(bytes[i]);
+                i += 1;
+            }
+            Ok(PyObject::str_val(CompactString::from(
+                String::from_utf8_lossy(&decoded).to_string()
+            )))
+        })),
+    ])
+}
+
+// ── stringprep module ──
+
+pub fn create_stringprep_module() -> PyObjectRef {
+    // RFC 3454 string preparation — used by SASL, LDAP, etc.
+    make_module("stringprep", vec![
+        ("in_table_a1", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let c = args[0].py_to_string();
+            let ch = c.chars().next().unwrap_or('\0');
+            // Unassigned code points (simplified check)
+            Ok(PyObject::bool_val(!ch.is_alphanumeric() && !ch.is_ascii() && (ch as u32) > 0xFFFD))
+        })),
+        ("in_table_b1", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let c = args[0].py_to_string();
+            let ch = c.chars().next().unwrap_or('\0');
+            // Commonly mapped to nothing: soft hyphen, zero-width joiner, etc.
+            Ok(PyObject::bool_val(ch == '\u{00AD}' || ch == '\u{200B}' || ch == '\u{200C}' || ch == '\u{200D}'))
+        })),
+        ("in_table_c12", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let c = args[0].py_to_string();
+            let ch = c.chars().next().unwrap_or('\0');
+            // Non-ASCII space
+            Ok(PyObject::bool_val(ch.is_whitespace() && !ch.is_ascii()))
+        })),
+        ("in_table_c21", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let c = args[0].py_to_string();
+            let ch = c.chars().next().unwrap_or('\0');
+            Ok(PyObject::bool_val(ch.is_control() && ch.is_ascii()))
+        })),
+        ("in_table_c22", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let c = args[0].py_to_string();
+            let ch = c.chars().next().unwrap_or('\0');
+            Ok(PyObject::bool_val(ch.is_control() && !ch.is_ascii()))
+        })),
+        ("in_table_d1", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let c = args[0].py_to_string();
+            let ch = c.chars().next().unwrap_or('\0');
+            // RTL characters (simplified)
+            Ok(PyObject::bool_val((ch as u32) >= 0x0590 && (ch as u32) <= 0x08FF))
+        })),
+        ("in_table_d2", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let c = args[0].py_to_string();
+            let ch = c.chars().next().unwrap_or('\0');
+            // LTR characters (simplified: Latin, CJK, etc.)
+            Ok(PyObject::bool_val(ch.is_alphanumeric() && (ch as u32) < 0x0590))
+        })),
+    ])
+}
+
+// ── plistlib module ──
+
+pub fn create_plistlib_module() -> PyObjectRef {
+    make_module("plistlib", vec![
+        ("loads", make_builtin(|_| {
+            Err(PyException::not_implemented_error("plistlib.loads: XML plist parsing not implemented"))
+        })),
+        ("dumps", make_builtin(|_| {
+            Err(PyException::not_implemented_error("plistlib.dumps: XML plist serialization not implemented"))
+        })),
+        ("load", make_builtin(|_| {
+            Err(PyException::not_implemented_error("plistlib.load"))
+        })),
+        ("dump", make_builtin(|_| {
+            Err(PyException::not_implemented_error("plistlib.dump"))
+        })),
+        ("FMT_XML", PyObject::int(1)),
+        ("FMT_BINARY", PyObject::int(2)),
+    ])
+}
+
