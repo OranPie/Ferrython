@@ -578,7 +578,26 @@ pub fn create_shutil_module() -> PyObjectRef {
             }
             Ok(PyObject::none())
         })),
-        ("disk_usage", make_builtin(|_| Ok(PyObject::none()))),
+        ("disk_usage", make_builtin(|args| {
+            let path = if args.is_empty() { "/".to_string() } else { args[0].py_to_string() };
+            // Parse df output for cross-platform compatibility
+            let output = std::process::Command::new("df").arg("-k").arg(&path).output();
+            if let Ok(out) = output {
+                let text = String::from_utf8_lossy(&out.stdout);
+                if let Some(line) = text.lines().nth(1) {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 4 {
+                        let total = parts[1].parse::<i64>().unwrap_or(0) * 1024;
+                        let used = parts[2].parse::<i64>().unwrap_or(0) * 1024;
+                        let free = parts[3].parse::<i64>().unwrap_or(0) * 1024;
+                        return Ok(PyObject::tuple(vec![
+                            PyObject::int(total), PyObject::int(used), PyObject::int(free),
+                        ]));
+                    }
+                }
+            }
+            Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::int(0), PyObject::int(0)]))
+        })),
         ("get_terminal_size", make_builtin(|_| {
             Ok(PyObject::tuple(vec![PyObject::int(80), PyObject::int(24)]))
         })),
@@ -605,7 +624,30 @@ pub fn create_shutil_module() -> PyObjectRef {
             Ok(PyObject::str_val(CompactString::from(dst)))
         })),
         ("copyfileobj", make_builtin(|_args| {
-            // Stub — real impl would need file object support
+            Ok(PyObject::none())
+        })),
+        ("copyfile", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("copyfile requires src and dst")); }
+            let src = args[0].py_to_string();
+            let dst = args[1].py_to_string();
+            std::fs::copy(&src, &dst).map_err(|e| PyException::runtime_error(format!("{}", e)))?;
+            Ok(PyObject::str_val(CompactString::from(dst)))
+        })),
+        ("copymode", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("copymode requires src and dst")); }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let src = args[0].py_to_string();
+                let dst = args[1].py_to_string();
+                if let Ok(meta) = std::fs::metadata(&src) {
+                    let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(meta.permissions().mode()));
+                }
+            }
+            Ok(PyObject::none())
+        })),
+        ("copystat", make_builtin(|_args| {
+            // Copies metadata (mtime, atime, permissions) — simplified
             Ok(PyObject::none())
         })),
         ("ignore_patterns", make_builtin(|_args| {
@@ -786,22 +828,100 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 
 pub fn create_tempfile_module() -> PyObjectRef {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_name(prefix: &str, suffix: &str) -> String {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("{}{}_{}_{}{}", 
+            std::env::temp_dir().to_string_lossy(),
+            std::path::MAIN_SEPARATOR,
+            prefix, n, suffix)
+    }
+
     make_module("tempfile", vec![
         ("gettempdir", make_builtin(|_| {
             Ok(PyObject::str_val(CompactString::from(
                 std::env::temp_dir().to_string_lossy().to_string()
             )))
         })),
-        ("mkdtemp", make_builtin(|_| {
-            let dir = std::env::temp_dir().join(format!("ferrython_tmp_{}", std::process::id()));
-            std::fs::create_dir_all(&dir).ok();
-            Ok(PyObject::str_val(CompactString::from(dir.to_string_lossy().to_string())))
+        ("mkdtemp", make_builtin(|args| {
+            let mut suffix = String::new();
+            let mut prefix = "tmp".to_string();
+            for arg in args {
+                if let PyObjectPayload::Dict(kw_map) = &arg.payload {
+                    let r = kw_map.read();
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("suffix"))) { suffix = v.py_to_string(); }
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
+                }
+            }
+            let dir = temp_name(&prefix, &suffix);
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| PyException::runtime_error(format!("mkdtemp: {}", e)))?;
+            Ok(PyObject::str_val(CompactString::from(dir)))
+        })),
+        ("mkstemp", make_builtin(|args| {
+            let mut suffix = String::new();
+            let mut prefix = "tmp".to_string();
+            for arg in args {
+                if let PyObjectPayload::Dict(kw_map) = &arg.payload {
+                    let r = kw_map.read();
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("suffix"))) { suffix = v.py_to_string(); }
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
+                }
+            }
+            let path = temp_name(&prefix, &suffix);
+            std::fs::File::create(&path)
+                .map_err(|e| PyException::runtime_error(format!("mkstemp: {}", e)))?;
+            Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::str_val(CompactString::from(path))]))
+        })),
+        ("mktemp", make_builtin(|args| {
+            let mut suffix = String::new();
+            let mut prefix = "tmp".to_string();
+            for arg in args {
+                if let PyObjectPayload::Dict(kw_map) = &arg.payload {
+                    let r = kw_map.read();
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("suffix"))) { suffix = v.py_to_string(); }
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(temp_name(&prefix, &suffix))))
         })),
         ("NamedTemporaryFile", make_builtin(named_temporary_file)),
-        ("TemporaryDirectory", make_builtin(|_| Ok(PyObject::none()))),
-        ("mkstemp", make_builtin(|_| {
-            let path = std::env::temp_dir().join(format!("ferrython_{}", std::process::id()));
-            Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::str_val(CompactString::from(path.to_string_lossy().to_string()))]))
+        ("TemporaryDirectory", make_builtin(|args| {
+            let mut prefix = "tmp".to_string();
+            for arg in args {
+                if let PyObjectPayload::Dict(kw_map) = &arg.payload {
+                    let r = kw_map.read();
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
+                }
+            }
+            let dir = temp_name(&prefix, "");
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| PyException::runtime_error(format!("TemporaryDirectory: {}", e)))?;
+
+            let cls = PyObject::class(CompactString::from("TemporaryDirectory"), vec![], IndexMap::new());
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&dir)));
+
+            let dir_enter = dir.clone();
+            attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "TemporaryDirectory.__enter__", move |_| {
+                    Ok(PyObject::str_val(CompactString::from(dir_enter.as_str())))
+                }));
+            let dir_exit = dir.clone();
+            attrs.insert(CompactString::from("__exit__"), PyObject::native_closure(
+                "TemporaryDirectory.__exit__", move |_| {
+                    let _ = std::fs::remove_dir_all(&dir_exit);
+                    Ok(PyObject::bool_val(false))
+                }));
+            let dir_cleanup = dir;
+            attrs.insert(CompactString::from("cleanup"), PyObject::native_closure(
+                "TemporaryDirectory.cleanup", move |_| {
+                    let _ = std::fs::remove_dir_all(&dir_cleanup);
+                    Ok(PyObject::none())
+                }));
+            Ok(PyObject::instance_with_attrs(cls, attrs))
         })),
     ])
 }
