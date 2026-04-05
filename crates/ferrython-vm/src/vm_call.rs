@@ -2420,7 +2420,13 @@ impl VirtualMachine {
             for i in 1..indices.len() {
                 let mut j = i;
                 while j > 0 {
-                    if self.vm_lt(&decorated[indices[j]].0, &decorated[indices[j - 1]].0)? {
+                    let cmp = if reverse {
+                        // Sort descending directly for stable reverse
+                        self.vm_lt(&decorated[indices[j - 1]].0, &decorated[indices[j]].0)?
+                    } else {
+                        self.vm_lt(&decorated[indices[j]].0, &decorated[indices[j - 1]].0)?
+                    };
+                    if cmp {
                         indices.swap(j, j - 1);
                         j -= 1;
                     } else {
@@ -2431,9 +2437,9 @@ impl VirtualMachine {
             *items = indices.into_iter().map(|i| decorated[i].1.clone()).collect();
         } else {
             self.vm_sort(items)?;
-        }
-        if reverse {
-            items.reverse();
+            if reverse {
+                items.reverse();
+            }
         }
         Ok(())
     }

@@ -113,7 +113,7 @@
 | `typing` | `TypeVar`, `Generic`, `Protocol`, all container types | `get_type_hints()` returns `{}` |
 | `ssl` | Module imports | OpenSSL version hardcoded to `"(stub)"` |
 | `multiprocessing` | Module imports | `Pool` is a stub |
-| `argparse` | ArgumentParser, add_argument, parse_args, parse_known_args | Subparsers, mutually exclusive groups |
+| `argparse` | ArgumentParser, add_argument, parse_args, parse_known_args | Subparsers, mutually exclusive groups, FileType |
 
 ### 4.2 Incomplete Implementations
 
@@ -125,6 +125,27 @@
 | `subprocess.Popen` | Streaming/pipe management not implemented |
 | `sqlite3` | Basic query execution; missing cursor protocol details |
 | `xml.etree` | Namespace support (xmlns) not implemented |
+| `decimal` | Context precision works but capped at 36 digits (i128 range); missing copy_decimal |
+| `os.environ` | `os.environ[k] = v` does not call `putenv()` — use `os.putenv()` to sync |
+| `weakref` | Collections (WeakValueDictionary, etc.) are stubs using regular containers |
+
+### 4.3 Recently Fixed (This Session)
+
+| Module | What was fixed |
+|--------|---------------|
+| `hashlib` | Now supports `update()`, `digest()`, `hexdigest()`, `copy()` (incremental hashing) |
+| `hmac` | Fixed to use proper SHA algorithms (was using Rust DefaultHasher) |
+| `glob` | Added `**` recursive directory traversal, `escape()` |
+| `os.path` | Added `getmtime`, `getctime`, `getatime`, `expandvars`, `commonprefix`, `samefile`, `islink` |
+| `string` | Added `Formatter` class (format/vformat), `capwords()` |
+| `decimal` | `getcontext().prec = N` now takes effect on division |
+| `difflib` | `get_close_matches` now uses proper LCS-based similarity ratio |
+| `socket` | Added `gettimeout()`, `getblocking()`, `setblocking()`, `fileno()` |
+| `enum` | `auto()` per-class counter, CPython `repr` format `<Class.Name: value>` |
+| `argparse` | Subparsers, mutually exclusive groups |
+| `struct` | `unpack_from()`, `iter_unpack()`, `struct.error` exception |
+| `io` | StringIO/BytesIO protocol methods, BytesIO.readline, StringIO.__iter__ |
+| `subprocess` | `.pid`, `send_signal()`, `terminate()` with SIGTERM |
 
 ### 4.3 Missing Modules (ImportError)
 
