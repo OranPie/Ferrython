@@ -63,6 +63,25 @@ impl VirtualMachine {
     /// (which comes from BuiltinType bases like list/dict and can't be called).
     /// Returns the method if it's a real callable (BoundMethod, Function, etc.).
     pub(crate) fn resolve_instance_dunder(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            // Check if the class's own namespace defines this dunder
+            // (not inherited from a builtin base type)
+            if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                if let Some(class_method) = cd.namespace.read().get(name).cloned() {
+                    // Found in the class's own namespace — this is a custom implementation
+                    // Return the instance-bound version if available
+                    if let Some(method) = obj.get_attr(name) {
+                        return Some(method);
+                    }
+                    return Some(class_method);
+                }
+            }
+            // Also check instance attrs directly (Python-defined __str__/__repr__)
+            if let Some(method) = inst.attrs.read().get(name).cloned() {
+                return Some(method);
+            }
+        }
+        // For non-Instance payloads, just try get_attr (skipping BuiltinBoundMethod)
         if let Some(method) = obj.get_attr(name) {
             if matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod { .. }) {
                 return None;
@@ -82,7 +101,7 @@ impl VirtualMachine {
 
     pub(crate) fn vm_str(&mut self, obj: &PyObjectRef) -> PyResult<String> {
         match &obj.payload {
-            PyObjectPayload::Instance(_inst) => {
+            PyObjectPayload::Instance(inst) => {
                 // Check for custom __str__ (skip BuiltinBoundMethod from builtin bases)
                 if let Some(str_method) = Self::resolve_instance_dunder(obj, "__str__") {
                     let args = match &str_method.payload {
@@ -92,11 +111,8 @@ impl VirtualMachine {
                     let result = self.call_object(str_method, args)?;
                     return Ok(result.py_to_string());
                 }
-                // Builtin base type subclass: delegate to __builtin_value__
-                if let Some(bv) = Self::get_builtin_value(obj) {
-                    return self.vm_str(&bv);
-                }
-                // Fall back to __repr__ (also skip BuiltinBoundMethod)
+                // Fall back to __repr__ before __builtin_value__: namedtuples, dataclasses, etc.
+                // define custom __repr__ that should serve as str() too.
                 if let Some(repr_method) = Self::resolve_instance_dunder(obj, "__repr__") {
                     let args = match &repr_method.payload {
                         PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
@@ -104,6 +120,17 @@ impl VirtualMachine {
                     };
                     let result = self.call_object(repr_method, args)?;
                     return Ok(result.py_to_string());
+                }
+                // namedtuple: use BuiltinBoundMethod __str__ (dispatches to call_namedtuple_method)
+                if inst.class.get_attr("__namedtuple__").is_some() {
+                    if let Some(str_method) = obj.get_attr("__str__") {
+                        let result = self.call_object(str_method, vec![])?;
+                        return Ok(result.py_to_string());
+                    }
+                }
+                // Builtin base type subclass: delegate to __builtin_value__
+                if let Some(bv) = Self::get_builtin_value(obj) {
+                    return self.vm_str(&bv);
                 }
                 // Exception instances: str(e) returns the message from args
                 if let Some(args) = obj.get_attr("args") {

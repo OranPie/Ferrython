@@ -457,8 +457,14 @@ impl VirtualMachine {
                                     }
                                 }
                                 "str" => {
-                                    let s = pos_args[0].py_to_string();
-                                    Some(PyObject::str_val(CompactString::from(s)))
+                                    // Use vm_str for VM-aware conversion (calls __str__/__repr__)
+                                    match self.vm_str(&pos_args[0]) {
+                                        Ok(s) => Some(PyObject::str_val(CompactString::from(s))),
+                                        Err(_) => {
+                                            let s = pos_args[0].py_to_string();
+                                            Some(PyObject::str_val(CompactString::from(s)))
+                                        }
+                                    }
                                 }
                                 "list" => {
                                     Some(PyObject::list(pos_args[0].to_list().unwrap_or_default()))

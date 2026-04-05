@@ -195,6 +195,25 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 if let Some(ref ds) = inst.dict_storage {
                     return format_dict(&ds.read());
                 }
+                // namedtuple: str() should match repr() — e.g., Point(x=1, y=2)
+                if inst.class.get_attr("__namedtuple__").is_some() {
+                    if let Some(fields) = inst.class.get_attr("_fields") {
+                        if let PyObjectPayload::Tuple(field_names) = &fields.payload {
+                            let attrs = inst.attrs.read();
+                            let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                                cd.name.to_string()
+                            } else {
+                                "namedtuple".to_string()
+                            };
+                            let parts: Vec<String> = field_names.iter().map(|f| {
+                                let name = f.py_to_string();
+                                let val = attrs.get(name.as_str()).map(|v| v.repr()).unwrap_or_else(|| "None".to_string());
+                                format!("{}={}", name, val)
+                            }).collect();
+                            return format!("{}({})", class_name, parts.join(", "));
+                        }
+                    }
+                }
                 // Known instance types with custom __str__
                 {
                     let attrs = inst.attrs.read();
