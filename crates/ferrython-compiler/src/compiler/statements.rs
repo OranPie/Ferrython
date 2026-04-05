@@ -439,6 +439,18 @@ impl Compiler {
             }
         }
 
+        // Emit SetupAnnotations if the function body has annotation assignments
+        if Self::has_annotations(body) {
+            self.emit_op(Opcode::SetupAnnotations);
+            // Ensure __annotations__ is registered as a local variable so
+            // load_name() compiles to LoadFast instead of LoadGlobal
+            let unit = self.current_unit_mut();
+            let ann_name = CompactString::from("__annotations__");
+            if !unit.code.varnames.iter().any(|v| v == &ann_name) {
+                unit.code.varnames.push(ann_name);
+            }
+        }
+
         // Compile the function body
         // Extract docstring: if first statement is a string literal, store as first constant
         if let Some(first) = body.first() {

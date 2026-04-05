@@ -187,6 +187,11 @@ impl Compiler {
         }
     }
 
+    /// Check if a name is already registered in varnames (e.g. __annotations__ added by SetupAnnotations)
+    pub(super) fn is_in_varnames(&self, name: &str) -> bool {
+        self.current_unit().code.varnames.iter().any(|v| v.as_str() == name)
+    }
+
     pub(super) fn is_cell(&self, name: &str) -> bool {
         if let Some(sym) = self.current_unit().scope.lookup(name) {
             sym.scope == SymbolScope::Cell
@@ -260,7 +265,7 @@ impl Compiler {
             if self.is_global(name) {
                 let idx = self.add_name(name);
                 self.emit_arg(Opcode::LoadGlobal, idx);
-            } else if self.is_local(name) {
+            } else if self.is_local(name) || self.is_in_varnames(name) {
                 let idx = self.varname_index(name);
                 self.emit_arg(Opcode::LoadFast, idx);
             } else {

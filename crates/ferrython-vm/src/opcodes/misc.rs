@@ -28,7 +28,14 @@ impl VirtualMachine {
             }
             Opcode::SetupAnnotations => {
                 let frame = self.vm_frame();
-                if !frame.local_names.contains_key("__annotations__") {
+                // In function scope, __annotations__ may be a fast local (varname).
+                // Check if it's registered as a varname and use fast locals.
+                let varname_idx = frame.code.varnames.iter().position(|v| v == "__annotations__");
+                if let Some(idx) = varname_idx {
+                    if idx < frame.locals.len() && frame.locals[idx].is_none() {
+                        frame.locals[idx] = Some(PyObject::dict(IndexMap::new()));
+                    }
+                } else if !frame.local_names.contains_key("__annotations__") {
                     frame.store_name(
                         intern_or_new("__annotations__"),
                         PyObject::dict(IndexMap::new()),
