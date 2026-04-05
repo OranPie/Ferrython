@@ -220,15 +220,98 @@ fn python_repl_to_rust(repl: &str) -> String {
     result
 }
 
+fn needs_fancy_regex(pattern: &str) -> bool {
+    // Detect lookahead/lookbehind which require fancy-regex
+    let bytes = pattern.as_bytes();
+    let len = bytes.len();
+    for i in 0..len.saturating_sub(1) {
+        if bytes[i] == b'(' && bytes[i + 1] == b'?' && i + 2 < len {
+            match bytes[i + 2] {
+                b'=' | b'!' => return true,  // (?= (?!
+                b'<' if i + 3 < len && (bytes[i + 3] == b'=' || bytes[i + 3] == b'!') => return true, // (?<= (?<!
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 fn build_regex(pattern: &str, flags: i64) -> Result<regex::Regex, PyException> {
     let mut pat = convert_python_regex(pattern);
-    // Apply flags as inline flags
     let mut prefix = String::new();
     if flags & 2 != 0 { prefix.push_str("(?i)"); }
     if flags & 8 != 0 { prefix.push_str("(?m)"); }
     if flags & 16 != 0 { prefix.push_str("(?s)"); }
     pat = format!("{}{}", prefix, pat);
     regex::Regex::new(&pat).map_err(|e| PyException::runtime_error(format!("re: {}", e)))
+}
+
+fn build_fancy_regex(pattern: &str, flags: i64) -> Result<fancy_regex::Regex, PyException> {
+    let mut pat = convert_python_regex(pattern);
+    let mut prefix = String::new();
+    if flags & 2 != 0 { prefix.push_str("(?i)"); }
+    if flags & 8 != 0 { prefix.push_str("(?m)"); }
+    if flags & 16 != 0 { prefix.push_str("(?s)"); }
+    pat = format!("{}{}", prefix, pat);
+    fancy_regex::Regex::new(&pat).map_err(|e| PyException::runtime_error(format!("re: {}", e)))
+}
+
+fn fancy_find_all(re: &fancy_regex::Regex, text: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let mut pos = 0;
+    while pos <= text.len() {
+        match re.find(&text[pos..]) {
+            Ok(Some(m)) => {
+                if m.start() == m.end() { pos += 1; continue; }
+                results.push(m.as_str().to_string());
+                pos += m.end();
+            }
+            _ => break,
+        }
+    }
+    results
+}
+
+fn fancy_captures(re: &fancy_regex::Regex, text: &str) -> Vec<Vec<Option<String>>> {
+    let mut results = Vec::new();
+    let mut pos = 0;
+    while pos <= text.len() {
+        match re.captures(&text[pos..]) {
+            Ok(Some(caps)) => {
+                let whole = caps.get(0).unwrap();
+                if whole.start() == whole.end() { pos += 1; continue; }
+                let mut groups = Vec::new();
+                for i in 0..caps.len() {
+                    groups.push(caps.get(i).map(|m| m.as_str().to_string()));
+                }
+                results.push(groups);
+                pos += whole.end();
+            }
+            _ => break,
+        }
+    }
+    results
+}
+
+fn make_fancy_match_object(text: &str, start: usize, end: usize, full: &str, groups: Vec<Option<String>>) -> PyObjectRef {
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("_match"), PyObject::str_val(CompactString::from(full)));
+    attrs.insert(CompactString::from("_start"), PyObject::int(start as i64));
+    attrs.insert(CompactString::from("_end"), PyObject::int(end as i64));
+    attrs.insert(CompactString::from("_text"), PyObject::str_val(CompactString::from(text)));
+    let group_objs: Vec<PyObjectRef> = groups.into_iter()
+        .map(|g| g.map(|s| PyObject::str_val(CompactString::from(s))).unwrap_or(PyObject::none()))
+        .collect();
+    attrs.insert(CompactString::from("_groups"), PyObject::tuple(group_objs));
+    attrs.insert(CompactString::from("_groupindex"), PyObject::dict(IndexMap::new()));
+    attrs.insert(CompactString::from("group"), PyObject::native_function("Match.group", match_group));
+    attrs.insert(CompactString::from("groups"), PyObject::native_function("Match.groups", match_groups));
+    attrs.insert(CompactString::from("groupdict"), PyObject::native_function("Match.groupdict", match_groupdict));
+    attrs.insert(CompactString::from("start"), PyObject::native_function("Match.start", match_start));
+    attrs.insert(CompactString::from("end"), PyObject::native_function("Match.end", match_end));
+    attrs.insert(CompactString::from("span"), PyObject::native_function("Match.span", match_span));
+    attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
+    PyObject::module_with_attrs(CompactString::from("Match"), attrs)
 }
 
 fn make_match_object(m: regex::Match, text: &str, re_obj: &regex::Regex) -> PyObjectRef {
@@ -385,15 +468,27 @@ fn re_match(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pattern = args[0].py_to_string();
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
-    // re.match anchors at start
     let anchored = format!("^(?:{})", pattern);
-    let re = build_regex(&anchored, flags)?;
-    match re.find(&text) {
-        Some(m) => {
-            let orig_re = build_regex(&pattern, flags)?;
-            Ok(make_match_object(m, &text, &orig_re))
+    if needs_fancy_regex(&pattern) {
+        let re = build_fancy_regex(&anchored, flags)?;
+        match re.captures(&text) {
+            Ok(Some(caps)) => {
+                let whole = caps.get(0).unwrap();
+                let groups: Vec<Option<String>> = (1..caps.len())
+                    .map(|i| caps.get(i).map(|m| m.as_str().to_string())).collect();
+                Ok(make_fancy_match_object(&text, whole.start(), whole.end(), whole.as_str(), groups))
+            }
+            _ => Ok(PyObject::none()),
         }
-        None => Ok(PyObject::none()),
+    } else {
+        let re = build_regex(&anchored, flags)?;
+        match re.find(&text) {
+            Some(m) => {
+                let orig_re = build_regex(&pattern, flags)?;
+                Ok(make_match_object(m, &text, &orig_re))
+            }
+            None => Ok(PyObject::none()),
+        }
     }
 }
 
@@ -402,10 +497,23 @@ fn re_search(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pattern = args[0].py_to_string();
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
-    let re = build_regex(&pattern, flags)?;
-    match re.find(&text) {
-        Some(m) => Ok(make_match_object(m, &text, &re)),
-        None => Ok(PyObject::none()),
+    if needs_fancy_regex(&pattern) {
+        let re = build_fancy_regex(&pattern, flags)?;
+        match re.captures(&text) {
+            Ok(Some(caps)) => {
+                let whole = caps.get(0).unwrap();
+                let groups: Vec<Option<String>> = (1..caps.len())
+                    .map(|i| caps.get(i).map(|m| m.as_str().to_string())).collect();
+                Ok(make_fancy_match_object(&text, whole.start(), whole.end(), whole.as_str(), groups))
+            }
+            _ => Ok(PyObject::none()),
+        }
+    } else {
+        let re = build_regex(&pattern, flags)?;
+        match re.find(&text) {
+            Some(m) => Ok(make_match_object(m, &text, &re)),
+            None => Ok(PyObject::none()),
+        }
     }
 }
 
@@ -428,31 +536,57 @@ fn re_findall(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pattern = args[0].py_to_string();
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
-    let re = build_regex(&pattern, flags)?;
-    // If pattern has groups, return group(1) for single group, tuple for multiple
-    let cap_count = re.captures_len() - 1;
-    if cap_count == 0 {
-        let results: Vec<PyObjectRef> = re.find_iter(&text)
-            .map(|m| PyObject::str_val(CompactString::from(m.as_str())))
-            .collect();
-        Ok(PyObject::list(results))
-    } else if cap_count == 1 {
-        let results: Vec<PyObjectRef> = re.captures_iter(&text)
-            .filter_map(|caps| caps.get(1).map(|m| PyObject::str_val(CompactString::from(m.as_str()))))
-            .collect();
-        Ok(PyObject::list(results))
+    if needs_fancy_regex(&pattern) {
+        let re = build_fancy_regex(&pattern, flags)?;
+        // Determine capture group count from first match
+        let all_caps = fancy_captures(&re, &text);
+        if all_caps.is_empty() { return Ok(PyObject::list(vec![])); }
+        let cap_count = all_caps[0].len() - 1;
+        if cap_count == 0 {
+            let results: Vec<PyObjectRef> = fancy_find_all(&re, &text)
+                .into_iter().map(|s| PyObject::str_val(CompactString::from(s))).collect();
+            Ok(PyObject::list(results))
+        } else if cap_count == 1 {
+            let results: Vec<PyObjectRef> = all_caps.into_iter()
+                .filter_map(|g| g.get(1).cloned().flatten().map(|s| PyObject::str_val(CompactString::from(s))))
+                .collect();
+            Ok(PyObject::list(results))
+        } else {
+            let results: Vec<PyObjectRef> = all_caps.into_iter()
+                .map(|g| {
+                    let items: Vec<PyObjectRef> = g[1..].iter()
+                        .map(|o| o.as_ref().map(|s| PyObject::str_val(CompactString::from(s.as_str())))
+                            .unwrap_or(PyObject::none())).collect();
+                    PyObject::tuple(items)
+                }).collect();
+            Ok(PyObject::list(results))
+        }
     } else {
-        let results: Vec<PyObjectRef> = re.captures_iter(&text)
-            .map(|caps| {
-                let groups: Vec<PyObjectRef> = (1..=cap_count)
-                    .map(|i| caps.get(i)
-                        .map(|m| PyObject::str_val(CompactString::from(m.as_str())))
-                        .unwrap_or(PyObject::none()))
-                    .collect();
-                PyObject::tuple(groups)
-            })
-            .collect();
-        Ok(PyObject::list(results))
+        let re = build_regex(&pattern, flags)?;
+        let cap_count = re.captures_len() - 1;
+        if cap_count == 0 {
+            let results: Vec<PyObjectRef> = re.find_iter(&text)
+                .map(|m| PyObject::str_val(CompactString::from(m.as_str())))
+                .collect();
+            Ok(PyObject::list(results))
+        } else if cap_count == 1 {
+            let results: Vec<PyObjectRef> = re.captures_iter(&text)
+                .filter_map(|caps| caps.get(1).map(|m| PyObject::str_val(CompactString::from(m.as_str()))))
+                .collect();
+            Ok(PyObject::list(results))
+        } else {
+            let results: Vec<PyObjectRef> = re.captures_iter(&text)
+                .map(|caps| {
+                    let groups: Vec<PyObjectRef> = (1..=cap_count)
+                        .map(|i| caps.get(i)
+                            .map(|m| PyObject::str_val(CompactString::from(m.as_str())))
+                            .unwrap_or(PyObject::none()))
+                        .collect();
+                    PyObject::tuple(groups)
+                })
+                .collect();
+            Ok(PyObject::list(results))
+        }
     }
 }
 
@@ -497,14 +631,40 @@ fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }
     }
-    let re = build_regex(&pattern, flags)?;
     let rust_repl = python_repl_to_rust(&repl);
-    let result = if count == 0 {
-        re.replace_all(&text, rust_repl.as_str()).to_string()
+    if needs_fancy_regex(&pattern) {
+        let re = build_fancy_regex(&pattern, flags)?;
+        let mut result = String::new();
+        let mut last = 0;
+        let mut n = 0;
+        let mut pos = 0;
+        while pos <= text.len() {
+            if count > 0 && n >= count { break; }
+            match re.find(&text[pos..]) {
+                Ok(Some(m)) => {
+                    if m.start() == m.end() { pos += 1; continue; }
+                    let abs_start = pos + m.start();
+                    let abs_end = pos + m.end();
+                    result.push_str(&text[last..abs_start]);
+                    result.push_str(&rust_repl);
+                    last = abs_end;
+                    pos = abs_end;
+                    n += 1;
+                }
+                _ => break,
+            }
+        }
+        result.push_str(&text[last..]);
+        Ok(PyObject::str_val(CompactString::from(result)))
     } else {
-        re.replacen(&text, count, rust_repl.as_str()).to_string()
-    };
-    Ok(PyObject::str_val(CompactString::from(result)))
+        let re = build_regex(&pattern, flags)?;
+        let result = if count == 0 {
+            re.replace_all(&text, rust_repl.as_str()).to_string()
+        } else {
+            re.replacen(&text, count, rust_repl.as_str()).to_string()
+        };
+        Ok(PyObject::str_val(CompactString::from(result)))
+    }
 }
 
 fn re_subn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -529,8 +689,32 @@ fn re_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let text = args[1].py_to_string();
     let maxsplit = if args.len() > 2 { args[2].to_int().unwrap_or(0) as usize } else { 0 };
     let flags = if args.len() > 3 { args[3].to_int().unwrap_or(0) } else { 0 };
-    let re = build_regex(&pattern, flags)?;
-    let num_groups = re.captures_len() - 1; // excluding group 0
+    if needs_fancy_regex(&pattern) {
+        let re = build_fancy_regex(&pattern, flags)?;
+        let mut result = Vec::new();
+        let mut last = 0;
+        let mut splits = 0;
+        let mut pos = 0;
+        while pos <= text.len() {
+            if maxsplit > 0 && splits >= maxsplit { break; }
+            match re.find(&text[pos..]) {
+                Ok(Some(m)) => {
+                    if m.start() == m.end() { pos += 1; continue; }
+                    let abs_start = pos + m.start();
+                    let abs_end = pos + m.end();
+                    result.push(PyObject::str_val(CompactString::from(&text[last..abs_start])));
+                    last = abs_end;
+                    pos = abs_end;
+                    splits += 1;
+                }
+                _ => break,
+            }
+        }
+        result.push(PyObject::str_val(CompactString::from(&text[last..])));
+        Ok(PyObject::list(result))
+    } else {
+        let re = build_regex(&pattern, flags)?;
+        let num_groups = re.captures_len() - 1;
 
     let parts: Vec<PyObjectRef> = if num_groups == 0 {
         // No capturing groups: use simple split
@@ -566,15 +750,19 @@ fn re_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         result
     };
     Ok(PyObject::list(parts))
+    }
 }
 
 fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("re.compile() requires a pattern")); }
     let pattern = args[0].py_to_string();
     let flags = if args.len() > 1 { args[1].to_int().unwrap_or(0) } else { 0 };
-    // Build and validate the regex
-    let re_obj = build_regex(&pattern, flags)?;
-    // Return a compiled pattern object with match/search/findall etc.
+    // Validate the pattern compiles (try fancy if needed)
+    if needs_fancy_regex(&pattern) {
+        build_fancy_regex(&pattern, flags)?;
+    } else {
+        build_regex(&pattern, flags)?;
+    }
     let pat_str = PyObject::str_val(CompactString::from(pattern.clone()));
     let flags_obj = PyObject::int(flags);
     let mut attrs = IndexMap::new();
@@ -583,26 +771,32 @@ fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     attrs.insert(CompactString::from("match"), PyObject::native_function("Pattern.match", compiled_match));
     attrs.insert(CompactString::from("search"), PyObject::native_function("Pattern.search", compiled_search));
     attrs.insert(CompactString::from("findall"), PyObject::native_function("Pattern.findall", compiled_findall));
-    attrs.insert(CompactString::from("finditer"), PyObject::native_function("Pattern.finditer", compiled_findall)); // finditer returns same as findall for now
+    attrs.insert(CompactString::from("finditer"), PyObject::native_function("Pattern.finditer", compiled_findall));
     attrs.insert(CompactString::from("sub"), PyObject::native_function("Pattern.sub", compiled_sub));
     attrs.insert(CompactString::from("split"), PyObject::native_function("Pattern.split", compiled_split));
     attrs.insert(CompactString::from("fullmatch"), PyObject::native_function("Pattern.fullmatch", compiled_fullmatch));
-    // Compute groups count and groupindex from the pattern
-    let group_count = re_obj.captures_len() - 1; // -1 for the whole match group
-    let mut groupindex_map = IndexMap::new();
-    for name in re_obj.capture_names().flatten() {
-        // Find the index of this named group
-        if let Some(idx) = re_obj.capture_names().enumerate()
-            .find(|(_, n)| n.as_deref() == Some(name))
-            .map(|(i, _)| i) {
-            groupindex_map.insert(
-                HashableKey::Str(CompactString::from(name)),
-                PyObject::int(idx as i64),
-            );
+    // groups/groupindex: best-effort for standard regex
+    if !needs_fancy_regex(&pattern) {
+        if let Ok(re_obj) = build_regex(&pattern, flags) {
+            let group_count = re_obj.captures_len() - 1;
+            let mut groupindex_map = IndexMap::new();
+            for name in re_obj.capture_names().flatten() {
+                if let Some(idx) = re_obj.capture_names().enumerate()
+                    .find(|(_, n)| n.as_deref() == Some(name))
+                    .map(|(i, _)| i) {
+                    groupindex_map.insert(
+                        HashableKey::Str(CompactString::from(name)),
+                        PyObject::int(idx as i64),
+                    );
+                }
+            }
+            attrs.insert(CompactString::from("groupindex"), PyObject::dict(groupindex_map));
+            attrs.insert(CompactString::from("groups"), PyObject::int(group_count as i64));
         }
+    } else {
+        attrs.insert(CompactString::from("groupindex"), PyObject::dict(IndexMap::new()));
+        attrs.insert(CompactString::from("groups"), PyObject::int(0));
     }
-    attrs.insert(CompactString::from("groupindex"), PyObject::dict(groupindex_map));
-    attrs.insert(CompactString::from("groups"), PyObject::int(group_count as i64));
     attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
     Ok(PyObject::module_with_attrs(CompactString::from("Pattern"), attrs))
 }
