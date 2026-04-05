@@ -1001,203 +1001,60 @@ pub fn create_selectors_module() -> PyObjectRef {
     ])
 }
 
-// ── concurrent.futures module ──
+// concurrent.futures is now implemented in pure Python: stdlib/Lib/concurrent/futures.py
 
-pub fn create_concurrent_futures_module() -> PyObjectRef {
-    // Future class constructor
-    let future_fn = make_builtin(|_args: &[PyObjectRef]| {
-        let cls = PyObject::class(CompactString::from("Future"), vec![], IndexMap::new());
-        let inst = PyObject::instance(cls);
-        if let PyObjectPayload::Instance(ref d) = inst.payload {
-            let mut w = d.attrs.write();
-            let result: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(None));
-            let done_flag: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
-            let cancelled_flag: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
-            let callbacks: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(vec![]));
+// ── select module ──
 
-            let r = result.clone();
-            let d2 = done_flag.clone();
-            w.insert(CompactString::from("result"), PyObject::native_closure(
-                "Future.result", move |_args: &[PyObjectRef]| {
-                    if *d2.read() {
-                        if let Some(ref v) = *r.read() {
-                            return Ok(v.clone());
-                        }
-                    }
-                    Ok(PyObject::none())
-                }
-            ));
-
-            let d3 = done_flag.clone();
-            w.insert(CompactString::from("done"), PyObject::native_closure(
-                "Future.done", move |_args: &[PyObjectRef]| {
-                    Ok(PyObject::bool_val(*d3.read()))
-                }
-            ));
-
-            let c = cancelled_flag.clone();
-            w.insert(CompactString::from("cancelled"), PyObject::native_closure(
-                "Future.cancelled", move |_args: &[PyObjectRef]| {
-                    Ok(PyObject::bool_val(*c.read()))
-                }
-            ));
-
-            w.insert(CompactString::from("running"), PyObject::native_closure(
-                "Future.running", move |_args: &[PyObjectRef]| {
-                    Ok(PyObject::bool_val(false))
-                }
-            ));
-
-            let r2 = result.clone();
-            let d4 = done_flag.clone();
-            w.insert(CompactString::from("set_result"), PyObject::native_closure(
-                "Future.set_result", move |args: &[PyObjectRef]| {
-                    if !args.is_empty() {
-                        *r2.write() = Some(args[0].clone());
-                    }
-                    *d4.write() = true;
-                    Ok(PyObject::none())
-                }
-            ));
-
-            let cb = callbacks.clone();
-            w.insert(CompactString::from("add_done_callback"), PyObject::native_closure(
-                "Future.add_done_callback", move |args: &[PyObjectRef]| {
-                    if !args.is_empty() {
-                        cb.write().push(args[0].clone());
-                    }
-                    Ok(PyObject::none())
-                }
-            ));
-
-            let c2 = cancelled_flag.clone();
-            w.insert(CompactString::from("cancel"), PyObject::native_closure(
-                "Future.cancel", move |_args: &[PyObjectRef]| {
-                    *c2.write() = true;
-                    Ok(PyObject::bool_val(true))
-                }
-            ));
-
-            w.insert(CompactString::from("exception"), PyObject::native_closure(
-                "Future.exception", move |_args: &[PyObjectRef]| {
-                    Ok(PyObject::none())
-                }
+pub fn create_select_module() -> PyObjectRef {
+    // select.select(rlist, wlist, xlist[, timeout])
+    let select_fn = make_builtin(|args: &[PyObjectRef]| {
+        // Simplified: return empty lists (no real fd polling)
+        if args.len() < 3 {
+            return Err(PyException::type_error(
+                "select() requires at least 3 arguments",
             ));
         }
-        Ok(inst)
+        // In a real implementation, we'd use libc::select or poll.
+        // For now, return (rlist, [], []) to unblock common patterns.
+        let rlist = match &args[0].payload {
+            PyObjectPayload::List(items) => {
+                let r = items.read();
+                if r.is_empty() { vec![] } else { r.clone() }
+            }
+            _ => vec![],
+        };
+        Ok(PyObject::tuple(vec![
+            PyObject::list(rlist),
+            PyObject::list(vec![]),
+            PyObject::list(vec![]),
+        ]))
     });
 
-    // ThreadPoolExecutor constructor
-    let make_executor = |name: &'static str| -> PyObjectRef {
-        PyObject::native_closure(name, move |args: &[PyObjectRef]| {
-            let max_workers = if !args.is_empty() {
-                args[0].to_int().unwrap_or(4)
-            } else {
-                4
-            };
-            let cls = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
-            let inst = PyObject::instance(cls);
-            if let PyObjectPayload::Instance(ref d) = inst.payload {
-                let mut w = d.attrs.write();
-                w.insert(CompactString::from("_max_workers"), PyObject::int(max_workers));
+    let poll_cls = {
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("register"), make_builtin(|_args| Ok(PyObject::none())));
+        ns.insert(CompactString::from("unregister"), make_builtin(|_args| Ok(PyObject::none())));
+        ns.insert(CompactString::from("modify"), make_builtin(|_args| Ok(PyObject::none())));
+        ns.insert(CompactString::from("poll"), make_builtin(|_args| Ok(PyObject::list(vec![]))));
+        PyObject::class(CompactString::from("poll"), vec![], ns)
+    };
 
-                w.insert(CompactString::from("submit"), make_builtin(|args: &[PyObjectRef]| {
-                    // Create a future that immediately resolves
-                    let future_cls = PyObject::class(CompactString::from("Future"), vec![], IndexMap::new());
-                    let future = PyObject::instance(future_cls);
-                    if let PyObjectPayload::Instance(ref fd) = future.payload {
-                        let mut fw = fd.attrs.write();
-                        // If a callable and args were provided, try to store result
-                        let result = if !args.is_empty() {
-                            PyObject::none()
-                        } else {
-                            PyObject::none()
-                        };
-                        let r = Arc::new(RwLock::new(Some(result)));
-                        let r2 = r.clone();
-                        fw.insert(CompactString::from("result"), PyObject::native_closure(
-                            "Future.result", move |_: &[PyObjectRef]| {
-                                Ok(r2.read().clone().unwrap_or_else(PyObject::none))
-                            }
-                        ));
-                        fw.insert(CompactString::from("done"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(true))));
-                        fw.insert(CompactString::from("cancelled"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
-                        fw.insert(CompactString::from("running"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
-                        fw.insert(CompactString::from("exception"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-                        fw.insert(CompactString::from("set_result"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-                        fw.insert(CompactString::from("add_done_callback"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-                        fw.insert(CompactString::from("cancel"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
-                    }
-                    Ok(future)
-                }));
-
-                w.insert(CompactString::from("map"), make_builtin(|_args: &[PyObjectRef]| {
-                    Ok(PyObject::list(vec![]))
-                }));
-
-                w.insert(CompactString::from("shutdown"), make_builtin(|_args: &[PyObjectRef]| {
-                    Ok(PyObject::none())
-                }));
-
-                let inst_ref = inst.clone();
-                w.insert(CompactString::from("__enter__"), PyObject::native_closure(
-                    "__enter__", move |_: &[PyObjectRef]| Ok(inst_ref.clone())
-                ));
-                w.insert(CompactString::from("__exit__"), make_builtin(|_: &[PyObjectRef]| {
-                    Ok(PyObject::bool_val(false))
-                }));
-            }
-            Ok(inst)
+    let poll_fn = {
+        let poll_cls = poll_cls.clone();
+        PyObject::native_closure("poll", move |_args: &[PyObjectRef]| {
+            Ok(PyObject::instance(poll_cls.clone()))
         })
     };
 
-    // wait function
-    let wait_fn = make_builtin(|args: &[PyObjectRef]| {
-        let _futures = if !args.is_empty() {
-            match &args[0].payload {
-                PyObjectPayload::List(items) => items.read().clone(),
-                _ => vec![args[0].clone()],
-            }
-        } else {
-            vec![]
-        };
-        let mut done_map = IndexMap::new();
-        let mut not_done_map = IndexMap::new();
-        done_map.insert(
-            CompactString::from("done"),
-            PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(IndexMap::new())))),
-        );
-        not_done_map.insert(
-            CompactString::from("not_done"),
-            PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(IndexMap::new())))),
-        );
-        let cls = PyObject::class(CompactString::from("WaitResult"), vec![], IndexMap::new());
-        let mut attrs = IndexMap::new();
-        attrs.insert(CompactString::from("done"), PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(IndexMap::new())))));
-        attrs.insert(CompactString::from("not_done"), PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(IndexMap::new())))));
-        Ok(PyObject::instance_with_attrs(cls, attrs))
-    });
-
-    // as_completed function
-    let as_completed_fn = make_builtin(|args: &[PyObjectRef]| {
-        if !args.is_empty() {
-            match &args[0].payload {
-                PyObjectPayload::List(items) => Ok(PyObject::list(items.read().clone())),
-                _ => Ok(PyObject::list(vec![args[0].clone()])),
-            }
-        } else {
-            Ok(PyObject::list(vec![]))
-        }
-    });
-
-    make_module("concurrent.futures", vec![
-        ("ThreadPoolExecutor", make_executor("ThreadPoolExecutor")),
-        ("ProcessPoolExecutor", make_executor("ProcessPoolExecutor")),
-        ("Future", future_fn),
-        ("wait", wait_fn),
-        ("as_completed", as_completed_fn),
-        ("FIRST_COMPLETED", PyObject::str_val(CompactString::from("FIRST_COMPLETED"))),
-        ("FIRST_EXCEPTION", PyObject::str_val(CompactString::from("FIRST_EXCEPTION"))),
-        ("ALL_COMPLETED", PyObject::str_val(CompactString::from("ALL_COMPLETED"))),
+    make_module("select", vec![
+        ("select", select_fn),
+        ("poll", poll_fn),
+        ("POLLIN", PyObject::int(0x001)),
+        ("POLLPRI", PyObject::int(0x002)),
+        ("POLLOUT", PyObject::int(0x004)),
+        ("POLLERR", PyObject::int(0x008)),
+        ("POLLHUP", PyObject::int(0x010)),
+        ("POLLNVAL", PyObject::int(0x020)),
+        ("error", PyObject::str_val(CompactString::from("select.error"))),
     ])
 }

@@ -2,6 +2,8 @@
 
 use compact_str::CompactString;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -1174,3 +1176,156 @@ pub fn create_sched_module() -> PyObjectRef {
     make_module("sched", vec![("scheduler", scheduler_fn)])
 }
 
+
+// ── mmap module ──
+
+pub fn create_mmap_module() -> PyObjectRef {
+    // mmap.mmap(fileno, length, ...) → mmap object (simplified: backed by Vec<u8>)
+    let mmap_fn = make_builtin(|args: &[PyObjectRef]| {
+        let _fileno = if !args.is_empty() { args[0].to_int().unwrap_or(-1) } else { -1 };
+        let length = if args.len() > 1 { args[1].to_int().unwrap_or(0) as usize } else { 0 };
+
+        let data: Arc<RwLock<Vec<u8>>> = Arc::new(RwLock::new(vec![0u8; length]));
+        let pos: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
+        let cls = PyObject::class(CompactString::from("mmap"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            
+            // read(n)
+            let d2 = data.clone();
+            let p2 = pos.clone();
+            w.insert(CompactString::from("read"), PyObject::native_closure("read", move |args| {
+                let n = if !args.is_empty() { args[0].to_int().unwrap_or(-1) } else { -1 };
+                let mut p = p2.write();
+                let d = d2.read();
+                let start = *p;
+                let end = if n < 0 { d.len() } else { std::cmp::min(start + n as usize, d.len()) };
+                let slice = d[start..end].to_vec();
+                *p = end;
+                Ok(PyObject::bytes(slice))
+            }));
+
+            // write(data)
+            let d3 = data.clone();
+            let p3 = pos.clone();
+            w.insert(CompactString::from("write"), PyObject::native_closure("write", move |args| {
+                if args.is_empty() { return Err(PyException::type_error("write requires bytes")); }
+                if let PyObjectPayload::Bytes(b) = &args[0].payload {
+                    let mut d = d3.write();
+                    let mut p = p3.write();
+                    let start = *p;
+                    for (i, &byte) in b.iter().enumerate() {
+                        let idx = start + i;
+                        if idx < d.len() {
+                            d[idx] = byte;
+                        } else {
+                            d.push(byte);
+                        }
+                    }
+                    *p = start + b.len();
+                    Ok(PyObject::int(b.len() as i64))
+                } else {
+                    Err(PyException::type_error("write requires bytes argument"))
+                }
+            }));
+
+            // seek(pos)
+            let p4 = pos.clone();
+            w.insert(CompactString::from("seek"), PyObject::native_closure("seek", move |args| {
+                if !args.is_empty() {
+                    let new_pos = args[0].to_int().unwrap_or(0) as usize;
+                    *p4.write() = new_pos;
+                }
+                Ok(PyObject::none())
+            }));
+
+            // tell()
+            let p5 = pos.clone();
+            w.insert(CompactString::from("tell"), PyObject::native_closure("tell", move |_args| {
+                Ok(PyObject::int(*p5.read() as i64))
+            }));
+
+            // size()
+            let d6 = data.clone();
+            w.insert(CompactString::from("size"), PyObject::native_closure("size", move |_args| {
+                Ok(PyObject::int(d6.read().len() as i64))
+            }));
+
+            // close()
+            w.insert(CompactString::from("close"), make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none())));
+
+            // __len__
+            let d7 = data.clone();
+            w.insert(CompactString::from("__len__"), PyObject::native_closure("__len__", move |_args| {
+                Ok(PyObject::int(d7.read().len() as i64))
+            }));
+
+            // __getitem__ (indexing)
+            let d8 = data.clone();
+            w.insert(CompactString::from("__getitem__"), PyObject::native_closure("__getitem__", move |args| {
+                if args.is_empty() { return Err(PyException::index_error("mmap index out of range")); }
+                let idx = args[0].to_int().unwrap_or(0) as usize;
+                let d = d8.read();
+                if idx < d.len() {
+                    Ok(PyObject::int(d[idx] as i64))
+                } else {
+                    Err(PyException::index_error("mmap index out of range"))
+                }
+            }));
+
+            // __enter__ / __exit__ for context manager
+            let inst_ref = inst.clone();
+            w.insert(CompactString::from("__enter__"), PyObject::native_closure("__enter__", move |_| Ok(inst_ref.clone())));
+            w.insert(CompactString::from("__exit__"), make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
+        }
+        Ok(inst)
+    });
+
+    make_module("mmap", vec![
+        ("mmap", mmap_fn),
+        ("ACCESS_READ", PyObject::int(1)),
+        ("ACCESS_WRITE", PyObject::int(2)),
+        ("ACCESS_COPY", PyObject::int(3)),
+        ("PAGESIZE", PyObject::int(4096)),
+    ])
+}
+
+// ── resource module (unix) ──
+
+pub fn create_resource_module() -> PyObjectRef {
+    let getrlimit_fn = make_builtin(|args: &[PyObjectRef]| {
+        let _resource = if !args.is_empty() { args[0].to_int().unwrap_or(0) } else { 0 };
+        // Return (soft_limit, hard_limit) — use -1 for unlimited
+        Ok(PyObject::tuple(vec![PyObject::int(-1), PyObject::int(-1)]))
+    });
+
+    let setrlimit_fn = make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()));
+
+    let getrusage_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("struct_rusage"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("ru_utime"), PyObject::float(0.0));
+        attrs.insert(CompactString::from("ru_stime"), PyObject::float(0.0));
+        attrs.insert(CompactString::from("ru_maxrss"), PyObject::int(0));
+        attrs.insert(CompactString::from("ru_minflt"), PyObject::int(0));
+        attrs.insert(CompactString::from("ru_majflt"), PyObject::int(0));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
+    make_module("resource", vec![
+        ("getrlimit", getrlimit_fn),
+        ("setrlimit", setrlimit_fn),
+        ("getrusage", getrusage_fn),
+        ("RLIMIT_CPU", PyObject::int(0)),
+        ("RLIMIT_FSIZE", PyObject::int(1)),
+        ("RLIMIT_DATA", PyObject::int(2)),
+        ("RLIMIT_STACK", PyObject::int(3)),
+        ("RLIMIT_CORE", PyObject::int(4)),
+        ("RLIMIT_RSS", PyObject::int(5)),
+        ("RLIMIT_NOFILE", PyObject::int(7)),
+        ("RLIMIT_AS", PyObject::int(9)),
+        ("RUSAGE_SELF", PyObject::int(0)),
+        ("RUSAGE_CHILDREN", PyObject::int(-1)),
+    ])
+}

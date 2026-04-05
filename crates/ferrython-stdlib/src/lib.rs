@@ -158,6 +158,10 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "signal" => Some(concurrency_modules::create_signal_module()),
         "multiprocessing" => Some(concurrency_modules::create_multiprocessing_module()),
         "selectors" => Some(concurrency_modules::create_selectors_module()),
+        "select" => Some(concurrency_modules::create_select_module()),
+        // OS-level
+        "mmap" => Some(sys_modules::create_mmap_module()),
+        "resource" => Some(sys_modules::create_resource_module()),
         // Async
         "asyncio" => Some(ferrython_async::create_asyncio_module()),
         // Import system
@@ -206,12 +210,10 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "sched" => Some(sys_modules::create_sched_module()),
         // Binary & encoding
         "binascii" => Some(serial_modules::create_binascii_module()),
-        // concurrent.futures
+        // concurrent — handled by stdlib/Lib/concurrent/futures.py (pure Python)
         "concurrent" => {
-            let futures = concurrency_modules::create_concurrent_futures_module();
-            Some(ferrython_core::object::make_module("concurrent", vec![("futures", futures)]))
+            Some(ferrython_core::object::make_module("concurrent", vec![]))
         }
-        "concurrent.futures" => Some(concurrency_modules::create_concurrent_futures_module()),
         // HTML parser & unicode
         "html.parser" => Some(text_modules::create_html_parser_module()),
         "unicodedata" => Some(text_modules::create_unicodedata_module()),
