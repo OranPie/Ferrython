@@ -212,6 +212,9 @@ pub struct ClassData {
     pub subclasses: Arc<RwLock<Vec<std::sync::Weak<PyObject>>>>,
     /// `__slots__` declared on *this* class (None means no __slots__ declared).
     pub slots: Option<Vec<CompactString>>,
+    /// Fast-path flag: true if this class (or any base) defines a custom __getattribute__.
+    /// When false, the VM skips the expensive MRO lookup on every LoadAttr.
+    pub has_getattribute: bool,
 }
 
 impl ClassData {
@@ -239,6 +242,14 @@ impl ClassData {
                 _ => None,
             }
         });
+        // Detect __getattribute__ override in namespace or any base class
+        let has_getattribute = namespace.contains_key("__getattribute__") || mro.iter().any(|base| {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                bcd.namespace.read().contains_key("__getattribute__")
+            } else {
+                false
+            }
+        });
         Self {
             name,
             bases,
@@ -248,6 +259,7 @@ impl ClassData {
             method_cache: Arc::new(RwLock::new(IndexMap::new())),
             subclasses: Arc::new(RwLock::new(Vec::new())),
             slots,
+            has_getattribute,
         }
     }
 

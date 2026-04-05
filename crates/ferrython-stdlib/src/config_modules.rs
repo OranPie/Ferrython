@@ -830,10 +830,9 @@ pub fn create_configparser_module() -> PyObjectRef {
         Ok(PyObject::bool_val(false))
     }
 
-    // write: write config to a file-like object (simplified: just returns string)
+    // write: write config to a file-like object
     fn cp_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         check_args_min("write", args, 2)?;
-        // For now, just build the string and try to write to the file-like arg
         let mut output = String::new();
         // Write defaults
         if let PyObjectPayload::Instance(inst) = &args[0].payload {
@@ -862,12 +861,34 @@ pub fn create_configparser_module() -> PyObjectRef {
                 output.push('\n');
             }
         }
-        // Try to call write on the file-like object
-        if let Some(_write_fn) = args[1].get_attr("write") {
-            // Just store output — we can't call from stdlib
-            // Instead, write directly if it's a StringIO
+        // Call write on the file-like object
+        let file_obj = &args[1];
+        if let Some(write_fn) = file_obj.get_attr("write") {
+            let text = PyObject::str_val(CompactString::from(output.as_str()));
+            match &write_fn.payload {
+                PyObjectPayload::NativeClosure { func, .. } => {
+                    func(&[text])?;
+                }
+                PyObjectPayload::NativeFunction { func, .. } => {
+                    func(&[text])?;
+                }
+                _ => {
+                    // For bound methods or other callables, we can't invoke from stdlib.
+                    // Fallback: write directly to StringIO buffer if possible
+                    if let PyObjectPayload::Instance(inst) = &file_obj.payload {
+                        if inst.attrs.read().contains_key("__stringio__") {
+                            if let Some(w) = inst.attrs.read().get("write") {
+                                if let PyObjectPayload::NativeClosure { func, .. } = &w.payload {
+                                    let text2 = PyObject::str_val(CompactString::from(output.as_str()));
+                                    func(&[text2])?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-        Ok(PyObject::str_val(CompactString::from(output)))
+        Ok(PyObject::none())
     }
 
     make_module("configparser", vec![

@@ -1,7 +1,7 @@
 # Ferrython — Known Limitations
 
 > Comprehensive inventory of gaps between Ferrython and CPython 3.8.
-> Updated after VM optimization and documentation refresh (124/124 tests pass).
+> Updated: 156 stdlib modules, 125 fixture tests, 15 crates.
 
 ---
 
@@ -73,6 +73,8 @@
 | `operator.length_hint()` | ✅ | Dispatches `__length_hint__` dunder |
 | `inspect` module (17 functions) | ✅ | is*, getmembers, signature, getfullargspec |
 | Dict views (`.keys()`, `.values()`, `.items()`) | ✅ | Live view objects |
+| Unbound dunder methods | ✅ | `int.__add__(3, 4)`, 35+ dunders on all builtin types |
+| `super().__delattr__` / `__eq__` / `__hash__` | ✅ | Full super proxy delegation |
 
 ### 3.6 Async Runtime
 | Feature | Status | Notes |
@@ -107,6 +109,7 @@
 | `typing` | `TypeVar`, `Generic`, `Protocol`, all container types | `get_type_hints()` returns `{}` |
 | `ssl` | Module imports | OpenSSL version hardcoded to `"(stub)"` |
 | `multiprocessing` | Module imports | `Pool` is a stub |
+| `argparse` | ArgumentParser, add_argument, parse_args, parse_known_args | Subparsers, mutually exclusive groups |
 
 ### 4.2 Incomplete Implementations
 
@@ -124,19 +127,20 @@
 | Category | Modules |
 |----------|---------|
 | C interop | `ctypes`, `cffi` |
-| OS / Low-level | `mmap`, `fcntl`, `select`, `resource` |
-| Compression | `gzip`, `bz2`, `lzma`, `zipfile`, `tarfile` |
-| Dev tools | `pdb` (pydoc ✅, tracemalloc ✅, faulthandler ✅) |
-| Introspection | `token` (symtable ✅, tokenize ✅) |
+
+> All previously listed missing modules (compression, pdb, mmap, fcntl, select, resource, token) have been implemented.
 
 ## 5. Performance
 
-| Benchmark | CPython 3.8 | Ferrython | Ratio |
+| Benchmark | CPython 3.8 | Ferrython (release) | Ratio |
 |-----------|------------|-----------|-------|
 | `fib(25)` | ~0.03 s | ~0.13 s | ~4× slower |
 | `fib(30)` | ~0.3 s | ~1.3 s | ~4× slower |
-| Function calls/s | — | 1.95M | — |
-| Arithmetic ops/s | — | 3.6M | — |
+| Method calls/s | — | 564K | — |
+| Dict 100K ops | — | 0.19s | — |
+| List 100K append+sum | — | 0.12s | — |
+| Genexpr sum 100K | — | 0.11s | — |
+| Try/except 100K | — | 0.02s | — |
 
 | Optimization | Status |
 |-------------|--------|
@@ -155,8 +159,8 @@
 ## 6. Architecture
 
 - **15 crates** in Cargo workspace
-- **135+ stdlib modules** registered
-- **124 fixture tests** + 12 unit tests (all passing)
+- **156 stdlib modules** registered
+- **125 fixture tests** (all passing via `cargo test`)
 - **13 microbenchmarks** in benchmark suite
 
 | Issue | Status | Notes |
@@ -169,4 +173,4 @@
 
 ---
 
-*Last updated after builtin subclass inheritance fix + BuiltinBoundMethod delegation refactor.*
+*Last updated after super proxy expansion + unbound dunder wrappers + stdlib improvements.*

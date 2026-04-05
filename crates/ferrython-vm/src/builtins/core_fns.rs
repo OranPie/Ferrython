@@ -117,6 +117,7 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         method_cache: Arc::new(RwLock::new(IndexMap::new())),
                         subclasses: Arc::new(RwLock::new(Vec::new())),
                         slots: cd.slots.clone(),
+                        has_getattribute: cd.has_getattribute,
                     })));
                 }
             }

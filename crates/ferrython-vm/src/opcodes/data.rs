@@ -271,32 +271,40 @@ impl VirtualMachine {
 
     fn exec_load_attr(&mut self, name: &CompactString, obj: PyObjectRef) -> Result<Option<PyObjectRef>, PyException> {
         // __getattribute__ override: called before normal lookup
+        // Fast-path: skip MRO scan if the class doesn't override __getattribute__
         if let PyObjectPayload::Instance(inst) = &obj.payload {
-            if let Some(ga) = lookup_in_class_mro(&inst.class, "__getattribute__") {
-                if matches!(&ga.payload, PyObjectPayload::Function(_)) {
-                    let method = Arc::new(PyObject {
-                        payload: PyObjectPayload::BoundMethod {
-                            receiver: obj.clone(),
-                            method: ga,
-                        }
-                    });
-                    let name_arg = PyObject::str_val(intern::intern_or_new(name.as_str()));
-                    match self.call_object(method, vec![name_arg]) {
-                        Ok(result) => {
-                            self.vm_push(result);
-                            return Ok(None);
-                        }
-                        Err(e) if e.kind == ExceptionKind::AttributeError => {
-                            // Fall through to __getattr__
-                            if let Some(ga2) = obj.get_attr("__getattr__") {
-                                let name_arg2 = PyObject::str_val(intern::intern_or_new(name.as_str()));
-                                let result = self.call_object(ga2, vec![name_arg2])?;
+            let has_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                cd.has_getattribute
+            } else {
+                false
+            };
+            if has_ga {
+                if let Some(ga) = lookup_in_class_mro(&inst.class, "__getattribute__") {
+                    if matches!(&ga.payload, PyObjectPayload::Function(_)) {
+                        let method = Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: obj.clone(),
+                                method: ga,
+                            }
+                        });
+                        let name_arg = PyObject::str_val(intern::intern_or_new(name.as_str()));
+                        match self.call_object(method, vec![name_arg]) {
+                            Ok(result) => {
                                 self.vm_push(result);
                                 return Ok(None);
                             }
-                            return Err(e);
+                            Err(e) if e.kind == ExceptionKind::AttributeError => {
+                                // Fall through to __getattr__
+                                if let Some(ga2) = obj.get_attr("__getattr__") {
+                                    let name_arg2 = PyObject::str_val(intern::intern_or_new(name.as_str()));
+                                    let result = self.call_object(ga2, vec![name_arg2])?;
+                                    self.vm_push(result);
+                                    return Ok(None);
+                                }
+                                return Err(e);
+                            }
+                            Err(e) => return Err(e),
                         }
-                        Err(e) => return Err(e),
                     }
                 }
             }
