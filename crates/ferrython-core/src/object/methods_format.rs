@@ -234,62 +234,148 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
 }
 
 pub(super) fn py_dir(obj: &PyObjectRef) -> Vec<CompactString> {
+        // Common dunders shared by all types
+        let common_dunders = &[
+            "__class__", "__delattr__", "__dir__", "__doc__", "__eq__", "__format__",
+            "__ge__", "__getattribute__", "__gt__", "__hash__", "__init__",
+            "__init_subclass__", "__le__", "__lt__", "__ne__", "__new__",
+            "__reduce__", "__reduce_ex__", "__repr__", "__setattr__",
+            "__sizeof__", "__str__", "__subclasshook__",
+        ];
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
                 let mut names: Vec<CompactString> = inst.attrs.read().keys().cloned().collect();
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     names.extend(cd.namespace.read().keys().cloned());
                 }
+                for d in common_dunders { names.push(CompactString::from(*d)); }
                 names.sort(); names.dedup(); names
             }
-            PyObjectPayload::Class(cd) => { let mut n: Vec<_> = cd.namespace.read().keys().cloned().collect(); n.sort(); n }
+            PyObjectPayload::Class(cd) => {
+                let mut n: Vec<_> = cd.namespace.read().keys().cloned().collect();
+                for d in common_dunders { n.push(CompactString::from(*d)); }
+                n.sort(); n.dedup(); n
+            }
             PyObjectPayload::Module(m) => { let mut n: Vec<_> = m.attrs.read().keys().cloned().collect(); n.sort(); n }
             PyObjectPayload::List(_) => {
-                vec!["__class__", "append", "clear", "copy", "count", "extend",
-                     "index", "insert", "pop", "remove", "reverse", "sort"]
-                    .into_iter().map(CompactString::from).collect()
+                let mut v: Vec<&str> = vec![
+                    "append", "clear", "copy", "count", "extend",
+                    "index", "insert", "pop", "remove", "reverse", "sort",
+                    "__add__", "__contains__", "__getitem__", "__iadd__", "__imul__",
+                    "__iter__", "__len__", "__mul__", "__reversed__", "__rmul__",
+                    "__setitem__", "__delitem__", "__bool__",
+                ];
+                v.extend_from_slice(common_dunders);
+                v.sort(); v.dedup();
+                v.into_iter().map(CompactString::from).collect()
             }
             PyObjectPayload::Dict(_) => {
-                vec!["__class__", "clear", "copy", "get", "items", "keys",
-                     "pop", "popitem", "setdefault", "update", "values"]
-                    .into_iter().map(CompactString::from).collect()
+                let mut v: Vec<&str> = vec![
+                    "clear", "copy", "fromkeys", "get", "items", "keys",
+                    "pop", "popitem", "setdefault", "update", "values",
+                    "__contains__", "__getitem__", "__setitem__", "__delitem__",
+                    "__iter__", "__len__", "__bool__",
+                ];
+                v.extend_from_slice(common_dunders);
+                v.sort(); v.dedup();
+                v.into_iter().map(CompactString::from).collect()
             }
             PyObjectPayload::Str(_) => {
-                vec!["__class__", "capitalize", "casefold", "center", "count", "encode",
-                     "endswith", "expandtabs", "find", "format", "format_map", "index",
-                     "isalnum", "isalpha", "isascii", "isdecimal", "isdigit", "isidentifier",
-                     "islower", "isnumeric", "isprintable", "isspace", "istitle", "isupper",
-                     "join", "ljust", "lower", "lstrip", "maketrans", "partition", "replace",
-                     "rfind", "rindex", "rjust", "rpartition", "rsplit", "rstrip", "split",
-                     "splitlines", "startswith", "strip", "swapcase", "title", "translate",
-                     "upper", "zfill"]
-                    .into_iter().map(CompactString::from).collect()
+                let mut v: Vec<&str> = vec![
+                    "capitalize", "casefold", "center", "count", "encode",
+                    "endswith", "expandtabs", "find", "format", "format_map", "index",
+                    "isalnum", "isalpha", "isascii", "isdecimal", "isdigit", "isidentifier",
+                    "islower", "isnumeric", "isprintable", "isspace", "istitle", "isupper",
+                    "join", "ljust", "lower", "lstrip", "maketrans", "partition",
+                    "removeprefix", "removesuffix", "replace",
+                    "rfind", "rindex", "rjust", "rpartition", "rsplit", "rstrip", "split",
+                    "splitlines", "startswith", "strip", "swapcase", "title", "translate",
+                    "upper", "zfill",
+                    "__add__", "__contains__", "__getitem__", "__iter__", "__len__",
+                    "__mod__", "__mul__", "__rmul__", "__bool__",
+                ];
+                v.extend_from_slice(common_dunders);
+                v.sort(); v.dedup();
+                v.into_iter().map(CompactString::from).collect()
             }
             PyObjectPayload::Int(_) | PyObjectPayload::Bool(_) => {
-                vec!["__class__", "bit_length", "conjugate", "denominator", "imag",
-                     "numerator", "real"]
-                    .into_iter().map(CompactString::from).collect()
+                let mut v: Vec<&str> = vec![
+                    "bit_length", "conjugate", "denominator", "imag",
+                    "numerator", "real", "to_bytes", "from_bytes",
+                    "__abs__", "__add__", "__and__", "__bool__", "__ceil__",
+                    "__divmod__", "__float__", "__floor__", "__floordiv__",
+                    "__index__", "__int__", "__invert__", "__lshift__", "__mod__",
+                    "__mul__", "__neg__", "__or__", "__pos__", "__pow__",
+                    "__radd__", "__rand__", "__rfloordiv__", "__rlshift__",
+                    "__rmod__", "__rmul__", "__ror__", "__rpow__", "__rrshift__",
+                    "__rshift__", "__rsub__", "__rtruediv__", "__rxor__",
+                    "__sub__", "__truediv__", "__trunc__", "__xor__",
+                ];
+                v.extend_from_slice(common_dunders);
+                v.sort(); v.dedup();
+                v.into_iter().map(CompactString::from).collect()
             }
             PyObjectPayload::Float(_) => {
-                vec!["__class__", "as_integer_ratio", "conjugate", "hex", "imag",
-                     "is_integer", "real"]
-                    .into_iter().map(CompactString::from).collect()
+                let mut v: Vec<&str> = vec![
+                    "as_integer_ratio", "conjugate", "hex", "imag",
+                    "is_integer", "real",
+                    "__abs__", "__add__", "__bool__", "__divmod__",
+                    "__float__", "__floordiv__", "__int__", "__mod__",
+                    "__mul__", "__neg__", "__pos__", "__pow__",
+                    "__radd__", "__rfloordiv__", "__rmod__", "__rmul__",
+                    "__rpow__", "__rsub__", "__rtruediv__",
+                    "__sub__", "__truediv__", "__trunc__",
+                ];
+                v.extend_from_slice(common_dunders);
+                v.sort(); v.dedup();
+                v.into_iter().map(CompactString::from).collect()
             }
             PyObjectPayload::Tuple(_) => {
-                vec!["__class__", "count", "index"]
-                    .into_iter().map(CompactString::from).collect()
+                let mut v: Vec<&str> = vec![
+                    "count", "index",
+                    "__add__", "__contains__", "__getitem__", "__iter__",
+                    "__len__", "__mul__", "__rmul__", "__bool__",
+                ];
+                v.extend_from_slice(common_dunders);
+                v.sort(); v.dedup();
+                v.into_iter().map(CompactString::from).collect()
             }
             PyObjectPayload::Set(_) => {
-                vec!["__class__", "add", "clear", "copy", "difference", "discard",
-                     "intersection", "isdisjoint", "issubset", "issuperset", "pop",
-                     "remove", "symmetric_difference", "union", "update"]
-                    .into_iter().map(CompactString::from).collect()
+                let mut v: Vec<&str> = vec![
+                    "add", "clear", "copy", "difference", "discard",
+                    "intersection", "isdisjoint", "issubset", "issuperset", "pop",
+                    "remove", "symmetric_difference", "union", "update",
+                    "__and__", "__contains__", "__iand__", "__ior__", "__isub__",
+                    "__iter__", "__ixor__", "__len__", "__or__", "__sub__",
+                    "__xor__", "__bool__",
+                ];
+                v.extend_from_slice(common_dunders);
+                v.sort(); v.dedup();
+                v.into_iter().map(CompactString::from).collect()
+            }
+            PyObjectPayload::FrozenSet(_) => {
+                let mut v: Vec<&str> = vec![
+                    "copy", "difference", "intersection", "isdisjoint",
+                    "issubset", "issuperset", "symmetric_difference", "union",
+                    "__and__", "__contains__", "__iter__", "__len__",
+                    "__or__", "__sub__", "__xor__", "__bool__",
+                ];
+                v.extend_from_slice(common_dunders);
+                v.sort(); v.dedup();
+                v.into_iter().map(CompactString::from).collect()
             }
             PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => {
-                vec!["__class__", "count", "decode", "endswith", "find", "hex",
-                     "index", "join", "replace", "split", "startswith", "strip"]
-                    .into_iter().map(CompactString::from).collect()
+                let mut v: Vec<&str> = vec![
+                    "count", "decode", "endswith", "find", "hex",
+                    "index", "join", "lower", "replace", "split", "startswith", "strip",
+                    "upper", "fromhex",
+                    "__add__", "__contains__", "__getitem__", "__iter__",
+                    "__len__", "__mul__", "__bool__",
+                ];
+                v.extend_from_slice(common_dunders);
+                v.sort(); v.dedup();
+                v.into_iter().map(CompactString::from).collect()
             }
-            _ => vec![],
+            _ => common_dunders.iter().map(|s| CompactString::from(*s)).collect(),
         }
 }

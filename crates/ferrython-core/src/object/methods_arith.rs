@@ -168,6 +168,18 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 for (k, v) in a.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
             }
+            (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
+                let rb = b.read();
+                let mut result = IndexMap::new();
+                for (k, v) in a.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            }
+            (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
+                let ra = a.read();
+                let mut result = IndexMap::new();
+                for (k, v) in ra.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+            }
             // DictKeys/DictItems set-like difference
             (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
             | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
@@ -567,6 +579,18 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                 for (k, v) in a.iter() { if b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
             }
+            (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
+                let rb = b.read();
+                let mut result = IndexMap::new();
+                for (k, v) in a.iter() { if rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            }
+            (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
+                let ra = a.read();
+                let mut result = IndexMap::new();
+                for (k, v) in ra.iter() { if b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+            }
             // Counter & Counter: minimum of counts (intersection)
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
                 let ra = a_map.read(); let rb = b_map.read();
@@ -705,6 +729,20 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                 for (k, v) in a.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 for (k, v) in b.iter() { if !a.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            }
+            (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
+                let rb = b.read();
+                let mut result = IndexMap::new();
+                for (k, v) in a.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                for (k, v) in rb.iter() { if !a.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+            }
+            (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
+                let ra = a.read();
+                let mut result = IndexMap::new();
+                for (k, v) in ra.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                for (k, v) in b.iter() { if !ra.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
             }
             // DictKeys/DictItems set-like symmetric difference
             (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)

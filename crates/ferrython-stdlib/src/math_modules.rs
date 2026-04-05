@@ -850,17 +850,13 @@ pub fn create_decimal_module() -> PyObjectRef {
     }
 
     fn decimal_format(neg: bool, digits: i128, scale: u32) -> String {
+        // CPython Decimal preserves trailing zeros to maintain precision
         if scale == 0 {
             if neg && digits != 0 { format!("-{}", digits) } else { format!("{}", digits) }
         } else {
             let s = format!("{:0>width$}", digits, width = scale as usize + 1);
             let (int_part, frac_part) = s.split_at(s.len() - scale as usize);
-            let frac_trimmed = frac_part.trim_end_matches('0');
-            if frac_trimmed.is_empty() {
-                if neg && digits != 0 { format!("-{}", int_part) } else { int_part.to_string() }
-            } else {
-                if neg && digits != 0 { format!("-{}.{}", int_part, frac_trimmed) } else { format!("{}.{}", int_part, frac_trimmed) }
-            }
+            if neg && digits != 0 { format!("-{}.{}", int_part, frac_part) } else { format!("{}.{}", int_part, frac_part) }
         }
     }
 
