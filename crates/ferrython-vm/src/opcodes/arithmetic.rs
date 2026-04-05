@@ -590,6 +590,20 @@ fn string_percent_format(fmt: &str, args: &PyObjectRef) -> Result<PyObjectRef, P
         match chars.peek() {
             Some(&'%') => { chars.next(); result.push('%'); }
             Some(_) => {
+                // Check for %(name) dict-keyed format
+                let dict_key = if chars.peek() == Some(&'(') {
+                    chars.next(); // skip '('
+                    let mut key = String::new();
+                    while let Some(&c) = chars.peek() {
+                        if c == ')' { chars.next(); break; }
+                        key.push(c);
+                        chars.next();
+                    }
+                    Some(key)
+                } else {
+                    None
+                };
+
                 let mut flags = String::new();
                 while let Some(&c) = chars.peek() {
                     if c == '-' || c == '+' || c == '0' || c == ' ' || c == '#' {
@@ -620,11 +634,19 @@ fn string_percent_format(fmt: &str, args: &PyObjectRef) -> Result<PyObjectRef, P
                     precision = Some(p);
                 }
                 let spec = chars.next().unwrap_or('s');
-                if arg_idx >= arg_list.len() {
-                    return Err(PyException::type_error("not enough arguments for format string"));
-                }
-                let arg = &arg_list[arg_idx];
-                arg_idx += 1;
+
+                // Resolve the argument: dict-keyed or positional
+                let arg = if let Some(ref key) = dict_key {
+                    let key_obj = PyObject::str_val(CompactString::from(key.as_str()));
+                    args.get_item(&key_obj)?
+                } else {
+                    if arg_idx >= arg_list.len() {
+                        return Err(PyException::type_error("not enough arguments for format string"));
+                    }
+                    let a = arg_list[arg_idx].clone();
+                    arg_idx += 1;
+                    a
+                };
 
                 let formatted = match spec {
                     's' => arg.py_to_string(),

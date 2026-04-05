@@ -419,6 +419,7 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
             }
             (PyObjectPayload::Str(fmt_str), _) => {
                 // printf-style string formatting: "Hello %s" % "world"
+                // Also supports dict-keyed format: "%(name)s" % {"name": "Bob"}
                 let args_list = match &b.payload {
                     PyObjectPayload::Tuple(items) => items.clone(),
                     _ => vec![b.clone()],
@@ -430,6 +431,19 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                 while i < chars.len() {
                     if chars[i] == '%' && i + 1 < chars.len() {
                         i += 1;
+                        // Check for %(name) dict-keyed format
+                        let dict_key = if i < chars.len() && chars[i] == '(' {
+                            i += 1; // skip '('
+                            let start = i;
+                            while i < chars.len() && chars[i] != ')' {
+                                i += 1;
+                            }
+                            let key: String = chars[start..i].iter().collect();
+                            if i < chars.len() { i += 1; } // skip ')'
+                            Some(key)
+                        } else {
+                            None
+                        };
                         // Parse optional flags, width, precision
                         let mut spec_chars = String::new();
                         while i < chars.len() && "-+ #0123456789.".contains(chars[i]) {
@@ -443,11 +457,18 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                             result.push('%');
                             continue;
                         }
-                        if arg_idx >= args_list.len() {
-                            return Err(PyException::type_error("not enough arguments for format string"));
-                        }
-                        let arg = &args_list[arg_idx];
-                        arg_idx += 1;
+                        // Resolve the argument: dict-keyed or positional
+                        let arg = if let Some(ref key) = dict_key {
+                            let key_obj = PyObject::str_val(CompactString::from(key.as_str()));
+                            b.get_item(&key_obj)?
+                        } else {
+                            if arg_idx >= args_list.len() {
+                                return Err(PyException::type_error("not enough arguments for format string"));
+                            }
+                            let a = args_list[arg_idx].clone();
+                            arg_idx += 1;
+                            a
+                        };
                         match conv {
                             's' => {
                                 let s = arg.py_to_string();
