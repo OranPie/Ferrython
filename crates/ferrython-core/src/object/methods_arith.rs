@@ -105,11 +105,14 @@ pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                     let new_val = existing + v.as_int().unwrap_or(0);
                     result.insert(k.clone(), PyObject::int(new_val));
                 }
-                // Preserve __counter__ marker if both inputs are counters
+                // Preserve __counter__ and __defaultdict_factory__ markers if both inputs are counters
                 let a_is_counter = ra.contains_key(&HashableKey::Str(intern_or_new("__counter__")));
                 let b_is_counter = rb.contains_key(&HashableKey::Str(intern_or_new("__counter__")));
                 if a_is_counter && b_is_counter {
                     result.insert(HashableKey::Str(intern_or_new("__counter__")), PyObject::bool_val(true));
+                    if let Some(factory) = ra.get(&HashableKey::Str(intern_or_new("__defaultdict_factory__"))) {
+                        result.insert(HashableKey::Str(intern_or_new("__defaultdict_factory__")), factory.clone());
+                    }
                 }
                 Ok(PyObject::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(result)))))
             }
