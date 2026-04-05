@@ -28,7 +28,7 @@ impl VirtualMachine {
 
         let namespace = match &body_func.payload {
             PyObjectPayload::Function(pyfunc) => {
-                let code = pyfunc.code.clone();
+                let code = Arc::clone(&pyfunc.code);
                 let globals = pyfunc.globals.clone();
                 let cc = pyfunc.constant_cache.clone();
                 let mut frame = Frame::new_from_pool(code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool);
@@ -44,7 +44,6 @@ impl VirtualMachine {
                 self.call_stack.push(frame);
                 let _ = self.run_frame();
                 let frame = self.call_stack.pop().unwrap();
-                // Capture cells for __class__ patching below (cells are Arc<RwLock>)
                 let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
                 let cells = frame.cells.clone();
                 (frame.local_names, Some((cellvar_names, cells)))
@@ -341,12 +340,11 @@ impl VirtualMachine {
         // Execute class body to get namespace
         let namespace = match &body_func.payload {
             PyObjectPayload::Function(pyfunc) => {
-                let code = pyfunc.code.clone();
+                let code = Arc::clone(&pyfunc.code);
                 let globals = pyfunc.globals.clone();
                 let cc = pyfunc.constant_cache.clone();
                 let mut frame = Frame::new_from_pool(code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool);
                 frame.scope_kind = ScopeKind::Class;
-                // Seed with __prepare__ namespace if any
                 for (k, v) in &prepared_ns {
                     frame.local_names.insert(k.clone(), v.clone());
                 }

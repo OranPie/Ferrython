@@ -195,7 +195,7 @@ impl VirtualMachine {
     fn exec_module_source(
         &mut self,
         cache_name: &str,
-        code: ferrython_bytecode::CodeObject,
+        code: std::sync::Arc<ferrython_bytecode::CodeObject>,
         mod_name: CompactString,
         file_path: Option<CompactString>,
     ) -> PyResult<PyObjectRef> {
@@ -220,7 +220,7 @@ impl VirtualMachine {
         self.cache_module(cache_name, &partial_mod);
 
         // Execute module body
-        let frame = Frame::new(Arc::new(code), globals.clone(), Arc::clone(&self.builtins));
+        let frame = Frame::new(code, globals.clone(), Arc::clone(&self.builtins));
         self.call_stack.push(frame);
         let exec_result = self.run_frame();
         if let Some(frame) = self.call_stack.pop() {

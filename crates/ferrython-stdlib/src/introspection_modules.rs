@@ -362,9 +362,9 @@ pub fn create_dis_module() -> PyObjectRef {
             return Err(PyException::type_error("dis() requires a function argument"));
         }
         let obj = &args[0];
-        let code = match &obj.payload {
-            PyObjectPayload::Function(pf) => pf.code.clone(),
-            PyObjectPayload::Code(c) => c.clone(),
+        let code: std::sync::Arc<ferrython_bytecode::CodeObject> = match &obj.payload {
+            PyObjectPayload::Function(pf) => std::sync::Arc::clone(&pf.code),
+            PyObjectPayload::Code(c) => std::sync::Arc::clone(c),
             _ => return Err(PyException::type_error(
                 format!("don't know how to disassemble {} objects", obj.type_name())
             )),

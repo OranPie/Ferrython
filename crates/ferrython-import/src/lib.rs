@@ -25,7 +25,7 @@ pub enum ResolvedModule {
     Builtin(PyObjectRef),
     /// Source code compiled to bytecode — VM must execute it to produce the module.
     Source {
-        code: CodeObject,
+        code: Arc<CodeObject>,
         name: CompactString,
         /// Filesystem path of the source file (for __file__ metadata).
         file_path: Option<CompactString>,
@@ -240,7 +240,7 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
         let cache = BYTECODE_CACHE.lock();
         if let Some(cached) = cache.get(&(canonical.clone(), mtime)) {
             return Ok(ResolvedModule::Source {
-                code: CodeObject::clone(&cached),
+                code: Arc::clone(cached),
                 name: CompactString::from(module_name),
                 file_path: Some(CompactString::from(path_str)),
             });
@@ -255,16 +255,16 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
         .map_err(|e| PyException::import_error(
             format!("syntax error in '{}': {}", path_str, e)
         ))?;
-    let code = ferrython_compiler::compile(&ast, &path_str)
+    let code = Arc::new(ferrython_compiler::compile(&ast, &path_str)
         .map_err(|e| PyException::import_error(
             format!("compile error in '{}': {}", path_str, e)
-        ))?;
+        ))?);
 
     // Store in cache if we have a valid mtime.
     if let Some(mtime) = mtime {
         BYTECODE_CACHE.lock().insert(
             (canonical, mtime),
-            Arc::new(code.clone()),
+            Arc::clone(&code),
         );
     }
 
