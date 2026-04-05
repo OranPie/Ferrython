@@ -164,3 +164,6 @@ fixture_test!(test_cpython_compat98, "test_cpython_compat98.py");
 fixture_test!(test_cpython_compat99, "test_cpython_compat99.py");
 fixture_test!(test_cpython_compat100, "test_cpython_compat100.py");
 fixture_test!(test_cpython_compat101, "test_cpython_compat101.py");
+
+// Phase 73: __contains__, __missing__, __len__/__bool__ protocols
+fixture_test!(test_phase73, "test_phase73.py");

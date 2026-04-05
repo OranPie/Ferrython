@@ -1,7 +1,7 @@
 # Ferrython — Known Limitations
 
 > Comprehensive inventory of gaps between Ferrython and CPython 3.8.
-> Updated after CPython alignment test batch 1350 (~99.3% pass rate on 1350 tests).
+> Updated after Phase 73 — __contains__, __missing__, __len__/__bool__ protocol alignment.
 
 ---
 
@@ -142,7 +142,7 @@
 |-------|----------|--------|-------|
 | God files (>2,000 lines) | opcodes.rs, vm_call.rs | ✅ | opcodes.rs split into focused handlers; vm_call.rs helpers extracted; parser.rs split into mod.rs, statements.rs, expressions.rs, arguments.rs |
 | Error type unification | parser/compiler/VM | ✅ | `From<ParseError>` and `From<CompileError>` for `PyException` in ferrython-core |
-| `cargo test` for Python fixtures | tests/fixtures/ | ✅ | 91/91 wired via `cargo test -p ferrython-cli --test fixtures` |
+| `cargo test` for Python fixtures | tests/fixtures/ | ✅ | 100/100 wired via `cargo test -p ferrython-cli --test fixtures` |
 | Import system scattered | opcodes.rs + vm_helpers.rs + vm_call.rs | ✅ | Consolidated into `vm_import.rs` |
 | Dead code | db_modules.rs | ⚠️ | 2 `#[allow(dead_code)]` on incomplete sqlite3 structs |
 | Module organization | stdlib crate | ✅ | network_modules split (socket, http); serial_modules split (json, csv, other); collection_modules split (collections, functools, itertools, operator, other) |
@@ -151,7 +151,7 @@
 ## 7. Test Results Summary
 
 - **CPython alignment tests**: ~1,343/1,350 pass (~99.5%)
-- **Fixture tests**: 91/91 pass (100%)
+- **Fixture tests**: 100/100 pass (100%)
 - **Known test failures by category**:
   - `asyncio.wait_for` timeout (Test 1230)
   - `asyncio.Queue` blocking get (Test 1340)
