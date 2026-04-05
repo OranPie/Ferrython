@@ -212,9 +212,21 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
             Some(std::cmp::Ordering::Equal)
         }
         // Instance comparison: check __eq__ method on class (for dataclass, custom __eq__)
-        (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(_inst_b)) => {
+        (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) => {
             // Check if they are the same object
             if Arc::ptr_eq(a, b) { return Some(std::cmp::Ordering::Equal); }
+            // Dict subclass: compare dict_storage contents
+            if let (Some(ref ds_a), Some(ref ds_b)) = (&inst_a.dict_storage, &inst_b.dict_storage) {
+                let a_r = ds_a.read(); let b_r = ds_b.read();
+                if a_r.len() != b_r.len() { return None; }
+                for (k, v1) in a_r.iter() {
+                    match b_r.get(k) {
+                        Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
+                        _ => return None,
+                    }
+                }
+                return Some(std::cmp::Ordering::Equal);
+            }
             // Look for __eq__ in the class hierarchy
             fn find_in_mro(cls: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
                 if let PyObjectPayload::Class(cd) = &cls.payload {
@@ -269,6 +281,33 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
                 }
             }
             None
+        }
+        // Dict subclass (Instance with dict_storage) vs Dict
+        (PyObjectPayload::Instance(inst), PyObjectPayload::Dict(b_dict)) => {
+            if let Some(ref ds) = inst.dict_storage {
+                let a_r = ds.read(); let b_r = b_dict.read();
+                if a_r.len() != b_r.len() { return None; }
+                for (k, v1) in a_r.iter() {
+                    match b_r.get(k) {
+                        Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
+                        _ => return None,
+                    }
+                }
+                Some(std::cmp::Ordering::Equal)
+            } else { None }
+        }
+        (PyObjectPayload::Dict(a_dict), PyObjectPayload::Instance(inst)) => {
+            if let Some(ref ds) = inst.dict_storage {
+                let a_r = a_dict.read(); let b_r = ds.read();
+                if a_r.len() != b_r.len() { return None; }
+                for (k, v1) in a_r.iter() {
+                    match b_r.get(k) {
+                        Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
+                        _ => return None,
+                    }
+                }
+                Some(std::cmp::Ordering::Equal)
+            } else { None }
         }
         _ => None,
     }
