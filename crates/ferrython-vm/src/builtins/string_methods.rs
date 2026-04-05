@@ -41,6 +41,30 @@ fn normalize_index(idx: i64, len: i64) -> usize {
     }
 }
 
+/// Resolve nested `{N}` references in a format spec.
+/// E.g., `{1}>{2}` with args=['hi', '*', 10] → `*>10`
+fn resolve_nested_spec(spec: &str, args: &[PyObjectRef]) -> String {
+    let mut result = String::new();
+    let mut chars = spec.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            let mut ref_name = String::new();
+            for c in chars.by_ref() {
+                if c == '}' { break; }
+                ref_name.push(c);
+            }
+            if let Ok(idx) = ref_name.parse::<usize>() {
+                if let Some(val) = args.get(idx) {
+                    result.push_str(&val.py_to_string());
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "upper" => Ok(PyObject::str_val(CompactString::from(s.to_uppercase()))),
@@ -529,10 +553,15 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                         chars.next();
                         result.push('{');
                     } else {
-                        // Collect everything until '}'
+                        // Collect everything until matching '}', tracking nested braces
                         let mut field_spec = String::new();
+                        let mut depth = 1;
                         for c in chars.by_ref() {
-                            if c == '}' { break; }
+                            if c == '{' { depth += 1; }
+                            else if c == '}' {
+                                depth -= 1;
+                                if depth == 0 { break; }
+                            }
                             field_spec.push(c);
                         }
                         // Split field_spec: {field_name!conversion:format_spec}
@@ -541,6 +570,14 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                         } else {
                             (field_spec.as_str(), None)
                         };
+                        // Resolve nested {N} references in format spec (e.g., {0:{1}>{2}})
+                        let resolved_spec = format_spec.map(|spec| {
+                            if spec.contains('{') {
+                                resolve_nested_spec(spec, args)
+                            } else {
+                                spec.to_string()
+                            }
+                        });
                         // Split field_part on '!' for conversion
                         let (field_name, conversion) = if let Some(bang_pos) = field_part.find('!') {
                             (&field_part[..bang_pos], Some(&field_part[bang_pos+1..]))
@@ -588,12 +625,12 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                                     "a" => val.repr(),
                                     _ => val.py_to_string(),
                                 };
-                                if let Some(spec) = format_spec {
+                                if let Some(ref spec) = resolved_spec {
                                     result.push_str(&apply_format_spec_str(&converted, spec));
                                 } else {
                                     result.push_str(&converted);
                                 }
-                            } else if let Some(spec) = format_spec {
+                            } else if let Some(ref spec) = resolved_spec {
                                 // No conversion — use format_value on the object directly
                                 match val.format_value(spec) {
                                     Ok(formatted) => result.push_str(&formatted),

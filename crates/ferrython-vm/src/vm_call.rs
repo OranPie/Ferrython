@@ -827,8 +827,13 @@ impl VirtualMachine {
                                         }
                                     } else {
                                         let mut field_spec = String::new();
+                                        let mut depth = 1;
                                         for c in chars.by_ref() {
-                                            if c == '}' { break; }
+                                            if c == '{' { depth += 1; }
+                                            else if c == '}' {
+                                                depth -= 1;
+                                                if depth == 0 { break; }
+                                            }
                                             field_spec.push(c);
                                         }
                                         // Parse {field_name!conversion:format_spec}
@@ -837,6 +842,34 @@ impl VirtualMachine {
                                         } else {
                                             (field_spec.as_str(), None)
                                         };
+                                        // Resolve nested {N}/{name} in format spec
+                                        let resolved_spec = format_spec.map(|spec| {
+                                            if spec.contains('{') {
+                                                let mut r = String::new();
+                                                let mut sc = spec.chars().peekable();
+                                                while let Some(ch) = sc.next() {
+                                                    if ch == '{' {
+                                                        let mut ref_name = String::new();
+                                                        for ch in sc.by_ref() {
+                                                            if ch == '}' { break; }
+                                                            ref_name.push(ch);
+                                                        }
+                                                        if let Ok(idx) = ref_name.parse::<usize>() {
+                                                            if let Some(v) = pos_args.get(idx) {
+                                                                r.push_str(&v.py_to_string());
+                                                            }
+                                                        } else if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == ref_name) {
+                                                            r.push_str(&v.py_to_string());
+                                                        }
+                                                    } else {
+                                                        r.push(ch);
+                                                    }
+                                                }
+                                                r
+                                            } else {
+                                                spec.to_string()
+                                            }
+                                        });
                                         let (field_name, conversion) = if let Some(bp) = field_part.find('!') {
                                             (&field_part[..bp], Some(&field_part[bp+1..]))
                                         } else {
@@ -854,7 +887,7 @@ impl VirtualMachine {
                                                 Some("s") => val.py_to_string(),
                                                 _ => val.py_to_string(),
                                             };
-                                            if let Some(spec) = format_spec {
+                                            if let Some(ref spec) = resolved_spec {
                                                 result.push_str(&crate::builtins::apply_format_spec_str(&text, spec));
                                             } else {
                                                 result.push_str(&text);
