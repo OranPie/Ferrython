@@ -338,12 +338,18 @@ pub fn create_os_module() -> PyObjectRef {
         ("rename", make_builtin(os_rename)),
         ("path", create_os_path_module()),
         ("getenv", make_builtin(os_getenv)),
-        ("environ", PyObject::dict_from_pairs(
-            std::env::vars().map(|(k, v)| (
-                PyObject::str_val(CompactString::from(k)),
-                PyObject::str_val(CompactString::from(v)),
-            )).collect()
-        )),
+        ("environ", {
+            // Build environ as a real Dict (so isinstance(os.environ, dict) == True)
+            // Note: modifications via os.environ["X"] = "Y" update the dict but not the OS env.
+            // Use os.putenv() to also update the OS env.
+            // os.getenv() reads from OS env (matches CPython).
+            PyObject::dict_from_pairs(
+                std::env::vars().map(|(k, v)| (
+                    PyObject::str_val(CompactString::from(k)),
+                    PyObject::str_val(CompactString::from(v)),
+                )).collect()
+            )
+        }),
         ("cpu_count", make_builtin(os_cpu_count)),
         ("getpid", make_builtin(os_getpid)),
         ("fspath", PyObject::native_function("os.fspath", os_fspath)),
@@ -393,6 +399,20 @@ pub fn create_os_module() -> PyObjectRef {
         ("O_TRUNC", PyObject::int(0o1000)),
         ("O_APPEND", PyObject::int(0o2000)),
         ("scandir", make_builtin(os_scandir)),
+        ("putenv", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("putenv requires 2 arguments")); }
+            let key = args[0].py_to_string();
+            let val = args[1].py_to_string();
+            // Safety: we ensure no concurrent modification of env in this single-threaded interpreter
+            unsafe { std::env::set_var(&key, &val); }
+            Ok(PyObject::none())
+        })),
+        ("unsetenv", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("unsetenv requires 1 argument")); }
+            let key = args[0].py_to_string();
+            unsafe { std::env::remove_var(&key); }
+            Ok(PyObject::none())
+        })),
         ("lstat", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("os.lstat requires path")); }
             let path = args[0].py_to_string();
