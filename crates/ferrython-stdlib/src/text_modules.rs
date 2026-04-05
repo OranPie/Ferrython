@@ -1037,12 +1037,68 @@ pub fn create_difflib_module() -> PyObjectRef {
         Ok(PyObject::list(scored.iter().map(|(_, s)| PyObject::str_val(CompactString::from(s.as_str()))).collect()))
     }
 
+    // SequenceMatcher(isjunk, a, b) — compute similarity ratio between sequences
+    fn sequence_matcher_ctor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let a_str = if args.len() > 1 { args[1].py_to_string() } else { String::new() };
+        let b_str = if args.len() > 2 { args[2].py_to_string() } else { String::new() };
+        
+        let cls = PyObject::class(CompactString::from("SequenceMatcher"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut attrs = d.attrs.write();
+            attrs.insert(CompactString::from("a"), PyObject::str_val(CompactString::from(&a_str)));
+            attrs.insert(CompactString::from("b"), PyObject::str_val(CompactString::from(&b_str)));
+            
+            // Compute ratio using LCS-based approach
+            let a_chars: Vec<char> = a_str.chars().collect();
+            let b_chars: Vec<char> = b_str.chars().collect();
+            let matches = lcs_length(&a_chars, &b_chars);
+            let total = a_chars.len() + b_chars.len();
+            let ratio_val = if total > 0 { 2.0 * matches as f64 / total as f64 } else { 1.0 };
+            
+            let ratio_f = ratio_val;
+            attrs.insert(CompactString::from("ratio"), PyObject::native_closure(
+                "SequenceMatcher.ratio", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::float(ratio_f))
+                }
+            ));
+            attrs.insert(CompactString::from("quick_ratio"), PyObject::native_closure(
+                "SequenceMatcher.quick_ratio", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::float(ratio_f))
+                }
+            ));
+        }
+        Ok(inst)
+    }
+    
     make_module("difflib", vec![
         ("unified_diff", make_builtin(unified_diff)),
         ("get_close_matches", make_builtin(get_close_matches)),
+        ("SequenceMatcher", make_builtin(sequence_matcher_ctor)),
         ("ndiff", make_builtin(|_| Ok(PyObject::list(vec![])))),
         ("context_diff", make_builtin(|_| Ok(PyObject::list(vec![])))),
     ])
+}
+
+/// Compute Longest Common Subsequence length
+fn lcs_length(a: &[char], b: &[char]) -> usize {
+    let m = a.len();
+    let n = b.len();
+    if m == 0 || n == 0 { return 0; }
+    let mut prev = vec![0usize; n + 1];
+    let mut curr = vec![0usize; n + 1];
+    for i in 1..=m {
+        for j in 1..=n {
+            if a[i - 1] == b[j - 1] {
+                curr[j] = prev[j - 1] + 1;
+            } else {
+                curr[j] = prev[j].max(curr[j - 1]);
+            }
+        }
+        std::mem::swap(&mut prev, &mut curr);
+        curr.iter_mut().for_each(|x| *x = 0);
+    }
+    prev[n]
 }
 
 

@@ -4,7 +4,7 @@ use compact_str::CompactString;
 use ferrython_core::error::PyException;
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin, check_args, check_args_min,
+    make_module, make_builtin, check_args, check_args_min, CompareOp,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -501,6 +501,46 @@ pub fn create_types_module() -> PyObjectRef {
                         }
                     }
                 }
+            }
+            // Add __eq__ for equality comparison via __dict__
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let attrs_ref = d.attrs.clone();
+                let mut attrs = d.attrs.write();
+                attrs.insert(CompactString::from("__eq__"), PyObject::native_closure(
+                    "SimpleNamespace.__eq__", move |eq_args: &[PyObjectRef]| {
+                        if eq_args.is_empty() {
+                            return Ok(PyObject::bool_val(false));
+                        }
+                        let other = &eq_args[0];
+                        if let PyObjectPayload::Instance(ref other_d) = other.payload {
+                            let self_attrs = attrs_ref.read();
+                            let other_attrs = other_d.attrs.read();
+                            // Compare all non-dunder attributes
+                            let self_user: Vec<_> = self_attrs.iter()
+                                .filter(|(k, _)| !k.starts_with("__"))
+                                .collect();
+                            let other_user: Vec<_> = other_attrs.iter()
+                                .filter(|(k, _)| !k.starts_with("__"))
+                                .collect();
+                            if self_user.len() != other_user.len() {
+                                return Ok(PyObject::bool_val(false));
+                            }
+                            for (k, v) in &self_user {
+                                if let Some(ov) = other_attrs.get(*k) {
+                                    let eq = v.compare(ov, CompareOp::Eq)?;
+                                    if !eq.is_truthy() {
+                                        return Ok(PyObject::bool_val(false));
+                                    }
+                                } else {
+                                    return Ok(PyObject::bool_val(false));
+                                }
+                            }
+                            Ok(PyObject::bool_val(true))
+                        } else {
+                            Ok(PyObject::bool_val(false))
+                        }
+                    },
+                ));
             }
             Ok(inst)
         })),

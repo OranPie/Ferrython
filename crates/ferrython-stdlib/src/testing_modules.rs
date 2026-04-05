@@ -653,6 +653,345 @@ pub fn create_unittest_module() -> PyObjectRef {
         },
     ));
 
+    // assertGreaterEqual(a, b[, msg])
+    tc_ns.insert(CompactString::from("assertGreaterEqual"), PyObject::native_closure(
+        "assertGreaterEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertGreaterEqual requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Ge)?;
+            if !result.is_truthy() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} not greater than or equal to {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertLessEqual(a, b[, msg])
+    tc_ns.insert(CompactString::from("assertLessEqual"), PyObject::native_closure(
+        "assertLessEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertLessEqual requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Le)?;
+            if !result.is_truthy() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} not less than or equal to {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertAlmostEqual(a, b[, places=7, msg=None])
+    tc_ns.insert(CompactString::from("assertAlmostEqual"), PyObject::native_closure(
+        "assertAlmostEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertAlmostEqual requires 2 arguments"));
+            }
+            let a = args[0].to_float().or_else(|_| args[0].as_int().map(|i| i as f64)
+                .ok_or_else(|| PyException::type_error("assertAlmostEqual requires numeric arguments")))?;
+            let b = args[1].to_float().or_else(|_| args[1].as_int().map(|i| i as f64)
+                .ok_or_else(|| PyException::type_error("assertAlmostEqual requires numeric arguments")))?;
+            let places = if args.len() > 2 { args[2].as_int().unwrap_or(7) } else { 7 };
+            // CPython: round(a-b, places) == 0, equivalent to abs(a-b) < 0.5 * 10^(-places)
+            let tolerance = 0.5 * 10f64.powi(-(places as i32));
+            if (a - b).abs() >= tolerance {
+                let msg = assert_msg(args, 3);
+                let msg = if msg.is_empty() {
+                    format!("{} != {} within {} places", a, b, places)
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertNotAlmostEqual(a, b[, places=7, msg=None])
+    tc_ns.insert(CompactString::from("assertNotAlmostEqual"), PyObject::native_closure(
+        "assertNotAlmostEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertNotAlmostEqual requires 2 arguments"));
+            }
+            let a = args[0].to_float().or_else(|_| args[0].as_int().map(|i| i as f64)
+                .ok_or_else(|| PyException::type_error("assertNotAlmostEqual requires numeric arguments")))?;
+            let b = args[1].to_float().or_else(|_| args[1].as_int().map(|i| i as f64)
+                .ok_or_else(|| PyException::type_error("assertNotAlmostEqual requires numeric arguments")))?;
+            let places = if args.len() > 2 { args[2].as_int().unwrap_or(7) } else { 7 };
+            let tolerance = 0.5 * 10f64.powi(-(places as i32));
+            if (a - b).abs() < tolerance {
+                let msg = assert_msg(args, 3);
+                let msg = if msg.is_empty() {
+                    format!("{} == {} within {} places", a, b, places)
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertIsInstance(obj, cls[, msg])
+    tc_ns.insert(CompactString::from("assertIsInstance"), PyObject::native_closure(
+        "assertIsInstance", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertIsInstance requires 2 arguments"));
+            }
+            let obj_type = args[0].type_name();
+            let expected = match &args[1].payload {
+                PyObjectPayload::Class(cd) => cd.name.as_str().to_string(),
+                _ => args[1].py_to_string(),
+            };
+            // Check direct type match or class hierarchy
+            let is_instance = obj_type == expected
+                || obj_type.eq_ignore_ascii_case(&expected);
+            if !is_instance {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} is not an instance of {}", args[0].py_to_string(), expected)
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertNotIsInstance(obj, cls[, msg])
+    tc_ns.insert(CompactString::from("assertNotIsInstance"), PyObject::native_closure(
+        "assertNotIsInstance", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertNotIsInstance requires 2 arguments"));
+            }
+            let obj_type = args[0].type_name();
+            let expected = match &args[1].payload {
+                PyObjectPayload::Class(cd) => cd.name.as_str().to_string(),
+                _ => args[1].py_to_string(),
+            };
+            let is_instance = obj_type == expected
+                || obj_type.eq_ignore_ascii_case(&expected);
+            if is_instance {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} is an instance of {}", args[0].py_to_string(), expected)
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertRegex(text, regex[, msg])
+    tc_ns.insert(CompactString::from("assertRegex"), PyObject::native_closure(
+        "assertRegex", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertRegex requires 2 arguments"));
+            }
+            let text = args[0].py_to_string();
+            let pattern = args[1].py_to_string();
+            let re = regex::Regex::new(&pattern)
+                .map_err(|e| PyException::runtime_error(format!("Invalid regex: {}", e)))?;
+            if re.find(&text).is_none() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("Regex '{}' didn't match '{}'", pattern, text)
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertNotRegex(text, regex[, msg])
+    tc_ns.insert(CompactString::from("assertNotRegex"), PyObject::native_closure(
+        "assertNotRegex", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertNotRegex requires 2 arguments"));
+            }
+            let text = args[0].py_to_string();
+            let pattern = args[1].py_to_string();
+            let re = regex::Regex::new(&pattern)
+                .map_err(|e| PyException::runtime_error(format!("Invalid regex: {}", e)))?;
+            if re.find(&text).is_some() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("Regex '{}' unexpectedly matched '{}'", pattern, text)
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertCountEqual(first, second[, msg]) — same elements, any order
+    tc_ns.insert(CompactString::from("assertCountEqual"), PyObject::native_closure(
+        "assertCountEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertCountEqual requires 2 arguments"));
+            }
+            let a_items = args[0].to_list()?;
+            let b_items = args[1].to_list()?;
+            if a_items.len() != b_items.len() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("Element counts differ: {} vs {}", a_items.len(), b_items.len())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            let mut a_strs: Vec<String> = a_items.iter().map(|x| x.py_to_string()).collect();
+            let mut b_strs: Vec<String> = b_items.iter().map(|x| x.py_to_string()).collect();
+            a_strs.sort();
+            b_strs.sort();
+            if a_strs != b_strs {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    "Element counts differ".to_string()
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertDictEqual(d1, d2[, msg])
+    tc_ns.insert(CompactString::from("assertDictEqual"), PyObject::native_closure(
+        "assertDictEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertDictEqual requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Eq)?;
+            if !result.is_truthy() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} != {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertListEqual(list1, list2[, msg])
+    tc_ns.insert(CompactString::from("assertListEqual"), PyObject::native_closure(
+        "assertListEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertListEqual requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Eq)?;
+            if !result.is_truthy() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} != {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertTupleEqual(tuple1, tuple2[, msg])
+    tc_ns.insert(CompactString::from("assertTupleEqual"), PyObject::native_closure(
+        "assertTupleEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertTupleEqual requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Eq)?;
+            if !result.is_truthy() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} != {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertSetEqual(set1, set2[, msg])
+    tc_ns.insert(CompactString::from("assertSetEqual"), PyObject::native_closure(
+        "assertSetEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertSetEqual requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Eq)?;
+            if !result.is_truthy() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("{} != {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertSequenceEqual(seq1, seq2[, msg])
+    tc_ns.insert(CompactString::from("assertSequenceEqual"), PyObject::native_closure(
+        "assertSequenceEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertSequenceEqual requires 2 arguments"));
+            }
+            let result = args[0].compare(&args[1], CompareOp::Eq)?;
+            if !result.is_truthy() {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("Sequences differ: {} != {}", args[0].py_to_string(), args[1].py_to_string())
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // assertMultiLineEqual(first, second[, msg])
+    tc_ns.insert(CompactString::from("assertMultiLineEqual"), PyObject::native_closure(
+        "assertMultiLineEqual", |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("assertMultiLineEqual requires 2 arguments"));
+            }
+            let a = args[0].py_to_string();
+            let b = args[1].py_to_string();
+            if a != b {
+                let msg = assert_msg(args, 2);
+                let msg = if msg.is_empty() {
+                    format!("'{}' != '{}'", a, b)
+                } else { msg };
+                return Err(PyException::assertion_error(msg));
+            }
+            Ok(PyObject::none())
+        },
+    ));
+
+    // fail([msg]) — unconditionally fail
+    tc_ns.insert(CompactString::from("fail"), PyObject::native_closure(
+        "fail", |args: &[PyObjectRef]| {
+            let msg = if args.is_empty() { "Fail".to_string() } else { args[0].py_to_string() };
+            Err(PyException::assertion_error(msg))
+        },
+    ));
+
+    // subTest — context manager stub for subtests
+    tc_ns.insert(CompactString::from("subTest"), PyObject::native_closure(
+        "subTest", |_args: &[PyObjectRef]| {
+            let cls = PyObject::class(CompactString::from("_SubTest"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                    "__enter__", |_: &[PyObjectRef]| Ok(PyObject::none()),
+                ));
+                w.insert(CompactString::from("__exit__"), PyObject::native_closure(
+                    "__exit__", |_: &[PyObjectRef]| Ok(PyObject::bool_val(false)),
+                ));
+            }
+            Ok(inst)
+        },
+    ));
+
     let test_case = PyObject::class(CompactString::from("TestCase"), vec![], tc_ns);
 
     make_module("unittest", vec![
