@@ -398,7 +398,7 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     ns.insert(CompactString::from("error"), make_log_method(40, "ERROR", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
     ns.insert(CompactString::from("critical"), make_log_method(50, "CRITICAL", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
 
-    // setLevel — update the shared effective level
+    // setLevel — placeholder (patched after instance creation to update .level attr)
     let el = effective_level.clone();
     ns.insert(CompactString::from("setLevel"), PyObject::native_closure(
         "setLevel", move |args: &[PyObjectRef]| {
@@ -455,6 +455,25 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut attrs = inst_data.attrs.write();
         for (k, v) in ns {
             attrs.insert(k, v);
+        }
+    }
+    // Patch setLevel to also update the visible .level attribute
+    {
+        let el_patch = effective_level.clone();
+        let inst_ref = inst.clone();
+        let set_level_fn = PyObject::native_closure("setLevel", move |args: &[PyObjectRef]| {
+            if let Some(v) = args.first() {
+                if let Some(n) = v.as_int() {
+                    *el_patch.write() = n;
+                    if let PyObjectPayload::Instance(ref data) = inst_ref.payload {
+                        data.attrs.write().insert(CompactString::from("level"), PyObject::int(n));
+                    }
+                }
+            }
+            Ok(PyObject::none())
+        });
+        if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+            inst_data.attrs.write().insert(CompactString::from("setLevel"), set_level_fn);
         }
     }
     Ok(inst)

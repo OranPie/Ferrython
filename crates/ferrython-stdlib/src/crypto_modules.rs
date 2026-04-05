@@ -402,18 +402,19 @@ fn uuid_uuid4(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Set variant bits
     bytes[8] = (bytes[8] & 0x3F) | 0x80;
     let hex_str = format_uuid(&bytes);
-    let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("hex"), PyObject::str_val(CompactString::from(hex_str.replace('-', ""))));
-    attrs.insert(CompactString::from("version"), PyObject::int(4));
-    attrs.insert(CompactString::from("int"), PyObject::int(
-        u128::from_be_bytes(bytes.try_into().unwrap()) as i64
-    ));
-    attrs.insert(CompactString::from("__str_val__"), PyObject::str_val(CompactString::from(&hex_str)));
-    attrs.insert(CompactString::from("__uuid__"), PyObject::bool_val(true));
-    Ok(PyObject::instance_with_attrs(
-        PyObject::str_val(CompactString::from("UUID")),
-        attrs,
-    ))
+    let cls = PyObject::class(CompactString::from("UUID"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref data) = inst.payload {
+        let mut attrs = data.attrs.write();
+        attrs.insert(CompactString::from("hex"), PyObject::str_val(CompactString::from(hex_str.replace('-', ""))));
+        attrs.insert(CompactString::from("version"), PyObject::int(4));
+        attrs.insert(CompactString::from("int"), PyObject::int(
+            u128::from_be_bytes(bytes.try_into().unwrap()) as i64
+        ));
+        attrs.insert(CompactString::from("__str_val__"), PyObject::str_val(CompactString::from(&hex_str)));
+        attrs.insert(CompactString::from("__uuid__"), PyObject::bool_val(true));
+    }
+    Ok(inst)
 }
 
 fn uuid_uuid1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -429,18 +430,18 @@ fn uuid_UUID(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if hex_str.len() != 32 || !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(PyException::value_error(format!("badly formed hexadecimal UUID string: '{}'", s)));
     }
-    // Parse the canonical form
     let canonical = format!("{}-{}-{}-{}-{}",
         &hex_str[0..8], &hex_str[8..12], &hex_str[12..16],
         &hex_str[16..20], &hex_str[20..32]);
     let version = u8::from_str_radix(&hex_str[12..13], 16).unwrap_or(0);
-    let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("hex"), PyObject::str_val(CompactString::from(&hex_str)));
-    attrs.insert(CompactString::from("version"), PyObject::int(version as i64));
-    attrs.insert(CompactString::from("__str_val__"), PyObject::str_val(CompactString::from(&canonical)));
-    attrs.insert(CompactString::from("__uuid__"), PyObject::bool_val(true));
-    Ok(PyObject::instance_with_attrs(
-        PyObject::str_val(CompactString::from("UUID")),
-        attrs,
-    ))
+    let cls = PyObject::class(CompactString::from("UUID"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref data) = inst.payload {
+        let mut attrs = data.attrs.write();
+        attrs.insert(CompactString::from("hex"), PyObject::str_val(CompactString::from(&hex_str)));
+        attrs.insert(CompactString::from("version"), PyObject::int(version as i64));
+        attrs.insert(CompactString::from("__str_val__"), PyObject::str_val(CompactString::from(&canonical)));
+        attrs.insert(CompactString::from("__uuid__"), PyObject::bool_val(true));
+    }
+    Ok(inst)
 }
