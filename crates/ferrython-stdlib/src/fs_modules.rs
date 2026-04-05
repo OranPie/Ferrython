@@ -10,11 +10,185 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
+/// Extract the `_path` string from a pathlib instance (args[0] = self).
+fn get_path_str(inst: &PyObjectRef) -> String {
+    if let PyObjectPayload::Instance(ref data) = inst.payload {
+        if let Some(p) = data.attrs.read().get("_path") {
+            return p.py_to_string();
+        }
+    }
+    ".".to_string()
+}
+
 pub fn create_pathlib_module() -> PyObjectRef {
     // Build Path as a proper class with class methods (home, cwd) + constructor
     let mut path_ns = IndexMap::new();
     path_ns.insert(CompactString::from("home"), make_builtin(pathlib_home));
     path_ns.insert(CompactString::from("cwd"), make_builtin(pathlib_cwd));
+
+    // exists() -> bool
+    path_ns.insert(CompactString::from("exists"), make_builtin(|args| {
+        if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+        Ok(PyObject::bool_val(std::path::Path::new(&get_path_str(&args[0])).exists()))
+    }));
+
+    // is_dir() -> bool
+    path_ns.insert(CompactString::from("is_dir"), make_builtin(|args| {
+        if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+        Ok(PyObject::bool_val(std::path::Path::new(&get_path_str(&args[0])).is_dir()))
+    }));
+
+    // is_file() -> bool
+    path_ns.insert(CompactString::from("is_file"), make_builtin(|args| {
+        if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+        Ok(PyObject::bool_val(std::path::Path::new(&get_path_str(&args[0])).is_file()))
+    }));
+
+    // mkdir(parents=False, exist_ok=False)
+    path_ns.insert(CompactString::from("mkdir"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("mkdir requires self")); }
+        let path = get_path_str(&args[0]);
+        let mut parents = false;
+        let mut exist_ok = false;
+        for a in &args[1..] {
+            if let PyObjectPayload::Dict(m) = &a.payload {
+                let m = m.read();
+                if let Some(v) = m.get(&HashableKey::Str(CompactString::from("parents"))) {
+                    parents = v.is_truthy();
+                }
+                if let Some(v) = m.get(&HashableKey::Str(CompactString::from("exist_ok"))) {
+                    exist_ok = v.is_truthy();
+                }
+            }
+        }
+        let result = if parents {
+            std::fs::create_dir_all(&path)
+        } else {
+            std::fs::create_dir(&path)
+        };
+        match result {
+            Ok(()) => Ok(PyObject::none()),
+            Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => Ok(PyObject::none()),
+            Err(e) => Err(PyException::runtime_error(format!("{}: '{}'", e, path))),
+        }
+    }));
+
+    // read_text() -> str
+    path_ns.insert(CompactString::from("read_text"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("read_text requires self")); }
+        let path = get_path_str(&args[0]);
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        Ok(PyObject::str_val(CompactString::from(&content)))
+    }));
+
+    // read_bytes() -> bytes
+    path_ns.insert(CompactString::from("read_bytes"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("read_bytes requires self")); }
+        let path = get_path_str(&args[0]);
+        let content = std::fs::read(&path)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        Ok(PyObject::bytes(content))
+    }));
+
+    // write_text(data) -> int
+    path_ns.insert(CompactString::from("write_text"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("write_text requires self and data")); }
+        let path = get_path_str(&args[0]);
+        let text = args[1].py_to_string();
+        let len = text.len();
+        std::fs::write(&path, &text)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        Ok(PyObject::int(len as i64))
+    }));
+
+    // iterdir() -> list of Path instances
+    path_ns.insert(CompactString::from("iterdir"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("iterdir requires self")); }
+        let path = get_path_str(&args[0]);
+        let entries = std::fs::read_dir(&path)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        let mut items = Vec::new();
+        for entry in entries.flatten() {
+            let p = entry.path().to_string_lossy().to_string();
+            items.push(make_path_instance(&p)?);
+        }
+        Ok(PyObject::list(items))
+    }));
+
+    // glob(pattern) -> list of Path instances
+    path_ns.insert(CompactString::from("glob"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("glob requires self and pattern")); }
+        let base = get_path_str(&args[0]);
+        let pattern = args[1].py_to_string();
+        let dir = std::path::Path::new(&base);
+        let mut results = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if simple_glob_match(&pattern, &name) {
+                    let full = entry.path().to_string_lossy().to_string();
+                    results.push(make_path_instance(&full)?);
+                }
+            }
+        }
+        Ok(PyObject::list(results))
+    }));
+
+    // resolve() -> Path (absolute path)
+    path_ns.insert(CompactString::from("resolve"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("resolve requires self")); }
+        let path = get_path_str(&args[0]);
+        let resolved = std::fs::canonicalize(&path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(&path));
+        make_path_instance(&resolved.to_string_lossy())
+    }));
+
+    // unlink()
+    path_ns.insert(CompactString::from("unlink"), make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("unlink requires self")); }
+        let path = get_path_str(&args[0]);
+        std::fs::remove_file(&path)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+        Ok(PyObject::none())
+    }));
+
+    // __truediv__(other) -> Path  (the / operator)
+    path_ns.insert(CompactString::from("__truediv__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("__truediv__ requires self and other")); }
+        let base = get_path_str(&args[0]);
+        let child = args[1].py_to_string();
+        let joined = std::path::Path::new(&base).join(&child);
+        make_path_instance(&joined.to_string_lossy())
+    }));
+
+    // __str__() -> str
+    path_ns.insert(CompactString::from("__str__"), make_builtin(|args| {
+        if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("."))); }
+        Ok(PyObject::str_val(CompactString::from(get_path_str(&args[0]))))
+    }));
+
+    // __repr__() -> str
+    path_ns.insert(CompactString::from("__repr__"), make_builtin(|args| {
+        if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("PosixPath('.')"))); }
+        let path = get_path_str(&args[0]);
+        Ok(PyObject::str_val(CompactString::from(format!("PosixPath('{}')", path))))
+    }));
+
+    // __eq__(other) -> bool
+    path_ns.insert(CompactString::from("__eq__"), make_builtin(|args| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a = get_path_str(&args[0]);
+        let b = get_path_str(&args[1]);
+        Ok(PyObject::bool_val(a == b))
+    }));
+
+    // __fspath__() -> str
+    path_ns.insert(CompactString::from("__fspath__"), make_builtin(|args| {
+        if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("."))); }
+        Ok(PyObject::str_val(CompactString::from(get_path_str(&args[0]))))
+    }));
+
     let path_cls = PyObject::class(CompactString::from("Path"), vec![], path_ns);
     // Add __init__ for constructor dispatch: Path("/some/path")
     if let PyObjectPayload::Class(ref cd) = path_cls.payload {
@@ -35,6 +209,22 @@ pub fn create_pathlib_module() -> PyObjectRef {
         ("PurePosixPath", path_cls.clone()),
         ("PureWindowsPath", path_cls),
     ])
+}
+
+/// Simple glob pattern matching (for use in the class-level glob method).
+fn simple_glob_match(pattern: &str, text: &str) -> bool {
+    if pattern == "*" { return true; }
+    if !pattern.contains('*') && !pattern.contains('?') { return pattern == text; }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut pos = 0;
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() { continue; }
+        if let Some(idx) = text[pos..].find(part) {
+            if i == 0 && idx != 0 { return false; }
+            pos += idx + part.len();
+        } else { return false; }
+    }
+    parts.last().map_or(true, |p| p.is_empty() || pos == text.len())
 }
 
 fn pathlib_home(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

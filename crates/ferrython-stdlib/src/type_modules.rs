@@ -292,10 +292,114 @@ pub fn create_enum_module() -> PyObjectRef {
         enum_ns,
     );
 
-    // IntEnum — Enum subclass where values are ints
+    // IntEnum — Enum subclass where values are ints and support int operations
     let mut int_enum_ns = IndexMap::new();
     int_enum_ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
     int_enum_ns.insert(CompactString::from("__int_enum__"), PyObject::bool_val(true));
+
+    // Helper: extract int value from an IntEnum member or plain int
+    fn int_enum_val(obj: &PyObjectRef) -> Option<i64> {
+        if let Some(v) = obj.get_attr("_value_") {
+            match &v.payload {
+                PyObjectPayload::Int(n) => n.to_i64(),
+                _ => None,
+            }
+        } else {
+            match &obj.payload {
+                PyObjectPayload::Int(n) => n.to_i64(),
+                _ => None,
+            }
+        }
+    }
+
+    // __int__ — convert to int
+    int_enum_ns.insert(CompactString::from("__int__"), PyObject::native_function(
+        "IntEnum.__int__", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::int(0)); }
+            Ok(PyObject::int(int_enum_val(&args[0]).unwrap_or(0)))
+        }
+    ));
+
+    // __eq__ — compare with int or another IntEnum member
+    int_enum_ns.insert(CompactString::from("__eq__"), PyObject::native_function(
+        "IntEnum.__eq__", |args: &[PyObjectRef]| {
+            check_args("IntEnum.__eq__", args, 2)?;
+            let a = int_enum_val(&args[0]);
+            let b = int_enum_val(&args[1]);
+            Ok(PyObject::bool_val(a == b))
+        }
+    ));
+
+    // __lt__
+    int_enum_ns.insert(CompactString::from("__lt__"), PyObject::native_function(
+        "IntEnum.__lt__", |args: &[PyObjectRef]| {
+            check_args("IntEnum.__lt__", args, 2)?;
+            let a = int_enum_val(&args[0]).unwrap_or(0);
+            let b = int_enum_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::bool_val(a < b))
+        }
+    ));
+
+    // __le__
+    int_enum_ns.insert(CompactString::from("__le__"), PyObject::native_function(
+        "IntEnum.__le__", |args: &[PyObjectRef]| {
+            check_args("IntEnum.__le__", args, 2)?;
+            let a = int_enum_val(&args[0]).unwrap_or(0);
+            let b = int_enum_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::bool_val(a <= b))
+        }
+    ));
+
+    // __gt__
+    int_enum_ns.insert(CompactString::from("__gt__"), PyObject::native_function(
+        "IntEnum.__gt__", |args: &[PyObjectRef]| {
+            check_args("IntEnum.__gt__", args, 2)?;
+            let a = int_enum_val(&args[0]).unwrap_or(0);
+            let b = int_enum_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::bool_val(a > b))
+        }
+    ));
+
+    // __ge__
+    int_enum_ns.insert(CompactString::from("__ge__"), PyObject::native_function(
+        "IntEnum.__ge__", |args: &[PyObjectRef]| {
+            check_args("IntEnum.__ge__", args, 2)?;
+            let a = int_enum_val(&args[0]).unwrap_or(0);
+            let b = int_enum_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::bool_val(a >= b))
+        }
+    ));
+
+    // __add__ — IntEnum + int
+    int_enum_ns.insert(CompactString::from("__add__"), PyObject::native_function(
+        "IntEnum.__add__", |args: &[PyObjectRef]| {
+            check_args("IntEnum.__add__", args, 2)?;
+            let a = int_enum_val(&args[0]).unwrap_or(0);
+            let b = int_enum_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a + b))
+        }
+    ));
+
+    // __sub__ — IntEnum - int
+    int_enum_ns.insert(CompactString::from("__sub__"), PyObject::native_function(
+        "IntEnum.__sub__", |args: &[PyObjectRef]| {
+            check_args("IntEnum.__sub__", args, 2)?;
+            let a = int_enum_val(&args[0]).unwrap_or(0);
+            let b = int_enum_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a - b))
+        }
+    ));
+
+    // __mul__ — IntEnum * int
+    int_enum_ns.insert(CompactString::from("__mul__"), PyObject::native_function(
+        "IntEnum.__mul__", |args: &[PyObjectRef]| {
+            check_args("IntEnum.__mul__", args, 2)?;
+            let a = int_enum_val(&args[0]).unwrap_or(0);
+            let b = int_enum_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a * b))
+        }
+    ));
+
     let int_enum = PyObject::class(
         CompactString::from("IntEnum"),
         vec![enum_class.clone(), PyObject::builtin_type(CompactString::from("int"))],
