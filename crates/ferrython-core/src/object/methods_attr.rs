@@ -1448,6 +1448,68 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 Ok(PyObject::none())
                             }));
                         }
+                        // Builtin __delattr__: object.__delattr__(self, name)
+                        if name == "__delattr__" {
+                            let inst = instance.clone();
+                            return Some(PyObject::native_closure("__delattr__", move |args: &[PyObjectRef]| {
+                                if args.is_empty() {
+                                    return Err(PyException::type_error("__delattr__ requires name argument"));
+                                }
+                                let attr_name = args[0].py_to_string();
+                                if let PyObjectPayload::Instance(data) = &inst.payload {
+                                    let removed = data.attrs.write().shift_remove(attr_name.as_str());
+                                    if removed.is_none() {
+                                        return Err(PyException::attribute_error(format!(
+                                            "'{}' object has no attribute '{}'",
+                                            data.class.py_to_string(), attr_name
+                                        )));
+                                    }
+                                }
+                                Ok(PyObject::none())
+                            }));
+                        }
+                        // Builtin __eq__: object.__eq__ is identity comparison
+                        if name == "__eq__" {
+                            let inst = instance.clone();
+                            return Some(PyObject::native_closure("__eq__", move |args: &[PyObjectRef]| {
+                                if args.is_empty() {
+                                    return Err(PyException::type_error("__eq__ requires an argument"));
+                                }
+                                Ok(PyObject::bool_val(Arc::ptr_eq(&inst, &args[0])))
+                            }));
+                        }
+                        // Builtin __ne__: object.__ne__ is negated identity
+                        if name == "__ne__" {
+                            let inst = instance.clone();
+                            return Some(PyObject::native_closure("__ne__", move |args: &[PyObjectRef]| {
+                                if args.is_empty() {
+                                    return Err(PyException::type_error("__ne__ requires an argument"));
+                                }
+                                Ok(PyObject::bool_val(!Arc::ptr_eq(&inst, &args[0])))
+                            }));
+                        }
+                        // Builtin __repr__ / __str__: default object repr
+                        if name == "__repr__" || name == "__str__" {
+                            let inst = instance.clone();
+                            return Some(PyObject::native_closure(name, move |_args: &[PyObjectRef]| {
+                                let cls_name = if let PyObjectPayload::Instance(data) = &inst.payload {
+                                    data.class.py_to_string()
+                                } else {
+                                    "object".into()
+                                };
+                                Ok(PyObject::str_val(CompactString::from(
+                                    format!("<{} object>", cls_name)
+                                )))
+                            }));
+                        }
+                        // Builtin __hash__: default hash from object id
+                        if name == "__hash__" {
+                            let inst = instance.clone();
+                            return Some(PyObject::native_closure("__hash__", move |_args: &[PyObjectRef]| {
+                                let ptr = Arc::as_ptr(&inst) as usize;
+                                Ok(PyObject::int(ptr as i64))
+                            }));
+                        }
                     }
                 }
                 None
