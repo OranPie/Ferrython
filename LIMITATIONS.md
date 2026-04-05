@@ -119,7 +119,7 @@
 
 | Module | Gap |
 |--------|-----|
-| `pickle` | Custom simplified format, not CPython wire-compatible; can't pickle user-defined classes |
+| `pickle` | Custom simplified format, not CPython wire-compatible; instance methods not restored on unpickle |
 | `socket` | `setsockopt()`, `fileno()` are stubs; no real socket I/O |
 | `configparser.write()` | Returns string instead of writing to file-like object |
 | `subprocess.Popen` | Streaming/pipe management not implemented |

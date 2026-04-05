@@ -205,9 +205,11 @@ impl VirtualMachine {
                 .collect()
         };
 
-        // For each member, create an instance of the enum class with name and value
+        // For each member, create an instance of the enum class with name and value.
+        // Resolve auto() sentinels: ("__enum_auto__", _) → sequential int starting from 1.
         let mut ns = cd.namespace.write();
         let mut member_map = IndexMap::new();
+        let mut auto_counter: i64 = 1;
 
         // Check if class has a custom __init__ (not inherited from Enum base)
         let has_custom_init = ns.get("__init__").is_some();
@@ -215,32 +217,55 @@ impl VirtualMachine {
         let class_name = cd.name.clone();
 
         for (name, value) in &members {
+            // Resolve auto() sentinel
+            let resolved_value = if let PyObjectPayload::Tuple(items) = &value.payload {
+                if items.len() == 2 {
+                    if let PyObjectPayload::Str(s) = &items[0].payload {
+                        if s.as_str() == "__enum_auto__" {
+                            let v = PyObject::int(auto_counter);
+                            auto_counter += 1;
+                            v
+                        } else {
+                            value.clone()
+                        }
+                    } else { value.clone() }
+                } else { value.clone() }
+            } else {
+                // Track max int value for auto() continuation
+                if let Some(iv) = value.as_int() {
+                    if iv >= auto_counter { auto_counter = iv + 1; }
+                }
+                value.clone()
+            };
+
             let mut attrs = IndexMap::new();
             attrs.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
-            attrs.insert(CompactString::from("value"), value.clone());
+            attrs.insert(CompactString::from("value"), resolved_value.clone());
             attrs.insert(CompactString::from("_name_"), PyObject::str_val(name.clone()));
-            attrs.insert(CompactString::from("_value_"), value.clone());
+            attrs.insert(CompactString::from("_value_"), resolved_value.clone());
 
-            // Enum __repr__ and __str__: "ClassName.MemberName"
-            let enum_repr = CompactString::from(format!("{}.{}", class_name, name));
-            let repr_copy = enum_repr.clone();
+            // Enum __repr__: "<ClassName.MemberName: value>" (CPython format)
+            let val_repr = resolved_value.repr();
+            let full_repr = CompactString::from(format!("<{}.{}: {}>", class_name, name, val_repr));
+            let repr_copy = full_repr;
             attrs.insert(intern_or_new("__repr__"), PyObject::native_closure(
                 "__repr__",
                 move |_args| {
                     Ok(PyObject::str_val(repr_copy.clone()))
                 }
             ));
-            let str_copy = enum_repr;
+            // __str__: "ClassName.MemberName"
+            let str_val = CompactString::from(format!("{}.{}", class_name, name));
             attrs.insert(intern_or_new("__str__"), PyObject::native_closure(
                 "__str__",
                 move |_args| {
-                    Ok(PyObject::str_val(str_copy.clone()))
+                    Ok(PyObject::str_val(str_val.clone()))
                 }
             ));
 
             // If custom __init__ exists and value is a tuple, unpack it and call __init__
             if has_custom_init {
-                if let PyObjectPayload::Tuple(items) = &value.payload {
+                if let PyObjectPayload::Tuple(items) = &resolved_value.payload {
                     for (i, item) in items.iter().enumerate() {
                         // Store positional args as attributes (will be overwritten by __init__)
                         attrs.insert(CompactString::from(format!("__arg{}", i)), item.clone());
@@ -255,10 +280,10 @@ impl VirtualMachine {
                 let init_fn = ns.get("__init__").cloned();
                 if let Some(init) = init_fn {
                     let mut call_args = vec![member.clone()];
-                    if let PyObjectPayload::Tuple(items) = &value.payload {
+                    if let PyObjectPayload::Tuple(items) = &resolved_value.payload {
                         call_args.extend(items.iter().cloned());
                     } else {
-                        call_args.push(value.clone());
+                        call_args.push(resolved_value.clone());
                     }
                     // Drop ns write lock before calling VM methods
                     drop(ns);

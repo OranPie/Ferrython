@@ -478,7 +478,7 @@ pub fn create_enum_module() -> PyObjectRef {
         int_flag_ns,
     );
 
-    // auto() counter
+    // auto() counter — returns a sentinel that process_enum_class resolves
     static AUTO_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
 
     // unique decorator — validates all values in enum are unique
@@ -514,8 +514,13 @@ pub fn create_enum_module() -> PyObjectRef {
         ("Flag", flag_class),
         ("IntFlag", int_flag_class),
         ("auto", make_builtin(|_| {
+            // Return a sentinel tuple ("__enum_auto__", counter_value)
+            // process_enum_class will detect this and assign sequential values
             let val = AUTO_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(PyObject::int(val))
+            Ok(PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from("__enum_auto__")),
+                PyObject::int(val),
+            ]))
         })),
         ("unique", unique_fn),
     ])

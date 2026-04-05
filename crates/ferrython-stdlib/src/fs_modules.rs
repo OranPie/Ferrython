@@ -1073,8 +1073,19 @@ fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
         // close()
         attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        // flush()
+        attrs.insert(CompactString::from("flush"), make_builtin(|_| Ok(PyObject::none())));
 
-        // closed property (always False for simplicity)
+        // Protocol methods
+        attrs.insert(CompactString::from("readable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("isatty"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+        attrs.insert(CompactString::from("fileno"), make_builtin(|_| {
+            Err(PyException::runtime_error("StringIO does not use a file descriptor"))
+        }));
+
+        // closed property
         attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
 
         // __enter__ / __exit__ for context manager
@@ -1083,6 +1094,28 @@ fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(inst_ref.clone())
         }));
         attrs.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+
+        // __iter__ — iterates lines
+        let rl_buf = buf.clone();
+        let rl_pos = pos.clone();
+        attrs.insert(CompactString::from("__iter__"), PyObject::native_closure("StringIO.__iter__", move |_: &[PyObjectRef]| {
+            let b = rl_buf.read();
+            let p = *rl_pos.read();
+            let remaining = if p < b.len() { &b[p..] } else { "" };
+            let mut lines: Vec<PyObjectRef> = Vec::new();
+            for line in remaining.split('\n') {
+                if !line.is_empty() || lines.is_empty() {
+                    lines.push(PyObject::str_val(CompactString::from(format!("{}\n", line))));
+                }
+            }
+            // Fix last line if original didn't end with \n
+            if !remaining.ends_with('\n') && !lines.is_empty() {
+                let last_idx = lines.len() - 1;
+                let last = lines[last_idx].py_to_string();
+                lines[last_idx] = PyObject::str_val(CompactString::from(last.trim_end_matches('\n')));
+            }
+            Ok(PyObject::list(lines))
+        }));
     }
     Ok(inst)
 }
@@ -1191,7 +1224,29 @@ fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
         // close()
         attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        // flush()
+        attrs.insert(CompactString::from("flush"), make_builtin(|_| Ok(PyObject::none())));
         attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
+
+        // Protocol methods
+        attrs.insert(CompactString::from("readable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("isatty"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+
+        // readline()
+        let rl_buf = buf.clone(); let rl_pos = pos.clone();
+        attrs.insert(CompactString::from("readline"), PyObject::native_closure("BytesIO.readline", move |_: &[PyObjectRef]| {
+            let b = rl_buf.read();
+            let mut p = rl_pos.write();
+            let start = *p;
+            if start >= b.len() { return Ok(PyObject::bytes(vec![])); }
+            let end = b[start..].iter().position(|&c| c == b'\n')
+                .map(|i| start + i + 1)
+                .unwrap_or(b.len());
+            *p = end;
+            Ok(PyObject::bytes(b[start..end].to_vec()))
+        }));
 
         // __enter__ / __exit__
         let inst_ref = inst.clone();
@@ -1681,12 +1736,14 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     let child = cmd.spawn()
         .map_err(|e| PyException::runtime_error(&format!("Popen: {e}")))?;
+    let child_pid = child.id() as i64;
     let child_arc = Arc::new(Mutex::new(Some(child)));
 
     let cls = PyObject::class(CompactString::from("Popen"), vec![], IndexMap::new());
     let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
     attrs.insert(CompactString::from("returncode"), PyObject::none());
     attrs.insert(CompactString::from("args"), args[0].clone());
+    attrs.insert(CompactString::from("pid"), PyObject::int(child_pid));
     let is_text = text_mode;
 
     // communicate(input=None)
@@ -1807,14 +1864,38 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }));
     }
 
-    // terminate()
+    // terminate() — sends SIGTERM on Unix
     {
         let ch = child_arc.clone();
         attrs.insert(CompactString::from("terminate"), PyObject::native_closure(
             "Popen.terminate", move |_args| {
                 let mut guard = ch.lock().unwrap();
                 if let Some(ref mut child) = *guard {
-                    child.kill().map_err(|e| PyException::runtime_error(&format!("terminate: {e}")))?;
+                    #[cfg(unix)]
+                    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM); }
+                    #[cfg(not(unix))]
+                    {
+                        child.kill().map_err(|e| PyException::runtime_error(&format!("terminate: {e}")))?;
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+    }
+
+    // send_signal(sig)
+    {
+        let ch = child_arc.clone();
+        attrs.insert(CompactString::from("send_signal"), PyObject::native_closure(
+            "Popen.send_signal", move |args| {
+                let sig = if !args.is_empty() {
+                    args[0].as_int().unwrap_or(15) as i32
+                } else { 15 };
+                let guard = ch.lock().unwrap();
+                if let Some(ref child) = *guard {
+                    #[cfg(unix)]
+                    unsafe { libc::kill(child.id() as libc::pid_t, sig); }
+                    #[cfg(not(unix))]
+                    { let _ = sig; }
                 }
                 Ok(PyObject::none())
             }));
