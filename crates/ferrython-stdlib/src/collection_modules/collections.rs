@@ -550,7 +550,13 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let d = data.clone();
     cls_ns.insert(CompactString::from("__iter__"), PyObject::native_closure(
         "deque.__iter__", move |_: &[PyObjectRef]| {
-            Ok(PyObject::list(d.read().clone()))
+            let snapshot = d.read().clone();
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List {
+                    items: snapshot,
+                    index: 0,
+                }))
+            )))
         }
     ));
     
@@ -595,7 +601,8 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
-        attrs.insert(CompactString::from("_data"), PyObject::list(data.read().clone()));
+        // Share the same Arc so mutations through closures are visible via _data
+        attrs.insert(CompactString::from("_data"), PyObject::wrap(PyObjectPayload::List(data.clone())));
         attrs.insert(
             CompactString::from("__maxlen__"),
             match maxlen {

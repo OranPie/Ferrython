@@ -73,7 +73,12 @@ impl VirtualMachine {
                     }
                 }
                 if let Some(r) = self.try_call_dunder(&obj, "__iter__", vec![])? {
-                    self.vm_push(r);
+                    // If __iter__ returned a list/tuple, convert to proper iterator
+                    if matches!(&r.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
+                        self.vm_push(r.get_iter()?);
+                    } else {
+                        self.vm_push(r);
+                    }
                 } else {
                     // Builtin base type subclass: delegate to __builtin_value__
                     if let PyObjectPayload::Instance(inst) = &obj.payload {

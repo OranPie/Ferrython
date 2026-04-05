@@ -440,14 +440,12 @@ impl VirtualMachine {
                 if let Some(ref ds) = inst.dict_storage {
                     return Ok(ds.read().keys().map(|k| k.to_object()).collect());
                 }
-                // Deque: directly return internal data as list
-                if inst.attrs.read().contains_key("__deque__") {
-                    if let Some(data) = inst.attrs.read().get("_data").cloned() {
-                        return data.to_list();
-                    }
-                }
                 if let Some(iter_method) = obj.get_attr("__iter__") {
                     let iter_obj = self.call_object(iter_method, vec![])?;
+                    // If __iter__ returned a list/tuple, convert directly
+                    if matches!(&iter_obj.payload, PyObjectPayload::List(_) | PyObjectPayload::Tuple(_)) {
+                        return iter_obj.to_list();
+                    }
                     // If __iter__ returned a builtin Iterator, use iter_advance
                     if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_)) {
                         let mut items = Vec::new();
