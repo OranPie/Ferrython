@@ -39,7 +39,22 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                 } else { "object" }
             }
             PyObjectPayload::Module(_) => "module",
-            PyObjectPayload::Iterator(_) => "iterator",
+            PyObjectPayload::Iterator(iter_data) => {
+                let guard = iter_data.lock().unwrap();
+                match &*guard {
+                    IteratorData::Map { .. } => "map",
+                    IteratorData::Filter { .. } => "filter",
+                    IteratorData::Zip { .. } => "zip",
+                    IteratorData::Enumerate { .. } => "enumerate",
+                    IteratorData::Sentinel { .. } => "callable_iterator",
+                    IteratorData::TakeWhile { .. } => "itertools.takewhile",
+                    IteratorData::DropWhile { .. } => "itertools.dropwhile",
+                    IteratorData::Range { .. } => "range_iterator",
+                    IteratorData::List { .. } => "list_iterator",
+                    IteratorData::Tuple { .. } => "tuple_iterator",
+                    IteratorData::Str { .. } => "str_ascii_iterator",
+                }
+            }
             PyObjectPayload::Range { .. } => "range",
             PyObjectPayload::Slice { .. } => "slice",
             PyObjectPayload::Cell(_) => "cell",
