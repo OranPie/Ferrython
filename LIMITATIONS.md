@@ -1,7 +1,7 @@
 # Ferrython — Known Limitations
 
 > Comprehensive inventory of gaps between Ferrython and CPython 3.8.
-> Updated: 156 stdlib modules, 125 fixture tests, 15 crates.
+> Updated: 155+ stdlib modules, 137 tests (125 fixture + 12 unit), 15 crates, ~64K lines Rust.
 
 ---
 
@@ -56,6 +56,8 @@
 | `finally` return override | ✅ | `return` in `finally` correctly overrides `return` in `try` |
 | Exception chaining (`from`) | ✅ | `__cause__`, `__context__`, `__suppress_context__` |
 | Source-line tracebacks | ✅ | Shows actual Python source line (like CPython) |
+| Exception hierarchy matching | ✅ | `except ArithmeticError` catches `ZeroDivisionError` |
+| Multiple except clauses | ✅ | Tuple of exception types, bare except |
 
 ### 3.4 I/O Redirection
 | Feature | Status | Notes |
@@ -75,6 +77,8 @@
 | Dict views (`.keys()`, `.values()`, `.items()`) | ✅ | Live view objects |
 | Unbound dunder methods | ✅ | `int.__add__(3, 4)`, 35+ dunders on all builtin types |
 | `super().__delattr__` / `__eq__` / `__hash__` | ✅ | Full super proxy delegation |
+| `dir()` with dunders | ✅ | Includes type-specific dunders (e.g., `__add__`, `__len__` for list) |
+| Regex lookahead/lookbehind | ✅ | Via fancy-regex fallback for `(?=`, `(?!`, `(?<=`, `(?<!` |
 
 ### 3.6 Async Runtime
 | Feature | Status | Notes |
@@ -115,12 +119,12 @@
 
 | Module | Gap |
 |--------|-----|
-| `pickle` | Custom simplified format, not CPython wire-compatible |
-| `csv.DictWriter` | writeheader/writerow stubs (no output) |
+| `pickle` | Custom simplified format, not CPython wire-compatible; can't pickle user-defined classes |
 | `socket` | `setsockopt()`, `fileno()` are stubs; no real socket I/O |
 | `configparser.write()` | Returns string instead of writing to file-like object |
 | `subprocess.Popen` | Streaming/pipe management not implemented |
 | `sqlite3` | Basic query execution; missing cursor protocol details |
+| `xml.etree` | Namespace support (xmlns) not implemented |
 
 ### 4.3 Missing Modules (ImportError)
 
@@ -158,19 +162,33 @@
 
 ## 6. Architecture
 
-- **15 crates** in Cargo workspace
-- **156 stdlib modules** registered
-- **125 fixture tests** (all passing via `cargo test`)
+- **15 crates** in Cargo workspace (~64K lines Rust)
+- **155+ stdlib modules** registered
+- **137 tests** (125 fixture + 12 unit, all passing via `cargo test`)
 - **13 microbenchmarks** in benchmark suite
 
 | Issue | Status | Notes |
 |-------|--------|-------|
-| God files (>2,000 lines) | ⚠️ | vm_call.rs ~2,295 lines; most others split |
+| God files (>2,000 lines) | ⚠️ | vm_call.rs ~2,481 lines; most others split |
 | Error type unification | ✅ | `From<ParseError>` and `From<CompileError>` for `PyException` |
 | Test harness | ✅ | All fixtures wired via `cargo test` |
 | Import system | ✅ | Consolidated in ferrython-import crate |
 | Debug tooling | ✅ | Profiler, breakpoints, disassembler, bytecode stats |
+| XML Element state | ✅ | Unified instance-attr model (no dual-state desync) |
+
+## 7. Recent Improvements (This Session)
+
+| Feature | Details |
+|---------|---------|
+| XML Element redesign | Eliminated dual-state bug; `child.text = "hello"` now serializes correctly |
+| `ET.tostring()` bytes | Returns `bytes` by default (CPython compat); `encoding='unicode'` for str |
+| `urljoin()` normalization | Properly resolves `..` and `.` path segments |
+| `dir()` dunders | Includes type-specific dunders for all builtin types |
+| `frozenset` cross-type ops | `frozenset & set`, `frozenset - set`, `frozenset ^ set` all work |
+| `Decimal` precision | Preserves trailing zeros (e.g., `3.14 + 2.86 = 6.00`) |
+| Regex lookaround | `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` via fancy-regex fallback |
+| `csv.DictWriter` | `writeheader()` and `writerow()` now produce correct output |
 
 ---
 
-*Last updated after super proxy expansion + unbound dunder wrappers + stdlib improvements.*
+*Last updated after XML redesign, urljoin fix, dir() enhancement, regex lookaround, stdlib expansion.*
