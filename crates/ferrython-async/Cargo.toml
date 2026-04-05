@@ -1,0 +1,13 @@
+[package]
+name = "ferrython-async"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Async runtime for Ferrython: event loop, task scheduling, Future/Task types, and asyncio module"
+
+[dependencies]
+ferrython-core = { workspace = true }
+ferrython-bytecode = { workspace = true }
+compact_str = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }

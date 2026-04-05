@@ -117,85 +117,8 @@ pub fn create_warnings_module() -> PyObjectRef {
 
 
 pub fn create_traceback_module() -> PyObjectRef {
-    // format_exc() — return formatted exception string using active exception info
-    let format_exc_fn = make_builtin(|_args: &[PyObjectRef]| {
-        if let Some((kind, msg)) = crate::sys_modules::get_exc_info() {
-            let type_name = format!("{:?}", kind);
-            Ok(PyObject::str_val(CompactString::from(format!(
-                "Traceback (most recent call last):\n  File \"<stdin>\", line 1, in <module>\n{}: {}\n",
-                type_name, msg
-            ))))
-        } else {
-            Ok(PyObject::str_val(CompactString::from("NoneType: None\n")))
-        }
-    });
-
-    // format_exception(etype, value, tb) — format exception into list of strings
-    let format_exception_fn = make_builtin(|args: &[PyObjectRef]| {
-        let mut lines = Vec::new();
-        if args.len() >= 2 {
-            let etype = &args[0];
-            let value = &args[1];
-            let type_name = if let PyObjectPayload::Class(cd) = &etype.payload {
-                cd.name.to_string()
-            } else if let PyObjectPayload::ExceptionType(kind) = &etype.payload {
-                format!("{:?}", kind)
-            } else {
-                etype.py_to_string()
-            };
-            let msg = value.py_to_string();
-            if args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::None) {
-                lines.push(PyObject::str_val(CompactString::from("Traceback (most recent call last):\n")));
-                lines.push(PyObject::str_val(CompactString::from("  File \"<unknown>\", line 0, in <module>\n")));
-            }
-            lines.push(PyObject::str_val(CompactString::from(
-                format!("{}: {}\n", type_name, msg)
-            )));
-        }
-        Ok(PyObject::list(lines))
-    });
-
-    // print_exc() — print exception info to stderr
-    let print_exc_fn = make_builtin(|_args: &[PyObjectRef]| {
-        eprintln!("NoneType: None");
-        Ok(PyObject::none())
-    });
-
-    // format_tb(tb) — format traceback entries as list of strings
-    let format_tb_fn = make_builtin(|args: &[PyObjectRef]| {
-        if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) {
-            return Ok(PyObject::list(vec![]));
-        }
-        // Return a basic traceback entry
-        Ok(PyObject::list(vec![
-            PyObject::str_val(CompactString::from("  File \"<unknown>\", line 0, in <module>\n"))
-        ]))
-    });
-
-    // extract_tb(tb) — extract FrameSummary-like tuples from traceback
-    let extract_tb_fn = make_builtin(|args: &[PyObjectRef]| {
-        if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::None) {
-            return Ok(PyObject::list(vec![]));
-        }
-        // Return list of (filename, lineno, name, line) tuples
-        Ok(PyObject::list(vec![
-            PyObject::tuple(vec![
-                PyObject::str_val(CompactString::from("<unknown>")),
-                PyObject::int(0),
-                PyObject::str_val(CompactString::from("<module>")),
-                PyObject::none(),
-            ])
-        ]))
-    });
-
-    make_module("traceback", vec![
-        ("format_exc", format_exc_fn),
-        ("print_exc", print_exc_fn),
-        ("format_exception", format_exception_fn),
-        ("print_stack", make_builtin(|_| Ok(PyObject::none()))),
-        ("format_tb", format_tb_fn),
-        ("extract_tb", extract_tb_fn),
-    ])
+    // Delegate to the dedicated ferrython-traceback crate
+    ferrython_traceback::create_traceback_module()
 }
 
 // ── warnings module (stub) ──

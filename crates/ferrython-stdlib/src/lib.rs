@@ -17,7 +17,6 @@ mod testing_modules;
 mod type_modules;
 mod introspection_modules;
 mod concurrency_modules;
-mod async_modules;
 mod import_modules;
 mod network_modules;
 pub mod xml_modules;
@@ -31,7 +30,7 @@ use parking_lot::RwLock;
 pub use sys_modules::get_recursion_limit;
 pub use sys_modules::{set_exc_info, clear_exc_info, get_exc_info};
 pub use concurrency_modules::drain_deferred_calls;
-pub use async_modules::take_asyncio_run_coro;
+pub use ferrython_async::take_asyncio_run_coro;
 pub use import_modules::{take_import_module_request, take_reload_request, ImportModuleRequest, ReloadRequest};
 
 // ── Global stdout/stderr override for redirect_stdout/redirect_stderr ──
@@ -160,7 +159,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "multiprocessing" => Some(concurrency_modules::create_multiprocessing_module()),
         "selectors" => Some(concurrency_modules::create_selectors_module()),
         // Async
-        "asyncio" => Some(async_modules::create_asyncio_module()),
+        "asyncio" => Some(ferrython_async::create_asyncio_module()),
         // Import system
         "importlib" => Some(import_modules::create_importlib_module()),
         // Networking

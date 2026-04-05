@@ -262,6 +262,12 @@ impl VirtualMachine {
                             exc.message.clone(),
                             exc.original.clone(),
                         );
+                        // Also update core thread-local (used by ferrython-traceback)
+                        ferrython_core::error::set_thread_exc_info(
+                            exc.kind.clone(),
+                            exc.message.clone(),
+                            exc.traceback.clone(),
+                        );
                         let frame = self.call_stack.last_mut().unwrap();
                         // CPython pushes (traceback, value, type) — 3 items
                         let (exc_value, exc_type) = if let Some(orig) = &exc.original {

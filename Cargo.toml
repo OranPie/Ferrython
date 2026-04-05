@@ -12,6 +12,8 @@ members = [
     "crates/ferrython-import",
     "crates/ferrython-repl",
     "crates/ferrython-debug",
+    "crates/ferrython-traceback",
+    "crates/ferrython-async",
     "crates/ferrython-stdlib",
     "crates/ferrython-cli",
 ]
@@ -37,6 +39,8 @@ ferrython-ffi = { path = "crates/ferrython-ffi" }
 ferrython-import = { path = "crates/ferrython-import" }
 ferrython-repl = { path = "crates/ferrython-repl" }
 ferrython-debug = { path = "crates/ferrython-debug" }
+ferrython-traceback = { path = "crates/ferrython-traceback" }
+ferrython-async = { path = "crates/ferrython-async" }
 ferrython-stdlib = { path = "crates/ferrython-stdlib" }
 ferrython-cli = { path = "crates/ferrython-cli" }
 

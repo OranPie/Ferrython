@@ -165,6 +165,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrython-async"
+version = "0.1.0"
+dependencies = [
+ "compact_str",
+ "ferrython-bytecode",
+ "ferrython-core",
+ "indexmap",
+ "parking_lot",
+]
+
+[[package]]
 name = "ferrython-bytecode"
 version = "0.1.0"
 dependencies = [
@@ -231,6 +242,7 @@ version = "0.1.0"
 dependencies = [
  "ferrython-bytecode",
  "ferrython-core",
+ "ferrython-traceback",
  "thiserror 1.0.69",
 ]
 
@@ -301,9 +313,11 @@ version = "0.1.0"
 dependencies = [
  "compact_str",
  "digest",
+ "ferrython-async",
  "ferrython-bytecode",
  "ferrython-core",
  "ferrython-gc",
+ "ferrython-traceback",
  "flate2",
  "indexmap",
  "md-5",
@@ -315,6 +329,17 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "zip",
+]
+
+[[package]]
+name = "ferrython-traceback"
+version = "0.1.0"
+dependencies = [
+ "compact_str",
+ "ferrython-bytecode",
+ "ferrython-core",
+ "indexmap",
+ "parking_lot",
 ]
 
 [[package]]

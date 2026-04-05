@@ -296,3 +296,28 @@ impl From<ferrython_compiler::CompileError> for PyException {
 
 /// Convenience result type used throughout the VM.
 pub type PyResult<T> = Result<T, PyException>;
+
+// ── Thread-local exception info (for sys.exc_info() / traceback.format_exc()) ──
+
+use std::cell::RefCell;
+
+thread_local! {
+    static THREAD_EXC_INFO: RefCell<Option<(ExceptionKind, String, Vec<TracebackEntry>)>>
+        = RefCell::new(None);
+}
+
+/// Store the current exception info in thread-local storage.
+/// Called by the VM when entering an except block.
+pub fn set_thread_exc_info(kind: ExceptionKind, msg: String, tb: Vec<TracebackEntry>) {
+    THREAD_EXC_INFO.with(|c| *c.borrow_mut() = Some((kind, msg, tb)));
+}
+
+/// Clear thread-local exception info. Called when leaving except blocks.
+pub fn clear_thread_exc_info() {
+    THREAD_EXC_INFO.with(|c| *c.borrow_mut() = None);
+}
+
+/// Get the current thread-local exception info, if any.
+pub fn get_thread_exc_info() -> Option<(ExceptionKind, String, Vec<TracebackEntry>)> {
+    THREAD_EXC_INFO.with(|c| c.borrow().clone())
+}

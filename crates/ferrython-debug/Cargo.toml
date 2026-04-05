@@ -8,4 +8,5 @@ description = "Developer tools for Ferrython: debugger, profiler, coverage"
 [dependencies]
 ferrython-core = { workspace = true }
 ferrython-bytecode = { workspace = true }
+ferrython-traceback = { workspace = true }
 thiserror = { workspace = true }

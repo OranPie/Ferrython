@@ -1,0 +1,13 @@
+[package]
+name = "ferrython-traceback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Python-compatible traceback system for Ferrython: frame introspection, source caching, and traceback formatting"
+
+[dependencies]
+ferrython-core = { workspace = true }
+ferrython-bytecode = { workspace = true }
+compact_str = { workspace = true }
+indexmap = { workspace = true }
+parking_lot = { workspace = true }
