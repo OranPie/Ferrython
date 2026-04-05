@@ -27,3 +27,4 @@ Thumbs.db
 *.profraw
 *.profdata
 coverage/
+_test_*.zip
