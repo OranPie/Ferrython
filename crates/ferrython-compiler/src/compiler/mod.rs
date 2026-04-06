@@ -41,6 +41,8 @@ pub(super) struct CompileUnit {
     pub(super) qualname_prefix: String,
     /// Index of the next child scope to consume.
     pub(super) child_scope_idx: usize,
+    /// Current class name for name mangling (None if not inside a class body).
+    pub(super) class_name: Option<String>,
 }
 
 impl CompileUnit {
@@ -72,6 +74,7 @@ impl CompileUnit {
             is_function,
             qualname_prefix,
             child_scope_idx: 0,
+            class_name: None,
         }
     }
 
@@ -116,6 +119,24 @@ impl Compiler {
 
     pub(super) fn current_unit_mut(&mut self) -> &mut CompileUnit {
         self.unit_stack.last_mut().expect("no compile unit on stack")
+    }
+
+    /// Python name mangling: __name → _ClassName__name inside class bodies.
+    /// Applies when name starts with __ and does not end with __, and we're
+    /// inside a class body (or a method inside a class body).
+    pub(super) fn mangle_name<'a>(&self, name: &'a str) -> std::borrow::Cow<'a, str> {
+        if name.starts_with("__") && !name.ends_with("__") {
+            // Walk the unit stack to find the nearest class context
+            for unit in self.unit_stack.iter().rev() {
+                if let Some(ref cls_name) = unit.class_name {
+                    let stripped = cls_name.trim_start_matches('_');
+                    if !stripped.is_empty() {
+                        return std::borrow::Cow::Owned(format!("_{}{}", cls_name, name));
+                    }
+                }
+            }
+        }
+        std::borrow::Cow::Borrowed(name)
     }
 
     pub(super) fn _code(&mut self) -> &mut CodeObject {
@@ -257,6 +278,8 @@ impl Compiler {
 
     /// Emit the correct LOAD instruction for a name.
     pub(super) fn load_name(&mut self, name: &str) {
+        let name = self.mangle_name(name);
+        let name = name.as_ref();
         // Cell/free variables use LoadDeref in ANY scope (function, class, comprehension)
         if self.is_cell(name) || self.is_free(name) {
             let idx = self.deref_index(name);
@@ -280,6 +303,8 @@ impl Compiler {
 
     /// Emit the correct STORE instruction for a name.
     pub(super) fn store_name(&mut self, name: &str) {
+        let name = self.mangle_name(name);
+        let name = name.as_ref();
         // Cell/free variables use StoreDeref in ANY scope
         if self.is_cell(name) || self.is_free(name) {
             let idx = self.deref_index(name);
@@ -300,6 +325,8 @@ impl Compiler {
 
     /// Emit the correct DELETE instruction for a name.
     pub(super) fn delete_name(&mut self, name: &str) {
+        let name = self.mangle_name(name);
+        let name = name.as_ref();
         if self.is_function_scope() {
             if self.is_global(name) {
                 let idx = self.add_name(name);

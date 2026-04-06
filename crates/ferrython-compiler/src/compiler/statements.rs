@@ -573,6 +573,7 @@ impl Compiler {
         class_unit.code.flags = CodeFlags::empty();
         // The class body function takes __locals__ as implicit first arg
         class_unit.code.arg_count = 0;
+        class_unit.class_name = Some(name.to_string());
         self.unit_stack.push(class_unit);
 
         // __name__ = qualname
@@ -1153,7 +1154,8 @@ impl Compiler {
             ExpressionKind::Attribute { value: obj, attr, .. } => {
                 self.compile_expression(obj)?;
                 self.emit_op(Opcode::DupTop);
-                let attr_idx = self.add_name(attr);
+                let mangled = self.mangle_name(attr);
+                let attr_idx = self.add_name(&mangled);
                 self.emit_arg(Opcode::LoadAttr, attr_idx);
                 self.compile_expression(value)?;
                 self.emit_inplace_op(op);
@@ -1211,7 +1213,8 @@ impl Compiler {
             }
             ExpressionKind::Attribute { value, attr, .. } => {
                 self.compile_expression(value)?;
-                let attr_idx = self.add_name(attr);
+                let mangled = self.mangle_name(attr);
+                let attr_idx = self.add_name(&mangled);
                 self.emit_arg(Opcode::StoreAttr, attr_idx);
             }
             ExpressionKind::Subscript { value, slice, .. } => {
@@ -1271,7 +1274,8 @@ impl Compiler {
             }
             ExpressionKind::Attribute { value, attr, .. } => {
                 self.compile_expression(value)?;
-                let attr_idx = self.add_name(attr);
+                let mangled = self.mangle_name(attr);
+                let attr_idx = self.add_name(&mangled);
                 self.emit_arg(Opcode::DeleteAttr, attr_idx);
             }
             ExpressionKind::Subscript { value, slice, .. } => {

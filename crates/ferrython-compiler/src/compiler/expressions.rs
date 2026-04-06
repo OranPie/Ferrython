@@ -69,20 +69,21 @@ impl Compiler {
             }
 
             ExpressionKind::Attribute { value, attr, ctx } => {
+                let mangled = self.mangle_name(attr);
                 match ctx {
                     ExprContext::Load => {
                         self.compile_expression(value)?;
-                        let attr_idx = self.add_name(attr);
+                        let attr_idx = self.add_name(&mangled);
                         self.emit_arg(Opcode::LoadAttr, attr_idx);
                     }
                     ExprContext::Store => {
                         self.compile_expression(value)?;
-                        let attr_idx = self.add_name(attr);
+                        let attr_idx = self.add_name(&mangled);
                         self.emit_arg(Opcode::StoreAttr, attr_idx);
                     }
                     ExprContext::Del => {
                         self.compile_expression(value)?;
-                        let attr_idx = self.add_name(attr);
+                        let attr_idx = self.add_name(&mangled);
                         self.emit_arg(Opcode::DeleteAttr, attr_idx);
                     }
                 }
@@ -551,7 +552,8 @@ impl Compiler {
             // Optimization: obj.method(args) → LoadMethod + CallMethod
             // Avoids creating a BoundMethod wrapper on every call
             self.compile_expression(value)?;
-            let attr_idx = self.add_name(attr);
+            let mangled = self.mangle_name(attr);
+            let attr_idx = self.add_name(&mangled);
             self.emit_arg(Opcode::LoadMethod, attr_idx);
             for arg in args {
                 self.compile_expression(arg)?;
