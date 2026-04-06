@@ -165,7 +165,7 @@ pub fn create_contextlib_module() -> PyObjectRef {
                                     }
                                 }
                                 _ => {
-                                    let mut call_args = extra_args.clone();
+                                    let call_args = extra_args.clone();
                                     ferrython_core::error::request_vm_call(func.clone(), call_args);
                                     Ok(PyObject::none())
                                 }
@@ -534,6 +534,49 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                 Err(PyException::type_error("replace() argument must be a dataclass instance"))
             }
         })),
+        ("is_dataclass", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+            let obj = &args[0];
+            match &obj.payload {
+                PyObjectPayload::Class(_) => {
+                    Ok(PyObject::bool_val(obj.get_attr("__dataclass_fields__").is_some()))
+                }
+                PyObjectPayload::Instance(inst) => {
+                    Ok(PyObject::bool_val(inst.class.get_attr("__dataclass_fields__").is_some()))
+                }
+                _ => Ok(PyObject::bool_val(false)),
+            }
+        })),
+        ("make_dataclass", make_builtin(|args| {
+            // make_dataclass(cls_name, fields, *, bases=()) -> class
+            if args.is_empty() { return Err(PyException::type_error("make_dataclass requires cls_name")); }
+            let cls_name = args[0].py_to_string();
+            let field_list = if args.len() > 1 { args[1].to_list()? } else { vec![] };
+            let mut field_names = Vec::new();
+            for f in &field_list {
+                field_names.push(f.py_to_string());
+            }
+            // Create a class with __annotations__ and __dataclass_fields__
+            let mut ns = IndexMap::new();
+            let mut annotations = IndexMap::new();
+            let mut dc_fields = Vec::new();
+            for name in &field_names {
+                annotations.insert(
+                    HashableKey::Str(CompactString::from(name.as_str())),
+                    PyObject::none(),
+                );
+                dc_fields.push(PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from(name.as_str())),
+                    PyObject::none(), // type annotation
+                ]));
+            }
+            ns.insert(CompactString::from("__annotations__"), PyObject::dict(annotations));
+            ns.insert(CompactString::from("__dataclass_fields__"), PyObject::tuple(dc_fields));
+            let cls = PyObject::class(CompactString::from(cls_name.as_str()), vec![], ns);
+            Ok(cls)
+        })),
+        ("FrozenInstanceError", PyObject::exception_type(ferrython_core::error::ExceptionKind::AttributeError)),
+        ("InitVar", make_builtin(|_| Ok(PyObject::none()))),
     ])
 }
 

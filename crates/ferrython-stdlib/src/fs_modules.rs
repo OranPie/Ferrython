@@ -1044,6 +1044,60 @@ pub fn create_io_module() -> PyObjectRef {
             if args.is_empty() { return Err(PyException::type_error("open() requires at least 1 argument")); }
             Err(PyException::not_implemented_error("io.open() — use builtins.open()"))
         })),
+        ("FileIO", make_builtin(|args| {
+            // FileIO(name, mode='r') -- thin wrapper around OS file descriptor
+            if args.is_empty() { return Err(PyException::type_error("FileIO requires a file path or fd")); }
+            let name = args[0].py_to_string();
+            let mode = if args.len() > 1 { args[1].py_to_string() } else { "r".to_string() };
+            let file = if mode.contains('w') {
+                std::fs::File::create(&name).map_err(|e| PyException::os_error(format!("{}: '{}'", e, name)))?
+            } else {
+                std::fs::File::open(&name).map_err(|e| PyException::os_error(format!("{}: '{}'", e, name)))?
+            };
+            let buf: Arc<RwLock<Option<std::fs::File>>> = Arc::new(RwLock::new(Some(file)));
+            let cls = PyObject::class(CompactString::from("FileIO"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(d) = &inst.payload {
+                let mut a = d.attrs.write();
+                a.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name)));
+                a.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(mode.as_str())));
+                a.insert(CompactString::from("closed"), PyObject::bool_val(false));
+                let buf2 = buf.clone();
+                a.insert(CompactString::from("read"), PyObject::native_closure("FileIO.read", move |_| {
+                    use std::io::Read;
+                    let mut guard = buf2.write();
+                    if let Some(ref mut f) = *guard {
+                        let mut data = Vec::new();
+                        f.read_to_end(&mut data).map_err(|e| PyException::os_error(format!("{}", e)))?;
+                        Ok(PyObject::bytes(data))
+                    } else {
+                        Err(PyException::value_error("I/O operation on closed file"))
+                    }
+                }));
+                let buf3 = buf.clone();
+                a.insert(CompactString::from("write"), PyObject::native_closure("FileIO.write", move |wargs| {
+                    use std::io::Write;
+                    if wargs.is_empty() { return Err(PyException::type_error("write requires data")); }
+                    let mut guard = buf3.write();
+                    if let Some(ref mut f) = *guard {
+                        let data = match &wargs[0].payload {
+                            PyObjectPayload::Bytes(b) => b.clone(),
+                            _ => wargs[0].py_to_string().into_bytes(),
+                        };
+                        let n = f.write(&data).map_err(|e| PyException::os_error(format!("{}", e)))?;
+                        Ok(PyObject::int(n as i64))
+                    } else {
+                        Err(PyException::value_error("I/O operation on closed file"))
+                    }
+                }));
+                let buf4 = buf.clone();
+                a.insert(CompactString::from("close"), PyObject::native_closure("FileIO.close", move |_| {
+                    *buf4.write() = None;
+                    Ok(PyObject::none())
+                }));
+            }
+            Ok(inst)
+        })),
     ])
 }
 
@@ -1710,7 +1764,7 @@ pub fn create_subprocess_module() -> PyObjectRef {
     // CalledProcessError(returncode, cmd, output=None, stderr=None)
     let cpe_cls = PyObject::class(CompactString::from("CalledProcessError"), vec![], IndexMap::new());
     let cpe_cls_ref = cpe_cls.clone();
-    let called_process_error = PyObject::native_closure("CalledProcessError", move |args: &[PyObjectRef]| {
+    let _called_process_error = PyObject::native_closure("CalledProcessError", move |args: &[PyObjectRef]| {
         let returncode = if !args.is_empty() { args[0].clone() } else { PyObject::int(1) };
         let cmd = if args.len() > 1 { args[1].clone() } else { PyObject::str_val(CompactString::from("")) };
         let output = if args.len() > 2 { args[2].clone() } else { PyObject::none() };

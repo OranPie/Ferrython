@@ -731,11 +731,22 @@ pub fn create_enum_module() -> PyObjectRef {
         Ok(args[0].clone())
     });
 
+    // StrEnum (Python 3.11+) — enum where members are also strings
+    let mut str_enum_ns = IndexMap::new();
+    str_enum_ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
+    str_enum_ns.insert(CompactString::from("__str_enum__"), PyObject::bool_val(true));
+    let str_enum = PyObject::class(
+        CompactString::from("StrEnum"),
+        vec![enum_class.clone(), PyObject::builtin_type(CompactString::from("str"))],
+        str_enum_ns,
+    );
+
     make_module("enum", vec![
         ("Enum", enum_class),
         ("IntEnum", int_enum),
         ("Flag", flag_class),
         ("IntFlag", int_flag_class),
+        ("StrEnum", str_enum),
         ("auto", make_builtin(|_| {
             // Return a sentinel tuple ("__enum_auto__", counter_value)
             // process_enum_class will detect this and assign sequential values

@@ -424,7 +424,7 @@ pub fn create_logging_module() -> PyObjectRef {
                     let record = if args.len() >= 1 { &args[0] } else {
                         return Ok(PyObject::str_val(CompactString::from("")));
                     };
-                    let mut result = fs.to_string();
+                    let result = fs.to_string();
                     // Apply %(key)s, %(key)d style substitutions
                     let mut i = 0;
                     let bytes = result.as_bytes().to_vec();
@@ -1473,7 +1473,7 @@ pub fn create_unittest_module() -> PyObjectRef {
                     let mut res_attrs = IndexMap::new();
                     let failures = Arc::new(RwLock::new(Vec::<PyObjectRef>::new()));
                     let errors = Arc::new(RwLock::new(Vec::<PyObjectRef>::new()));
-                    let tests_run = Arc::new(std::sync::atomic::AtomicI64::new(0));
+                    let _tests_run = Arc::new(std::sync::atomic::AtomicI64::new(0));
 
                     let f = failures.clone();
                     res_attrs.insert(CompactString::from("failures"), PyObject::list(vec![]));

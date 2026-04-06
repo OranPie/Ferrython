@@ -1294,7 +1294,26 @@ impl VirtualMachine {
                     }
                     PyObjectPayload::ExceptionType(kind) => {
                         let msg = if pos_args.is_empty() { String::new() } else { pos_args[0].py_to_string() };
-                        return Ok(PyObject::exception_instance_with_args(kind.clone(), msg, pos_args));
+                        let inst = PyObject::exception_instance_with_args(kind.clone(), msg, pos_args.clone());
+                        // ExceptionGroup/BaseExceptionGroup: store .message and .exceptions attrs
+                        if matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup) {
+                            if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
+                                let mut a = attrs.write();
+                                if !pos_args.is_empty() {
+                                    a.insert(CompactString::from("message"), pos_args[0].clone());
+                                }
+                                if pos_args.len() >= 2 {
+                                    // Convert to list if not already
+                                    let exc_list = match &pos_args[1].payload {
+                                        PyObjectPayload::List(_) => pos_args[1].clone(),
+                                        PyObjectPayload::Tuple(items) => PyObject::list(items.clone()),
+                                        _ => PyObject::list(vec![pos_args[1].clone()]),
+                                    };
+                                    a.insert(CompactString::from("exceptions"), exc_list);
+                                }
+                            }
+                        }
+                        return Ok(inst);
                     }
                     PyObjectPayload::Instance(_) => {
                         if func.get_attr("__singledispatch__").is_some() {
@@ -2320,7 +2339,25 @@ impl VirtualMachine {
                 } else {
                     args[0].py_to_string()
                 };
-                Ok(PyObject::exception_instance_with_args(kind.clone(), msg, args))
+                let inst = PyObject::exception_instance_with_args(kind.clone(), msg, args.clone());
+                // ExceptionGroup/BaseExceptionGroup: store .message and .exceptions attrs
+                if matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup) {
+                    if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
+                        let mut a = attrs.write();
+                        if !args.is_empty() {
+                            a.insert(CompactString::from("message"), args[0].clone());
+                        }
+                        if args.len() >= 2 {
+                            let exc_list = match &args[1].payload {
+                                PyObjectPayload::List(_) => args[1].clone(),
+                                PyObjectPayload::Tuple(items) => PyObject::list(items.clone()),
+                                _ => PyObject::list(vec![args[1].clone()]),
+                            };
+                            a.insert(CompactString::from("exceptions"), exc_list);
+                        }
+                    }
+                }
+                Ok(inst)
             }
             PyObjectPayload::NativeFunction { func, name } => {
                 // Intercept functions that need VM access to call Python callables

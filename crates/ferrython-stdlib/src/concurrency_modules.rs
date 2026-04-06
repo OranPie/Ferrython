@@ -573,6 +573,20 @@ pub fn create_weakref_module() -> PyObjectRef {
         ("WeakValueDictionary", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
         ("WeakKeyDictionary", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
         ("WeakSet", make_builtin(|_| Ok(PyObject::set(IndexMap::new())))),
+        ("finalize", PyObject::native_closure("finalize", |args: &[PyObjectRef]| {
+            // finalize(obj, func, *args, **kwargs) — stub that stores the callback
+            if args.len() < 2 { return Err(PyException::type_error("finalize requires obj and func")); }
+            let func = args[1].clone();
+            let extra = if args.len() > 2 { args[2..].to_vec() } else { vec![] };
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("alive"), PyObject::bool_val(true));
+            attrs.insert(CompactString::from("_func"), func);
+            attrs.insert(CompactString::from("_args"), PyObject::tuple(extra));
+            attrs.insert(CompactString::from("detach"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("peek"), make_builtin(|_| Ok(PyObject::none())));
+            let cls = PyObject::class(CompactString::from("finalize"), vec![], IndexMap::new());
+            Ok(PyObject::instance_with_attrs(cls, attrs))
+        })),
     ])
 }
 

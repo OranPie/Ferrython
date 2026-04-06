@@ -42,6 +42,8 @@ pub fn create_itertools_module() -> PyObjectRef {
         ("compress", make_builtin(itertools_compress)),
         ("tee", make_builtin(itertools_tee)),
         ("starmap", PyObject::native_function("itertools.starmap", itertools_starmap)),
+        ("pairwise", make_builtin(itertools_pairwise)),
+        ("batched", make_builtin(itertools_batched)),
     ])
 }
 
@@ -462,4 +464,35 @@ fn itertools_starmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // starmap(func, iterable) — VM-intercepted for callable functions
     if args.len() < 2 { return Err(PyException::type_error("starmap requires function and iterable")); }
     Err(PyException::type_error("starmap requires VM dispatch"))
+}
+
+/// pairwise(iterable) → iterator of consecutive overlapping pairs (Python 3.10+)
+fn itertools_pairwise(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("pairwise requires an iterable")); }
+    let items = args[0].to_list()?;
+    if items.len() < 2 {
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            IteratorData::List { items: vec![], index: 0 }
+        )))));
+    }
+    let pairs: Vec<PyObjectRef> = items.windows(2)
+        .map(|w| PyObject::tuple(vec![w[0].clone(), w[1].clone()]))
+        .collect();
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        IteratorData::List { items: pairs, index: 0 }
+    )))))
+}
+
+/// batched(iterable, n) → iterator of tuples of size n (Python 3.12+)
+fn itertools_batched(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("batched requires iterable and n")); }
+    let items = args[0].to_list()?;
+    let n = args[1].to_int()? as usize;
+    if n == 0 { return Err(PyException::value_error("n must be at least one")); }
+    let batches: Vec<PyObjectRef> = items.chunks(n)
+        .map(|chunk| PyObject::tuple(chunk.to_vec()))
+        .collect();
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        IteratorData::List { items: batches, index: 0 }
+    )))))
 }

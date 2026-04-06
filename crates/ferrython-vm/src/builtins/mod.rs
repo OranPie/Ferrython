@@ -136,6 +136,9 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
         // Indentation
         ("IndentationError", ExceptionKind::IndentationError),
         ("TabError", ExceptionKind::TabError),
+        // Python 3.11+ exception groups
+        ("ExceptionGroup", ExceptionKind::ExceptionGroup),
+        ("BaseExceptionGroup", ExceptionKind::BaseExceptionGroup),
     ];
     for (name, kind) in exc_types {
         m.insert(CompactString::from(name), PyObject::exception_type(kind));

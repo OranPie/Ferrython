@@ -8,10 +8,9 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin, check_args_min, InstanceData,
+    make_module, make_builtin, check_args_min,
 };
 use ferrython_core::types::HashableKey;
-use parking_lot::RwLock;
 use indexmap::IndexMap;
 use std::cell::RefCell;
 
@@ -391,7 +390,7 @@ fn metadata_requires(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .ok_or_else(|| PyException::type_error("requires() argument must be str"))?;
     if let Some(dist_info) = find_dist_info(name) {
         let metadata_path = dist_info.join("METADATA");
-        let meta = parse_metadata_file(&metadata_path);
+        let _meta = parse_metadata_file(&metadata_path);
         let mut requires = Vec::new();
         // Collect all "Requires-Dist" entries
         if let Ok(content) = std::fs::read_to_string(&metadata_path) {

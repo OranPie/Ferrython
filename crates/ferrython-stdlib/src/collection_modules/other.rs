@@ -23,11 +23,16 @@ pub fn create_queue_module() -> PyObjectRef {
     let prio_fn = PyObject::native_closure("PriorityQueue", move |args: &[PyObjectRef]| {
         create_queue_instance_full("PriorityQueue", args)
     });
+    // SimpleQueue constructor (unbounded FIFO, no maxsize)
+    let simple_queue_fn = PyObject::native_closure("SimpleQueue", move |_args: &[PyObjectRef]| {
+        create_queue_instance_full("SimpleQueue", &[PyObject::int(0)])
+    });
 
     make_module("queue", vec![
         ("Queue", queue_fn),
         ("LifoQueue", lifo_fn),
         ("PriorityQueue", prio_fn),
+        ("SimpleQueue", simple_queue_fn),
         ("Empty", PyObject::class(CompactString::from("Empty"), vec![], IndexMap::new())),
         ("Full", PyObject::class(CompactString::from("Full"), vec![], IndexMap::new())),
     ])

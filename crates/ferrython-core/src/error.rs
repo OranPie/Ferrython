@@ -83,6 +83,9 @@ pub enum ExceptionKind {
     SubprocessError,
     CalledProcessError,
     TimeoutExpired,
+    // Python 3.11+ exception groups
+    ExceptionGroup,
+    BaseExceptionGroup,
 }
 
 impl fmt::Display for ExceptionKind {
@@ -98,7 +101,8 @@ impl ExceptionKind {
         match parent {
             ExceptionKind::BaseException => true,
             ExceptionKind::Exception => !matches!(self,
-                ExceptionKind::SystemExit | ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit
+                ExceptionKind::SystemExit | ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit |
+                ExceptionKind::BaseExceptionGroup
             ),
             ExceptionKind::ArithmeticError => matches!(self,
                 ExceptionKind::ArithmeticError | ExceptionKind::FloatingPointError |
@@ -159,6 +163,9 @@ impl ExceptionKind {
             ExceptionKind::SubprocessError => matches!(self,
                 ExceptionKind::SubprocessError | ExceptionKind::CalledProcessError |
                 ExceptionKind::TimeoutExpired
+            ),
+            ExceptionKind::BaseExceptionGroup => matches!(self,
+                ExceptionKind::BaseExceptionGroup | ExceptionKind::ExceptionGroup
             ),
             _ => false,
         }

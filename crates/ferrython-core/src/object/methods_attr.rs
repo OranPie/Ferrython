@@ -811,6 +811,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning => {
                                 Some(ExceptionKind::Warning)
                             }
+                            ExceptionKind::BaseExceptionGroup => Some(ExceptionKind::BaseException),
+                            ExceptionKind::ExceptionGroup => Some(ExceptionKind::BaseExceptionGroup),
                         };
                         let bases = match parent {
                             Some(p) => vec![PyObject::exception_type(p)],
@@ -864,6 +866,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 ExceptionKind::FutureWarning | ExceptionKind::ImportWarning |
                                 ExceptionKind::UnicodeWarning | ExceptionKind::BytesWarning |
                                 ExceptionKind::ResourceWarning | ExceptionKind::PendingDeprecationWarning => ExceptionKind::Warning,
+                                ExceptionKind::BaseExceptionGroup => ExceptionKind::BaseException,
+                                ExceptionKind::ExceptionGroup => ExceptionKind::BaseExceptionGroup,
                             };
                             mro.push(PyObject::exception_type(parent.clone()));
                             current = parent;

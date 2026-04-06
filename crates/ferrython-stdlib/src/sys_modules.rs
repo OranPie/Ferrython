@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin, check_args,
+    make_module, make_builtin, check_args, check_args_min,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -209,6 +209,26 @@ pub fn create_sys_module() -> PyObjectRef {
             attrs.insert(CompactString::from("f_back"), PyObject::none());
             Ok(PyObject::module_with_attrs(CompactString::from("frame"), attrs))
         })),
+        ("base_prefix", PyObject::str_val(CompactString::from("/usr/local"))),
+        ("base_exec_prefix", PyObject::str_val(CompactString::from("/usr/local"))),
+        ("api_version", PyObject::int(1013)),
+        ("copyright", PyObject::str_val(CompactString::from(
+            "Copyright (c) Ferrython contributors.\nBased on Python, Copyright (c) Python Software Foundation."
+        ))),
+        ("thread_info", PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("pthread")), // name
+            PyObject::none(), // lock
+            PyObject::str_val(CompactString::from("")), // version
+        ])),
+        ("builtin_module_names", PyObject::tuple({
+            let mut names: Vec<PyObjectRef> = [
+                "_abc", "_io", "_thread", "_weakref", "builtins", "errno", "gc",
+                "marshal", "os", "sys", "time",
+            ].iter().map(|n| PyObject::str_val(CompactString::from(*n))).collect();
+            names.sort_by(|a, b| a.py_to_string().cmp(&b.py_to_string()));
+            names
+        })),
+        ("getfilesystemencodeerrors", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("surrogateescape"))))),
     ])
 }
 
@@ -824,6 +844,46 @@ pub fn create_os_module() -> PyObjectRef {
             // For now, return a simple wrapper — full implementation would create a file object
             Err(PyException::not_implemented_error("os.fdopen not fully implemented; use open() instead"))
         })),
+        ("fstat", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("os.fstat requires fd")); }
+            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::FromRawFd;
+                let file = unsafe { std::fs::File::from_raw_fd(fd) };
+                let meta = file.metadata().map_err(|e| PyException::os_error(format!("{}", e)));
+                std::mem::forget(file);
+                let meta = meta?;
+                build_stat_result_from_meta(&meta)
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = fd;
+                Err(PyException::not_implemented_error("os.fstat not supported on this platform"))
+            }
+        })),
+        ("ftruncate", make_builtin(|args| {
+            check_args_min("os.ftruncate", args, 2)?;
+            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
+            let length = args[1].as_int().ok_or_else(|| PyException::type_error("length must be int"))? as u64;
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::FromRawFd;
+                let file = unsafe { std::fs::File::from_raw_fd(fd) };
+                let result = file.set_len(length).map_err(|e| PyException::os_error(format!("{}", e)));
+                std::mem::forget(file);
+                result?;
+                Ok(PyObject::none())
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (fd, length);
+                Err(PyException::not_implemented_error("os.ftruncate not supported on this platform"))
+            }
+        })),
+        ("stat_result", make_builtin(|_| {
+            Ok(PyObject::class(CompactString::from("stat_result"), vec![], IndexMap::new()))
+        })),
     ])
 }
 
@@ -1007,11 +1067,7 @@ fn walk_dir_recursive(dir: &str, topdown: bool, results: &mut Vec<PyObjectRef>) 
     }
 }
 
-fn os_stat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    check_args("os.stat", args, 1)?;
-    let path = args[0].py_to_string();
-    let meta = std::fs::metadata(&path)
-        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+fn build_stat_result_from_meta(meta: &std::fs::Metadata) -> PyResult<PyObjectRef> {
     let mut attrs = indexmap::IndexMap::new();
     #[cfg(unix)]
     {
@@ -1050,6 +1106,14 @@ fn os_stat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     attrs.insert(CompactString::from("st_atime"), PyObject::float(atime));
     attrs.insert(CompactString::from("st_ctime"), PyObject::float(ctime));
     Ok(PyObject::module_with_attrs(CompactString::from("os.stat_result"), attrs))
+}
+
+fn os_stat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.stat", args, 1)?;
+    let path = args[0].py_to_string();
+    let meta = std::fs::metadata(&path)
+        .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+    build_stat_result_from_meta(&meta)
 }
 
 fn os_chmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

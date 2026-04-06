@@ -995,7 +995,7 @@ pub fn create_ast_module() -> PyObjectRef {
         // Return the class itself (callable). When called, it creates an instance.
         // Also wrap in a NativeClosure for constructor kwargs support.
         let n = name.to_string();
-        let constructor = PyObject::native_closure(&format!("ast.{}", n), move |args: &[PyObjectRef]| {
+        let _constructor = PyObject::native_closure(&format!("ast.{}", n), move |args: &[PyObjectRef]| {
             let inst = PyObject::instance(cls_clone.clone());
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(map) = &last.payload {
