@@ -608,7 +608,7 @@ fn build_socket_object(
         }),
     );
 
-    // ── setsockopt(level, optname, value) — stub ──
+    // ── setsockopt(level, optname, value) ──
     let st = inner.clone();
     attrs.insert(
         CompactString::from("gettimeout"),
