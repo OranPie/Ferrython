@@ -11,6 +11,8 @@ ferrython-bytecode = { workspace = true }
 ferrython-traceback = { workspace = true }
 ferrython-async = { workspace = true }
 ferrython-gc = { workspace = true }
+ferrython-parser = { workspace = true }
+ferrython-ast = { workspace = true }
 compact_str = { workspace = true }
 indexmap = { workspace = true }
 parking_lot = { workspace = true }

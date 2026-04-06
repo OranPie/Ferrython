@@ -10,3 +10,4 @@ mod string_parser;
 
 pub use error::{ParseError, ParseErrorKind};
 pub use parser::parse;
+pub use parser::parse_expression;
