@@ -145,13 +145,38 @@ pub fn create_contextlib_module() -> PyObjectRef {
                     let self_ref = self_ref.clone();
                     move |args: &[PyObjectRef]| {
                         check_args_min("ExitStack.callback", args, 1)?;
-                        let func = &args[0];
+                        let func = args[0].clone();
+                        let extra_args: Vec<PyObjectRef> = args[1..].to_vec();
+                        // Wrap callback+args into a NativeClosure so __exit__ can call it
+                        let wrapper = PyObject::native_closure("_callback_wrapper", move |_: &[PyObjectRef]| {
+                            match &func.payload {
+                                PyObjectPayload::NativeFunction { func: f, .. } => f(&extra_args),
+                                PyObjectPayload::NativeClosure { func: f, .. } => f(&extra_args),
+                                PyObjectPayload::BoundMethod { method, receiver, .. } => {
+                                    let mut call_args = vec![(*receiver).clone()];
+                                    call_args.extend(extra_args.iter().cloned());
+                                    match &method.payload {
+                                        PyObjectPayload::NativeFunction { func: ff, .. } => ff(&call_args),
+                                        PyObjectPayload::NativeClosure { func: ff, .. } => ff(&call_args),
+                                        _ => {
+                                            ferrython_core::error::request_vm_call((*method).clone(), call_args);
+                                            Ok(PyObject::none())
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    let mut call_args = extra_args.clone();
+                                    ferrython_core::error::request_vm_call(func.clone(), call_args);
+                                    Ok(PyObject::none())
+                                }
+                            }
+                        });
                         if let Some(cbs) = self_ref.get_attr("_callbacks") {
                             if let PyObjectPayload::List(items) = &cbs.payload {
-                                items.write().push(func.clone());
+                                items.write().push(wrapper);
                             }
                         }
-                        Ok(func.clone())
+                        Ok(PyObject::none())
                     }
                 }
             ));

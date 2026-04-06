@@ -466,7 +466,12 @@ impl VirtualMachine {
             let bases_tuple = PyObject::tuple(bases_list.clone());
             
             // Try calling metaclass.__new__(mcs, name, bases, namespace)
-            let cls = if let Some(new_method) = meta.get_attr("__new__") {
+            let own_new = if let PyObjectPayload::Class(cd) = &meta.payload {
+                cd.namespace.read().get("__new__").cloned()
+            } else {
+                None
+            };
+            let cls = if let Some(new_method) = own_new {
                 // User-defined __new__ on the metaclass
                 let new_fn = match &new_method.payload {
                     PyObjectPayload::BoundMethod { method, .. } => method.clone(),
