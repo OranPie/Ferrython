@@ -1205,7 +1205,19 @@ impl VirtualMachine {
                             } else { None };
                             let effective_default = default_fn.or(cls_default);
                             if let Some(ref def) = effective_default {
-                                if matches!(&def.payload, PyObjectPayload::Function(_)) {
+                                let needs_vm_prepare = match &def.payload {
+                                    PyObjectPayload::Function(_) => true,
+                                    PyObjectPayload::BoundMethod { method, .. } => {
+                                        matches!(&method.payload, PyObjectPayload::Function(_))
+                                    }
+                                    PyObjectPayload::NativeFunction { .. }
+                                    | PyObjectPayload::NativeClosure { .. }
+                                    | PyObjectPayload::Class(_)
+                                    | PyObjectPayload::BuiltinFunction(_)
+                                    | PyObjectPayload::BuiltinType(_) => true,
+                                    _ => false,
+                                };
+                                if needs_vm_prepare {
                                     // Pre-process object tree: call `default` on non-serializable values
                                     let prepared = self.json_prepare_with_default(&pos_args[0], def)?;
                                     // Rebuild kwargs without `default` and `cls`

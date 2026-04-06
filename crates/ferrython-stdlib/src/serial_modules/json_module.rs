@@ -335,10 +335,14 @@ fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize, default: Op
             Ok(format!("{{\n{}{}\n{}}}", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
         }
         PyObjectPayload::Set(map) => {
-            let r = map.read();
-            let items: Vec<PyObjectRef> = r.keys().map(|k| k.to_object()).collect();
-            let list = PyObject::list(items);
-            py_to_json_pretty(&list, depth, indent, default)
+            if default.is_some() {
+                json_serialize_fallback(obj, default, |o, d| py_to_json_pretty(o, depth, indent, d))
+            } else {
+                let r = map.read();
+                let items: Vec<PyObjectRef> = r.keys().map(|k| k.to_object()).collect();
+                let list = PyObject::list(items);
+                py_to_json_pretty(&list, depth, indent, default)
+            }
         }
         _ => json_serialize_fallback(obj, default, |o, d| py_to_json_pretty(o, depth, indent, d)),
     }
@@ -382,20 +386,29 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
             Ok(format!("{{{}}}", parts?.join(item_sep)))
         }
         PyObjectPayload::InstanceDict(attrs) => {
-            let r = attrs.read();
-            let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
-                let key_str = json_escape_string(k);
-                let val_str = py_to_json_sep(v, item_sep, kv_sep, default)?;
-                Ok(format!("{}{}{}", key_str, kv_sep, val_str))
-            }).collect();
-            Ok(format!("{{{}}}", parts?.join(item_sep)))
+            // When a custom default/cls is provided, route through fallback first
+            // (CPython: custom objects are NOT auto-serializable)
+            if default.is_some() {
+                json_serialize_fallback(obj, default, |o, d| py_to_json_sep(o, item_sep, kv_sep, d))
+            } else {
+                let r = attrs.read();
+                let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
+                    let key_str = json_escape_string(k);
+                    let val_str = py_to_json_sep(v, item_sep, kv_sep, default)?;
+                    Ok(format!("{}{}{}", key_str, kv_sep, val_str))
+                }).collect();
+                Ok(format!("{{{}}}", parts?.join(item_sep)))
+            }
         }
         PyObjectPayload::Set(map) => {
-            // Sets serialize as JSON arrays (common pattern used by custom encoders)
-            let r = map.read();
-            let items: Vec<PyObjectRef> = r.keys().map(|k| k.to_object()).collect();
-            let list = PyObject::list(items);
-            py_to_json_sep(&list, item_sep, kv_sep, default)
+            if default.is_some() {
+                json_serialize_fallback(obj, default, |o, d| py_to_json_sep(o, item_sep, kv_sep, d))
+            } else {
+                let r = map.read();
+                let items: Vec<PyObjectRef> = r.keys().map(|k| k.to_object()).collect();
+                let list = PyObject::list(items);
+                py_to_json_sep(&list, item_sep, kv_sep, default)
+            }
         }
         _ => json_serialize_fallback(obj, default, |o, d| py_to_json_sep(o, item_sep, kv_sep, d)),
     }

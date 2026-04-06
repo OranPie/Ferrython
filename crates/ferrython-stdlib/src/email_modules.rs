@@ -222,6 +222,50 @@ fn build_message_instance(
             }));
     }
 
+    // set_content(body) — EmailMessage API
+    {
+        let h = headers.clone();
+        let p = payload_cell.clone();
+        attrs.insert(CompactString::from("set_content"),
+            PyObject::native_closure("set_content", move |args| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("set_content() requires body text"));
+                }
+                let body = args[0].py_to_string();
+                *p.lock().unwrap() = PyObject::str_val(CompactString::from(body));
+                h.lock().unwrap().entry(CompactString::from("Content-Type"))
+                    .or_insert_with(|| PyObject::str_val(CompactString::from("text/plain; charset=\"utf-8\"")));
+                Ok(PyObject::none())
+            }));
+    }
+
+    // __str__ — produces RFC 2822 formatted string
+    {
+        let h = headers.clone();
+        let p = payload_cell.clone();
+        attrs.insert(CompactString::from("__str__"),
+            PyObject::native_closure("__str__", move |_args| {
+                let guard = h.lock().unwrap();
+                let mut s = String::new();
+                for (k, v) in guard.iter() {
+                    s.push_str(k.as_str());
+                    s.push_str(": ");
+                    s.push_str(&v.py_to_string());
+                    s.push('\n');
+                }
+                s.push('\n');
+                let payload = p.lock().unwrap();
+                if !matches!(payload.payload, PyObjectPayload::None) {
+                    let ps = payload.py_to_string();
+                    if ps != "None" {
+                        s.push_str(&ps);
+                        s.push('\n');
+                    }
+                }
+                Ok(PyObject::str_val(CompactString::from(s)))
+            }));
+    }
+
     // attach(part) — for multipart messages
     {
         let p = payload_cell.clone();
@@ -259,6 +303,7 @@ fn email_message_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub fn create_email_message_module() -> PyObjectRef {
     make_module("email.message", vec![
         ("Message", make_builtin(email_message_constructor)),
+        ("EmailMessage", make_builtin(email_message_constructor)),
     ])
 }
 
