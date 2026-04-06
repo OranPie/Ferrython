@@ -651,22 +651,85 @@ pub fn create_gc_module() -> PyObjectRef {
 pub fn create_thread_module() -> PyObjectRef {
     make_module("_thread", vec![
         ("allocate_lock", make_builtin(|_| {
+            let locked = Arc::new(std::sync::Mutex::new(false));
             let cls = PyObject::class(CompactString::from("lock"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst.payload {
                 let mut w = d.attrs.write();
-                w.insert(CompactString::from("_locked"), PyObject::bool_val(false));
-                w.insert(CompactString::from("acquire"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-                w.insert(CompactString::from("release"), make_builtin(|_| Ok(PyObject::none())));
-                w.insert(CompactString::from("locked"), make_builtin(|_| Ok(PyObject::bool_val(false))));
-                w.insert(CompactString::from("__enter__"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-                w.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::none())));
+                let l1 = locked.clone();
+                w.insert(CompactString::from("acquire"), PyObject::native_closure(
+                    "acquire", move |args: &[PyObjectRef]| {
+                        let blocking = args.first().map(|a| a.is_truthy()).unwrap_or(true);
+                        let mut guard = l1.lock().unwrap();
+                        if *guard {
+                            if !blocking { return Ok(PyObject::bool_val(false)); }
+                            // In single-threaded context, can't block — return false
+                            return Ok(PyObject::bool_val(false));
+                        }
+                        *guard = true;
+                        Ok(PyObject::bool_val(true))
+                    }));
+                let l2 = locked.clone();
+                w.insert(CompactString::from("release"), PyObject::native_closure(
+                    "release", move |_: &[PyObjectRef]| {
+                        let mut guard = l2.lock().unwrap();
+                        if !*guard {
+                            return Err(PyException::runtime_error("release unlocked lock"));
+                        }
+                        *guard = false;
+                        Ok(PyObject::none())
+                    }));
+                let l3 = locked.clone();
+                w.insert(CompactString::from("locked"), PyObject::native_closure(
+                    "locked", move |_: &[PyObjectRef]| {
+                        Ok(PyObject::bool_val(*l3.lock().unwrap()))
+                    }));
+                let l4 = locked.clone();
+                w.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                    "__enter__", move |_: &[PyObjectRef]| {
+                        let mut guard = l4.lock().unwrap();
+                        *guard = true;
+                        Ok(PyObject::bool_val(true))
+                    }));
+                let l5 = locked;
+                w.insert(CompactString::from("__exit__"), PyObject::native_closure(
+                    "__exit__", move |_: &[PyObjectRef]| {
+                        let mut guard = l5.lock().unwrap();
+                        *guard = false;
+                        Ok(PyObject::none())
+                    }));
             }
             Ok(inst)
         })),
         ("LockType", PyObject::class(CompactString::from("lock"), vec![], IndexMap::new())),
-        ("start_new_thread", make_builtin(|_| Ok(PyObject::int(0)))),
-        ("get_ident", make_builtin(|_| Ok(PyObject::int(1)))),
+        ("start_new_thread", make_builtin(|args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("start_new_thread requires a callable"));
+            }
+            let func = args[0].clone();
+            let call_args: Vec<PyObjectRef> = if args.len() > 1 {
+                args[1].to_list().unwrap_or_default()
+            } else { vec![] };
+            // Spawn a real OS thread for native closures/functions
+            let handle = std::thread::spawn(move || {
+                match &func.payload {
+                    PyObjectPayload::NativeClosure { func: f, .. } => { let _ = f(&call_args); }
+                    PyObjectPayload::NativeFunction { func: f, .. } => { let _ = f(&call_args); }
+                    _ => {} // Python-defined functions need VM — can't call from here
+                }
+            });
+            // Return thread ID
+            let tid = format!("{:?}", handle.thread().id());
+            let id_num: i64 = tid.chars().filter(|c| c.is_ascii_digit()).collect::<String>()
+                .parse().unwrap_or(1);
+            Ok(PyObject::int(id_num))
+        })),
+        ("get_ident", make_builtin(|_| {
+            let tid = format!("{:?}", std::thread::current().id());
+            let id_num: i64 = tid.chars().filter(|c| c.is_ascii_digit()).collect::<String>()
+                .parse().unwrap_or(1);
+            Ok(PyObject::int(id_num))
+        })),
         ("stack_size", make_builtin(|_| Ok(PyObject::int(0)))),
         ("TIMEOUT_MAX", PyObject::float(f64::MAX)),
     ])

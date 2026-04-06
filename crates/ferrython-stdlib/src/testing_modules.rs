@@ -345,9 +345,26 @@ pub fn create_logging_module() -> PyObjectRef {
         let inst = PyObject::instance(h_cls.clone());
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
+            let level = Arc::new(std::sync::atomic::AtomicI64::new(0));
             attrs.insert(CompactString::from("level"), PyObject::int(0));
-            attrs.insert(CompactString::from("setLevel"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("setFormatter"), make_builtin(|_| Ok(PyObject::none())));
+            let lv = level.clone();
+            attrs.insert(CompactString::from("setLevel"), PyObject::native_closure(
+                "setLevel", move |args: &[PyObjectRef]| {
+                    if let Some(v) = args.first().and_then(|a| a.as_int()) {
+                        lv.store(v, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Ok(PyObject::none())
+                }));
+            let formatter_ref: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
+            let fr = formatter_ref.clone();
+            attrs.insert(CompactString::from("setFormatter"), PyObject::native_closure(
+                "setFormatter", move |args: &[PyObjectRef]| {
+                    if let Some(v) = args.first() {
+                        *fr.write() = v.clone();
+                    }
+                    Ok(PyObject::none())
+                }));
+            attrs.insert(CompactString::from("formatter"), PyObject::none());
         }
         Ok(inst)
     });

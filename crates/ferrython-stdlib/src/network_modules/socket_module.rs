@@ -612,6 +612,40 @@ fn build_socket_object(
         }),
     );
 
+    // ── getsockopt(level, optname) → int ──
+    let st = inner.clone();
+    attrs.insert(
+        CompactString::from("getsockopt"),
+        PyObject::native_closure("getsockopt", move |args| {
+            let level = if !args.is_empty() { args[0].as_int().unwrap_or(0) } else { 0 };
+            let optname = if args.len() > 1 { args[1].as_int().unwrap_or(0) } else { 0 };
+            let guard = lock_inner(&st)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::AsRawFd;
+                let fd = guard.tcp_stream.as_ref().map(|s| s.as_raw_fd())
+                    .or_else(|| guard.udp_socket.as_ref().map(|s| s.as_raw_fd()))
+                    .or_else(|| guard.tcp_listener.as_ref().map(|s| s.as_raw_fd()));
+                if let Some(fd) = fd {
+                    let mut val: libc::c_int = 0;
+                    let mut len: libc::socklen_t = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                    let rc = unsafe {
+                        libc::getsockopt(fd, level as libc::c_int, optname as libc::c_int,
+                            &mut val as *mut libc::c_int as *mut libc::c_void, &mut len)
+                    };
+                    if rc == 0 {
+                        return Ok(PyObject::int(val as i64));
+                    }
+                }
+            }
+            // Fallback: check stored options
+            for &(l, o, v) in &guard.options {
+                if l == level && o == optname { return Ok(PyObject::int(v)); }
+            }
+            Ok(PyObject::int(0))
+        }),
+    );
+
     // ── getsockname() → (host, port) ──
     let st = inner.clone();
     attrs.insert(
