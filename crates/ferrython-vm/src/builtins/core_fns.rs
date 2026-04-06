@@ -137,6 +137,14 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::ExceptionInstance { kind, .. } => {
             Ok(PyObject::exception_type(kind.clone()))
         }
+        // For classes with a custom metaclass, return the metaclass
+        PyObjectPayload::Class(cd) => {
+            if let Some(ref mcs) = cd.metaclass {
+                Ok(mcs.clone())
+            } else {
+                Ok(PyObject::builtin_type(CompactString::from("type")))
+            }
+        }
         _ => Ok(PyObject::builtin_type(CompactString::from(name)))
     }
 }
@@ -529,6 +537,19 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             // User-defined class check: walk the instance's class MRO
             if let PyObjectPayload::Instance(inst) = &obj.payload {
                 class_is_subclass_of(&inst.class, &target_cd.name)
+            } else if let PyObjectPayload::Class(obj_cd) = &obj.payload {
+                // Metaclass check: isinstance(MyClass, Meta) where Meta is a metaclass
+                if let Some(ref mcs) = obj_cd.metaclass {
+                    if let PyObjectPayload::Class(mcs_cd) = &mcs.payload {
+                        if mcs_cd.name == target_cd.name {
+                            return true;
+                        }
+                        // Check MRO of the metaclass
+                        return class_is_subclass_of(mcs, &target_cd.name);
+                    }
+                }
+                // All classes are instances of 'type'
+                target_cd.name.as_str() == "type"
             } else {
                 false
             }

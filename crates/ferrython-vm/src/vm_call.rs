@@ -823,98 +823,8 @@ impl VirtualMachine {
                     }
                     if method_name.as_str() == "format" && !kwargs.is_empty() {
                         if let PyObjectPayload::Str(s) = &receiver.payload {
-                            // Handle str.format() with named args
-                            let mut result = String::new();
-                            let mut chars = s.chars().peekable();
-                            let mut arg_idx = 0usize;
-                            while let Some(c) = chars.next() {
-                                if c == '{' {
-                                    if chars.peek() == Some(&'{') {
-                                        chars.next();
-                                        result.push('{');
-                                    } else if chars.peek() == Some(&'}') {
-                                        chars.next();
-                                        if arg_idx < pos_args.len() {
-                                            result.push_str(&pos_args[arg_idx].py_to_string());
-                                            arg_idx += 1;
-                                        }
-                                    } else {
-                                        let mut field_spec = String::new();
-                                        let mut depth = 1;
-                                        for c in chars.by_ref() {
-                                            if c == '{' { depth += 1; }
-                                            else if c == '}' {
-                                                depth -= 1;
-                                                if depth == 0 { break; }
-                                            }
-                                            field_spec.push(c);
-                                        }
-                                        // Parse {field_name!conversion:format_spec}
-                                        let (field_part, format_spec) = if let Some(cp) = field_spec.find(':') {
-                                            (&field_spec[..cp], Some(&field_spec[cp+1..]))
-                                        } else {
-                                            (field_spec.as_str(), None)
-                                        };
-                                        // Resolve nested {N}/{name} in format spec
-                                        let resolved_spec = format_spec.map(|spec| {
-                                            if spec.contains('{') {
-                                                let mut r = String::new();
-                                                let mut sc = spec.chars().peekable();
-                                                while let Some(ch) = sc.next() {
-                                                    if ch == '{' {
-                                                        let mut ref_name = String::new();
-                                                        for ch in sc.by_ref() {
-                                                            if ch == '}' { break; }
-                                                            ref_name.push(ch);
-                                                        }
-                                                        if let Ok(idx) = ref_name.parse::<usize>() {
-                                                            if let Some(v) = pos_args.get(idx) {
-                                                                r.push_str(&v.py_to_string());
-                                                            }
-                                                        } else if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == ref_name) {
-                                                            r.push_str(&v.py_to_string());
-                                                        }
-                                                    } else {
-                                                        r.push(ch);
-                                                    }
-                                                }
-                                                r
-                                            } else {
-                                                spec.to_string()
-                                            }
-                                        });
-                                        let (field_name, conversion) = if let Some(bp) = field_part.find('!') {
-                                            (&field_part[..bp], Some(&field_part[bp+1..]))
-                                        } else {
-                                            (field_part, None)
-                                        };
-                                        // Resolve value
-                                        let value = if let Ok(idx) = field_name.parse::<usize>() {
-                                            pos_args.get(idx).cloned()
-                                        } else {
-                                            kwargs.iter().find(|(k, _)| k.as_str() == field_name).map(|(_, v)| v.clone())
-                                        };
-                                        if let Some(val) = value {
-                                            let text = match conversion {
-                                                Some("r") | Some("a") => val.repr(),
-                                                Some("s") => val.py_to_string(),
-                                                _ => val.py_to_string(),
-                                            };
-                                            if let Some(ref spec) = resolved_spec {
-                                                result.push_str(&crate::builtins::apply_format_spec_str(&text, spec));
-                                            } else {
-                                                result.push_str(&text);
-                                            }
-                                        }
-                                    }
-                                } else if c == '}' && chars.peek() == Some(&'}') {
-                                    chars.next();
-                                    result.push('}');
-                                } else {
-                                    result.push(c);
-                                }
-                            }
-                            return Ok(PyObject::str_val(CompactString::from(result)));
+                            // Handle str.format() with named args via VM-aware formatter
+                            return self.vm_str_format_kw(s, &pos_args, &kwargs);
                         }
                     }
                 }
@@ -2219,6 +2129,12 @@ impl VirtualMachine {
                             return Ok(PyObject::none());
                         }
                         // No key or reverse — fall through to basic sort
+                    }
+                }
+                // str.format with positional args: needs VM for __str__ on instances
+                if method_name.as_str() == "format" {
+                    if let PyObjectPayload::Str(s) = &receiver.payload {
+                        return self.vm_str_format(s, &args);
                     }
                 }
                 // str.format_map with dict subclass: needs VM for __missing__ calls

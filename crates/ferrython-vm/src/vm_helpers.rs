@@ -153,6 +153,228 @@ impl VirtualMachine {
         }
     }
 
+    /// VM-aware conversion of an object to string for str.format() placeholders.
+    /// Uses __str__ protocol for instances (dispatches through VM), falls back to py_to_string.
+    fn vm_format_obj_str(&mut self, val: &PyObjectRef) -> PyResult<String> {
+        self.vm_str(val)
+    }
+
+    fn vm_format_obj_repr(&mut self, val: &PyObjectRef) -> PyResult<String> {
+        self.vm_repr(val)
+    }
+
+    /// Format a single replacement field value with optional conversion and format spec.
+    fn vm_format_field(&mut self, val: &PyObjectRef, conversion: Option<&str>, spec: Option<&str>) -> PyResult<String> {
+        match conversion {
+            Some("r") | Some("a") => {
+                let text = self.vm_format_obj_repr(val)?;
+                Ok(match spec {
+                    Some(s) if !s.is_empty() => crate::builtins::apply_format_spec_str(&text, s),
+                    _ => text,
+                })
+            }
+            Some("s") => {
+                let text = self.vm_format_obj_str(val)?;
+                Ok(match spec {
+                    Some(s) if !s.is_empty() => crate::builtins::apply_format_spec_str(&text, s),
+                    _ => text,
+                })
+            }
+            _ => {
+                // No conversion — apply format spec to the raw value (not str())
+                match spec {
+                    Some(s) if !s.is_empty() => {
+                        // For instances, check __format__ first
+                        if matches!(&val.payload, PyObjectPayload::Instance(_)) {
+                            if let Some(format_method) = val.get_attr("__format__") {
+                                let spec_obj = PyObject::str_val(CompactString::from(s));
+                                let r = self.call_object(format_method, vec![spec_obj])?;
+                                return Ok(r.py_to_string());
+                            }
+                        }
+                        // Use the core format_value which handles int/float format specs
+                        match val.format_value(s) {
+                            Ok(formatted) => Ok(formatted),
+                            Err(_) => Ok(self.vm_format_obj_str(val)?),
+                        }
+                    }
+                    _ => self.vm_format_obj_str(val),
+                }
+            }
+        }
+    }
+
+    /// Parse a field spec like "name!r:>10" into (field_name, conversion, format_spec).
+    fn parse_format_field(field_spec: &str) -> (&str, Option<&str>, Option<&str>) {
+        let (field_part, format_spec) = if let Some(cp) = field_spec.find(':') {
+            (&field_spec[..cp], Some(&field_spec[cp+1..]))
+        } else {
+            (field_spec, None)
+        };
+        let (field_name, conversion) = if let Some(bp) = field_part.find('!') {
+            (&field_part[..bp], Some(&field_part[bp+1..]))
+        } else {
+            (field_part, None)
+        };
+        (field_name, conversion, format_spec)
+    }
+
+    /// VM-aware str.format() with positional args only.
+    pub(crate) fn vm_str_format(&mut self, fmt: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        let mut result = String::new();
+        let mut chars = fmt.chars().peekable();
+        let mut auto_idx = 0usize;
+        while let Some(c) = chars.next() {
+            if c == '{' {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    result.push('{');
+                } else {
+                    let mut field_spec = String::new();
+                    let mut depth = 1;
+                    for c in chars.by_ref() {
+                        if c == '{' { depth += 1; }
+                        else if c == '}' { depth -= 1; if depth == 0 { break; } }
+                        field_spec.push(c);
+                    }
+                    let (field_name, conversion, format_spec) = Self::parse_format_field(&field_spec);
+                    // Resolve value
+                    let val = if field_name.is_empty() {
+                        let v = args.get(auto_idx).cloned();
+                        auto_idx += 1;
+                        v
+                    } else if let Ok(idx) = field_name.parse::<usize>() {
+                        args.get(idx).cloned()
+                    } else {
+                        // Attribute/item access: "obj.attr" or "obj[key]"
+                        self.resolve_format_field(field_name, args, auto_idx, &[])
+                    };
+                    if let Some(val) = val {
+                        result.push_str(&self.vm_format_field(&val, conversion, format_spec)?);
+                    }
+                }
+            } else if c == '}' && chars.peek() == Some(&'}') {
+                chars.next();
+                result.push('}');
+            } else {
+                result.push(c);
+            }
+        }
+        Ok(PyObject::str_val(CompactString::from(result)))
+    }
+
+    /// VM-aware str.format() with keyword args.
+    pub(crate) fn vm_str_format_kw(
+        &mut self, fmt: &str,
+        pos_args: &[PyObjectRef],
+        kwargs: &[(CompactString, PyObjectRef)],
+    ) -> PyResult<PyObjectRef> {
+        let mut result = String::new();
+        let mut chars = fmt.chars().peekable();
+        let mut auto_idx = 0usize;
+        while let Some(c) = chars.next() {
+            if c == '{' {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    result.push('{');
+                } else {
+                    let mut field_spec = String::new();
+                    let mut depth = 1;
+                    for c in chars.by_ref() {
+                        if c == '{' { depth += 1; }
+                        else if c == '}' { depth -= 1; if depth == 0 { break; } }
+                        field_spec.push(c);
+                    }
+                    // Resolve nested braces in format spec
+                    let resolved_spec = self.resolve_nested_spec(&field_spec, pos_args, kwargs);
+                    let spec_str = resolved_spec.as_deref().unwrap_or(&field_spec);
+                    let (field_name, conversion, format_spec) = Self::parse_format_field(spec_str);
+                    // Resolve value
+                    let val = if field_name.is_empty() {
+                        let v = pos_args.get(auto_idx).cloned();
+                        auto_idx += 1;
+                        v
+                    } else if let Ok(idx) = field_name.parse::<usize>() {
+                        pos_args.get(idx).cloned()
+                    } else {
+                        kwargs.iter().find(|(k, _)| k.as_str() == field_name).map(|(_, v)| v.clone())
+                    };
+                    if let Some(val) = val {
+                        result.push_str(&self.vm_format_field(&val, conversion, format_spec)?);
+                    }
+                }
+            } else if c == '}' && chars.peek() == Some(&'}') {
+                chars.next();
+                result.push('}');
+            } else {
+                result.push(c);
+            }
+        }
+        Ok(PyObject::str_val(CompactString::from(result)))
+    }
+
+    /// Resolve nested {name}/{idx} references inside a format spec.
+    fn resolve_nested_spec(
+        &mut self, spec: &str,
+        pos_args: &[PyObjectRef],
+        kwargs: &[(CompactString, PyObjectRef)],
+    ) -> Option<String> {
+        if !spec.contains('{') { return None; }
+        // Only resolve nested refs in the format_spec part (after ':')
+        if let Some(colon_pos) = spec.find(':') {
+            let format_part = &spec[colon_pos+1..];
+            if !format_part.contains('{') { return None; }
+            let mut r = spec[..=colon_pos].to_string();
+            let mut sc = format_part.chars().peekable();
+            while let Some(ch) = sc.next() {
+                if ch == '{' {
+                    let mut ref_name = String::new();
+                    for ch in sc.by_ref() {
+                        if ch == '}' { break; }
+                        ref_name.push(ch);
+                    }
+                    if let Ok(idx) = ref_name.parse::<usize>() {
+                        if let Some(v) = pos_args.get(idx) {
+                            r.push_str(&v.py_to_string());
+                        }
+                    } else if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == ref_name) {
+                        r.push_str(&v.py_to_string());
+                    }
+                } else {
+                    r.push(ch);
+                }
+            }
+            Some(r)
+        } else {
+            None
+        }
+    }
+
+    /// Resolve attribute/item access in format fields like "{0.name}" or "{obj.attr}".
+    fn resolve_format_field(
+        &mut self, field_name: &str,
+        pos_args: &[PyObjectRef],
+        auto_idx: usize,
+        _kwargs: &[(CompactString, PyObjectRef)],
+    ) -> Option<PyObjectRef> {
+        // Handle "N.attr" patterns
+        if let Some(dot_pos) = field_name.find('.') {
+            let base = &field_name[..dot_pos];
+            let attr = &field_name[dot_pos+1..];
+            let base_obj = if let Ok(idx) = base.parse::<usize>() {
+                pos_args.get(idx).cloned()
+            } else if base.is_empty() {
+                pos_args.get(auto_idx).cloned()
+            } else {
+                None
+            };
+            if let Some(obj) = base_obj {
+                return obj.get_attr(attr);
+            }
+        }
+        None
+    }
+
     /// Call close() on an object through normal VM dispatch (used by contextlib.closing).
     pub(crate) fn call_close_on(&mut self, obj: &PyObjectRef) -> PyResult<()> {
         if let Some(close_fn) = obj.get_attr("close") {
