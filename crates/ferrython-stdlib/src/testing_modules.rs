@@ -1419,126 +1419,78 @@ pub fn create_unittest_module() -> PyObjectRef {
 
 /// Create a Mock/MagicMock instance with proper dynamic attribute access,
 /// return_value support, call tracking, and assertion methods.
+///
+/// Design: return_value is stored directly in the instance dict so that
+/// `mock.return_value = X` (a normal STORE_ATTR) updates it in-place.
+/// The __call__ closure reads from the instance's attrs dict at call time
+/// via a shared Arc<RwLock<IndexMap>> reference to the instance data.
 fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
     let cls = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
+        let attrs_ref = d.attrs.clone(); // shared ref for closures to read live attrs
 
-        // Shared state
+        // Shared mutable state via Arc
         let call_count: Arc<RwLock<i64>> = Arc::new(RwLock::new(0));
         let call_args_list: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(vec![]));
-        // Extract return_value from kwargs if provided
-        let init_rv = kwargs.get(&HashableKey::Str(CompactString::from("return_value")))
-            .cloned().unwrap_or_else(PyObject::none);
-        let return_value: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(init_rv));
-        // Child mock cache for __getattr__ — dynamically created children
         let children: Arc<RwLock<IndexMap<String, PyObjectRef>>> = Arc::new(RwLock::new(IndexMap::new()));
         let mock_name = CompactString::from(name);
 
-        // return_value property (readable)
-        let rv = return_value.clone();
-        w.insert(CompactString::from("return_value"), PyObject::native_closure(
-            "Mock.return_value", move |_: &[PyObjectRef]| Ok(rv.read().clone())
-        ));
+        // Store return_value directly as a plain value (not a closure) so STORE_ATTR overwrites it
+        let init_rv = kwargs.get(&HashableKey::Str(CompactString::from("return_value")))
+            .cloned().unwrap_or_else(PyObject::none);
+        w.insert(CompactString::from("return_value"), init_rv);
 
-        // call_count property
-        let cc = call_count.clone();
-        w.insert(CompactString::from("call_count"), PyObject::native_closure(
-            "Mock.call_count", move |_: &[PyObjectRef]| Ok(PyObject::int(*cc.read()))
-        ));
-
-        // call_args_list property
-        let cal = call_args_list.clone();
-        w.insert(CompactString::from("call_args_list"), PyObject::native_closure(
-            "Mock.call_args_list", move |_: &[PyObjectRef]| Ok(PyObject::list(cal.read().clone()))
-        ));
-
-        // called property
-        w.insert(CompactString::from("called"), PyObject::native_closure(
-            "Mock.called", {
-                let cc2 = call_count.clone();
-                move |_: &[PyObjectRef]| Ok(PyObject::bool_val(*cc2.read() > 0))
-            }
-        ));
-
-        // side_effect support
-        let side_effect: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(
-            kwargs.get(&HashableKey::Str(CompactString::from("side_effect"))).cloned()
-        ));
-        let se = side_effect.clone();
-        w.insert(CompactString::from("side_effect"), PyObject::native_closure(
-            "Mock.side_effect", move |_: &[PyObjectRef]| {
-                Ok(se.read().clone().unwrap_or_else(PyObject::none))
-            }
-        ));
-
-        // __call__ — tracks calls and returns return_value (or raises side_effect)
+        // __call__ — tracks calls, reads return_value from live instance attrs
         let cc3 = call_count.clone();
         let cal2 = call_args_list.clone();
-        let rv2 = return_value.clone();
-        let se2 = side_effect.clone();
+        let attrs_call = attrs_ref.clone();
         w.insert(CompactString::from("__call__"), PyObject::native_closure(
             "Mock.__call__", move |args: &[PyObjectRef]| {
                 *cc3.write() += 1;
                 cal2.write().push(PyObject::tuple(args.to_vec()));
-                // Check side_effect
-                if let Some(ref effect) = *se2.read() {
-                    if let PyObjectPayload::List(items) = &effect.payload {
-                        let idx = (*cc3.read() - 1) as usize;
-                        let items_r = items.read();
-                        if idx < items_r.len() {
-                            return Ok(items_r[idx].clone());
-                        }
-                    }
-                }
-                Ok(rv2.read().clone())
+                // Read return_value from live instance attrs (may have been updated via STORE_ATTR)
+                let rv = attrs_call.read()
+                    .get("return_value")
+                    .cloned()
+                    .unwrap_or_else(PyObject::none);
+                Ok(rv)
             }
         ));
 
-        // __getattr__ — dynamically create child mocks for unknown attributes
+        // __getattr__ — create child mocks for unknown attributes, route properties
         let children2 = children.clone();
         let mn = mock_name.clone();
+        let cc_ga = call_count.clone();
+        let cal_ga = call_args_list.clone();
         w.insert(CompactString::from("__getattr__"), PyObject::native_closure(
             "Mock.__getattr__", move |args: &[PyObjectRef]| {
                 let attr_name = if !args.is_empty() { args[0].py_to_string() } else { return Ok(PyObject::none()); };
-                // Don't intercept dunder methods or known internals
+                // Don't intercept dunder methods
                 if attr_name.starts_with("__") && attr_name.ends_with("__") {
                     return Err(PyException::attribute_error(format!(
                         "'{}' object has no attribute '{}'", mn, attr_name)));
+                }
+                // Route mock-specific dynamic properties
+                match attr_name.as_str() {
+                    "call_count" => return Ok(PyObject::int(*cc_ga.read())),
+                    "call_args_list" => return Ok(PyObject::list(cal_ga.read().clone())),
+                    "called" => return Ok(PyObject::bool_val(*cc_ga.read() > 0)),
+                    _ => {}
                 }
                 let mut cache = children2.write();
                 if let Some(child) = cache.get(&attr_name) {
                     return Ok(child.clone());
                 }
-                // Create a new child mock
+                // Create new child mock
                 let child = build_mock_instance("MagicMock", &IndexMap::new());
                 cache.insert(attr_name, child.clone());
                 Ok(child)
             }
         ));
 
-        // __setattr__ — intercept return_value assignment and child mock setting
-        let rv_set = return_value.clone();
-        let children3 = children.clone();
-        w.insert(CompactString::from("__setattr__"), PyObject::native_closure(
-            "Mock.__setattr__", move |args: &[PyObjectRef]| {
-                if args.len() < 2 { return Ok(PyObject::none()); }
-                let attr_name = args[0].py_to_string();
-                let value = args[1].clone();
-                if attr_name == "return_value" {
-                    *rv_set.write() = value;
-                } else if attr_name == "side_effect" {
-                    // Would need side_effect arc here too, but for simplicity store as child
-                    children3.write().insert(attr_name, value);
-                } else {
-                    children3.write().insert(attr_name, value);
-                }
-                Ok(PyObject::none())
-            }
-        ));
-
-        // assert_called() — raises AssertionError if not called
+        // assert_called()
         let cc_ac = call_count.clone();
         w.insert(CompactString::from("assert_called"), PyObject::native_closure(
             "Mock.assert_called", move |_: &[PyObjectRef]| {
@@ -1549,7 +1501,7 @@ fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) 
             }
         ));
 
-        // assert_called_once() — raises if call_count != 1
+        // assert_called_once()
         let cc_aco = call_count.clone();
         w.insert(CompactString::from("assert_called_once"), PyObject::native_closure(
             "Mock.assert_called_once", move |_: &[PyObjectRef]| {
@@ -1562,7 +1514,7 @@ fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) 
             }
         ));
 
-        // assert_called_with(*args) — check last call matches
+        // assert_called_with()
         let cal_acw = call_args_list.clone();
         w.insert(CompactString::from("assert_called_with"), PyObject::native_closure(
             "Mock.assert_called_with", move |args: &[PyObjectRef]| {
@@ -1594,16 +1546,16 @@ fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) 
             }
         ));
 
-        // reset_mock() — clear all tracking state
+        // reset_mock()
         let cc_rm = call_count.clone();
         let cal_rm = call_args_list.clone();
-        let rv_rm = return_value.clone();
         let ch_rm = children.clone();
+        let attrs_rm = attrs_ref.clone();
         w.insert(CompactString::from("reset_mock"), PyObject::native_closure(
             "Mock.reset_mock", move |_: &[PyObjectRef]| {
                 *cc_rm.write() = 0;
                 cal_rm.write().clear();
-                *rv_rm.write() = PyObject::none();
+                attrs_rm.write().insert(CompactString::from("return_value"), PyObject::none());
                 ch_rm.write().clear();
                 Ok(PyObject::none())
             }

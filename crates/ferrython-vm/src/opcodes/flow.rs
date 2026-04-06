@@ -633,9 +633,20 @@ impl VirtualMachine {
                             frame.push(method);
                         }
                     }
-                    None => return Err(PyException::attribute_error(format!(
-                        "'{}' object has no attribute '{}'", obj.type_name(), name
-                    ))),
+                    None => {
+                        // Fallback: check __getattr__ on instances
+                        if let PyObjectPayload::Instance(_) = &obj.payload {
+                            if let Some(ga) = obj.get_attr("__getattr__") {
+                                let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
+                                let result = self.call_object(ga, vec![name_arg])?;
+                                self.vm_push(result);
+                                return Ok(None);
+                            }
+                        }
+                        return Err(PyException::attribute_error(format!(
+                            "'{}' object has no attribute '{}'", obj.type_name(), name
+                        )));
+                    }
                 }
             }
             Opcode::MakeFunction => {
