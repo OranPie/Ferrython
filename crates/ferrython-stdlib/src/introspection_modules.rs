@@ -387,70 +387,71 @@ pub fn create_inspect_module() -> PyObjectRef {
             if let PyObjectPayload::Function(f) = &args[0].payload {
                 let ac = f.code.arg_count as usize;
                 let kwc = f.code.kwonlyarg_count as usize;
-                let total = ac + kwc;
                 let n_defaults = f.defaults.len();
+                let has_varargs = f.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARARGS);
+                let has_varkw = f.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARKEYWORDS);
 
-                for (i, name) in f.code.varnames.iter().take(total).enumerate() {
+                // Compiler stores varnames as: [positional(ac), *args?(1), kwonly(kwc), **kwargs?(1), locals...]
+                let varargs_idx = if has_varargs { Some(ac) } else { None };
+                let kw_start = ac + if has_varargs { 1 } else { 0 };
+                let varkw_idx = if has_varkw { Some(kw_start + kwc) } else { None };
+
+                let make_param = |name: &CompactString, kind: i64, default: PyObjectRef| -> PyObjectRef {
                     let p = PyObject::instance(param_cls.clone());
                     if let PyObjectPayload::Instance(ref inst) = p.payload {
                         let mut w = inst.attrs.write();
                         w.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
-                        // Determine kind
-                        let kind = if i < ac { 1 } else { 3 }; // POSITIONAL_OR_KEYWORD=1, KEYWORD_ONLY=3
                         w.insert(CompactString::from("kind"), PyObject::int(kind));
-                        // Default
-                        if i < ac && i >= ac - n_defaults {
-                            w.insert(CompactString::from("default"), f.defaults[i - (ac - n_defaults)].clone());
-                        } else if i >= ac {
-                            let kw_name = name.clone();
-                            if let Some(kw_def) = f.kw_defaults.get(&kw_name) {
-                                w.insert(CompactString::from("default"), kw_def.clone());
-                            } else {
-                                w.insert(CompactString::from("default"), empty_sentinel.clone());
-                            }
-                        } else {
-                            w.insert(CompactString::from("default"), empty_sentinel.clone());
-                        }
-                        // Annotation (always set, use _empty if missing)
+                        w.insert(CompactString::from("default"), default);
                         if let Some(ann) = f.annotations.get(name) {
                             w.insert(CompactString::from("annotation"), ann.clone());
                         } else {
                             w.insert(CompactString::from("annotation"), empty_sentinel.clone());
                         }
                     }
-                    params_map.insert(
-                        HashableKey::Str(name.clone()),
-                        p,
-                    );
+                    p
+                };
+
+                // Positional params
+                for i in 0..ac.min(f.code.varnames.len()) {
+                    let name = &f.code.varnames[i];
+                    let default = if n_defaults > 0 && i >= ac - n_defaults {
+                        f.defaults[i - (ac - n_defaults)].clone()
+                    } else {
+                        empty_sentinel.clone()
+                    };
+                    let p = make_param(name, 1, default); // POSITIONAL_OR_KEYWORD
+                    params_map.insert(HashableKey::Str(name.clone()), p);
                 }
 
                 // *args
-                if f.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARARGS) && total < f.code.varnames.len() {
-                    let name = &f.code.varnames[total];
-                    let p = PyObject::instance(param_cls.clone());
-                    if let PyObjectPayload::Instance(ref inst) = p.payload {
-                        let mut w = inst.attrs.write();
-                        w.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
-                        w.insert(CompactString::from("kind"), PyObject::int(2)); // VAR_POSITIONAL
-                        w.insert(CompactString::from("default"), empty_sentinel.clone());
-                        w.insert(CompactString::from("annotation"), empty_sentinel.clone());
+                if let Some(idx) = varargs_idx {
+                    if idx < f.code.varnames.len() {
+                        let name = &f.code.varnames[idx];
+                        let p = make_param(name, 2, empty_sentinel.clone()); // VAR_POSITIONAL
+                        params_map.insert(HashableKey::Str(name.clone()), p);
                     }
+                }
+
+                // Keyword-only params
+                for i in 0..kwc {
+                    let idx = kw_start + i;
+                    if idx >= f.code.varnames.len() { break; }
+                    let name = &f.code.varnames[idx];
+                    let default = if let Some(kw_def) = f.kw_defaults.get(name) {
+                        kw_def.clone()
+                    } else {
+                        empty_sentinel.clone()
+                    };
+                    let p = make_param(name, 3, default); // KEYWORD_ONLY
                     params_map.insert(HashableKey::Str(name.clone()), p);
                 }
 
                 // **kwargs
-                if f.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARKEYWORDS) {
-                    let kw_idx = total + if f.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARARGS) { 1 } else { 0 };
-                    if kw_idx < f.code.varnames.len() {
-                        let name = &f.code.varnames[kw_idx];
-                        let p = PyObject::instance(param_cls.clone());
-                        if let PyObjectPayload::Instance(ref inst) = p.payload {
-                            let mut w = inst.attrs.write();
-                            w.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
-                            w.insert(CompactString::from("kind"), PyObject::int(4)); // VAR_KEYWORD
-                            w.insert(CompactString::from("default"), empty_sentinel.clone());
-                            w.insert(CompactString::from("annotation"), empty_sentinel.clone());
-                        }
+                if let Some(idx) = varkw_idx {
+                    if idx < f.code.varnames.len() {
+                        let name = &f.code.varnames[idx];
+                        let p = make_param(name, 4, empty_sentinel.clone()); // VAR_KEYWORD
                         params_map.insert(HashableKey::Str(name.clone()), p);
                     }
                 }
@@ -484,14 +485,33 @@ pub fn create_inspect_module() -> PyObjectRef {
                     Ok(PyObject::bool_val(keys.iter().any(|k| k == &needle)))
                 }));
 
-                // __str__ / __repr__ — "(a, b, *args, **kwargs)" format
+                // __str__ / __repr__ — "(a, b, *args, c, **kwargs)" format
                 let sig_str = {
                     let mut parts = Vec::new();
+                    let mut seen_varargs = false;
+                    let mut has_kwonly = false;
+                    // Check if there are keyword-only params but no *args
+                    for k in &keys2 {
+                        if let Some(p) = params_map.get(&HashableKey::Str(CompactString::from(k.as_str()))) {
+                            if let PyObjectPayload::Instance(ref pinst) = p.payload {
+                                let kind = pinst.attrs.read().get("kind").and_then(|v| v.as_int()).unwrap_or(1);
+                                if kind == 2 { seen_varargs = true; }
+                                if kind == 3 { has_kwonly = true; }
+                            }
+                        }
+                    }
+                    let needs_bare_star = has_kwonly && !seen_varargs;
+                    let mut bare_star_inserted = false;
                     for k in &keys2 {
                         if let Some(p) = params_map.get(&HashableKey::Str(CompactString::from(k.as_str()))) {
                             if let PyObjectPayload::Instance(ref pinst) = p.payload {
                                 let attrs = pinst.attrs.read();
                                 let kind = attrs.get("kind").and_then(|v| v.as_int()).unwrap_or(1);
+                                // Insert bare * before first keyword-only param if no *args
+                                if kind == 3 && needs_bare_star && !bare_star_inserted {
+                                    parts.push("*".to_string());
+                                    bare_star_inserted = true;
+                                }
                                 match kind {
                                     2 => parts.push(format!("*{}", k)),
                                     4 => parts.push(format!("**{}", k)),
