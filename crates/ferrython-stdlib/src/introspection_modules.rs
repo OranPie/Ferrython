@@ -636,9 +636,23 @@ pub fn create_inspect_module() -> PyObjectRef {
             if let Some((fname, lineno)) = filename {
                 match std::fs::read_to_string(fname.as_str()) {
                     Ok(src) => {
-                        let lines: Vec<PyObjectRef> = src.lines()
-                            .skip(lineno.saturating_sub(1) as usize)
-                            .take_while(|l| !l.is_empty() || l.trim().is_empty())
+                        let all_lines: Vec<&str> = src.lines().collect();
+                        let start = (lineno as usize).saturating_sub(1);
+                        if start >= all_lines.len() {
+                            return Err(PyException::runtime_error("could not find source lines"));
+                        }
+                        // Determine indentation of the def/lambda line
+                        let base_indent = all_lines[start].len() - all_lines[start].trim_start().len();
+                        let mut end = start + 1;
+                        while end < all_lines.len() {
+                            let line = all_lines[end];
+                            if line.trim().is_empty() { end += 1; continue; }
+                            let indent = line.len() - line.trim_start().len();
+                            if indent <= base_indent { break; }
+                            end += 1;
+                        }
+                        let lines: Vec<PyObjectRef> = all_lines[start..end]
+                            .iter()
                             .map(|l| PyObject::str_val(CompactString::from(format!("{}\n", l))))
                             .collect();
                         Ok(PyObject::tuple(vec![PyObject::list(lines), PyObject::int(lineno as i64)]))

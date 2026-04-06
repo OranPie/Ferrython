@@ -293,7 +293,7 @@ impl Compiler {
             }
 
             ExpressionKind::Lambda { args, body } => {
-                self.compile_lambda(args, body)?;
+                self.compile_lambda(args, body, expr.location)?;
             }
 
             ExpressionKind::ListComp { elt, generators } => {
@@ -684,6 +684,7 @@ impl Compiler {
         &mut self,
         args: &Arguments,
         body: &Expression,
+        location: SourceLocation,
     ) -> Result<()> {
         // Compile defaults in enclosing scope
         let num_defaults = args.defaults.len();
@@ -703,6 +704,9 @@ impl Compiler {
         };
 
         self.push_function_unit("<lambda>", child_scope, &qualname)?;
+
+        // Set the first line number from the lambda location
+        self.current_unit_mut().code.first_line_number = location.line;
 
         // Set up argument info
         {

@@ -185,7 +185,7 @@ impl Compiler {
                 body,
                 decorator_list,
             } => {
-                self.compile_class_def(name, bases, keywords, body, decorator_list)?;
+                self.compile_class_def(name, bases, keywords, body, decorator_list, stmt.location)?;
             }
 
             StatementKind::Import { names } => {
@@ -345,7 +345,7 @@ impl Compiler {
         decorator_list: &[Expression],
         returns: Option<&Expression>,
         is_async: bool,
-        _location: SourceLocation,
+        location: SourceLocation,
     ) -> Result<()> {
         // Compile decorators first (they are called in reverse order)
         for dec in decorator_list {
@@ -388,6 +388,9 @@ impl Compiler {
         };
 
         self.push_function_unit(name, child_scope, &qualname)?;
+
+        // Set the first line number from the def statement location
+        self.current_unit_mut().code.first_line_number = location.line;
 
         // Set up argument info on the code object
         {
@@ -582,6 +585,7 @@ impl Compiler {
         keywords: &[Keyword],
         body: &[Statement],
         decorator_list: &[Expression],
+        location: SourceLocation,
     ) -> Result<()> {
         // Compile decorators
         for dec in decorator_list {
@@ -606,6 +610,7 @@ impl Compiler {
         // The class body function takes __locals__ as implicit first arg
         class_unit.code.arg_count = 0;
         class_unit.class_name = Some(name.to_string());
+        class_unit.code.first_line_number = location.line;
         self.unit_stack.push(class_unit);
 
         // __name__ = qualname
