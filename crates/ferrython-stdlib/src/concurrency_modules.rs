@@ -918,6 +918,7 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                 let func = &args[0];
                 let iterable = args[1].to_list()?;
                 let mut results = Vec::with_capacity(iterable.len());
+                let mut has_deferred = false;
                 for item in &iterable {
                     match &func.payload {
                         PyObjectPayload::NativeFunction { func: f, .. } => {
@@ -927,11 +928,14 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                             results.push(f(&[item.clone()])?);
                         }
                         _ => {
-                            // For Python functions, use deferred calls
-                            push_deferred_call(func.clone(), vec![item.clone()]);
-                            results.push(PyObject::none()); // placeholder
+                            ferrython_core::error::request_vm_call(func.clone(), vec![item.clone()]);
+                            has_deferred = true;
+                            results.push(PyObject::none());
                         }
                     }
+                }
+                if has_deferred {
+                    ferrython_core::error::set_collect_vm_call_results(true);
                 }
                 Ok(PyObject::list(results))
             }));

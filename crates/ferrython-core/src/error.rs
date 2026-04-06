@@ -354,7 +354,7 @@ pub type PyResult<T> = Result<T, PyException>;
 
 // ── Thread-local exception info (for sys.exc_info() / traceback.format_exc()) ──
 
-use std::cell::RefCell;
+use std::cell::{RefCell, Cell};
 
 thread_local! {
     static THREAD_EXC_INFO: RefCell<Option<(ExceptionKind, String, Vec<TracebackEntry>)>>
@@ -385,6 +385,7 @@ pub fn get_thread_exc_info() -> Option<(ExceptionKind, String, Vec<TracebackEntr
 thread_local! {
     static PENDING_VM_CALLS: RefCell<Vec<(PyObjectRef, Vec<PyObjectRef>)>>
         = RefCell::new(Vec::new());
+    static COLLECT_VM_RESULTS: Cell<bool> = Cell::new(false);
 }
 
 /// Request the VM to call `func` with `args` after the current NativeClosure returns.
@@ -399,5 +400,19 @@ pub fn take_pending_vm_call() -> Option<(PyObjectRef, Vec<PyObjectRef>)> {
     PENDING_VM_CALLS.with(|c| {
         let mut calls = c.borrow_mut();
         if calls.is_empty() { None } else { Some(calls.remove(0)) }
+    })
+}
+
+/// When set, the VM collects all pending call results into a list
+/// (used by Pool.map to gather results from multiple Python function calls).
+pub fn set_collect_vm_call_results(val: bool) {
+    COLLECT_VM_RESULTS.with(|c| c.set(val));
+}
+
+pub fn take_collect_vm_call_results() -> bool {
+    COLLECT_VM_RESULTS.with(|c| {
+        let val = c.get();
+        c.set(false);
+        val
     })
 }

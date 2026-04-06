@@ -970,11 +970,13 @@ pub fn create_ast_module() -> PyObjectRef {
     });
 
     let make_node_type = |name: &str| -> PyObjectRef {
+        let cls = get_or_create_ast_class(name);
+        let cls_clone = cls.clone();
+        // Return the class itself (callable). When called, it creates an instance.
+        // Also wrap in a NativeClosure for constructor kwargs support.
         let n = name.to_string();
-        PyObject::native_closure(&format!("ast.{}", n), move |args: &[PyObjectRef]| {
-            let cls = PyObject::class(CompactString::from(&n), vec![], IndexMap::new());
-            let inst = PyObject::instance(cls);
-            // Support keyword arguments passed as trailing dict
+        let constructor = PyObject::native_closure(&format!("ast.{}", n), move |args: &[PyObjectRef]| {
+            let inst = PyObject::instance(cls_clone.clone());
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(map) = &last.payload {
                     let r = map.read();
@@ -985,7 +987,10 @@ pub fn create_ast_module() -> PyObjectRef {
                 }
             }
             Ok(inst)
-        })
+        });
+        // Return the class object so isinstance() works, but set __call__
+        // to the constructor closure
+        cls
     };
 
     make_module("ast", vec![
@@ -1129,8 +1134,24 @@ fn set_location(obj: &PyObjectRef, loc: &ferrython_ast::SourceLocation) {
 }
 
 fn make_ast_node(type_name: &str) -> PyObjectRef {
-    let cls = PyObject::class(CompactString::from(type_name), vec![], IndexMap::new());
+    let cls = get_or_create_ast_class(type_name);
     PyObject::instance(cls)
+}
+
+/// Get or create a shared AST class, so isinstance(ast.parse(...), ast.Module) works
+fn get_or_create_ast_class(name: &str) -> PyObjectRef {
+    use std::sync::Mutex;
+    use std::collections::HashMap;
+    use std::sync::LazyLock;
+    static AST_CLASSES: LazyLock<Mutex<HashMap<String, PyObjectRef>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let mut map = AST_CLASSES.lock().unwrap();
+    if let Some(cls) = map.get(name) {
+        return cls.clone();
+    }
+    let cls = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
+    map.insert(name.to_string(), cls.clone());
+    cls
 }
 
 /// Fix expression context to Store (for assignment targets) or Del (for delete targets)

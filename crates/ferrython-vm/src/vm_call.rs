@@ -2417,6 +2417,16 @@ impl VirtualMachine {
                 }
                 let result = func(&args)?;
                 // Check if native function requested VM method calls
+                let collect_mode = ferrython_core::error::take_collect_vm_call_results();
+                if collect_mode {
+                    let mut collected = Vec::new();
+                    while let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
+                        collected.push(self.call_object(method, margs)?);
+                    }
+                    if !collected.is_empty() {
+                        return Ok(PyObject::list(collected));
+                    }
+                }
                 let mut last_result = None;
                 while let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
                     last_result = Some(self.call_object(method, margs)?);
@@ -2434,6 +2444,16 @@ impl VirtualMachine {
             PyObjectPayload::NativeClosure { func, .. } => {
                 let result = func(&args)?;
                 // Check if stdlib requested VM method calls (loop for multiple)
+                let collect_mode = ferrython_core::error::take_collect_vm_call_results();
+                if collect_mode {
+                    let mut collected = Vec::new();
+                    while let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
+                        collected.push(self.call_object(method, margs)?);
+                    }
+                    if !collected.is_empty() {
+                        return Ok(PyObject::list(collected));
+                    }
+                }
                 let mut last_result = None;
                 while let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
                     last_result = Some(self.call_object(method, margs)?);
