@@ -172,11 +172,14 @@ fn build_socket_object(
             }
             let (host, port) = extract_host_port(&args[0])?;
             let addr_str = format!("{}:{}", host, port);
-            let mut guard = lock_inner(&st)?;
-            if guard.closed {
-                return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
-            }
-            let timeout = guard.timeout;
+            // Get timeout, check closed — release lock before blocking I/O
+            let timeout = {
+                let guard = lock_inner(&st)?;
+                if guard.closed {
+                    return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
+                }
+                guard.timeout
+            };
             let connect_result = if let Some(t) = timeout {
                 use std::net::ToSocketAddrs;
                 let addrs: Vec<_> = addr_str
@@ -206,6 +209,7 @@ fn build_socket_object(
                         stream.set_read_timeout(Some(t)).ok();
                         stream.set_write_timeout(Some(t)).ok();
                     }
+                    let mut guard = lock_inner(&st)?;
                     guard.tcp_stream = Some(stream);
                     Ok(PyObject::none())
                 }
@@ -292,6 +296,43 @@ fn build_socket_object(
                 .unwrap_or_else(|| "0.0.0.0:0".to_string());
             match TcpListener::bind(&addr) {
                 Ok(listener) => {
+                    // Apply timeout so accept() won't block forever
+                    if let Some(t) = guard.timeout {
+                        listener.set_nonblocking(false).ok();
+                        // Use raw fd to set SO_RCVTIMEO for accept timeout
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::io::AsRawFd;
+                            let fd = listener.as_raw_fd();
+                            let tv = libc::timeval {
+                                tv_sec: t.as_secs() as libc::time_t,
+                                tv_usec: t.subsec_micros() as libc::suseconds_t,
+                            };
+                            unsafe {
+                                libc::setsockopt(
+                                    fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO,
+                                    &tv as *const libc::timeval as *const libc::c_void,
+                                    std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+                                );
+                            }
+                        }
+                    }
+                    // Apply stored socket options
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::io::AsRawFd;
+                        let fd = listener.as_raw_fd();
+                        for &(level, optname, value) in &guard.options {
+                            let val = value as libc::c_int;
+                            unsafe {
+                                libc::setsockopt(
+                                    fd, level as libc::c_int, optname as libc::c_int,
+                                    &val as *const libc::c_int as *const libc::c_void,
+                                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                                );
+                            }
+                        }
+                    }
                     guard.tcp_listener = Some(listener);
                     Ok(PyObject::none())
                 }
@@ -305,31 +346,66 @@ fn build_socket_object(
     attrs.insert(
         CompactString::from("accept"),
         PyObject::native_closure("accept", move |_args| {
-            let guard = lock_inner(&st)?;
-            if guard.closed {
-                return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
-            }
-            let listener = guard.tcp_listener.as_ref().ok_or_else(|| {
-                PyException::os_error("[Errno 22] Invalid argument: not listening")
-            })?;
-            match listener.accept() {
-                Ok((stream, addr)) => {
-                    let peer_host = addr.ip().to_string();
-                    let peer_port = addr.port() as i64;
-                    let fam = guard.family;
-                    let st = guard.sock_type;
-                    let pr = guard.proto;
-                    drop(guard);
-                    let mut si = SocketInner::new(fam, st, pr);
-                    si.tcp_stream = Some(stream);
-                    let conn = build_socket_object(fam, st, pr, Some(si));
-                    let addr_tuple = PyObject::tuple(vec![
-                        PyObject::str_val(CompactString::from(&peer_host)),
-                        PyObject::int(peer_port),
-                    ]);
-                    Ok(PyObject::tuple(vec![conn, addr_tuple]))
+            // Briefly lock to clone the listener and get state, then release lock
+            let (listener_clone, timeout, fam, stype, pr) = {
+                let guard = lock_inner(&st)?;
+                if guard.closed {
+                    return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
                 }
-                Err(e) => Err(PyException::os_error(format!("accept: {}", e))),
+                let listener = guard.tcp_listener.as_ref().ok_or_else(|| {
+                    PyException::os_error("[Errno 22] Invalid argument: not listening")
+                })?;
+                let lc = listener.try_clone()
+                    .map_err(|e| PyException::os_error(format!("accept clone: {}", e)))?;
+                (lc, guard.timeout, guard.family, guard.sock_type, guard.proto)
+            };
+            // Accept outside the lock so other threads can proceed
+            if let Some(t) = timeout {
+                listener_clone.set_nonblocking(true).ok();
+                let start = std::time::Instant::now();
+                loop {
+                    match listener_clone.accept() {
+                        Ok((stream, addr)) => {
+                            stream.set_nonblocking(false).ok();
+                            let peer_host = addr.ip().to_string();
+                            let peer_port = addr.port() as i64;
+                            let mut si = SocketInner::new(fam, stype, pr);
+                            si.tcp_stream = Some(stream);
+                            let conn = build_socket_object(fam, stype, pr, Some(si));
+                            let addr_tuple = PyObject::tuple(vec![
+                                PyObject::str_val(CompactString::from(&peer_host)),
+                                PyObject::int(peer_port),
+                            ]);
+                            return Ok(PyObject::tuple(vec![conn, addr_tuple]));
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if start.elapsed() >= t {
+                                return Err(PyException::new(
+                                    ExceptionKind::TimeoutError, "timed out",
+                                ));
+                            }
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(e) => return Err(PyException::os_error(format!("accept: {}", e))),
+                    }
+                }
+            } else {
+                // Blocking accept
+                match listener_clone.accept() {
+                    Ok((stream, addr)) => {
+                        let peer_host = addr.ip().to_string();
+                        let peer_port = addr.port() as i64;
+                        let mut si = SocketInner::new(fam, stype, pr);
+                        si.tcp_stream = Some(stream);
+                        let conn = build_socket_object(fam, stype, pr, Some(si));
+                        let addr_tuple = PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from(&peer_host)),
+                            PyObject::int(peer_port),
+                        ]);
+                        Ok(PyObject::tuple(vec![conn, addr_tuple]))
+                    }
+                    Err(e) => Err(PyException::os_error(format!("accept: {}", e))),
+                }
             }
         }),
     );
@@ -420,11 +496,28 @@ fn build_socket_object(
             if bufsize < 0 {
                 return Err(PyException::value_error("negative buffersize in recv"));
             }
-            let mut guard = lock_inner(&st)?;
-            if guard.closed {
-                return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
-            }
-            if let Some(ref mut stream) = guard.tcp_stream {
+            // Clone the stream so we can read without holding the lock
+            let stream_clone = {
+                let guard = lock_inner(&st)?;
+                if guard.closed {
+                    return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
+                }
+                if let Some(ref stream) = guard.tcp_stream {
+                    Some(stream.try_clone().map_err(|e|
+                        PyException::os_error(format!("recv clone: {}", e)))?)
+                } else if let Some(ref sock) = guard.udp_socket {
+                    // For UDP, read directly under lock (typically non-blocking)
+                    let mut buf = vec![0u8; bufsize as usize];
+                    return match sock.recv(&mut buf) {
+                        Ok(n) => { buf.truncate(n); Ok(PyObject::bytes(buf)) }
+                        Err(e) => Err(PyException::os_error(format!("recv: {}", e))),
+                    };
+                } else {
+                    None
+                }
+            };
+            // Read outside the lock for TCP
+            if let Some(mut stream) = stream_clone {
                 let mut buf = vec![0u8; bufsize as usize];
                 match stream.read(&mut buf) {
                     Ok(n) => {
@@ -436,15 +529,6 @@ fn build_socket_object(
                             || e.kind() == std::io::ErrorKind::WouldBlock =>
                     {
                         Err(PyException::new(ExceptionKind::TimeoutError, "timed out"))
-                    }
-                    Err(e) => Err(PyException::os_error(format!("recv: {}", e))),
-                }
-            } else if let Some(ref sock) = guard.udp_socket {
-                let mut buf = vec![0u8; bufsize as usize];
-                match sock.recv(&mut buf) {
-                    Ok(n) => {
-                        buf.truncate(n);
-                        Ok(PyObject::bytes(buf))
                     }
                     Err(e) => Err(PyException::os_error(format!("recv: {}", e))),
                 }

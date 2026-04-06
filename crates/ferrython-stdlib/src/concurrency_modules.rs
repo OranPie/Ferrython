@@ -79,10 +79,54 @@ pub fn create_threading_module() -> PyObjectRef {
                     PyObjectPayload::List(items) => items.read().clone(),
                     _ => vec![],
                 };
+                // For native functions, spawn a real OS thread for true parallelism
                 match &target.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&call_args); }
-                    PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&call_args); }
-                    _ => { push_deferred_call(target, call_args); }
+                    PyObjectPayload::NativeFunction { func, .. } => {
+                        let f = *func;
+                        let alive_attrs = inst.attrs.clone();
+                        let join_handle = std::sync::Arc::new(std::sync::Mutex::new(None::<std::thread::JoinHandle<()>>));
+                        let jh = join_handle.clone();
+                        let handle = std::thread::spawn(move || {
+                            let _ = f(&call_args);
+                            alive_attrs.write().insert(CompactString::from("_alive"), PyObject::bool_val(false));
+                        });
+                        *jh.lock().unwrap() = Some(handle);
+                        inst.attrs.write().insert(
+                            CompactString::from("_join_handle"),
+                            PyObject::native_closure("_join_handle", move |_| {
+                                if let Some(h) = join_handle.lock().unwrap().take() {
+                                    let _ = h.join();
+                                }
+                                Ok(PyObject::none())
+                            }),
+                        );
+                        return Ok(PyObject::none());
+                    }
+                    PyObjectPayload::NativeClosure { func, .. } => {
+                        let f = func.clone();
+                        let alive_attrs = inst.attrs.clone();
+                        let join_handle = std::sync::Arc::new(std::sync::Mutex::new(None::<std::thread::JoinHandle<()>>));
+                        let jh = join_handle.clone();
+                        let handle = std::thread::spawn(move || {
+                            let _ = f(&call_args);
+                            alive_attrs.write().insert(CompactString::from("_alive"), PyObject::bool_val(false));
+                        });
+                        *jh.lock().unwrap() = Some(handle);
+                        inst.attrs.write().insert(
+                            CompactString::from("_join_handle"),
+                            PyObject::native_closure("_join_handle", move |_| {
+                                if let Some(h) = join_handle.lock().unwrap().take() {
+                                    let _ = h.join();
+                                }
+                                Ok(PyObject::none())
+                            }),
+                        );
+                        return Ok(PyObject::none());
+                    }
+                    _ => {
+                        // Python-defined functions: run sequentially (needs VM)
+                        push_deferred_call(target, call_args);
+                    }
                 }
             }
             inst.attrs.write().insert(CompactString::from("_alive"), PyObject::bool_val(false));
@@ -91,8 +135,6 @@ pub fn create_threading_module() -> PyObjectRef {
     }));
 
     // join(self, timeout=None) — wait for thread to complete
-    // In Ferrython's sequential execution model, threads complete during start(),
-    // so join() mainly validates state and respects the API contract.
     thread_ns.insert(CompactString::from("join"), make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() { return Ok(PyObject::none()); }
         if let PyObjectPayload::Instance(ref inst) = args[0].payload {
@@ -101,6 +143,36 @@ pub fn create_threading_module() -> PyObjectRef {
                 .map(|v| v.is_truthy()).unwrap_or(false);
             if !started {
                 return Err(PyException::runtime_error("cannot join thread before it is started"));
+            }
+            // If there's a real OS thread join handle, use it
+            if let Some(jh) = attrs.get("_join_handle").cloned() {
+                drop(attrs);
+                // Get timeout if provided
+                let timeout_secs = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
+                    args[1].to_float().ok()
+                } else {
+                    None
+                };
+                if let Some(t) = timeout_secs {
+                    // Poll-based join with timeout
+                    let start = std::time::Instant::now();
+                    let dur = std::time::Duration::from_secs_f64(t);
+                    loop {
+                        if let PyObjectPayload::Instance(ref inst2) = args[0].payload {
+                            let alive = inst2.attrs.read().get("_alive")
+                                .map(|v| v.is_truthy()).unwrap_or(false);
+                            if !alive { break; }
+                        }
+                        if start.elapsed() >= dur { break; }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                } else {
+                    // Blocking join
+                    match &jh.payload {
+                        PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[]); }
+                        _ => {}
+                    }
+                }
             }
         }
         Ok(PyObject::none())
