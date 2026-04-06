@@ -1717,6 +1717,20 @@ impl VirtualMachine {
                         }
                     }
                     "dir" => {
+                        if args.is_empty() {
+                            // dir() with no args: return sorted local variable names
+                            let locals = self.collect_locals_dict()?;
+                            if let PyObjectPayload::Dict(map) = &locals.payload {
+                                let mut names: Vec<String> = map.read().keys()
+                                    .map(|k| k.to_object().py_to_string())
+                                    .collect();
+                                names.sort();
+                                let items = names.into_iter()
+                                    .map(|n| PyObject::str_val(CompactString::from(n)))
+                                    .collect();
+                                return Ok(PyObject::list(items));
+                            }
+                        }
                         if args.len() == 1 {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
                                 if let Some(method) = Self::resolve_instance_dunder(&args[0], "__dir__") {
