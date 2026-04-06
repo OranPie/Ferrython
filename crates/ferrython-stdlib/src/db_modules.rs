@@ -660,15 +660,43 @@ fn execute_select(db: &Database, sql: &str) -> PyResult<QueryResult> {
 
     // Build result
     let mut rows = Vec::new();
-    for row in &result_rows {
+
+    // Check if any columns are aggregates
+    let has_aggregate = select_cols.iter().any(|col| {
+        let upper = col.trim().to_uppercase();
+        upper.starts_with("COUNT(") || upper.starts_with("SUM(")
+            || upper.starts_with("AVG(") || upper.starts_with("MIN(")
+            || upper.starts_with("MAX(")
+    });
+
+    if has_aggregate {
+        // Aggregate query — produce single result row
         let mut vals = Vec::new();
         for col in &select_cols {
-            let col_trimmed = col.trim();
-            let col_upper = col_trimmed.to_uppercase();
-            if col_upper.starts_with("COUNT(") {
-                vals.push(DbValue::Int(result_rows.len() as i64));
+            if let Some(agg_val) = compute_aggregate(col, &result_rows) {
+                vals.push(agg_val);
             } else {
-                // Handle alias: col AS alias
+                // Non-aggregate column in aggregate query: take first row value
+                let col_trimmed = col.trim();
+                let col_upper = col_trimmed.to_uppercase();
+                let actual_col = if let Some(as_pos) = col_upper.find(" AS ") {
+                    col_trimmed[..as_pos].trim()
+                } else {
+                    col_trimmed
+                };
+                vals.push(result_rows.first()
+                    .and_then(|r| r.get(actual_col).cloned())
+                    .unwrap_or(DbValue::Null));
+            }
+        }
+        rows.push(vals);
+    } else {
+        // Non-aggregate query — return all matching rows
+        for row in &result_rows {
+            let mut vals = Vec::new();
+            for col in &select_cols {
+                let col_trimmed = col.trim();
+                let col_upper = col_trimmed.to_uppercase();
                 let actual_col = if let Some(as_pos) = col_upper.find(" AS ") {
                     col_trimmed[..as_pos].trim()
                 } else {
@@ -676,13 +704,8 @@ fn execute_select(db: &Database, sql: &str) -> PyResult<QueryResult> {
                 };
                 vals.push(row.get(actual_col).cloned().unwrap_or(DbValue::Null));
             }
+            rows.push(vals);
         }
-        rows.push(vals);
-    }
-
-    // Handle COUNT(*) with no results special case
-    if select_cols.len() == 1 && select_cols[0].to_uppercase().starts_with("COUNT(") && rows.is_empty() {
-        rows.push(vec![DbValue::Int(0)]);
     }
 
     let columns: Vec<String> = select_cols.iter().map(|c| {
@@ -705,6 +728,105 @@ fn find_clause_end(upper: &str) -> usize {
         }
     }
     upper.len()
+}
+
+fn compute_aggregate(col_expr: &str, rows: &[&IndexMap<String, DbValue>]) -> Option<DbValue> {
+    let upper = col_expr.trim().to_uppercase();
+    let (func, inner) = if let Some(paren) = upper.find('(') {
+        let end = upper.rfind(')')?;
+        let func_name = upper[..paren].trim();
+        let inner = col_expr.trim()[paren + 1..end].trim().to_string();
+        (func_name.to_string(), inner)
+    } else {
+        return None;
+    };
+
+    match func.as_str() {
+        "COUNT" => {
+            if inner == "*" {
+                Some(DbValue::Int(rows.len() as i64))
+            } else {
+                let col = inner;
+                let count = rows.iter().filter(|r| {
+                    matches!(r.get(&col as &str), Some(v) if !matches!(v, DbValue::Null))
+                }).count();
+                Some(DbValue::Int(count as i64))
+            }
+        }
+        "SUM" => {
+            let col = inner;
+            let mut sum_f: f64 = 0.0;
+            let mut has_float = false;
+            let mut count = 0i64;
+            for row in rows {
+                match row.get(&col as &str) {
+                    Some(DbValue::Int(n)) => { sum_f += *n as f64; count += 1; }
+                    Some(DbValue::Float(f)) => { sum_f += f; has_float = true; count += 1; }
+                    _ => {}
+                }
+            }
+            if count == 0 { return Some(DbValue::Null); }
+            if has_float { Some(DbValue::Float(sum_f)) } else { Some(DbValue::Int(sum_f as i64)) }
+        }
+        "AVG" => {
+            let col = inner;
+            let mut sum: f64 = 0.0;
+            let mut count = 0i64;
+            for row in rows {
+                match row.get(&col as &str) {
+                    Some(DbValue::Int(n)) => { sum += *n as f64; count += 1; }
+                    Some(DbValue::Float(f)) => { sum += f; count += 1; }
+                    _ => {}
+                }
+            }
+            if count == 0 { Some(DbValue::Null) } else { Some(DbValue::Float(sum / count as f64)) }
+        }
+        "MIN" => {
+            let col = inner;
+            let mut min_val: Option<DbValue> = None;
+            for row in rows {
+                match row.get(&col as &str) {
+                    Some(DbValue::Null) | None => {}
+                    Some(v) => {
+                        min_val = Some(match min_val {
+                            None => v.clone(),
+                            Some(ref cur) => {
+                                if compare_db_values(Some(v), Some(cur)) == std::cmp::Ordering::Less {
+                                    v.clone()
+                                } else {
+                                    cur.clone()
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+            Some(min_val.unwrap_or(DbValue::Null))
+        }
+        "MAX" => {
+            let col = inner;
+            let mut max_val: Option<DbValue> = None;
+            for row in rows {
+                match row.get(&col as &str) {
+                    Some(DbValue::Null) | None => {}
+                    Some(v) => {
+                        max_val = Some(match max_val {
+                            None => v.clone(),
+                            Some(ref cur) => {
+                                if compare_db_values(Some(v), Some(cur)) == std::cmp::Ordering::Greater {
+                                    v.clone()
+                                } else {
+                                    cur.clone()
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+            Some(max_val.unwrap_or(DbValue::Null))
+        }
+        _ => None,
+    }
 }
 
 fn compare_db_values(a: Option<&DbValue>, b: Option<&DbValue>) -> std::cmp::Ordering {
