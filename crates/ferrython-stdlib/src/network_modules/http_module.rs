@@ -128,19 +128,36 @@ pub fn create_urllib_module() -> PyObjectRef {
     )
 }
 
-fn build_http_get(parsed: &ParsedUrl) -> String {
+fn build_http_request(parsed: &ParsedUrl, method: &str, headers: &IndexMap<String, String>, body: Option<&[u8]>) -> Vec<u8> {
     let full_path = if parsed.query.is_empty() {
         parsed.path.clone()
     } else {
         format!("{}?{}", parsed.path, parsed.query)
     };
-    format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: ferrython/1.0\r\nAccept: */*\r\n\r\n",
-        full_path, parsed.host
-    )
+    let mut req = format!(
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: ferrython/1.0\r\nAccept: */*\r\n",
+        method, full_path, parsed.host
+    );
+    for (k, v) in headers {
+        req.push_str(&format!("{}: {}\r\n", k, v));
+    }
+    if let Some(data) = body {
+        if !headers.contains_key("Content-Length") {
+            req.push_str(&format!("Content-Length: {}\r\n", data.len()));
+        }
+        if !headers.contains_key("Content-Type") {
+            req.push_str("Content-Type: application/x-www-form-urlencoded\r\n");
+        }
+    }
+    req.push_str("\r\n");
+    let mut bytes = req.into_bytes();
+    if let Some(data) = body {
+        bytes.extend_from_slice(data);
+    }
+    bytes
 }
 
-fn do_http_request(url: &str) -> PyResult<(u16, IndexMap<String, String>, Vec<u8>)> {
+fn do_http_request(url: &str, method: &str, headers: &IndexMap<String, String>, data: Option<&[u8]>) -> PyResult<(u16, IndexMap<String, String>, Vec<u8>)> {
     let parsed = parse_url_string(url);
     if parsed.scheme == "https" {
         return Err(PyException::os_error(
@@ -155,9 +172,9 @@ fn do_http_request(url: &str) -> PyResult<(u16, IndexMap<String, String>, Vec<u8
         .set_read_timeout(Some(Duration::from_secs(30)))
         .ok();
 
-    let request = build_http_get(&parsed);
+    let request = build_http_request(&parsed, method, headers, data);
     stream
-        .write_all(request.as_bytes())
+        .write_all(&request)
         .map_err(|e| PyException::os_error(format!("urlopen write: {}", e)))?;
 
     let mut raw = Vec::new();
@@ -326,15 +343,52 @@ fn urllib_urlopen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "urlopen() requires a url argument",
         ));
     }
-    // Accept a string URL or a Request object
-    let url = if let Some(u) = args[0].get_attr("full_url") {
-        u.py_to_string()
+
+    // Extract URL, method, headers, and data from args
+    let (url, method, headers, data) = if let Some(u) = args[0].get_attr("full_url") {
+        // Request object
+        let url = u.py_to_string();
+        let method = args[0].get_attr("method")
+            .map(|m| m.py_to_string())
+            .unwrap_or_else(|| "GET".to_string());
+        let data_bytes = args[0].get_attr("data").and_then(|d| {
+            match &d.payload {
+                PyObjectPayload::Bytes(b) => Some(b.clone()),
+                PyObjectPayload::None => None,
+                _ => Some(d.py_to_string().into_bytes()),
+            }
+        });
+        let mut hdrs = IndexMap::new();
+        if let Some(hdr_obj) = args[0].get_attr("headers") {
+            if let PyObjectPayload::Dict(map) = &hdr_obj.payload {
+                for (k, v) in map.read().iter() {
+                    if let HashableKey::Str(key) = k {
+                        hdrs.insert(key.to_string(), v.py_to_string());
+                    }
+                }
+            }
+        }
+        (url, method, hdrs, data_bytes)
     } else {
-        args[0].py_to_string()
+        // Plain string URL
+        let url = args[0].py_to_string();
+        // Check for data= kwarg (second arg or trailing dict)
+        let data_bytes = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
+            match &args[1].payload {
+                PyObjectPayload::Bytes(b) => Some(b.clone()),
+                _ => Some(args[1].py_to_string().into_bytes()),
+            }
+        } else {
+            None
+        };
+        let method = if data_bytes.is_some() { "POST" } else { "GET" };
+        (url, method.to_string(), IndexMap::new(), data_bytes)
     };
 
-    let (status, headers, body) = do_http_request(&url)?;
-    Ok(build_response_object(&url, status, headers, body))
+    let (status, resp_headers, body) = do_http_request(
+        &url, &method, &headers, data.as_deref()
+    )?;
+    Ok(build_response_object(&url, status, resp_headers, body))
 }
 
 fn urllib_request_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -344,39 +398,71 @@ fn urllib_request_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ));
     }
     let url = args[0].py_to_string();
+
+    // Parse data= (2nd arg) and method= (kwarg or 3rd arg)
+    let data = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
+        args[1].clone()
+    } else {
+        PyObject::none()
+    };
+
+    // Extract headers and method from kwargs dict if present
+    let mut extra_headers = IndexMap::new();
+    let mut method = if matches!(&data.payload, PyObjectPayload::None) {
+        "GET".to_string()
+    } else {
+        "POST".to_string()
+    };
+
+    if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(kw) = &last.payload {
+            let r = kw.read();
+            if let Some(m) = r.get(&HashableKey::Str(CompactString::from("method"))) {
+                method = m.py_to_string();
+            }
+            if let Some(h) = r.get(&HashableKey::Str(CompactString::from("headers"))) {
+                if let PyObjectPayload::Dict(hm) = &h.payload {
+                    for (k, v) in hm.read().iter() {
+                        if let HashableKey::Str(key) = k {
+                            extra_headers.insert(
+                                HashableKey::Str(key.clone()),
+                                v.clone(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let parsed = parse_url_string(&url);
+    let headers_dict = PyObject::dict(extra_headers);
+
     let mut attrs = IndexMap::new();
-    attrs.insert(
-        CompactString::from("full_url"),
-        PyObject::str_val(CompactString::from(url.as_str())),
-    );
-    attrs.insert(
-        CompactString::from("host"),
-        PyObject::str_val(CompactString::from(
-            parse_url_string(&url).host.as_str(),
-        )),
-    );
-    attrs.insert(
-        CompactString::from("type"),
-        PyObject::str_val(CompactString::from(
-            parse_url_string(&url).scheme.as_str(),
-        )),
-    );
-    attrs.insert(
-        CompactString::from("method"),
-        PyObject::str_val(CompactString::from("GET")),
-    );
-    attrs.insert(
-        CompactString::from("headers"),
-        PyObject::dict(IndexMap::new()),
-    );
-    attrs.insert(
-        CompactString::from("add_header"),
-        PyObject::native_closure("add_header", |_args| Ok(PyObject::none())),
-    );
-    Ok(PyObject::module_with_attrs(
-        CompactString::from("urllib.request.Request"),
-        attrs,
-    ))
+    attrs.insert(CompactString::from("full_url"), PyObject::str_val(CompactString::from(url.as_str())));
+    attrs.insert(CompactString::from("host"), PyObject::str_val(CompactString::from(parsed.host.as_str())));
+    attrs.insert(CompactString::from("type"), PyObject::str_val(CompactString::from(parsed.scheme.as_str())));
+    attrs.insert(CompactString::from("method"), PyObject::str_val(CompactString::from(method)));
+    attrs.insert(CompactString::from("data"), data);
+    attrs.insert(CompactString::from("headers"), headers_dict);
+
+    // add_header(key, value) — add a header to the request
+    let req_attrs = Arc::new(Mutex::new(attrs.clone()));
+    let ra = req_attrs.clone();
+    attrs.insert(CompactString::from("add_header"), PyObject::native_closure("add_header", move |a: &[PyObjectRef]| {
+        if a.len() < 2 { return Err(PyException::type_error("add_header(key, value)")); }
+        let key = a[0].py_to_string();
+        let val = a[1].py_to_string();
+        let mut locked = ra.lock().unwrap();
+        if let Some(hdr) = locked.get_mut("headers") {
+            if let PyObjectPayload::Dict(map) = &hdr.payload {
+                map.write().insert(HashableKey::Str(CompactString::from(key)), PyObject::str_val(CompactString::from(val)));
+            }
+        }
+        Ok(PyObject::none())
+    }));
+
+    Ok(PyObject::module_with_attrs(CompactString::from("urllib.request.Request"), attrs))
 }
 
 // ════════════════════════════════════════════════════════════════════════
