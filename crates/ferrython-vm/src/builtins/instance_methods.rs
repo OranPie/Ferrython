@@ -1470,8 +1470,10 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
         "joinpath" | "__truediv__" => {
             check_args_min("joinpath", args, 1)?;
             let base = get_path();
-            let child = args[0].py_to_string();
-            let joined = std::path::Path::new(&base).join(&child);
+            let mut joined = std::path::PathBuf::from(&base);
+            for arg in args {
+                joined = joined.join(arg.py_to_string().as_str());
+            }
             Ok(PyObject::str_val(CompactString::from(joined.to_string_lossy().to_string())))
         }
         "stat" => {
