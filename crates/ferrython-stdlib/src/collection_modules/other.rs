@@ -34,7 +34,21 @@ pub fn create_queue_module() -> PyObjectRef {
 }
 
 fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let maxsize = if !args.is_empty() { args[0].to_int().unwrap_or(0) } else { 0 };
+    // Extract maxsize from positional args or kwargs dict
+    let maxsize = if !args.is_empty() {
+        if let Some(n) = args[0].as_int() {
+            n
+        } else if let PyObjectPayload::Dict(d) = &args[0].payload {
+            let d = d.read();
+            d.get(&ferrython_core::types::HashableKey::Str(CompactString::from("maxsize")))
+                .and_then(|v| v.as_int())
+                .unwrap_or(0)
+        } else {
+            0
+        }
+    } else {
+        0
+    };
     let class = PyObject::class(CompactString::from(kind), vec![], IndexMap::new());
     let inst = PyObject::instance(class);
     let items: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(Vec::new()));
@@ -354,16 +368,95 @@ fn array_array(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
         attrs.insert(CompactString::from("tobytes"), PyObject::native_closure(
             "array.tobytes", { let s = self_ref.clone(); move |_args: &[PyObjectRef]| {
+                let typecode = s.get_attr("typecode").map(|v| v.py_to_string()).unwrap_or_default();
                 if let Some(data) = s.get_attr("_data") {
                     if let PyObjectPayload::List(items) = &data.payload {
                         let r = items.read();
-                        let bytes: Vec<u8> = r.iter().filter_map(|x| {
-                            x.to_int().ok().map(|v| v as u8)
-                        }).collect();
+                        let mut bytes = Vec::new();
+                        for x in r.iter() {
+                            let v = x.to_int().unwrap_or(0);
+                            match typecode.as_str() {
+                                "b" => bytes.push(v as i8 as u8),
+                                "B" => bytes.push(v as u8),
+                                "h" => bytes.extend_from_slice(&(v as i16).to_ne_bytes()),
+                                "H" => bytes.extend_from_slice(&(v as u16).to_ne_bytes()),
+                                "i" | "l" => bytes.extend_from_slice(&(v as i32).to_ne_bytes()),
+                                "I" | "L" => bytes.extend_from_slice(&(v as u32).to_ne_bytes()),
+                                "q" => bytes.extend_from_slice(&v.to_ne_bytes()),
+                                "Q" => bytes.extend_from_slice(&(v as u64).to_ne_bytes()),
+                                "f" => {
+                                    let fv = x.to_float().unwrap_or(0.0) as f32;
+                                    bytes.extend_from_slice(&fv.to_ne_bytes());
+                                }
+                                "d" => {
+                                    let fv = x.to_float().unwrap_or(0.0);
+                                    bytes.extend_from_slice(&fv.to_ne_bytes());
+                                }
+                                _ => bytes.push(v as u8),
+                            }
+                        }
                         return Ok(PyObject::bytes(bytes));
                     }
                 }
                 Ok(PyObject::bytes(vec![]))
+            }}
+        ));
+
+        attrs.insert(CompactString::from("frombytes"), PyObject::native_closure(
+            "array.frombytes", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
+                check_args_min("array.frombytes", args, 1)?;
+                let input_bytes = if let PyObjectPayload::Bytes(b) = &args[0].payload {
+                    b.clone()
+                } else {
+                    return Err(PyException::type_error("frombytes requires a bytes argument"));
+                };
+                let typecode = s.get_attr("typecode").map(|v| v.py_to_string()).unwrap_or_default();
+                let itemsize: usize = match typecode.as_str() {
+                    "b" | "B" => 1, "h" | "H" => 2, "i" | "I" | "l" | "L" | "f" => 4,
+                    "q" | "Q" | "d" => 8, _ => 1,
+                };
+                if input_bytes.len() % itemsize != 0 {
+                    return Err(PyException::value_error("bytes length not a multiple of item size"));
+                }
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let mut w = items.write();
+                        for chunk in input_bytes.chunks(itemsize) {
+                            let val: PyObjectRef = match typecode.as_str() {
+                                "b" => PyObject::int(i8::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+                                "B" => PyObject::int(chunk[0] as i64),
+                                "h" => PyObject::int(i16::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+                                "H" => PyObject::int(u16::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+                                "i" | "l" => PyObject::int(i32::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+                                "I" | "L" => PyObject::int(u32::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+                                "q" => PyObject::int(i64::from_ne_bytes(chunk.try_into().unwrap())),
+                                "Q" => PyObject::int(u64::from_ne_bytes(chunk.try_into().unwrap()) as i64),
+                                "f" => PyObject::float(f32::from_ne_bytes(chunk.try_into().unwrap()) as f64),
+                                "d" => PyObject::float(f64::from_ne_bytes(chunk.try_into().unwrap())),
+                                _ => PyObject::int(chunk[0] as i64),
+                            };
+                            w.push(val);
+                        }
+                    }
+                }
+                Ok(PyObject::none())
+            }}
+        ));
+
+        // __repr__: array('i', [1, 2, 3])
+        attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+            "array.__repr__", { let s = self_ref.clone(); move |_args: &[PyObjectRef]| {
+                let tc = s.get_attr("typecode").map(|v| v.py_to_string()).unwrap_or_default();
+                if let Some(data) = s.get_attr("_data") {
+                    if let PyObjectPayload::List(items) = &data.payload {
+                        let r = items.read();
+                        let items_str: Vec<String> = r.iter().map(|x| x.repr()).collect();
+                        return Ok(PyObject::str_val(CompactString::from(
+                            format!("array('{}', [{}])", tc, items_str.join(", "))
+                        )));
+                    }
+                }
+                Ok(PyObject::str_val(CompactString::from(format!("array('{}')", tc))))
             }}
         ));
 

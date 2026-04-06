@@ -2032,41 +2032,75 @@ pub fn create_fractions_module() -> PyObjectRef {
         else { Ok(make_frac_instance(p1, q1)) }
     }
 
-    make_module("fractions", vec![
-        ("Fraction", make_builtin(|args| {
-            if args.is_empty() { return Ok(make_frac_instance(0, 1)); }
-            if args.len() == 1 {
-                match &args[0].payload {
-                    PyObjectPayload::Int(n) => return Ok(make_frac_instance(n.to_i64().unwrap_or(0), 1)),
-                    PyObjectPayload::Float(f) => {
-                        let (n, d) = float_to_fraction(*f);
-                        return Ok(make_frac_instance(n, d));
-                    }
-                    PyObjectPayload::Str(s) => {
-                        if let Some((n_str, d_str)) = s.split_once('/') {
-                            let n: i64 = n_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
-                            let d: i64 = d_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
-                            if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
+    // Fraction as a module-like callable with class methods
+    let fraction_from_float = make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("from_float requires 1 argument")); }
+        let f = args[0].to_float()?;
+        let (n, d) = float_to_fraction(f);
+        Ok(make_frac_instance(n, d))
+    });
+    let fraction_from_decimal = make_builtin(|args| {
+        if args.is_empty() { return Err(PyException::type_error("from_decimal requires 1 argument")); }
+        let f = args[0].to_float()?;
+        let (n, d) = float_to_fraction(f);
+        Ok(make_frac_instance(n, d))
+    });
+
+    let frac_class_ns = IndexMap::from([
+        (CompactString::from("from_float"), fraction_from_float),
+        (CompactString::from("from_decimal"), fraction_from_decimal),
+    ]);
+    let frac_class = PyObject::class(CompactString::from("Fraction"), vec![], frac_class_ns);
+
+    // Store new function on the class for instantiation
+    if let PyObjectPayload::Class(ref cd) = frac_class.payload {
+        cd.namespace.write().insert(
+            CompactString::from("__new__"),
+            make_builtin(|args| {
+                if args.is_empty() { return Ok(make_frac_instance(0, 1)); }
+                // Skip cls argument if present (class object)
+                let real_args = if !args.is_empty() && matches!(&args[0].payload, PyObjectPayload::Class(_)) {
+                    &args[1..]
+                } else {
+                    args
+                };
+                if real_args.is_empty() { return Ok(make_frac_instance(0, 1)); }
+                if real_args.len() == 1 {
+                    match &real_args[0].payload {
+                        PyObjectPayload::Int(n) => return Ok(make_frac_instance(n.to_i64().unwrap_or(0), 1)),
+                        PyObjectPayload::Float(f) => {
+                            let (n, d) = float_to_fraction(*f);
                             return Ok(make_frac_instance(n, d));
-                        } else {
-                            let n: i64 = s.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
-                            return Ok(make_frac_instance(n, 1));
                         }
-                    }
-                    _ => {
-                        // Check if it's already a Fraction
-                        if let Some((n, d)) = get_frac_parts(&args[0]) {
-                            return Ok(make_frac_instance(n, d));
+                        PyObjectPayload::Str(s) => {
+                            if let Some((n_str, d_str)) = s.split_once('/') {
+                                let n: i64 = n_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
+                                let d: i64 = d_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
+                                if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
+                                return Ok(make_frac_instance(n, d));
+                            } else {
+                                let n: i64 = s.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
+                                return Ok(make_frac_instance(n, 1));
+                            }
                         }
-                        return Err(PyException::type_error("Fraction() argument must be int, float, or str"));
+                        _ => {
+                            if let Some((n, d)) = get_frac_parts(&real_args[0]) {
+                                return Ok(make_frac_instance(n, d));
+                            }
+                            return Err(PyException::type_error("Fraction() argument must be int, float, or str"));
+                        }
                     }
                 }
-            }
-            let n = args[0].to_int()?;
-            let d = args[1].to_int()?;
-            if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
-            Ok(make_frac_instance(n, d))
-        })),
+                let n = real_args[0].to_int()?;
+                let d = real_args[1].to_int()?;
+                if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
+                Ok(make_frac_instance(n, d))
+            }),
+        );
+    }
+
+    make_module("fractions", vec![
+        ("Fraction", frac_class),
         ("gcd", make_builtin(fraction_gcd)),
     ])
 }
