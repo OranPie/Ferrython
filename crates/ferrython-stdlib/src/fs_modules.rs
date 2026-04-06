@@ -580,23 +580,26 @@ pub fn create_shutil_module() -> PyObjectRef {
         })),
         ("disk_usage", make_builtin(|args| {
             let path = if args.is_empty() { "/".to_string() } else { args[0].py_to_string() };
-            // Parse df output for cross-platform compatibility
             let output = std::process::Command::new("df").arg("-k").arg(&path).output();
-            if let Ok(out) = output {
+            let (total, used, free) = if let Ok(out) = output {
                 let text = String::from_utf8_lossy(&out.stdout);
                 if let Some(line) = text.lines().nth(1) {
                     let parts: Vec<&str> = line.split_whitespace().collect();
                     if parts.len() >= 4 {
-                        let total = parts[1].parse::<i64>().unwrap_or(0) * 1024;
-                        let used = parts[2].parse::<i64>().unwrap_or(0) * 1024;
-                        let free = parts[3].parse::<i64>().unwrap_or(0) * 1024;
-                        return Ok(PyObject::tuple(vec![
-                            PyObject::int(total), PyObject::int(used), PyObject::int(free),
-                        ]));
-                    }
-                }
-            }
-            Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::int(0), PyObject::int(0)]))
+                        (
+                            parts[1].parse::<i64>().unwrap_or(0) * 1024,
+                            parts[2].parse::<i64>().unwrap_or(0) * 1024,
+                            parts[3].parse::<i64>().unwrap_or(0) * 1024,
+                        )
+                    } else { (0, 0, 0) }
+                } else { (0, 0, 0) }
+            } else { (0, 0, 0) };
+            let cls = PyObject::class(CompactString::from("usage"), vec![], IndexMap::new());
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("total"), PyObject::int(total));
+            attrs.insert(CompactString::from("used"), PyObject::int(used));
+            attrs.insert(CompactString::from("free"), PyObject::int(free));
+            Ok(PyObject::instance_with_attrs(cls, attrs))
         })),
         ("get_terminal_size", make_builtin(|_| {
             Ok(PyObject::tuple(vec![PyObject::int(80), PyObject::int(24)]))

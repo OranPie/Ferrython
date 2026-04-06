@@ -346,8 +346,57 @@ fn needs_fancy_regex(pattern: &str) -> bool {
     false
 }
 
+/// Strip VERBOSE (re.X) comments and unescaped whitespace from a regex pattern.
+fn strip_verbose(pattern: &str) -> String {
+    let mut result = String::with_capacity(pattern.len());
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    let mut in_char_class = false;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '\\' && i + 1 < chars.len() {
+            // Escaped character — always keep
+            result.push(ch);
+            result.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        if ch == '[' && !in_char_class {
+            in_char_class = true;
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+        if ch == ']' && in_char_class {
+            in_char_class = false;
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+        if in_char_class {
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+        if ch == '#' {
+            // Skip to end of line
+            while i < chars.len() && chars[i] != '\n' { i += 1; }
+            i += 1; // skip the newline too
+            continue;
+        }
+        if ch.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        result.push(ch);
+        i += 1;
+    }
+    result
+}
+
 fn build_regex(pattern: &str, flags: i64) -> Result<regex::Regex, PyException> {
-    let mut pat = convert_python_regex(pattern);
+    let mut pat = if flags & 64 != 0 { strip_verbose(pattern) } else { pattern.to_string() };
+    pat = convert_python_regex(&pat);
     let mut prefix = String::new();
     if flags & 2 != 0 { prefix.push_str("(?i)"); }
     if flags & 8 != 0 { prefix.push_str("(?m)"); }
@@ -357,7 +406,8 @@ fn build_regex(pattern: &str, flags: i64) -> Result<regex::Regex, PyException> {
 }
 
 fn build_fancy_regex(pattern: &str, flags: i64) -> Result<fancy_regex::Regex, PyException> {
-    let mut pat = convert_python_regex(pattern);
+    let mut pat = if flags & 64 != 0 { strip_verbose(pattern) } else { pattern.to_string() };
+    pat = convert_python_regex(&pat);
     let mut prefix = String::new();
     if flags & 2 != 0 { prefix.push_str("(?i)"); }
     if flags & 8 != 0 { prefix.push_str("(?m)"); }

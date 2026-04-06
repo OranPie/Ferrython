@@ -76,6 +76,13 @@ pub fn create_functools_module() -> PyObjectRef {
             });
             Ok(decorator)
         })),
+        ("cache", make_builtin(|args| {
+            // cache(func) — equivalent to lru_cache(maxsize=None)(func)
+            if args.is_empty() {
+                return Err(PyException::type_error("cache requires a callable argument"));
+            }
+            Ok(create_cached_function(args[0].clone(), None))
+        })),
         ("cached_property", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("cached_property requires 1 argument")); }
             let func = args[0].clone();

@@ -491,6 +491,11 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                             } else {
                                 field_attrs.insert(CompactString::from("repr"), PyObject::bool_val(true));
                             }
+                            if info.len() > 6 {
+                                field_attrs.insert(CompactString::from("type"), info[6].clone());
+                            } else {
+                                field_attrs.insert(CompactString::from("type"), PyObject::none());
+                            }
                             field_attrs.insert(CompactString::from("hash"), PyObject::none());
                             field_attrs.insert(CompactString::from("metadata"), PyObject::dict(IndexMap::new()));
                             field_attrs.insert(CompactString::from("kw_only"), PyObject::bool_val(false));
@@ -576,6 +581,7 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
     // Get annotations to discover fields — walk MRO for inherited dataclass fields
     let mut field_names: Vec<CompactString> = Vec::new();
     let mut field_defaults: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+    let mut field_types: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
     let mut compare_fields: Vec<CompactString> = Vec::new();
     let mut init_fields: Vec<CompactString> = Vec::new();
     let mut repr_fields: Vec<CompactString> = Vec::new();
@@ -590,11 +596,12 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                 let ns = bcd.namespace.read();
                 if let Some(annotations) = ns.get("__annotations__") {
                     if let PyObjectPayload::Dict(ann_map) = &annotations.payload {
-                        for (k, _v) in ann_map.read().iter() {
+                        for (k, v) in ann_map.read().iter() {
                             if let HashableKey::Str(name) = k {
                                 if !field_names.contains(name) {
                                     field_names.push(name.clone());
                                 }
+                                field_types.insert(name.clone(), v.clone());
                                 let mut compare = true;
                                 let mut init = true;
                                 let mut field_repr = true;
@@ -631,13 +638,14 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
         }
     }
     
-    // Store __dataclass_fields__ as tuple of (name, has_default, default_val, init, compare, repr) tuples
+    // Store __dataclass_fields__ as tuple of (name, has_default, default_val, init, compare, repr, type) tuples
     let fields_info: Vec<PyObjectRef> = field_names.iter().map(|name| {
         let has_default = field_defaults.contains_key(name.as_str());
         let default_val = field_defaults.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
         let init_flag = init_fields.contains(name);
         let compare_flag = compare_fields.contains(name);
         let repr_flag = repr_fields.contains(name);
+        let type_val = field_types.get(name).cloned().unwrap_or_else(PyObject::none);
         PyObject::tuple(vec![
             PyObject::str_val(CompactString::from(name.as_str())),
             PyObject::bool_val(has_default),
@@ -645,6 +653,7 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
             PyObject::bool_val(init_flag),
             PyObject::bool_val(compare_flag),
             PyObject::bool_val(repr_flag),
+            type_val,
         ])
     }).collect();
     
