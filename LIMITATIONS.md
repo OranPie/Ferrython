@@ -1,7 +1,7 @@
 # Ferrython — Known Limitations
 
 > Comprehensive inventory of gaps between Ferrython and CPython 3.8.
-> Updated: 155+ stdlib modules, 125 fixture tests (all passing), 15 crates, ~64K lines Rust.
+> Updated: 155+ stdlib modules, 130 fixture tests (all passing), 15 crates, ~67K lines Rust.
 
 ---
 
@@ -84,6 +84,9 @@
 | Feature | Status | Notes |
 |---------|--------|-------|
 | `asyncio.run()`, `gather()`, `sleep()` | ✅ | Sequential execution model |
+| `dir()` in functions | ✅ | Returns sorted local variable names (like CPython) |
+| `sys.settrace()` / `sys.setprofile()` | ❌ | Not implemented |
+| `sys.excepthook` | ❌ | Not implemented |
 | Real event loop scheduling | ❌ | All coroutines run to completion sequentially |
 | `asyncio.wait_for` timeout | ❌ | Runs coroutine immediately, timeout ignored |
 | `asyncio.Queue` blocking | ❌ | `await queue.get()` doesn't suspend; raises if empty |
@@ -130,24 +133,15 @@
 | `os.environ` | `os.environ[k] = v` does not call `putenv()` — use `os.putenv()` to sync |
 | `weakref` | Collections (WeakValueDictionary, etc.) are stubs using regular containers |
 
-### 4.3 Recently Fixed (This Session)
+### 4.3 Recently Fixed
 
 | Module | What was fixed |
 |--------|---------------|
-| `json.JSONDecodeError` | Proper `ValueError` subclass; `except json.JSONDecodeError` works |
-| `json.dumps` `default=` | Python function callbacks via VM interception; pre-processes object tree |
-| `json.dump` `default=` | Same as `json.dumps`; file output with custom serialization |
-| `super()` in `@classmethod` | Now properly unwraps ClassMethod/StaticMethod descriptors |
-| `super()` in `@staticmethod` | Raw function returned correctly through super proxy |
-| `json.dump/load` | File dispatch: NativeFunction write/read now receives self arg correctly |
-| In-place operators | `list +=`, `list *=`, `set \|=`, `set -=`, `set &=`, `set ^=` preserve identity |
-| `namedtuple` | `defaults=` kwarg now parsed and applied (right-aligned to fields) |
-| `hashlib` | Now supports `update()`, `digest()`, `hexdigest()`, `copy()` (incremental hashing) |
-| `enum` | `auto()` per-class counter, CPython `repr` format `<Class.Name: value>` |
-| `argparse` | Subparsers, mutually exclusive groups |
-| `struct` | `unpack_from()`, `iter_unpack()`, `struct.error` exception |
-| `io` | StringIO/BytesIO protocol methods, BytesIO.readline, StringIO.__iter__ |
-| `subprocess` | `.pid`, `send_signal()`, `terminate()` with SIGTERM |
+| `dir()` | No-arg `dir()` in function scope now returns local variable names |
+| Format strings | `{0[key]}` getitem syntax for list index and dict key access |
+| `isinstance` | `__subclasshook__` support in isinstance (not just issubclass) |
+| `hasattr` | Container dunders excluded from non-container types (int, float, etc.) |
+| Builtin subclassing | `str.__new__`, `int.__new__`, `float.__new__` for proper subclass creation |
 
 ### 4.3 Missing Modules (ImportError)
 
@@ -185,9 +179,9 @@
 
 ## 6. Architecture
 
-- **15 crates** in Cargo workspace (~64K lines Rust)
+- **15 crates** in Cargo workspace (~67K lines Rust)
 - **155+ stdlib modules** registered
-- **137 tests** (125 fixture + 12 unit, all passing via `cargo test`)
+- **130 tests** (all passing via `cargo test`)
 - **13 microbenchmarks** in benchmark suite
 
 | Issue | Status | Notes |
@@ -214,4 +208,4 @@
 
 ---
 
-*Last updated after XML redesign, urljoin fix, dir() enhancement, regex lookaround, stdlib expansion.*
+*Last updated after dir() local scope fix, format getitem, isinstance __subclasshook__, builtin subclassing.*

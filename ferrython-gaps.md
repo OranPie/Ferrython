@@ -3,7 +3,7 @@
 **Methodology:** All results are empirical — each item was verified by running an isolated Python
 program through `ferrython` (`cargo build --release`).
 
-**Score: 78 PASS · 4 FAIL/PARTIAL (language + stdlib) + 2 missing modules**
+**Score: 82 PASS · 4 FAIL/PARTIAL (language + stdlib) + 5 missing systems**
 
 > Items marked `[simplified]` are partially implemented — the stub unblocks common usage.
 
@@ -120,6 +120,9 @@ Missing: `help()`.
 | `sys._getframe(n)` | ✅ |
 | `sys.exc_info()` | ✅ |
 | `sys.stdout = buf` (redirect) | ✅ |
+| `sys.settrace()` / `sys.gettrace()` | ❌ |
+| `sys.setprofile()` / `sys.getprofile()` | ❌ |
+| `sys.excepthook` | ❌ |
 | `sys.__stdout__`, `sys.stdin`, `sys.stderr` | ✅ |
 
 ---
@@ -208,6 +211,9 @@ Missing: `help()`.
 |----------|---------|
 | C interop | `ctypes`, `cffi` |
 | OS / Low-level | `fcntl` |
+| Debug / Trace | `sys.settrace`, `sys.setprofile`, `sys.excepthook` |
+| AST | Full AST node tree (parse returns skeleton only) |
+| Package Manager | No `ferryip` / pip-like tool |
 
 ---
 
@@ -235,10 +241,10 @@ Arc<CodeObject> sharing, binary op fast paths (add/sub/mul/div/mod), method reso
 
 ## 7. Architecture
 
-- **15 crates** · **150+ stdlib modules** · **124 fixture tests** (all passing)
+- **15 crates** · **155+ stdlib modules** · **130 fixture tests** (all passing)
 - Source-line tracebacks · Profiler · Disassembler · Benchmark suite (13 microbenchmarks)
 - Inline VM fast paths for arithmetic (int/float add, sub, mul, truediv, floordiv, mod)
 
 ---
 
-*Last updated after VM division/modulo fast paths and documentation refresh.*
+*Last updated after dir() local scope, format getitem, isinstance __subclasshook__, builtin subclassing fixes.*
