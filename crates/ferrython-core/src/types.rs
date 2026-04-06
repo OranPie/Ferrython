@@ -481,3 +481,4 @@ impl Eq for OrderedFloat {}
 impl Hash for OrderedFloat { fn hash<H: Hasher>(&self, state: &mut H) { self.0.to_bits().hash(state); } }
 impl PartialOrd for OrderedFloat { fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) } }
 impl Ord for OrderedFloat { fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.total_cmp(&other.0) } }
+impl std::fmt::Display for OrderedFloat { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.0) } }

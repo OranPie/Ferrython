@@ -1755,12 +1755,118 @@ pub fn create_unicodedata_module() -> PyObjectRef {
 
 // ── pprint module ──
 
+fn pformat_value(obj: &PyObjectRef, indent: usize, width: usize, depth: Option<usize>, current_depth: usize) -> String {
+    if let Some(max_d) = depth {
+        if current_depth > max_d { return "...".to_string(); }
+    }
+    let prefix = " ".repeat(indent * current_depth);
+    let inner_prefix = " ".repeat(indent * (current_depth + 1));
+
+    match &obj.payload {
+        PyObjectPayload::Dict(map) => {
+            let r = map.read();
+            if r.is_empty() { return "{}".to_string(); }
+            let mut entries: Vec<String> = Vec::new();
+            for (k, v) in r.iter() {
+                let ks = match k {
+                    HashableKey::Str(s) => format!("'{}'", s),
+                    HashableKey::Int(i) => i.to_string(),
+                    HashableKey::Float(f) => format!("{}", f),
+                    HashableKey::Bool(b) => if *b { "True".to_string() } else { "False".to_string() },
+                    HashableKey::None => "None".to_string(),
+                    HashableKey::Tuple(t) => format!("({})", t.iter().map(|x| match x {
+                        HashableKey::Str(s) => format!("'{}'", s),
+                        HashableKey::Int(i) => i.to_string(),
+                        _ => "...".to_string(),
+                    }).collect::<Vec<_>>().join(", ")),
+                    HashableKey::FrozenSet(_) => "frozenset(...)".to_string(),
+                    HashableKey::Bytes(_) | HashableKey::Identity(_) | HashableKey::Custom { .. } => "...".to_string(),
+                };
+                let vs = pformat_value(v, indent, width, depth, current_depth + 1);
+                entries.push(format!("{}: {}", ks, vs));
+            }
+            let oneline = format!("{{{}}}", entries.join(", "));
+            if oneline.len() + prefix.len() <= width {
+                return oneline;
+            }
+            let mut s = String::from("{\n");
+            for (i, e) in entries.iter().enumerate() {
+                s.push_str(&inner_prefix);
+                s.push_str(e);
+                if i < entries.len() - 1 { s.push(','); }
+                s.push('\n');
+            }
+            s.push_str(&prefix);
+            s.push('}');
+            s
+        }
+        PyObjectPayload::List(items) => {
+            let r = items.read();
+            if r.is_empty() { return "[]".to_string(); }
+            let oneline = format!("[{}]", r.iter().map(|v| pformat_value(v, indent, width, depth, current_depth + 1)).collect::<Vec<_>>().join(", "));
+            if oneline.len() + prefix.len() <= width {
+                return oneline;
+            }
+            let mut s = String::from("[\n");
+            for (i, v) in r.iter().enumerate() {
+                s.push_str(&inner_prefix);
+                s.push_str(&pformat_value(v, indent, width, depth, current_depth + 1));
+                if i < r.len() - 1 { s.push(','); }
+                s.push('\n');
+            }
+            s.push_str(&prefix);
+            s.push(']');
+            s
+        }
+        PyObjectPayload::Tuple(items) => {
+            if items.is_empty() { return "()".to_string(); }
+            if items.len() == 1 {
+                return format!("({},)", pformat_value(&items[0], indent, width, depth, current_depth + 1));
+            }
+            let oneline = format!("({})", items.iter().map(|v| pformat_value(v, indent, width, depth, current_depth + 1)).collect::<Vec<_>>().join(", "));
+            if oneline.len() + prefix.len() <= width { return oneline; }
+            let mut s = String::from("(\n");
+            for (i, v) in items.iter().enumerate() {
+                s.push_str(&inner_prefix);
+                s.push_str(&pformat_value(v, indent, width, depth, current_depth + 1));
+                if i < items.len() - 1 { s.push(','); }
+                s.push('\n');
+            }
+            s.push_str(&prefix);
+            s.push(')');
+            s
+        }
+        PyObjectPayload::Set(items) => {
+            let r = items.read();
+            if r.is_empty() { return "set()".to_string(); }
+            let elems: Vec<String> = r.iter().map(|(k, _)| match k {
+                HashableKey::Str(s) => format!("'{}'", s),
+                HashableKey::Int(i) => i.to_string(),
+                HashableKey::Float(f) => f.0.to_string(),
+                HashableKey::Bool(b) => if *b { "True".to_string() } else { "False".to_string() },
+                HashableKey::None => "None".to_string(),
+                _ => format!("{:?}", k),
+            }).collect();
+            format!("{{{}}}", elems.join(", "))
+        }
+        _ => {
+            // For strings, add quotes (like repr)
+            if let PyObjectPayload::Str(s) = &obj.payload {
+                return format!("'{}'", s);
+            }
+            obj.py_to_string()
+        }
+    }
+}
+
 pub fn create_pprint_module() -> PyObjectRef {
     make_module("pprint", vec![
         ("pprint", make_builtin(|args| {
             if args.is_empty() { return Ok(PyObject::none()); }
-            let text = args[0].py_to_string();
-            // Check for stream keyword in kwargs dict (last arg if Dict)
+            // Parse kwargs: stream, indent, width, depth
+            let mut indent = 1usize;
+            let mut width = 80usize;
+            let mut depth: Option<usize> = None;
             let mut stream_obj: Option<PyObjectRef> = None;
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(kw) = &last.payload {
@@ -1770,8 +1876,18 @@ pub fn create_pprint_module() -> PyObjectRef {
                             stream_obj = Some(s.clone());
                         }
                     }
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("indent"))) {
+                        indent = v.as_int().unwrap_or(1) as usize;
+                    }
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("width"))) {
+                        width = v.as_int().unwrap_or(80) as usize;
+                    }
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("depth"))) {
+                        depth = v.as_int().map(|d| d as usize);
+                    }
                 }
             }
+            let text = pformat_value(&args[0], indent, width, depth, 0);
             if let Some(stream) = stream_obj {
                 if let Some(write_fn) = stream.get_attr("write") {
                     let line = format!("{}\n", text);
@@ -1791,8 +1907,21 @@ pub fn create_pprint_module() -> PyObjectRef {
         })),
         ("pformat", make_builtin(|args| {
             if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
-            Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
+            let mut indent = 1usize;
+            let mut width = 80usize;
+            let mut depth: Option<usize> = None;
+            if args.len() > 1 { indent = args[1].as_int().unwrap_or(1) as usize; }
+            if args.len() > 2 { width = args[2].as_int().unwrap_or(80) as usize; }
+            if args.len() > 3 { depth = args[3].as_int().map(|d| d as usize); }
+            let text = pformat_value(&args[0], indent, width, depth, 0);
+            Ok(PyObject::str_val(CompactString::from(text)))
         })),
         ("PrettyPrinter", make_builtin(|_| Ok(PyObject::none()))),
+        ("isreadable", make_builtin(|_| Ok(PyObject::bool_val(true)))),
+        ("isrecursive", make_builtin(|_| Ok(PyObject::bool_val(false)))),
+        ("saferepr", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
+        })),
     ])
 }
