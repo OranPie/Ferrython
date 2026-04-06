@@ -709,108 +709,149 @@ pub fn create_decimal_module() -> PyObjectRef {
     use std::sync::Arc;
     use ferrython_core::object::InstanceData;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::OnceLock;
 
     static DECIMAL_PREC: AtomicU32 = AtomicU32::new(28);
+    static DECIMAL_CLASS: OnceLock<PyObjectRef> = OnceLock::new();
 
     fn get_prec() -> u32 {
         DECIMAL_PREC.load(Ordering::Relaxed)
     }
 
-    fn make_decimal(s: &str) -> PyObjectRef {
-        let mut dec_ns = IndexMap::new();
-        dec_ns.insert(CompactString::from("__add__"), make_builtin(decimal_add));
-        dec_ns.insert(CompactString::from("__radd__"), make_builtin(decimal_add));
-        dec_ns.insert(CompactString::from("__sub__"), make_builtin(decimal_sub));
-        dec_ns.insert(CompactString::from("__mul__"), make_builtin(decimal_mul));
-        dec_ns.insert(CompactString::from("__truediv__"), make_builtin(decimal_div));
-        // __repr__ and __str__ handled by py_to_string via __decimal__ marker
-        dec_ns.insert(CompactString::from("__eq__"), make_builtin(decimal_eq));
-        dec_ns.insert(CompactString::from("__lt__"), make_builtin(decimal_lt));
-        dec_ns.insert(CompactString::from("__float__"), make_builtin(decimal_float));
-        dec_ns.insert(CompactString::from("__int__"), make_builtin(decimal_int));
-        dec_ns.insert(CompactString::from("__neg__"), make_builtin(decimal_neg));
-        dec_ns.insert(CompactString::from("__abs__"), make_builtin(decimal_abs));
-        dec_ns.insert(CompactString::from("__le__"), make_builtin(decimal_le));
-        dec_ns.insert(CompactString::from("__gt__"), make_builtin(decimal_gt));
-        dec_ns.insert(CompactString::from("__ge__"), make_builtin(decimal_ge));
-        dec_ns.insert(CompactString::from("__str__"), make_builtin(decimal_str));
-        dec_ns.insert(CompactString::from("__repr__"), make_builtin(decimal_str));
-        dec_ns.insert(CompactString::from("__hash__"), make_builtin(decimal_hash));
-        dec_ns.insert(CompactString::from("quantize"), make_builtin(decimal_quantize));
-        dec_ns.insert(CompactString::from("sqrt"), make_builtin(decimal_sqrt));
-        dec_ns.insert(CompactString::from("ln"), make_builtin(decimal_ln));
-        dec_ns.insert(CompactString::from("exp"), make_builtin(decimal_exp));
-        dec_ns.insert(CompactString::from("is_zero"), make_builtin(decimal_is_zero));
-        dec_ns.insert(CompactString::from("is_nan"), make_builtin(decimal_is_nan));
-        dec_ns.insert(CompactString::from("is_infinite"), make_builtin(decimal_is_infinite));
-        dec_ns.insert(CompactString::from("is_finite"), make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Ok(PyObject::bool_val(true)); }
-            let s = get_decimal_str(&args[0]).unwrap_or_default();
-            let v: f64 = s.parse().unwrap_or(0.0);
-            Ok(PyObject::bool_val(v.is_finite()))
-        }));
-        dec_ns.insert(CompactString::from("is_signed"), make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
-            let s = get_decimal_str(&args[0]).unwrap_or_default();
-            Ok(PyObject::bool_val(s.starts_with('-')))
-        }));
-        dec_ns.insert(CompactString::from("is_normal"), make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
-            let s = get_decimal_str(&args[0]).unwrap_or_default();
-            let v: f64 = s.parse().unwrap_or(0.0);
-            Ok(PyObject::bool_val(v.is_normal()))
-        }));
-        dec_ns.insert(CompactString::from("is_subnormal"), make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Ok(PyObject::bool_val(false)); }
-            let s = get_decimal_str(&args[0]).unwrap_or_default();
-            let v: f64 = s.parse().unwrap_or(0.0);
-            Ok(PyObject::bool_val(v.is_subnormal()))
-        }));
-        dec_ns.insert(CompactString::from("copy_abs"), make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Err(PyException::type_error("copy_abs requires self")); }
-            let s = get_decimal_str(&args[0]).unwrap_or_default();
-            let s = s.trim_start_matches('-');
-            Ok(make_decimal(s))
-        }));
-        dec_ns.insert(CompactString::from("copy_negate"), make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Err(PyException::type_error("copy_negate requires self")); }
-            let s = get_decimal_str(&args[0]).unwrap_or_default();
-            let neg = if s.starts_with('-') { s[1..].to_string() } else { format!("-{}", s) };
-            Ok(make_decimal(&neg))
-        }));
-        dec_ns.insert(CompactString::from("normalize"), make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Err(PyException::type_error("normalize requires self")); }
-            let s = get_decimal_str(&args[0]).unwrap_or_default();
-            // Remove trailing zeros after decimal point
-            if s.contains('.') {
-                let trimmed = s.trim_end_matches('0').trim_end_matches('.');
-                Ok(make_decimal(trimmed))
-            } else {
-                Ok(make_decimal(&s))
-            }
-        }));
-        dec_ns.insert(CompactString::from("adjusted"), make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Ok(PyObject::int(0)); }
-            let s = get_decimal_str(&args[0]).unwrap_or_default();
-            let s = s.trim_start_matches('-');
-            if s.contains('.') {
-                let parts: Vec<&str> = s.split('.').collect();
-                let digits = parts[0].trim_start_matches('0');
-                if digits.is_empty() {
-                    // 0.xxx case
-                    let frac = parts.get(1).unwrap_or(&"");
-                    let leading_zeros = frac.len() - frac.trim_start_matches('0').len();
-                    Ok(PyObject::int(-(leading_zeros as i64 + 1)))
+    fn get_decimal_class() -> PyObjectRef {
+        DECIMAL_CLASS.get_or_init(|| {
+            let mut dec_ns = IndexMap::new();
+            dec_ns.insert(CompactString::from("__add__"), make_builtin(decimal_add));
+            dec_ns.insert(CompactString::from("__radd__"), make_builtin(decimal_add));
+            dec_ns.insert(CompactString::from("__sub__"), make_builtin(decimal_sub));
+            dec_ns.insert(CompactString::from("__mul__"), make_builtin(decimal_mul));
+            dec_ns.insert(CompactString::from("__truediv__"), make_builtin(decimal_div));
+            dec_ns.insert(CompactString::from("__eq__"), make_builtin(decimal_eq));
+            dec_ns.insert(CompactString::from("__lt__"), make_builtin(decimal_lt));
+            dec_ns.insert(CompactString::from("__float__"), make_builtin(decimal_float));
+            dec_ns.insert(CompactString::from("__int__"), make_builtin(decimal_int));
+            dec_ns.insert(CompactString::from("__neg__"), make_builtin(decimal_neg));
+            dec_ns.insert(CompactString::from("__abs__"), make_builtin(decimal_abs));
+            dec_ns.insert(CompactString::from("__le__"), make_builtin(decimal_le));
+            dec_ns.insert(CompactString::from("__gt__"), make_builtin(decimal_gt));
+            dec_ns.insert(CompactString::from("__ge__"), make_builtin(decimal_ge));
+            dec_ns.insert(CompactString::from("__str__"), make_builtin(decimal_str));
+            dec_ns.insert(CompactString::from("__repr__"), make_builtin(decimal_str));
+            dec_ns.insert(CompactString::from("__hash__"), make_builtin(decimal_hash));
+            dec_ns.insert(CompactString::from("quantize"), make_builtin(decimal_quantize));
+            dec_ns.insert(CompactString::from("sqrt"), make_builtin(decimal_sqrt));
+            dec_ns.insert(CompactString::from("ln"), make_builtin(decimal_ln));
+            dec_ns.insert(CompactString::from("exp"), make_builtin(decimal_exp));
+            dec_ns.insert(CompactString::from("is_zero"), make_builtin(decimal_is_zero));
+            dec_ns.insert(CompactString::from("is_nan"), make_builtin(decimal_is_nan));
+            dec_ns.insert(CompactString::from("is_infinite"), make_builtin(decimal_is_infinite));
+            dec_ns.insert(CompactString::from("is_finite"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::bool_val(true)); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let v: f64 = s.parse().unwrap_or(0.0);
+                Ok(PyObject::bool_val(v.is_finite()))
+            }));
+            dec_ns.insert(CompactString::from("is_signed"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                Ok(PyObject::bool_val(s.starts_with('-')))
+            }));
+            dec_ns.insert(CompactString::from("is_normal"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let v: f64 = s.parse().unwrap_or(0.0);
+                Ok(PyObject::bool_val(v.is_normal()))
+            }));
+            dec_ns.insert(CompactString::from("is_subnormal"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let v: f64 = s.parse().unwrap_or(0.0);
+                Ok(PyObject::bool_val(v.is_subnormal()))
+            }));
+            dec_ns.insert(CompactString::from("copy_abs"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("copy_abs requires self")); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let s = s.trim_start_matches('-');
+                Ok(make_decimal(s))
+            }));
+            dec_ns.insert(CompactString::from("copy_negate"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("copy_negate requires self")); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let neg = if s.starts_with('-') { s[1..].to_string() } else { format!("-{}", s) };
+                Ok(make_decimal(&neg))
+            }));
+            dec_ns.insert(CompactString::from("normalize"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("normalize requires self")); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                if s.contains('.') {
+                    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+                    Ok(make_decimal(trimmed))
                 } else {
-                    Ok(PyObject::int((digits.len() as i64) - 1))
+                    Ok(make_decimal(&s))
                 }
-            } else {
-                let digits = s.trim_start_matches('0');
-                Ok(PyObject::int((digits.len().max(1) as i64) - 1))
-            }
-        }));
-        dec_ns.insert(CompactString::from("to_eng_string"), make_builtin(decimal_to_eng_string));
-        let class = PyObject::class(CompactString::from("Decimal"), vec![], dec_ns);
+            }));
+            dec_ns.insert(CompactString::from("adjusted"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::int(0)); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let s = s.trim_start_matches('-');
+                if s.contains('.') {
+                    let parts: Vec<&str> = s.split('.').collect();
+                    let digits = parts[0].trim_start_matches('0');
+                    if digits.is_empty() {
+                        let frac = parts.get(1).unwrap_or(&"");
+                        let leading_zeros = frac.len() - frac.trim_start_matches('0').len();
+                        Ok(PyObject::int(-(leading_zeros as i64 + 1)))
+                    } else {
+                        Ok(PyObject::int((digits.len() as i64) - 1))
+                    }
+                } else {
+                    let digits = s.trim_start_matches('0');
+                    Ok(PyObject::int((digits.len().max(1) as i64) - 1))
+                }
+            }));
+            dec_ns.insert(CompactString::from("to_eng_string"), make_builtin(decimal_to_eng_string));
+            // __new__ enables Decimal("1.23") to work when called as class constructor
+            dec_ns.insert(CompactString::from("__new__"), PyObject::native_function(
+                "Decimal.__new__", |args: &[PyObjectRef]| {
+                    // args[0] = cls, args[1..] = constructor args
+                    if args.len() < 2 { return Ok(make_decimal("0")); }
+                    let s = args[1].py_to_string();
+                    let trimmed = s.trim();
+                    if trimmed.is_empty() { return Ok(make_decimal("0")); }
+                    match &args[1].payload {
+                        PyObjectPayload::Int(n) => return Ok(make_decimal(&format!("{}", n.to_i64().unwrap_or(0)))),
+                        PyObjectPayload::Float(f) => return Ok(make_decimal(&format!("{}", f))),
+                        _ => {}
+                    }
+                    if let PyObjectPayload::Instance(inst) = &args[1].payload {
+                        if let Some(v) = inst.attrs.read().get("_value") {
+                            if let Some(sv) = v.as_str() {
+                                return Ok(make_decimal(&sv.to_string()));
+                            }
+                        }
+                    }
+                    let check = trimmed.trim_start_matches('+').trim_start_matches('-');
+                    let parts: Vec<&str> = check.splitn(2, '.').collect();
+                    let valid = parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                        || check == "Infinity" || check == "NaN";
+                    if valid {
+                        Ok(make_decimal(trimmed))
+                    } else if check.contains('E') || check.contains('e') {
+                        match trimmed.parse::<f64>() {
+                            Ok(f) => Ok(make_decimal(&format!("{}", f))),
+                            Err(_) => Err(PyException::value_error(format!("Invalid literal for Decimal: '{}'", s))),
+                        }
+                    } else {
+                        Err(PyException::value_error(format!("Invalid literal for Decimal: '{}'", s)))
+                    }
+                }
+            ));
+            PyObject::class(CompactString::from("Decimal"), vec![], dec_ns)
+        }).clone()
+    }
+
+    fn make_decimal(s: &str) -> PyObjectRef {
+        let class = get_decimal_class();
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
             attrs: Arc::new(RwLock::new(IndexMap::new())),
@@ -1179,31 +1220,7 @@ pub fn create_decimal_module() -> PyObjectRef {
     }
 
     make_module("decimal", vec![
-        ("Decimal", make_builtin(|args| {
-            if args.is_empty() { return Ok(make_decimal("0")); }
-            let s = args[0].py_to_string();
-            let trimmed = s.trim();
-            if trimmed.is_empty() { return Ok(make_decimal("0")); }
-            match &args[0].payload {
-                PyObjectPayload::Int(n) => return Ok(make_decimal(&format!("{}", n.to_i64().unwrap_or(0)))),
-                PyObjectPayload::Float(f) => return Ok(make_decimal(&format!("{}", f))),
-                _ => {}
-            }
-            let check = trimmed.trim_start_matches('+').trim_start_matches('-');
-            let parts: Vec<&str> = check.splitn(2, '.').collect();
-            let valid = parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-                || check == "Infinity" || check == "NaN";
-            if valid {
-                Ok(make_decimal(trimmed))
-            } else if check.contains('E') || check.contains('e') {
-                match trimmed.parse::<f64>() {
-                    Ok(f) => Ok(make_decimal(&format!("{}", f))),
-                    Err(_) => Err(PyException::value_error(format!("Invalid literal for Decimal: '{}'", s))),
-                }
-            } else {
-                Err(PyException::value_error(format!("Invalid literal for Decimal: '{}'", s)))
-            }
-        })),
+        ("Decimal", get_decimal_class()),
         ("ROUND_HALF_UP", PyObject::str_val(CompactString::from("ROUND_HALF_UP"))),
         ("ROUND_HALF_DOWN", PyObject::str_val(CompactString::from("ROUND_HALF_DOWN"))),
         ("ROUND_HALF_EVEN", PyObject::str_val(CompactString::from("ROUND_HALF_EVEN"))),

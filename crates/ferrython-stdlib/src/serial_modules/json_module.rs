@@ -48,9 +48,9 @@ fn json_escape_string(s: &str) -> String {
 pub fn create_json_module() -> PyObjectRef {
     make_module("json", vec![
         ("dumps", PyObject::native_function("json.dumps", json_dumps)),
-        ("loads", make_builtin(json_loads)),
+        ("loads", PyObject::native_function("json.loads", json_loads)),
         ("dump", PyObject::native_function("json.dump", json_dump)),
-        ("load", make_builtin(json_load)),
+        ("load", PyObject::native_function("json.load", json_load)),
         ("JSONEncoder", make_builtin(json_encoder_ctor)),
         ("JSONDecoder", make_builtin(json_decoder_ctor)),
         ("JSONDecodeError", PyObject::class(

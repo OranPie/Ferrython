@@ -1156,6 +1156,34 @@ impl VirtualMachine {
                             let rest = pos_args[1..].to_vec();
                             return self.instantiate_class(&cls, rest, kwargs);
                         }
+                        // json.loads with object_hook/parse_float/parse_int Python callables
+                        if name.as_str() == "json.loads" && !kwargs.is_empty() {
+                            let has_py_hook = kwargs.iter().any(|(k, v)| {
+                                matches!(k.as_str(), "object_hook" | "parse_float" | "parse_int" | "object_pairs_hook")
+                                && matches!(&v.payload, PyObjectPayload::Function(_) | PyObjectPayload::Class(_))
+                            });
+                            if has_py_hook {
+                                // Call native json.loads without hooks to get parsed data
+                                let filtered_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs.iter()
+                                    .filter(|(k, _)| !matches!(k.as_str(), "object_hook" | "parse_float" | "parse_int" | "object_pairs_hook"))
+                                    .cloned()
+                                    .collect();
+                                let mut load_args = pos_args.clone();
+                                if !filtered_kwargs.is_empty() {
+                                    let mut kw_map = IndexMap::new();
+                                    for (k, v) in filtered_kwargs {
+                                        kw_map.insert(HashableKey::Str(k), v);
+                                    }
+                                    load_args.push(PyObject::dict(kw_map));
+                                }
+                                let parsed = nf(&load_args)?;
+                                // Apply hooks via VM (can call Python functions)
+                                let object_hook = kwargs.iter().find(|(k, _)| k.as_str() == "object_hook").map(|(_, v)| v.clone());
+                                let parse_float = kwargs.iter().find(|(k, _)| k.as_str() == "parse_float").map(|(_, v)| v.clone());
+                                let parse_int = kwargs.iter().find(|(k, _)| k.as_str() == "parse_int").map(|(_, v)| v.clone());
+                                return self.json_apply_hooks(&parsed, &object_hook, &parse_float, &parse_int);
+                            }
+                        }
                         // json.dumps / json.dump with `default` kwarg that may be a Python function
                         if (name.as_str() == "json.dumps" || name.as_str() == "json.dump") && !kwargs.is_empty() {
                             let default_fn = kwargs.iter()
@@ -2631,6 +2659,61 @@ impl VirtualMachine {
             }
         }
         Ok(best)
+    }
+
+    /// Post-process parsed JSON: apply object_hook, parse_float, parse_int
+    /// by calling Python functions via the VM.
+    fn json_apply_hooks(
+        &mut self,
+        value: &PyObjectRef,
+        object_hook: &Option<PyObjectRef>,
+        parse_float: &Option<PyObjectRef>,
+        parse_int: &Option<PyObjectRef>,
+    ) -> PyResult<PyObjectRef> {
+        match &value.payload {
+            PyObjectPayload::Dict(map) => {
+                // Recursively apply hooks to values first
+                let entries: Vec<_> = map.read().iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let mut new_map = IndexMap::new();
+                for (k, v) in entries {
+                    new_map.insert(k, self.json_apply_hooks(&v, object_hook, parse_float, parse_int)?);
+                }
+                let new_dict = PyObject::dict(new_map);
+                // Apply object_hook to the dict
+                if let Some(hook) = object_hook {
+                    self.call_object(hook.clone(), vec![new_dict])
+                } else {
+                    Ok(new_dict)
+                }
+            }
+            PyObjectPayload::List(items) => {
+                let items: Vec<_> = items.read().clone();
+                let mut result = Vec::with_capacity(items.len());
+                for item in &items {
+                    result.push(self.json_apply_hooks(item, object_hook, parse_float, parse_int)?);
+                }
+                Ok(PyObject::list(result))
+            }
+            PyObjectPayload::Float(_) => {
+                if let Some(pf) = parse_float {
+                    let s = PyObject::str_val(CompactString::from(value.py_to_string()));
+                    self.call_object(pf.clone(), vec![s])
+                } else {
+                    Ok(value.clone())
+                }
+            }
+            PyObjectPayload::Int(_) => {
+                if let Some(pi) = parse_int {
+                    let s = PyObject::str_val(CompactString::from(value.py_to_string()));
+                    self.call_object(pi.clone(), vec![s])
+                } else {
+                    Ok(value.clone())
+                }
+            }
+            _ => Ok(value.clone()),
+        }
     }
 
     /// Pre-process an object tree for json.dumps: replace non-JSON-serializable
