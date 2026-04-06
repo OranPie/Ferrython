@@ -1149,8 +1149,9 @@ pub fn create_textwrap_module() -> PyObjectRef {
     ])
 }
 
-// ── traceback module (stub) ──
-
+// ── traceback module ──
+// Real implementation in ferrython-traceback crate (module_api.rs).
+// Wired via introspection_modules::create_traceback_module().
 
 pub fn create_fnmatch_module() -> PyObjectRef {
     make_module("fnmatch", vec![

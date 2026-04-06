@@ -193,7 +193,10 @@ pub fn create_sys_module() -> PyObjectRef {
                     } else {
                         PyObject::str_val(CompactString::from(msg.as_str()))
                     };
-                    Ok(PyObject::tuple(vec![type_obj, value_obj, PyObject::none()]))
+                    // Extract __traceback__ from the exception value
+                    let tb_obj = value_obj.get_attr("__traceback__")
+                        .unwrap_or_else(|| PyObject::none());
+                    Ok(PyObject::tuple(vec![type_obj, value_obj, tb_obj]))
                 } else {
                     Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none(), PyObject::none()]))
                 }

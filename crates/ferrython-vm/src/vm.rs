@@ -710,12 +710,6 @@ impl VirtualMachine {
                     if let Some(handler_ip) = self.unwind_except() {
                         // Store active exception for bare `raise` re-raise
                         self.active_exception = Some(exc.clone());
-                        // Update thread-local for sys.exc_info()
-                        ferrython_stdlib::set_exc_info(
-                            exc.kind.clone(),
-                            exc.message.clone(),
-                            exc.original.clone(),
-                        );
                         // Also update core thread-local (used by ferrython-traceback)
                         ferrython_core::error::set_thread_exc_info(
                             exc.kind.clone(),
@@ -785,6 +779,12 @@ impl VirtualMachine {
                         // Store __traceback__ on the exception value
                         let tb_obj = Self::build_traceback_object(&exc.traceback);
                         Self::store_exc_attr(&exc_value, "__traceback__", tb_obj.clone());
+                        // Update thread-local for sys.exc_info() — after exc_value and __traceback__ are ready
+                        ferrython_stdlib::set_exc_info(
+                            exc.kind.clone(),
+                            exc.message.clone(),
+                            Some(exc_value.clone()),
+                        );
                         frame.push(tb_obj);               // traceback
                         frame.push(exc_value);            // value
                         frame.push(exc_type);             // type
@@ -813,16 +813,19 @@ impl VirtualMachine {
         }
     }
 
-    /// Build a Python-level traceback object (list of (filename, lineno, funcname) tuples).
+    /// Build a Python-level traceback object chain (CPython-compatible).
+    /// The returned object is the outermost frame, with tb_next pointing towards
+    /// the innermost frame (matching CPython's `sys.exc_info()[2]` chain order).
     fn build_traceback_object(entries: &[ferrython_core::error::TracebackEntry]) -> PyObjectRef {
         if entries.is_empty() {
             return PyObject::none();
         }
-        // Build a traceback chain: last entry is the innermost frame.
-        // Each traceback object has tb_lineno, tb_frame (None), and tb_next.
+        // entries are ordered [outermost, ..., innermost].
+        // CPython chain: outermost -> ... -> innermost -> None
+        // Build from innermost to outermost so tb_next links are correct.
         let tb_class = PyObject::builtin_type(CompactString::from("traceback"));
         let mut tb_next = PyObject::none();
-        for entry in entries {
+        for entry in entries.iter().rev() {
             let mut attrs = IndexMap::new();
             attrs.insert(CompactString::from("tb_lineno"), PyObject::int(entry.lineno as i64));
             attrs.insert(CompactString::from("tb_frame"), PyObject::none());
