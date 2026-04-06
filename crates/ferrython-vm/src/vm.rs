@@ -1081,6 +1081,33 @@ impl VirtualMachine {
         ferrython_stdlib::set_profile_func(Some(profile_fn));
     }
 
+    /// Invoke sys.excepthook if set. Returns true if the hook was called successfully.
+    pub fn invoke_excepthook(&mut self, exc: &PyException) -> bool {
+        // Look up excepthook from the sys module (user may have reassigned it)
+        let hook = if let Some(sys_mod) = self.modules.get("sys") {
+            if let Some(h) = sys_mod.get_attr("excepthook") {
+                // Check if it's the default (a BuiltinFunction named "sys_excepthook_default")
+                // If default, fall through to normal traceback display
+                if let PyObjectPayload::BuiltinFunction(name) = &h.payload {
+                    if name.contains("excepthook") { return false; }
+                }
+                Some(h)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let hook = match hook {
+            Some(h) => h,
+            None => return false,
+        };
+        let exc_type = PyObject::exception_type(exc.kind.clone());
+        let exc_value = PyObject::str_val(CompactString::from(exc.message.as_str()));
+        let exc_tb = PyObject::none();
+        self.call_object(hook, vec![exc_type, exc_value, exc_tb]).is_ok()
+    }
+
 
     /// Truthiness test that dispatches __bool__/__len__ on instances.
     /// Walk a class hierarchy to find if it inherits from an ExceptionType

@@ -231,7 +231,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "xml.sax" => Some(xml_modules::create_xml_sax_module()),
         // Testing & debugging
         "unittest.mock" => Some(testing_modules::create_unittest_mock_module()),
-        "doctest" => Some(testing_modules::create_doctest_module()),
+        // doctest: pure Python module (stdlib/Lib/doctest.py)
         "pdb" => Some(testing_modules::create_pdb_module()),
         "profile" => Some(testing_modules::create_profile_module()),
         "cProfile" => Some(testing_modules::create_cprofile_module()),

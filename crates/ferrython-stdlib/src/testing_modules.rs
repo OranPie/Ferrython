@@ -806,6 +806,7 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 // ── unittest module ──
 
 /// Helper: extract optional message from args at given index.
+#[allow(dead_code)]
 fn assert_msg(args: &[PyObjectRef], idx: usize) -> String {
     if args.len() > idx {
         args[idx].py_to_string()
@@ -814,6 +815,7 @@ fn assert_msg(args: &[PyObjectRef], idx: usize) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub fn create_unittest_module() -> PyObjectRef {
     // Build TestCase class with assert methods in the namespace so that
     // subclass instances inherit them via MRO lookup.
@@ -1747,8 +1749,9 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
     ])
 }
 
-// ── doctest module ──
+// ── doctest module (replaced by pure Python stdlib/Lib/doctest.py) ──
 
+#[allow(dead_code)]
 pub fn create_doctest_module() -> PyObjectRef {
     let testmod_fn = make_builtin(|_args: &[PyObjectRef]| {
         // Return a TestResults(failed=0, attempted=0) named tuple-like

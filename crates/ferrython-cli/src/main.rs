@@ -166,23 +166,33 @@ fn main() {
     }
 }
 
-fn execute_pipeline(source: &str, filename: &str) -> Result<(), PipelineError> {
-    let module = ferrython_parser::parse(source, filename)?;
-    let code = ferrython_compiler::compile(&module, filename)?;
+fn execute_pipeline(source: &str, filename: &str) -> Result<(), (PipelineError, Option<ferrython_vm::VirtualMachine>)> {
+    let module = ferrython_parser::parse(source, filename)
+        .map_err(|e| (PipelineError::from(e), None))?;
+    let code = ferrython_compiler::compile(&module, filename)
+        .map_err(|e| (PipelineError::from(e), None))?;
     let mut vm = ferrython_vm::VirtualMachine::new();
-    vm.execute(code)?;
-    Ok(())
+    match vm.execute(code) {
+        Ok(_) => Ok(()),
+        Err(e) => Err((PipelineError::Runtime(e), Some(vm))),
+    }
 }
 
 fn run_string(source: &str, filename: &str) {
-    if let Err(e) = execute_pipeline(source, filename) {
-        // Handle SystemExit specially — exit with the code, don't print traceback
+    if let Err((e, vm_opt)) = execute_pipeline(source, filename) {
         if let PipelineError::Runtime(ref exc) = e {
+            // Handle SystemExit specially — exit with the code, don't print traceback
             if exc.kind == ferrython_core::error::ExceptionKind::SystemExit {
                 let code = exc.value.as_ref()
                     .map(|v| v.to_int().unwrap_or(1) as i32)
                     .unwrap_or(0);
                 process::exit(code);
+            }
+            // Try sys.excepthook before default traceback display
+            if let Some(mut vm) = vm_opt {
+                if vm.invoke_excepthook(exc) {
+                    process::exit(1);
+                }
             }
         }
         e.report(filename);
