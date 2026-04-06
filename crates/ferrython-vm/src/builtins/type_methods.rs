@@ -6,6 +6,7 @@ use ferrython_core::object::{
     check_args_min,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
+use ferrython_core::object::IteratorData;
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -115,6 +116,37 @@ pub(super) fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &st
         "clear" => {
             items.write().clear();
             Ok(PyObject::none())
+        }
+        "__iter__" => {
+            let snapshot = items.read().clone();
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::List {
+                    items: snapshot,
+                    index: 0,
+                })),
+            )))
+        }
+        "__len__" => {
+            Ok(PyObject::int(items.read().len() as i64))
+        }
+        "__contains__" => {
+            check_args_min("__contains__", args, 1)?;
+            let target = &args[0];
+            let found = items.read().iter().any(|x| {
+                x.py_to_string() == target.py_to_string()
+            });
+            Ok(PyObject::bool_val(found))
+        }
+        "__getitem__" => {
+            check_args_min("__getitem__", args, 1)?;
+            let idx = args[0].to_int()?;
+            let r = items.read();
+            let len = r.len() as i64;
+            let actual = if idx < 0 { len + idx } else { idx };
+            if actual < 0 || actual >= len {
+                return Err(PyException::index_error("list index out of range"));
+            }
+            Ok(r[actual as usize].clone())
         }
         _ => Err(PyException::attribute_error(format!(
             "'list' object has no attribute '{}'", method
