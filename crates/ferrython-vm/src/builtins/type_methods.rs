@@ -405,6 +405,33 @@ pub(super) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyO
             }
             Err(PyException::value_error("tuple.index(x): x not in tuple"))
         }
+        "__iter__" => {
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::List {
+                    items: items.to_vec(),
+                    index: 0,
+                })),
+            )))
+        }
+        "__len__" => {
+            Ok(PyObject::int(items.len() as i64))
+        }
+        "__contains__" => {
+            check_args_min("__contains__", args, 1)?;
+            let target = &args[0];
+            let found = items.iter().any(|x| x.py_to_string() == target.py_to_string());
+            Ok(PyObject::bool_val(found))
+        }
+        "__getitem__" => {
+            check_args_min("__getitem__", args, 1)?;
+            let idx = args[0].to_int()?;
+            let len = items.len() as i64;
+            let actual = if idx < 0 { len + idx } else { idx };
+            if actual < 0 || actual >= len {
+                return Err(PyException::index_error("tuple index out of range"));
+            }
+            Ok(items[actual as usize].clone())
+        }
         _ => Err(PyException::attribute_error(format!(
             "'tuple' object has no attribute '{}'", method
         ))),

@@ -1,6 +1,7 @@
 //! Formatting helpers, slice resolution, coercion, and module-building utilities.
 
 use crate::error::{PyException, PyResult};
+use crate::intern::intern_or_new;
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
@@ -1025,6 +1026,50 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             } else {
                 Err(PyException::type_error("type.__new__ requires 3 or 4 arguments"))
             }
+        })),
+        // tuple.__new__(cls, iterable) — create tuple subclass instance with __builtin_value__
+        ("tuple", "__new__") => Some(PyObject::native_function("tuple.__new__", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("tuple.__new__ requires cls"));
+            }
+            let cls = &args[0];
+            let inst = PyObject::instance(cls.clone());
+            let items = if args.len() > 2 {
+                // Multiple positional args (namedtuple-style): use all as items
+                args[1..].to_vec()
+            } else if args.len() == 2 {
+                // Single arg: try to expand as iterable, else wrap
+                args[1].to_list().unwrap_or_else(|_| vec![args[1].clone()])
+            } else {
+                vec![]
+            };
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                inst_data.attrs.write().insert(
+                    intern_or_new("__builtin_value__"),
+                    PyObject::tuple(items),
+                );
+            }
+            Ok(inst)
+        })),
+        // list.__new__(cls, iterable) — create list subclass instance with __builtin_value__
+        ("list", "__new__") => Some(PyObject::native_function("list.__new__", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("list.__new__ requires cls"));
+            }
+            let cls = &args[0];
+            let inst = PyObject::instance(cls.clone());
+            let items = if args.len() > 1 {
+                args[1].to_list().unwrap_or_default()
+            } else {
+                vec![]
+            };
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                inst_data.attrs.write().insert(
+                    intern_or_new("__builtin_value__"),
+                    PyObject::list(items),
+                );
+            }
+            Ok(inst)
         })),
         ("object", "__new__") => Some(PyObject::native_function("object.__new__", |args| {
             if args.is_empty() {

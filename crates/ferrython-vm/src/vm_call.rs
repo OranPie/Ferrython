@@ -429,7 +429,13 @@ impl VirtualMachine {
                 PyObjectPayload::BuiltinBoundMethod { receiver, .. }
                     if matches!(&receiver.payload, PyObjectPayload::BuiltinType(_))
             );
-            if is_builtin_new {
+            // Also recognize builtin __new__ NativeFunctions (tuple.__new__, list.__new__)
+            let is_native_builtin_new = matches!(&new_method.payload,
+                PyObjectPayload::NativeFunction { name, .. }
+                    if name.ends_with(".__new__") && matches!(name.as_str(),
+                        "tuple.__new__" | "list.__new__" | "object.__new__")
+            );
+            if is_builtin_new || is_native_builtin_new {
                 let inst = PyObject::instance(cls.clone());
                 // For builtin type subclasses (int, str, float), store the constructor
                 // argument as __builtin_value__ so arithmetic/methods work correctly.
@@ -1626,6 +1632,12 @@ impl VirtualMachine {
                                         PyObject::str_val(CompactString::from(""))
                                     };
                                     let mut ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] }; ca.push(spec); return self.call_object(method, ca);
+                                }
+                                // No __format__: use __str__ for empty/no spec (CPython default __format__)
+                                let has_spec = args.len() > 1 && !args[1].py_to_string().is_empty();
+                                if !has_spec {
+                                    let s = self.vm_str(&args[0])?;
+                                    return Ok(PyObject::str_val(CompactString::from(s)));
                                 }
                             }
                             // Fall through to native format
