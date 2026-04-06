@@ -918,16 +918,38 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // Generic BuiltinBoundMethod kwargs: pass as trailing dict
-                if let PyObjectPayload::BuiltinBoundMethod { .. } = &func.payload {
+                // BuiltinBoundMethod kwargs: resolve known kwargs to positional args
+                if let PyObjectPayload::BuiltinBoundMethod { method_name, .. } = &func.payload {
                     if !kwargs.is_empty() {
-                        let mut all_args = pos_args;
-                        let mut kw_map = IndexMap::new();
-                        for (k, v) in kwargs {
-                            kw_map.insert(HashableKey::Str(k), v);
+                        match method_name.as_str() {
+                            // str.encode(encoding=, errors=) / bytes.decode(encoding=, errors=)
+                            "encode" | "decode" => {
+                                let mut resolved = pos_args;
+                                if resolved.is_empty() {
+                                    // encoding kwarg or default
+                                    let enc = kwargs.iter().find(|(k, _)| k.as_str() == "encoding")
+                                        .map(|(_, v)| v.clone())
+                                        .unwrap_or_else(|| PyObject::str_val(CompactString::from("utf-8")));
+                                    resolved.push(enc);
+                                }
+                                if resolved.len() < 2 {
+                                    if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "errors") {
+                                        resolved.push(v.clone());
+                                    }
+                                }
+                                return self.call_object(func, resolved);
+                            }
+                            _ => {
+                                // Generic fallback: pass kwargs as trailing dict
+                                let mut all_args = pos_args;
+                                let mut kw_map = IndexMap::new();
+                                for (k, v) in kwargs {
+                                    kw_map.insert(HashableKey::Str(k), v);
+                                }
+                                all_args.push(PyObject::dict(kw_map));
+                                return self.call_object(func, all_args);
+                            }
                         }
-                        all_args.push(PyObject::dict(kw_map));
-                        return self.call_object(func, all_args);
                     }
                 }
                 // Fall back to call_object for builtins etc

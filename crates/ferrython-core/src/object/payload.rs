@@ -39,6 +39,8 @@ pub enum PyObjectPayload {
     Dict(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     /// A dict that is a live view of an instance's __dict__ (shares backing store)
     InstanceDict(Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>),
+    /// Read-only view of a class namespace (types.MappingProxyType)
+    MappingProxy(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     Function(PyFunction),
     BuiltinFunction(CompactString),
     /// Built-in type object (int, str, float, etc.) — callable as constructor
@@ -144,6 +146,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::NativeFunction { name, .. } => write!(f, "NativeFunction({name})"),
             Self::NativeClosure { name, .. } => write!(f, "NativeClosure({name})"),
             Self::InstanceDict(_) => write!(f, "InstanceDict(...)"),
+            Self::MappingProxy(_) => write!(f, "MappingProxy(...)"),
             Self::Partial { .. } => write!(f, "Partial(...)"),
             Self::Property { .. } => write!(f, "Property(...)"),
             Self::StaticMethod(_) => write!(f, "StaticMethod(...)"),

@@ -19,7 +19,7 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             PyObjectPayload::Tuple(v) => Ok(v.len()),
             PyObjectPayload::Set(m) => Ok(m.read().len()),
             PyObjectPayload::FrozenSet(m) => Ok(m.len()),
-            PyObjectPayload::Dict(m) => {
+            PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
                 let map = m.read();
                 let mut hidden = 0;
                 if map.contains_key(&HashableKey::Str(CompactString::from("__defaultdict_factory__"))) { hidden += 1; }
@@ -160,6 +160,13 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                 }
                 Err(PyException::key_error(key.repr()))
             }
+            PyObjectPayload::MappingProxy(map) => {
+                let hk = key.to_hashable_key()?;
+                if let Some(val) = map.read().get(&hk) {
+                    return Ok(val.clone());
+                }
+                Err(PyException::key_error(key.repr()))
+            }
             PyObjectPayload::Str(s) => {
                 let idx = key.to_int()?;
                 let chars: Vec<char> = s.chars().collect();
@@ -228,7 +235,7 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                 let hk = item.to_hashable_key()?;
                 Ok(m.contains_key(&hk))
             }
-            PyObjectPayload::Dict(m) => {
+            PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
                 let hk = item.to_hashable_key()?;
                 Ok(m.read().contains_key(&hk))
             }
@@ -318,7 +325,7 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: items.read().clone(), index: 0 }))))),
             PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 }))))),
             PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
-            PyObjectPayload::Dict(m) => {
+            PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
                 let keys: Vec<PyObjectRef> = m.read().keys()
                     .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
                     .map(|k| k.to_object()).collect();

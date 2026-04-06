@@ -26,6 +26,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
             PyObjectPayload::Set(_) => "set",
             PyObjectPayload::FrozenSet(_) => "frozenset",
             PyObjectPayload::Dict(_) => "dict",
+            PyObjectPayload::MappingProxy(_) => "mappingproxy",
             PyObjectPayload::Function(_) => "function",
             PyObjectPayload::BuiltinFunction(_) => "builtin_function_or_method",
             PyObjectPayload::BuiltinType(_) => "type",
@@ -92,7 +93,7 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
             PyObjectPayload::Tuple(v) => !v.is_empty(),
             PyObjectPayload::Set(m) => !m.read().is_empty(),
             PyObjectPayload::FrozenSet(m) => !m.is_empty(),
-            PyObjectPayload::Dict(m) => !m.read().is_empty(),
+            PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => !m.read().is_empty(),
             PyObjectPayload::DictKeys(m) | PyObjectPayload::DictValues(m) | PyObjectPayload::DictItems(m) => !m.read().is_empty(),
             PyObjectPayload::Instance(inst) => {
                 // Builtin base type subclass: delegate truthiness to __builtin_value__
@@ -185,6 +186,10 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 let result = format_dict(&m.read());
                 repr_leave(ptr);
                 result
+            }
+            PyObjectPayload::MappingProxy(m) => {
+                let inner = format_dict(&m.read());
+                format!("mappingproxy({})", inner)
             }
             PyObjectPayload::InstanceDict(attrs) => {
                 let attrs = attrs.read();
@@ -496,7 +501,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             PyObjectPayload::Set(m) => Ok(m.read().values().cloned().collect()),
             PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
-            PyObjectPayload::Dict(m) => Ok(m.read().keys()
+            PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => Ok(m.read().keys()
                 .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
                 .map(|k| k.to_object()).collect()),
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {

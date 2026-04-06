@@ -5,6 +5,7 @@ use crate::intern::{self, intern_or_new};
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
+use parking_lot::RwLock;
 use std::sync::Arc;
 
 use super::payload::*;
@@ -380,7 +381,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             map.insert(hk, v.clone());
                         }
                     }
-                    return Some(PyObject::dict(map));
+                    return Some(PyObject::wrap(PyObjectPayload::MappingProxy(
+                        Arc::new(RwLock::new(map)),
+                    )));
                 }
                 if name == "__module__" {
                     // Check namespace first for explicitly set __module__
@@ -1085,7 +1088,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 None
             }
-            PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_) => {
+            PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_) | PyObjectPayload::MappingProxy(_) => {
                 if name == "__class__" {
                     let type_name = obj.type_name();
                     return Some(PyObject::builtin_type(CompactString::from(type_name)));
