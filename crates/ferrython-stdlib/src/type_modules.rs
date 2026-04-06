@@ -59,14 +59,23 @@ pub fn create_typing_module() -> PyObjectRef {
                         _ => PyObject::tuple(vec![params.clone()]),
                     };
 
-                    let params_str = if args.len() >= 2 {
-                        args[1].py_to_string()
-                    } else if args.len() == 1 {
-                        args[0].py_to_string()
-                    } else {
-                        "?".to_string()
+                    let params_str = match &params.payload {
+                        PyObjectPayload::Tuple(items) => {
+                            items.iter().map(|i| {
+                                if let PyObjectPayload::Class(cd) = &i.payload {
+                                    cd.name.to_string()
+                                } else if let PyObjectPayload::BuiltinType(n) = &i.payload {
+                                    n.to_string()
+                                } else {
+                                    i.py_to_string()
+                                }
+                            }).collect::<Vec<_>>().join(", ")
+                        }
+                        PyObjectPayload::Class(cd) => cd.name.to_string(),
+                        PyObjectPayload::BuiltinType(n) => n.to_string(),
+                        _ => params.py_to_string(),
                     };
-                    let repr = format!("typing.{}[{}]", origin_display, params_str);
+                    let repr = format!("{}[{}]", origin_display, params_str);
 
                     let cls = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
                     let mut attrs = IndexMap::new();
