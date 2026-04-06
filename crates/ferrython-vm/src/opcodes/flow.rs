@@ -582,6 +582,17 @@ impl VirtualMachine {
                                     }));
                                     return Ok(None);
                                 }
+                                // NativeClosure in class namespace: bind only if marked as method
+                                // (name contains '.' like "ClassName.method")
+                                PyObjectPayload::NativeClosure { ref name, .. } if name.contains('.') => {
+                                    frame.push(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: obj,
+                                            method,
+                                        }
+                                    }));
+                                    return Ok(None);
+                                }
                                 PyObjectPayload::StaticMethod(func) => {
                                     frame.push(func.clone());
                                     return Ok(None);

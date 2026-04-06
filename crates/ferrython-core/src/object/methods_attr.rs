@@ -326,7 +326,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             }
                         }));
                     }
-                    // NativeFunction from class namespace → wrap to pass self
+                    // NativeFunction / NativeClosure (class methods with '.' in name) from class namespace → wrap to pass self
                     if matches!(&v.payload, PyObjectPayload::NativeFunction { .. }) {
                         let receiver = obj.clone();
                         let func = v.clone();
@@ -336,6 +336,16 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 method: func,
                             }
                         }));
+                    }
+                    if let PyObjectPayload::NativeClosure { ref name, .. } = v.payload {
+                        if name.contains('.') {
+                            return Some(Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: obj.clone(),
+                                    method: v.clone(),
+                                }
+                            }));
+                        }
                     }
                     return Some(v.clone());
                 }
@@ -1352,7 +1362,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             // Look in this base's namespace directly
                             if let PyObjectPayload::Class(bcd) = &base.payload {
                                 if let Some(v) = bcd.namespace.read().get(name) {
-                                    if matches!(&v.payload, PyObjectPayload::Function(_)) {
+                                    if matches!(&v.payload, PyObjectPayload::Function(_) | PyObjectPayload::NativeClosure { .. }) {
                                         return Some(Arc::new(PyObject {
                                             payload: PyObjectPayload::BoundMethod {
                                                 receiver: instance.clone(),

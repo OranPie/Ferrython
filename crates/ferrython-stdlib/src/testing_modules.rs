@@ -428,36 +428,68 @@ pub fn create_logging_module() -> PyObjectRef {
         Ok(inst)
     });
 
-    // Handler base class
-    let handler_cls = PyObject::class(CompactString::from("Handler"), vec![], IndexMap::new());
-    let h_cls = handler_cls.clone();
-    let handler_fn = PyObject::native_closure("Handler", move |_args: &[PyObjectRef]| {
-        let inst = PyObject::instance(h_cls.clone());
-        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
-            let mut attrs = inst_data.attrs.write();
-            let level = Arc::new(std::sync::atomic::AtomicI64::new(0));
-            attrs.insert(CompactString::from("level"), PyObject::int(0));
-            let lv = level.clone();
-            attrs.insert(CompactString::from("setLevel"), PyObject::native_closure(
-                "setLevel", move |args: &[PyObjectRef]| {
-                    if let Some(v) = args.first().and_then(|a| a.as_int()) {
-                        lv.store(v, std::sync::atomic::Ordering::Relaxed);
+    // Handler base class — proper class with __init__ for subclassing
+    let handler_cls = {
+        let mut ns = IndexMap::new();
+        // __init__: set default level and formatter on self
+        ns.insert(CompactString::from("__init__"), PyObject::native_closure(
+            "Handler.__init__", move |args: &[PyObjectRef]| {
+                if let Some(self_obj) = args.first() {
+                    if let PyObjectPayload::Instance(ref inst_data) = self_obj.payload {
+                        let mut attrs = inst_data.attrs.write();
+                        attrs.insert(CompactString::from("level"), PyObject::int(0));
+                        attrs.insert(CompactString::from("formatter"), PyObject::none());
                     }
-                    Ok(PyObject::none())
-                }));
-            let formatter_ref: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
-            let fr = formatter_ref.clone();
-            attrs.insert(CompactString::from("setFormatter"), PyObject::native_closure(
-                "setFormatter", move |args: &[PyObjectRef]| {
-                    if let Some(v) = args.first() {
-                        *fr.write() = v.clone();
+                }
+                Ok(PyObject::none())
+            }));
+        // setLevel(self, level) — class-level method
+        ns.insert(CompactString::from("setLevel"), PyObject::native_closure(
+            "Handler.setLevel", move |args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    if let PyObjectPayload::Instance(ref inst_data) = args[0].payload {
+                        let mut attrs = inst_data.attrs.write();
+                        attrs.insert(CompactString::from("level"), args[1].clone());
                     }
-                    Ok(PyObject::none())
-                }));
-            attrs.insert(CompactString::from("formatter"), PyObject::none());
-        }
-        Ok(inst)
-    });
+                }
+                Ok(PyObject::none())
+            }));
+        // setFormatter(self, fmt) — class-level method, stores on self.formatter
+        ns.insert(CompactString::from("setFormatter"), PyObject::native_closure(
+            "Handler.setFormatter", move |args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    if let PyObjectPayload::Instance(ref inst_data) = args[0].payload {
+                        let mut attrs = inst_data.attrs.write();
+                        attrs.insert(CompactString::from("formatter"), args[1].clone());
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+        // format(self, record) — class-level method
+        ns.insert(CompactString::from("format"), PyObject::native_closure(
+            "Handler.format", move |args: &[PyObjectRef]| {
+                if args.len() < 2 {
+                    return Ok(PyObject::str_val(CompactString::from("")));
+                }
+                let self_obj = &args[0];
+                let record = &args[1];
+                if let Some(formatter) = self_obj.get_attr("formatter") {
+                    if !matches!(formatter.payload, PyObjectPayload::None) {
+                        if let Some(fmt_fn) = formatter.get_attr("format") {
+                            if let PyObjectPayload::NativeClosure { func, .. } = &fmt_fn.payload {
+                                return func(&[record.clone()]);
+                            }
+                        }
+                    }
+                }
+                if let Some(msg) = record.get_attr("message") {
+                    return Ok(msg);
+                }
+                Ok(PyObject::str_val(CompactString::from(record.py_to_string())))
+            }));
+        PyObject::class(CompactString::from("Handler"), vec![], ns)
+    };
+    let handler_fn = handler_cls.clone();
 
     // basicConfig(**kwargs) — configure root logger (once)
     let basic_config_fn = make_builtin(|args: &[PyObjectRef]| {
@@ -637,7 +669,14 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                                 let _ = func(&[handler.clone(), record.clone()]);
                                 dispatched = true;
                             }
-                            _ => {}
+                            // Python function or bound method — defer to VM
+                            _ => {
+                                ferrython_core::error::request_vm_call(
+                                    emit_fn.clone(),
+                                    vec![record.clone()],
+                                );
+                                dispatched = true;
+                            }
                         }
                     }
                 }
