@@ -278,6 +278,20 @@ fn format_char_size(c: char) -> usize {
     }
 }
 
+/// Extract a u64 from a PyObject, supporting both Small(i64) and Big(BigInt).
+fn extract_u64(obj: &PyObjectRef) -> PyResult<u64> {
+    use ferrython_core::types::PyInt;
+    match &obj.payload {
+        PyObjectPayload::Int(PyInt::Small(n)) => Ok(*n as u64),
+        PyObjectPayload::Int(PyInt::Big(n)) => {
+            use num_traits::ToPrimitive;
+            n.to_u64().ok_or_else(|| PyException::overflow_error("int too large for unsigned 64-bit"))
+        }
+        PyObjectPayload::Bool(b) => Ok(if *b { 1 } else { 0 }),
+        _ => Err(PyException::type_error("required integer")),
+    }
+}
+
 fn struct_pack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("pack requires format string")); }
     let fmt = args[0].py_to_string();
@@ -351,8 +365,15 @@ fn pack_one_format(c: char, count: usize, args: &[PyObjectRef], arg_idx: &mut us
         'q' | 'Q' => {
             for _ in 0..count {
                 if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
-                let val = args[*arg_idx].to_int()? as u64;
-                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                let bytes = if c == 'Q' {
+                    // Unsigned 64-bit: extract as u64 (handles values > i64::MAX)
+                    let val = extract_u64(&args[*arg_idx])?;
+                    if little_endian { val.to_le_bytes() } else { val.to_be_bytes() }
+                } else {
+                    // Signed 64-bit
+                    let val = args[*arg_idx].to_int()?;
+                    if little_endian { val.to_le_bytes() } else { val.to_be_bytes() }
+                };
                 result.extend_from_slice(&bytes);
                 *arg_idx += 1;
             }

@@ -354,12 +354,12 @@ fn fold_mod(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
 fn fold_pow(a: &ConstantValue, b: &ConstantValue) -> Option<ConstantValue> {
     match (a, b) {
         (ConstantValue::Integer(x), ConstantValue::Integer(y)) if *y >= 0 && *y <= 100 => {
-            // Only fold small positive exponents to avoid huge results
-            let result = (*x as f64).powi(*y as i32);
-            if result.is_finite() && result.abs() <= (i64::MAX as f64) {
-                Some(ConstantValue::Integer(result as i64))
+            // Only fold small positive exponents to avoid huge results.
+            // Use checked integer pow to avoid f64 precision loss for large values.
+            if let Some(result) = x.checked_pow(*y as u32) {
+                Some(ConstantValue::Integer(result))
             } else {
-                None
+                None // Too large for i64 — let runtime handle with BigInt
             }
         }
         (ConstantValue::Float(x), ConstantValue::Float(y)) => {

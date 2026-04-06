@@ -681,6 +681,28 @@ pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
     // Parse width
     let width_str: String = chars[i..].iter().take_while(|c| c.is_ascii_digit()).collect();
     let width: usize = width_str.parse().unwrap_or(0);
+    i += width_str.len();
+    // Parse precision (.N truncates string to N chars)
+    let precision: Option<usize> = if i < chars.len() && chars[i] == '.' {
+        i += 1;
+        let prec_str: String = chars[i..].iter().take_while(|c| c.is_ascii_digit()).collect();
+        let _prec_len = prec_str.len(); // advance past precision digits
+        i += _prec_len;
+        let _ = i; // mark as intentionally used for future spec parsing
+        Some(prec_str.parse().unwrap_or(0))
+    } else {
+        None
+    };
+    // Apply precision truncation
+    let s = if let Some(prec) = precision {
+        if s.chars().count() > prec {
+            &s[..s.char_indices().nth(prec).map(|(i, _)| i).unwrap_or(s.len())]
+        } else {
+            s
+        }
+    } else {
+        s
+    };
     if width <= s.len() { return s.to_string(); }
     let pad_len = width - s.len();
     match align.unwrap_or('>') {
