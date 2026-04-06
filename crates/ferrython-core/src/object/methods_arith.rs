@@ -520,6 +520,39 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                             'x' => result.push_str(&format!("{:x}", arg.to_int()?)),
                             'X' => result.push_str(&format!("{:X}", arg.to_int()?)),
                             'o' => result.push_str(&format!("{:o}", arg.to_int()?)),
+                            'e' | 'E' => {
+                                let f = arg.to_float()?;
+                                let prec = parse_precision(&spec_chars).unwrap_or(6);
+                                let raw = if conv == 'e' {
+                                    format!("{:.prec$e}", f, prec = prec)
+                                } else {
+                                    format!("{:.prec$E}", f, prec = prec)
+                                };
+                                result.push_str(&normalize_scientific_exponent(&raw, conv));
+                            }
+                            'g' | 'G' => {
+                                let f = arg.to_float()?;
+                                let prec = parse_precision(&spec_chars).unwrap_or(6);
+                                let abs_f = f.abs();
+                                let use_sci = abs_f != 0.0 && (abs_f >= 10f64.powi(prec as i32) || abs_f < 1e-4);
+                                if use_sci {
+                                    let sci_prec = if prec > 0 { prec - 1 } else { 0 };
+                                    let e_char = if conv == 'g' { 'e' } else { 'E' };
+                                    let raw = if e_char == 'e' {
+                                        format!("{:.prec$e}", f, prec = sci_prec)
+                                    } else {
+                                        format!("{:.prec$E}", f, prec = sci_prec)
+                                    };
+                                    result.push_str(&normalize_scientific_exponent(&raw, e_char));
+                                } else {
+                                    // Remove trailing zeros for %g
+                                    let s = format!("{:.prec$}", f, prec = prec);
+                                    let s = if s.contains('.') {
+                                        s.trim_end_matches('0').trim_end_matches('.').to_string()
+                                    } else { s };
+                                    result.push_str(&s);
+                                }
+                            }
                             _ => {
                                 result.push('%');
                                 result.push_str(&spec_chars);

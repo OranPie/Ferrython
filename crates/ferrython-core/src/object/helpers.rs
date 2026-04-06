@@ -426,6 +426,32 @@ pub(super) fn format_float_spec(f: f64, spec: &str) -> String {
     }
 }
 
+/// Parse precision from a printf spec string like ".2" or "10.3"
+pub(super) fn parse_precision(spec: &str) -> Option<usize> {
+    if let Some(dot_pos) = spec.find('.') {
+        spec[dot_pos + 1..].parse().ok()
+    } else {
+        None
+    }
+}
+
+/// Normalize Rust scientific notation to CPython format.
+/// Rust: "1.23e3" or "1.23e-3"  →  Python: "1.23e+03" or "1.23e-03"
+pub(super) fn normalize_scientific_exponent(raw: &str, e_char: char) -> String {
+    if let Some(e_pos) = raw.rfind(e_char) {
+        let mantissa = &raw[..e_pos];
+        let exp_str = &raw[e_pos + 1..];
+        let exp_val: i64 = exp_str.parse().unwrap_or(0);
+        if exp_val >= 0 {
+            format!("{}{}+{:02}", mantissa, e_char, exp_val)
+        } else {
+            format!("{}{}-{:02}", mantissa, e_char, -exp_val)
+        }
+    } else {
+        raw.to_string()
+    }
+}
+
 pub fn format_str_spec(s: &str, spec: &str) -> String {
     let left_align = spec.starts_with('-');
     let width_str = spec.trim_start_matches(|c: char| "-+ #0".contains(c));

@@ -734,10 +734,28 @@ impl VirtualMachine {
                         'e' | 'E' => {
                             let v = arg.to_float().unwrap_or(0.0);
                             let p = precision.unwrap_or(6);
-                            if spec == 'e' { format!("{:.prec$e}", v, prec = p) }
-                            else { format!("{:.prec$E}", v, prec = p) }
+                            let raw = if spec == 'e' { format!("{:.prec$e}", v, prec = p) }
+                            else { format!("{:.prec$E}", v, prec = p) };
+                            normalize_sci_exp(&raw, spec)
                         }
-                        'g' | 'G' => format!("{}", arg.to_float().unwrap_or(0.0)),
+                        'g' | 'G' => {
+                            let v = arg.to_float().unwrap_or(0.0);
+                            let p = precision.unwrap_or(6);
+                            let abs_v = v.abs();
+                            let use_sci = abs_v != 0.0 && (abs_v >= 10f64.powi(p as i32) || abs_v < 1e-4);
+                            if use_sci {
+                                let sp = if p > 0 { p - 1 } else { 0 };
+                                let ec = if spec == 'g' { 'e' } else { 'E' };
+                                let raw = if ec == 'e' { format!("{:.prec$e}", v, prec = sp) }
+                                else { format!("{:.prec$E}", v, prec = sp) };
+                                normalize_sci_exp(&raw, ec)
+                            } else {
+                                let s = format!("{:.prec$}", v, prec = p);
+                                if s.contains('.') {
+                                    s.trim_end_matches('0').trim_end_matches('.').to_string()
+                                } else { s }
+                            }
+                        }
                         'x' => format!("{:x}", arg.as_int().unwrap_or(0)),
                         'X' => format!("{:X}", arg.as_int().unwrap_or(0)),
                         'o' => format!("{:o}", arg.as_int().unwrap_or(0)),
@@ -768,5 +786,22 @@ impl VirtualMachine {
             }
         }
         Ok(PyObject::str_val(CompactString::from(result)))
+    }
+}
+
+/// Normalize Rust scientific notation to CPython format.
+/// Rust: "1.23e3" → Python: "1.23e+03"
+fn normalize_sci_exp(raw: &str, e_char: char) -> String {
+    if let Some(e_pos) = raw.rfind(e_char) {
+        let mantissa = &raw[..e_pos];
+        let exp_str = &raw[e_pos + 1..];
+        let exp_val: i64 = exp_str.parse().unwrap_or(0);
+        if exp_val >= 0 {
+            format!("{}{}+{:02}", mantissa, e_char, exp_val)
+        } else {
+            format!("{}{}-{:02}", mantissa, e_char, -exp_val)
+        }
+    } else {
+        raw.to_string()
     }
 }

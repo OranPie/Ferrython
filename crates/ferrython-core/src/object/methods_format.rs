@@ -100,28 +100,12 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
                 let prec = if let Some(dot_pos) = inner_spec.rfind('.') {
                     inner_spec[dot_pos + 1..].parse().unwrap_or(6)
                 } else { 6 };
-                // Python scientific notation: always show sign, zero-pad exponent to 2+ digits
                 let raw = if type_char == 'e' {
                     format!("{:.prec$e}", f, prec = prec)
                 } else {
                     format!("{:.prec$E}", f, prec = prec)
                 };
-                // Rust gives e.g. "1.23e3", Python wants "1.23e+03"
-                let e_char = if type_char == 'e' { 'e' } else { 'E' };
-                let result = if let Some(e_pos) = raw.rfind(e_char) {
-                    let mantissa = &raw[..e_pos];
-                    let exp_str = &raw[e_pos + 1..];
-                    let exp_val: i64 = exp_str.parse().unwrap_or(0);
-                    let exp_formatted = if exp_val >= 0 {
-                        format!("{}{:+03}", e_char, exp_val)
-                    } else {
-                        format!("{}{:03}", e_char, exp_val)
-                    };
-                    format!("{}{}", mantissa, exp_formatted)
-                } else {
-                    raw
-                };
-                return Ok(result);
+                return Ok(normalize_scientific_exponent(&raw, type_char));
             }
             '%' => {
                 let f = obj.to_float()?;
