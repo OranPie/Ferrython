@@ -9,7 +9,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
     AsyncGenAction, CompareOp, IteratorData, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef, is_data_descriptor, lookup_in_class_mro,
+    PyObjectPayload, PyObjectRef, is_data_descriptor, has_descriptor_get, lookup_in_class_mro,
     get_builtin_base_type_name,
 };
 use ferrython_core::types::{HashableKey, SharedConstantCache, SharedGlobals};
@@ -1742,6 +1742,55 @@ impl VirtualMachine {
                         }
                         // vars(obj) — fall through to static builtin_vars
                     }
+                    "getattr" => {
+                        if args.len() < 2 || args.len() > 3 {
+                            return Err(PyException::type_error("getattr expected 2 or 3 arguments"));
+                        }
+                        let attr_name = args[1].as_str().ok_or_else(||
+                            PyException::type_error("getattr(): attribute name must be string"))?;
+                        // Use get_attr which handles MRO + data descriptors
+                        match args[0].get_attr(attr_name) {
+                            Some(v) => {
+                                // Invoke descriptor protocol (Property, custom __get__)
+                                if let PyObjectPayload::Property { fget, .. } = &v.payload {
+                                    if let Some(getter) = fget {
+                                        return self.call_object(getter.clone(), vec![args[0].clone()]);
+                                    }
+                                    return Err(PyException::attribute_error(
+                                        format!("unreadable attribute '{}'", attr_name)));
+                                }
+                                if has_descriptor_get(&v) {
+                                    if let Some(get_method) = v.get_attr("__get__") {
+                                        let (inst_arg, owner_arg) = match &args[0].payload {
+                                            PyObjectPayload::Instance(inst) =>
+                                                (args[0].clone(), inst.class.clone()),
+                                            PyObjectPayload::Class(_) =>
+                                                (PyObject::none(), args[0].clone()),
+                                            _ => (args[0].clone(), PyObject::none()),
+                                        };
+                                        // get_method is already a BoundMethod if from class MRO
+                                        return self.call_object(get_method, vec![inst_arg, owner_arg]);
+                                    }
+                                }
+                                return Ok(v);
+                            }
+                            None => {
+                                // Try __getattr__ fallback
+                                if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                    if let Some(ga) = args[0].get_attr("__getattr__") {
+                                        let name_arg = PyObject::str_val(CompactString::from(attr_name));
+                                        return self.call_object(ga, vec![name_arg]);
+                                    }
+                                }
+                                if args.len() > 2 {
+                                    return Ok(args[2].clone());
+                                }
+                                return Err(PyException::attribute_error(format!(
+                                    "'{}' object has no attribute '{}'",
+                                    args[0].type_name(), attr_name)));
+                            }
+                        }
+                    }
                     "setattr" => {
                         if args.len() != 3 {
                             return Err(PyException::type_error("setattr() takes exactly 3 arguments"));
@@ -1762,7 +1811,8 @@ impl VirtualMachine {
                                 }
                                 if is_data_descriptor(&desc) {
                                     if let Some(set_method) = desc.get_attr("__set__") {
-                                        self.call_object(set_method, vec![desc, args[0].clone(), value])?;
+                                        // set_method is already bound to desc
+                                        self.call_object(set_method, vec![args[0].clone(), value])?;
                                         return Ok(PyObject::none());
                                     }
                                 }
