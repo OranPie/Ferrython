@@ -1503,6 +1503,19 @@ impl VirtualMachine {
                                         return Ok(PyObject::bool_val(result.is_truthy()));
                                     }
                                 }
+                                // Check __subclasshook__ on the class (ABC protocol)
+                                if let Some(hook) = cls.get_attr("__subclasshook__") {
+                                    // Pass the type of the object being checked
+                                    let obj = &args[0];
+                                    let obj_type = match &obj.payload {
+                                        PyObjectPayload::Instance(inst) => inst.class.clone(),
+                                        _ => PyObject::builtin_type(CompactString::from(obj.type_name())),
+                                    };
+                                    let result = self.call_object(hook, vec![obj_type])?;
+                                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                                        return Ok(PyObject::bool_val(result.is_truthy()));
+                                    }
+                                }
                                 // Check for runtime_checkable Protocol — structural subtyping
                                 let ns = cd.namespace.read();
                                 if ns.get("_is_runtime_checkable").map_or(false, |v| v.is_truthy()) {

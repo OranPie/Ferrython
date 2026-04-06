@@ -41,6 +41,70 @@ fn normalize_index(idx: i64, len: i64) -> usize {
     }
 }
 
+/// Resolve a format field like "0", "0.attr", "0[key]", "0.attr[0]", or "name".
+/// Supports chained attribute access (`.`) and getitem (`[...]`) in any order.
+fn resolve_format_field(field_name: &str, args: &[PyObjectRef]) -> Option<PyObjectRef> {
+    // Parse the base name: everything before the first '.' or '['
+    let base_end = field_name.find(|c: char| c == '.' || c == '[').unwrap_or(field_name.len());
+    let base_name = &field_name[..base_end];
+    let rest = &field_name[base_end..];
+
+    // Resolve base value from positional args or kwargs
+    let mut current = if let Ok(idx) = base_name.parse::<usize>() {
+        args.get(idx)?.clone()
+    } else {
+        // Named field — look in kwargs (last arg if it's a dict from **kwargs unpacking)
+        // For now, named fields aren't supported without kwargs unpacking at call site
+        return None;
+    };
+
+    // Process accessor chain: .attr and [key] in sequence
+    let mut chars = rest.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c == '.' {
+            chars.next(); // consume '.'
+            let mut attr = String::new();
+            while let Some(&nc) = chars.peek() {
+                if nc == '.' || nc == '[' { break; }
+                attr.push(nc);
+                chars.next();
+            }
+            if let Some(v) = current.get_attr(&attr) {
+                current = v;
+            } else {
+                return Some(PyObject::str_val(CompactString::from("")));
+            }
+        } else if c == '[' {
+            chars.next(); // consume '['
+            let mut key = String::new();
+            for nc in chars.by_ref() {
+                if nc == ']' { break; }
+                key.push(nc);
+            }
+            // Try integer index first, then string key
+            if let Ok(idx) = key.parse::<i64>() {
+                let key_obj = PyObject::int(idx);
+                if let Ok(v) = current.get_item(&key_obj) {
+                    current = v;
+                } else {
+                    return Some(PyObject::str_val(CompactString::from("")));
+                }
+            } else {
+                let key_obj = PyObject::str_val(CompactString::from(key));
+                if let Ok(v) = current.get_item(&key_obj) {
+                    current = v;
+                } else {
+                    return Some(PyObject::str_val(CompactString::from("")));
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    Some(current)
+}
+
 /// Resolve nested `{N}` references in a format spec.
 /// E.g., `{1}>{2}` with args=['hi', '*', 10] → `*>10`
 fn resolve_nested_spec(spec: &str, args: &[PyObjectRef]) -> String {
@@ -590,31 +654,7 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             auto_idx += 1;
                             v
                         } else {
-                            // Split on '.' for attribute access: "0.val" → base="0", attrs=["val"]
-                            let parts: Vec<&str> = field_name.splitn(2, '.').collect();
-                            let base_name = parts[0];
-                            let mut val = if let Ok(idx) = base_name.parse::<usize>() {
-                                args.get(idx).cloned()
-                            } else {
-                                None
-                            };
-                            // Resolve attribute chain if present
-                            if parts.len() > 1 {
-                                if let Some(ref base_val) = val {
-                                    let attr_chain = parts[1];
-                                    let mut current = base_val.clone();
-                                    for attr in attr_chain.split('.') {
-                                        if let Some(v) = current.get_attr(attr) {
-                                            current = v;
-                                        } else {
-                                            current = PyObject::str_val(CompactString::from(""));
-                                            break;
-                                        }
-                                    }
-                                    val = Some(current);
-                                }
-                            }
-                            val
+                            resolve_format_field(field_name, args)
                         };
                         if let Some(val) = value {
                             if let Some(conv) = conversion {

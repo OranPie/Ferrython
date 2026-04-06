@@ -357,22 +357,51 @@ impl VirtualMachine {
         auto_idx: usize,
         _kwargs: &[(CompactString, PyObjectRef)],
     ) -> Option<PyObjectRef> {
-        // Handle "N.attr" patterns
-        if let Some(dot_pos) = field_name.find('.') {
-            let base = &field_name[..dot_pos];
-            let attr = &field_name[dot_pos+1..];
-            let base_obj = if let Ok(idx) = base.parse::<usize>() {
-                pos_args.get(idx).cloned()
-            } else if base.is_empty() {
-                pos_args.get(auto_idx).cloned()
+        // Parse base name: everything before first '.' or '['
+        let base_end = field_name.find(|c: char| c == '.' || c == '[').unwrap_or(field_name.len());
+        let base = &field_name[..base_end];
+        let rest = &field_name[base_end..];
+
+        let mut current = if let Ok(idx) = base.parse::<usize>() {
+            pos_args.get(idx)?.clone()
+        } else if base.is_empty() {
+            pos_args.get(auto_idx)?.clone()
+        } else {
+            return None;
+        };
+
+        // Process accessor chain: .attr and [key] in sequence
+        let mut chars = rest.chars().peekable();
+        while let Some(&c) = chars.peek() {
+            if c == '.' {
+                chars.next();
+                let mut attr = String::new();
+                while let Some(&nc) = chars.peek() {
+                    if nc == '.' || nc == '[' { break; }
+                    attr.push(nc);
+                    chars.next();
+                }
+                current = current.get_attr(&attr)?;
+            } else if c == '[' {
+                chars.next();
+                let mut key = String::new();
+                for nc in chars.by_ref() {
+                    if nc == ']' { break; }
+                    key.push(nc);
+                }
+                if let Ok(idx) = key.parse::<i64>() {
+                    let key_obj = PyObject::int(idx);
+                    current = current.get_item(&key_obj).ok()?;
+                } else {
+                    let key_obj = PyObject::str_val(CompactString::from(&key));
+                    current = current.get_item(&key_obj).ok()?;
+                }
             } else {
-                None
-            };
-            if let Some(obj) = base_obj {
-                return obj.get_attr(attr);
+                break;
             }
         }
-        None
+
+        Some(current)
     }
 
     /// Call close() on an object through normal VM dispatch (used by contextlib.closing).
