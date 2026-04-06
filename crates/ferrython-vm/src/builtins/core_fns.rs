@@ -317,12 +317,70 @@ fn round_half_to_even(x: f64) -> f64 {
 
 pub(super) fn builtin_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("pow", args, 2)?;
-    let result = args[0].power(&args[1])?;
     if args.len() >= 3 {
-        result.modulo(&args[2])
+        // Three-argument pow(base, exp, mod) — modular exponentiation
+        let modulus = &args[2];
+        if matches!(&modulus.payload, PyObjectPayload::None) {
+            return Ok(args[0].power(&args[1])?);
+        }
+        let base_i = args[0].as_int().ok_or_else(||
+            PyException::type_error("pow() 1st argument not allowed for 3-argument pow() unless all arguments are integers"))?;
+        let exp_i = args[1].as_int().ok_or_else(||
+            PyException::type_error("pow() 2nd argument cannot be negative when 3rd argument specified"))?;
+        let mod_i = modulus.as_int().ok_or_else(||
+            PyException::type_error("pow() 3rd argument not allowed unless all arguments are integers"))?;
+        if mod_i == 0 {
+            return Err(PyException::value_error("pow() 3rd argument cannot be 0"));
+        }
+        if exp_i < 0 {
+            // Modular inverse: pow(a, -1, m) = modular inverse of a mod m (Python 3.8+)
+            // Use extended Euclidean algorithm
+            let a = ((base_i % mod_i) + mod_i) % mod_i;
+            let (g, x, _) = extended_gcd(a, mod_i);
+            if g != 1 {
+                return Err(PyException::value_error(format!(
+                    "base is not invertible for the given modulus"
+                )));
+            }
+            let inv = ((x % mod_i) + mod_i) % mod_i;
+            // For exponents < -1, compute pow(inv, -exp, mod)
+            let pos_exp = (-exp_i) as u64;
+            if pos_exp == 1 {
+                return Ok(PyObject::int(inv));
+            }
+            let result = mod_pow(inv, pos_exp, mod_i);
+            return Ok(PyObject::int(result));
+        }
+        let result = mod_pow(base_i, exp_i as u64, mod_i);
+        Ok(PyObject::int(result))
     } else {
-        Ok(result)
+        Ok(args[0].power(&args[1])?)
     }
+}
+
+/// Modular exponentiation: (base^exp) % modulus using repeated squaring
+fn mod_pow(base: i64, mut exp: u64, modulus: i64) -> i64 {
+    let m = modulus.unsigned_abs() as u128;
+    let mut result: u128 = 1;
+    let mut b = ((base as i128 % modulus as i128 + modulus as i128) % modulus as i128) as u128;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = result * b % m;
+        }
+        b = b * b % m;
+        exp >>= 1;
+    }
+    let r = result as i64;
+    if modulus < 0 && r > 0 { r + modulus } else { r }
+}
+
+/// Extended Euclidean algorithm: returns (gcd, x, y) such that a*x + b*y = gcd
+fn extended_gcd(a: i64, b: i64) -> (i64, i64, i64) {
+    if a == 0 {
+        return (b, 0, 1);
+    }
+    let (g, x1, y1) = extended_gcd(b % a, a);
+    (g, y1 - (b / a) * x1, x1)
 }
 
 pub(super) fn builtin_divmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
