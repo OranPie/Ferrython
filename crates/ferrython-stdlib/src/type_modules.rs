@@ -12,13 +12,57 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 pub fn create_typing_module() -> PyObjectRef {
-    // TypeVar(name) — returns a placeholder object with __name__
+    // TypeVar(name, *constraints, bound=None, covariant=False, contravariant=False)
     let typevar_fn = make_builtin(|args: &[PyObjectRef]| {
         check_args_min("TypeVar", args, 1)?;
+
+        // Last arg may be a kwargs dict appended by the VM
+        let last_is_kwargs = args.len() >= 2
+            && matches!(&args[args.len() - 1].payload, PyObjectPayload::Dict(_));
+
+        let kwargs_dict: Option<IndexMap<HashableKey, PyObjectRef>> = if last_is_kwargs {
+            if let PyObjectPayload::Dict(d) = &args[args.len() - 1].payload {
+                Some(d.read().clone())
+            } else { None }
+        } else { None };
+
+        let positional_end = if last_is_kwargs { args.len() - 1 } else { args.len() };
         let name = CompactString::from(args[0].py_to_string());
+
+        // Constraints are positional args after the name
+        let constraints: Vec<PyObjectRef> = if positional_end > 1 {
+            args[1..positional_end].to_vec()
+        } else {
+            vec![]
+        };
+
+        // Extract keyword args
+        let get_kwarg = |key: &str| -> Option<PyObjectRef> {
+            kwargs_dict.as_ref().and_then(|kw| {
+                kw.get(&HashableKey::Str(CompactString::from(key))).cloned()
+            })
+        };
+        let bound = get_kwarg("bound").unwrap_or_else(PyObject::none);
+        let covariant = get_kwarg("covariant")
+            .map_or(false, |v| v.is_truthy());
+        let contravariant = get_kwarg("contravariant")
+            .map_or(false, |v| v.is_truthy());
+
         let cls = PyObject::class(CompactString::from("TypeVar"), vec![], IndexMap::new());
         let mut attrs = IndexMap::new();
-        attrs.insert(CompactString::from("__name__"), PyObject::str_val(name));
+        attrs.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
+        attrs.insert(CompactString::from("__constraints__"), PyObject::tuple(constraints));
+        attrs.insert(CompactString::from("__bound__"), bound);
+        attrs.insert(CompactString::from("__covariant__"), PyObject::bool_val(covariant));
+        attrs.insert(CompactString::from("__contravariant__"), PyObject::bool_val(contravariant));
+
+        // __repr__ returns ~T
+        let repr_name = name.clone();
+        attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+            "__repr__",
+            move |_args| Ok(PyObject::str_val(CompactString::from(format!("~{}", repr_name).as_str()))),
+        ));
+
         Ok(PyObject::instance_with_attrs(cls, attrs))
     });
 
@@ -173,13 +217,38 @@ pub fn create_typing_module() -> PyObjectRef {
                     .filter(|(k, _)| !k.starts_with('_'))
                     .map(|(k, _)| PyObject::str_val(k.clone()))
                     .collect();
-                ns.insert(CompactString::from("__protocol_attrs__"), PyObject::tuple(protocol_attrs));
+                let attrs_tuple = PyObject::tuple(protocol_attrs);
+                ns.insert(CompactString::from("__protocol_attrs__"), attrs_tuple.clone());
                 ns.insert(CompactString::from("_is_runtime_checkable"), PyObject::bool_val(true));
+                // __instancecheck__(cls, obj) — structural check
+                ns.insert(CompactString::from("__instancecheck__"), PyObject::native_closure(
+                    "__instancecheck__",
+                    move |ic_args: &[PyObjectRef]| {
+                        // ic_args[0] = cls (self), ic_args[1] = obj
+                        if ic_args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+                        let obj = &ic_args[ic_args.len() - 1];
+                        if let PyObjectPayload::Tuple(required) = &attrs_tuple.payload {
+                            let has_all = required.iter().all(|attr_name| {
+                                let name = attr_name.py_to_string();
+                                obj.get_attr(&name).is_some()
+                            });
+                            return Ok(PyObject::bool_val(has_all));
+                        }
+                        Ok(PyObject::bool_val(false))
+                    },
+                ));
             }
             Ok(args[0].clone())
         })),
     ];
     attrs.push(("TYPE_CHECKING", PyObject::bool_val(false)));
+    // InitVar — simple marker type for use with dataclasses
+    attrs.push(("InitVar", make_typing_alias("InitVar")));
+    // final — no-op decorator at runtime
+    attrs.push(("final", make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        Ok(args[0].clone())
+    })));
     // Additional typing constructs
     attrs.push(("Deque", make_typing_alias("Deque")));
     attrs.push(("DefaultDict", make_typing_alias("DefaultDict")));

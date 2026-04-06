@@ -584,6 +584,28 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
         // Generate __setattr__ and __delattr__ for frozen=True
         if frozen {
             ns.insert(CompactString::from("__dataclass_frozen__"), PyObject::bool_val(true));
+            // Raise FrozenInstanceError on attribute assignment (after __init__)
+            ns.insert(CompactString::from("__setattr__"), PyObject::native_closure("__setattr__", move |args: &[PyObjectRef]| {
+                if args.len() < 3 {
+                    return Err(PyException::type_error("__setattr__ requires 3 arguments"));
+                }
+                // Check if we're in __init__ (allow setting during construction)
+                // We use a marker __dataclass_initializing__ to allow __init__ to set fields
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    let attrs = inst.attrs.read();
+                    if attrs.get("__dataclass_initializing__").map_or(false, |v| v.is_truthy()) {
+                        drop(attrs);
+                        let mut attrs = inst.attrs.write();
+                        let name = args[1].py_to_string();
+                        attrs.insert(CompactString::from(name), args[2].clone());
+                        return Ok(PyObject::none());
+                    }
+                }
+                Err(PyException::runtime_error("cannot assign to field of frozen dataclass"))
+            }));
+            ns.insert(CompactString::from("__delattr__"), make_builtin(|_| {
+                Err(PyException::runtime_error("cannot delete field of frozen dataclass"))
+            }));
         }
 
         // Generate __repr__ if repr=True (default)

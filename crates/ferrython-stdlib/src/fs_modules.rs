@@ -1431,6 +1431,80 @@ fn io_text_io_wrapper(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }));
 
+        // readlines(hint=-1) — read all lines
+        let buf = buffer.clone();
+        attrs.insert(CompactString::from("readlines"), PyObject::native_closure("TextIOWrapper.readlines", move |a: &[PyObjectRef]| {
+            let hint = if a.is_empty() { -1i64 } else { a[0].as_int().unwrap_or(-1) };
+            let mut lines = Vec::new();
+            let mut total_bytes = 0i64;
+            loop {
+                if let Some(readline_fn) = buf.get_attr("readline") {
+                    let result = call_native(&readline_fn, &[])?;
+                    let line_str = if let PyObjectPayload::Bytes(b) = &result.payload {
+                        String::from_utf8_lossy(b).to_string()
+                    } else {
+                        result.py_to_string()
+                    };
+                    if line_str.is_empty() { break; }
+                    total_bytes += line_str.len() as i64;
+                    lines.push(PyObject::str_val(CompactString::from(line_str)));
+                    if hint > 0 && total_bytes >= hint { break; }
+                } else {
+                    break;
+                }
+            }
+            Ok(PyObject::list(lines))
+        }));
+
+        // writelines(lines) — write an iterable of strings
+        let buf = buffer.clone();
+        attrs.insert(CompactString::from("writelines"), PyObject::native_closure("TextIOWrapper.writelines", move |a: &[PyObjectRef]| {
+            if a.is_empty() { return Err(PyException::type_error("writelines() requires 1 argument")); }
+            if let Some(write_fn) = buf.get_attr("write") {
+                if let PyObjectPayload::List(items) = &a[0].payload {
+                    for item in items.read().iter() {
+                        let text = item.py_to_string();
+                        let bytes_obj = PyObject::bytes(text.as_bytes().to_vec());
+                        call_native(&write_fn, &[bytes_obj])?;
+                    }
+                }
+            }
+            Ok(PyObject::none())
+        }));
+
+        // seek/tell — delegate to buffer
+        let buf = buffer.clone();
+        attrs.insert(CompactString::from("seek"), PyObject::native_closure("TextIOWrapper.seek", move |a: &[PyObjectRef]| {
+            if let Some(seek_fn) = buf.get_attr("seek") {
+                call_native(&seek_fn, a)
+            } else {
+                Ok(PyObject::int(0))
+            }
+        }));
+        let buf = buffer.clone();
+        attrs.insert(CompactString::from("tell"), PyObject::native_closure("TextIOWrapper.tell", move |_: &[PyObjectRef]| {
+            if let Some(tell_fn) = buf.get_attr("tell") {
+                call_native(&tell_fn, &[])
+            } else {
+                Ok(PyObject::int(0))
+            }
+        }));
+
+        // flush — delegate to buffer
+        let buf = buffer.clone();
+        attrs.insert(CompactString::from("flush"), PyObject::native_closure("TextIOWrapper.flush", move |_: &[PyObjectRef]| {
+            if let Some(flush_fn) = buf.get_attr("flush") {
+                call_native(&flush_fn, &[])
+            } else {
+                Ok(PyObject::none())
+            }
+        }));
+
+        // readable/writable/seekable
+        attrs.insert(CompactString::from("readable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+
         // close
         attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
 
@@ -1463,7 +1537,7 @@ fn io_buffered_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }));
 
-        let r = raw;
+        let r = raw.clone();
         attrs.insert(CompactString::from("readline"), PyObject::native_closure("BufferedReader.readline", move |a: &[PyObjectRef]| {
             if let Some(readline_fn) = r.get_attr("readline") {
                 call_native(&readline_fn, a)
@@ -1471,7 +1545,45 @@ fn io_buffered_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 Err(PyException::type_error("raw stream has no readline method"))
             }
         }));
+
+        let r = raw.clone();
+        attrs.insert(CompactString::from("readlines"), PyObject::native_closure("BufferedReader.readlines", move |_: &[PyObjectRef]| {
+            let mut lines = Vec::new();
+            loop {
+                if let Some(readline_fn) = r.get_attr("readline") {
+                    let result = call_native(&readline_fn, &[])?;
+                    let is_empty = match &result.payload {
+                        PyObjectPayload::Bytes(b) => b.is_empty(),
+                        _ => result.py_to_string().is_empty(),
+                    };
+                    if is_empty { break; }
+                    lines.push(result);
+                } else { break; }
+            }
+            Ok(PyObject::list(lines))
+        }));
+
+        let r = raw.clone();
+        attrs.insert(CompactString::from("seek"), PyObject::native_closure("BufferedReader.seek", move |a: &[PyObjectRef]| {
+            if let Some(seek_fn) = r.get_attr("seek") {
+                call_native(&seek_fn, a)
+            } else { Ok(PyObject::int(0)) }
+        }));
+
+        let r = raw.clone();
+        attrs.insert(CompactString::from("tell"), PyObject::native_closure("BufferedReader.tell", move |_: &[PyObjectRef]| {
+            if let Some(tell_fn) = r.get_attr("tell") {
+                call_native(&tell_fn, &[])
+            } else { Ok(PyObject::int(0)) }
+        }));
+
+        attrs.insert(CompactString::from("readable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(false))));
         attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+
+        let inst_ref = inst.clone();
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("BufferedReader.__enter__", move |_| Ok(inst_ref.clone())));
+        attrs.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
     }
     Ok(inst)
 }
@@ -1497,7 +1609,7 @@ fn io_buffered_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }));
 
-        let r = raw;
+        let r = raw.clone();
         attrs.insert(CompactString::from("flush"), PyObject::native_closure("BufferedWriter.flush", move |_: &[PyObjectRef]| {
             if let Some(flush_fn) = r.get_attr("flush") {
                 call_native(&flush_fn, &[])
@@ -1505,7 +1617,28 @@ fn io_buffered_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 Ok(PyObject::none())
             }
         }));
+
+        let r = raw.clone();
+        attrs.insert(CompactString::from("seek"), PyObject::native_closure("BufferedWriter.seek", move |a: &[PyObjectRef]| {
+            if let Some(seek_fn) = r.get_attr("seek") {
+                call_native(&seek_fn, a)
+            } else { Ok(PyObject::int(0)) }
+        }));
+
+        let r = raw;
+        attrs.insert(CompactString::from("tell"), PyObject::native_closure("BufferedWriter.tell", move |_: &[PyObjectRef]| {
+            if let Some(tell_fn) = r.get_attr("tell") {
+                call_native(&tell_fn, &[])
+            } else { Ok(PyObject::int(0)) }
+        }));
+
+        attrs.insert(CompactString::from("readable"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+        attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
         attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+
+        let inst_ref = inst.clone();
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("BufferedWriter.__enter__", move |_| Ok(inst_ref.clone())));
+        attrs.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
     }
     Ok(inst)
 }
