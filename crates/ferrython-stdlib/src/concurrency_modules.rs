@@ -90,8 +90,21 @@ pub fn create_threading_module() -> PyObjectRef {
         Ok(PyObject::none())
     }));
 
-    // join(self)
-    thread_ns.insert(CompactString::from("join"), make_builtin(|_| Ok(PyObject::none())));
+    // join(self, timeout=None) — wait for thread to complete
+    // In Ferrython's sequential execution model, threads complete during start(),
+    // so join() mainly validates state and respects the API contract.
+    thread_ns.insert(CompactString::from("join"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+            let attrs = inst.attrs.read();
+            let started = attrs.get("_started")
+                .map(|v| v.is_truthy()).unwrap_or(false);
+            if !started {
+                return Err(PyException::runtime_error("cannot join thread before it is started"));
+            }
+        }
+        Ok(PyObject::none())
+    }));
 
     // is_alive(self)
     thread_ns.insert(CompactString::from("is_alive"), make_builtin(|args: &[PyObjectRef]| {
@@ -660,6 +673,14 @@ pub fn create_thread_module() -> PyObjectRef {
 }
 
 // ── signal module ────────────────────────────────────────────────────
+
+use std::cell::RefCell as SignalRefCell;
+use std::collections::HashMap as SignalMap;
+
+thread_local! {
+    static SIGNAL_HANDLERS: SignalRefCell<SignalMap<i64, PyObjectRef>> = SignalRefCell::new(SignalMap::new());
+}
+
 pub fn create_signal_module() -> PyObjectRef {
     // Signal constants (POSIX values)
     make_module("signal", vec![
@@ -683,15 +704,67 @@ pub fn create_signal_module() -> PyObjectRef {
         ("SIG_DFL", PyObject::int(0)),
         ("SIG_IGN", PyObject::int(1)),
         ("signal", make_builtin(|args| {
-            // signal.signal(signum, handler) — stub, returns SIG_DFL
             if args.len() < 2 { return Err(PyException::type_error("signal() requires 2 arguments")); }
-            Ok(PyObject::int(0)) // SIG_DFL
+            let signum = args[0].to_int()?;
+            let handler = args[1].clone();
+            // Return previous handler, store new one
+            let prev = SIGNAL_HANDLERS.with(|h| {
+                let mut map = h.borrow_mut();
+                let old = map.get(&signum).cloned().unwrap_or_else(|| PyObject::int(0));
+                map.insert(signum, handler);
+                old
+            });
+            // Install real OS signal handler for safe signals
+            #[cfg(unix)]
+            {
+                use std::sync::atomic::{AtomicBool, Ordering};
+                static SIGINT_FLAG: AtomicBool = AtomicBool::new(false);
+                if signum == 2 {
+                    // SIGINT — install a handler that sets a flag
+                    unsafe {
+                        libc::signal(libc::SIGINT, signal_handler as *const () as libc::sighandler_t);
+                    }
+                    extern "C" fn signal_handler(_sig: libc::c_int) {
+                        SIGINT_FLAG.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
+            Ok(prev)
         })),
-        ("getsignal", make_builtin(|_| Ok(PyObject::none()))),
-        ("raise_signal", make_builtin(|_| Ok(PyObject::none()))),
-        ("alarm", make_builtin(|_| Ok(PyObject::int(0)))),
-        ("pause", make_builtin(|_| Ok(PyObject::none()))),
-        ("set_wakeup_fd", make_builtin(|_| Ok(PyObject::int(-1)))),
+        ("getsignal", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("getsignal() requires 1 argument")); }
+            let signum = args[0].to_int()?;
+            let handler = SIGNAL_HANDLERS.with(|h| {
+                h.borrow().get(&signum).cloned().unwrap_or_else(|| PyObject::int(0))
+            });
+            Ok(handler)
+        })),
+        ("raise_signal", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("raise_signal() requires 1 argument")); }
+            let signum = args[0].to_int()?;
+            #[cfg(unix)]
+            unsafe { libc::raise(signum as libc::c_int); }
+            Ok(PyObject::none())
+        })),
+        ("alarm", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::int(0)); }
+            let secs = args[0].to_int()? as u32;
+            #[cfg(unix)]
+            let remaining = unsafe { libc::alarm(secs) };
+            #[cfg(not(unix))]
+            let remaining = 0u32;
+            Ok(PyObject::int(remaining as i64))
+        })),
+        ("pause", make_builtin(|_| {
+            #[cfg(unix)]
+            unsafe { libc::pause(); }
+            Ok(PyObject::none())
+        })),
+        ("set_wakeup_fd", make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::int(-1)); }
+            let _fd = args[0].to_int()?;
+            Ok(PyObject::int(-1)) // return previous fd (-1 = none)
+        })),
         ("Signals", PyObject::none()),
         ("Handlers", PyObject::none()),
     ])
@@ -777,11 +850,68 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
             let mut attrs = inst_data.attrs.write();
             attrs.insert(CompactString::from("_processes"), PyObject::int(processes));
             attrs.insert(CompactString::from("map"), make_builtin(|args| {
-                if args.len() < 2 { return Err(PyException::type_error("map() requires 2 arguments")); }
-                Ok(PyObject::list(vec![]))
+                // Pool.map(func, iterable) — execute func(item) for each item sequentially
+                if args.len() < 2 { return Err(PyException::type_error("map() requires func and iterable")); }
+                let func = &args[0];
+                let iterable = args[1].to_list()?;
+                let mut results = Vec::with_capacity(iterable.len());
+                for item in &iterable {
+                    match &func.payload {
+                        PyObjectPayload::NativeFunction { func: f, .. } => {
+                            results.push(f(&[item.clone()])?);
+                        }
+                        PyObjectPayload::NativeClosure { func: f, .. } => {
+                            results.push(f(&[item.clone()])?);
+                        }
+                        _ => {
+                            // For Python functions, use deferred calls
+                            push_deferred_call(func.clone(), vec![item.clone()]);
+                            results.push(PyObject::none()); // placeholder
+                        }
+                    }
+                }
+                Ok(PyObject::list(results))
             }));
-            attrs.insert(CompactString::from("apply"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("apply_async"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("apply"), make_builtin(|args| {
+                // Pool.apply(func, args=()) — call func with args
+                if args.is_empty() { return Err(PyException::type_error("apply() requires func")); }
+                let func = &args[0];
+                let call_args: Vec<PyObjectRef> = if args.len() > 1 {
+                    args[1].to_list().unwrap_or_default()
+                } else { vec![] };
+                match &func.payload {
+                    PyObjectPayload::NativeFunction { func: f, .. } => f(&call_args),
+                    PyObjectPayload::NativeClosure { func: f, .. } => f(&call_args),
+                    _ => {
+                        push_deferred_call(func.clone(), call_args);
+                        Ok(PyObject::none())
+                    }
+                }
+            }));
+            attrs.insert(CompactString::from("apply_async"), make_builtin(|args| {
+                // apply_async returns an AsyncResult; in our model, execute immediately
+                if args.is_empty() { return Err(PyException::type_error("apply_async() requires func")); }
+                let func = &args[0];
+                let call_args: Vec<PyObjectRef> = if args.len() > 1 {
+                    args[1].to_list().unwrap_or_default()
+                } else { vec![] };
+                let result = match &func.payload {
+                    PyObjectPayload::NativeFunction { func: f, .. } => f(&call_args)?,
+                    PyObjectPayload::NativeClosure { func: f, .. } => f(&call_args)?,
+                    _ => { push_deferred_call(func.clone(), call_args); PyObject::none() }
+                };
+                // Return an AsyncResult-like object with get() method
+                let cls = PyObject::class(CompactString::from("AsyncResult"), vec![], IndexMap::new());
+                let async_inst = PyObject::instance(cls);
+                if let PyObjectPayload::Instance(ref d) = async_inst.payload {
+                    let r = result.clone();
+                    d.attrs.write().insert(CompactString::from("get"), PyObject::native_closure(
+                        "get", move |_: &[PyObjectRef]| Ok(r.clone())));
+                    d.attrs.write().insert(CompactString::from("ready"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+                    d.attrs.write().insert(CompactString::from("successful"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+                }
+                Ok(async_inst)
+            }));
             attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
             attrs.insert(CompactString::from("join"), make_builtin(|_| Ok(PyObject::none())));
             attrs.insert(CompactString::from("terminate"), make_builtin(|_| Ok(PyObject::none())));

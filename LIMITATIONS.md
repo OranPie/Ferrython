@@ -85,8 +85,10 @@
 |---------|--------|-------|
 | `asyncio.run()`, `gather()`, `sleep()` | ✅ | Sequential execution model |
 | `dir()` in functions | ✅ | Returns sorted local variable names (like CPython) |
-| `sys.settrace()` / `sys.setprofile()` | ❌ | Not implemented |
-| `sys.excepthook` | ❌ | Not implemented |
+| `sys.settrace()` / `sys.setprofile()` | ✅ | Thread-local trace/profile hooks with call/line/return/exception events |
+| `sys.excepthook` | ✅ | Custom exception display handler |
+| `sys.gettrace()` / `sys.getprofile()` | ✅ | Retrieve current trace/profile function |
+| `ast.parse()` / `ast.dump()` | ✅ | Real parsing with full AST node tree, Store/Del context fix |
 | Real event loop scheduling | ❌ | All coroutines run to completion sequentially |
 | `asyncio.wait_for` timeout | ❌ | Runs coroutine immediately, timeout ignored |
 | `asyncio.Queue` blocking | ❌ | `await queue.get()` doesn't suspend; raises if empty |

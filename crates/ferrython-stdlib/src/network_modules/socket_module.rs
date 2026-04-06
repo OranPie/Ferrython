@@ -590,6 +590,24 @@ fn build_socket_object(
             };
             let mut guard = lock_inner(&st)?;
             guard.options.push((level, optname, value));
+            // Apply option to real socket if connected
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::AsRawFd;
+                let fd = guard.tcp_stream.as_ref().map(|s| s.as_raw_fd())
+                    .or_else(|| guard.udp_socket.as_ref().map(|s| s.as_raw_fd()))
+                    .or_else(|| guard.tcp_listener.as_ref().map(|s| s.as_raw_fd()));
+                if let Some(fd) = fd {
+                    let val = value as libc::c_int;
+                    unsafe {
+                        libc::setsockopt(
+                            fd, level as libc::c_int, optname as libc::c_int,
+                            &val as *const libc::c_int as *const libc::c_void,
+                            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                        );
+                    }
+                }
+            }
             Ok(PyObject::none())
         }),
     );
@@ -659,12 +677,6 @@ fn build_socket_object(
                 "[Errno 107] Transport endpoint is not connected",
             ))
         }),
-    );
-
-    // ── fileno() — stub returning -1 ──
-    attrs.insert(
-        CompactString::from("fileno"),
-        PyObject::native_closure("fileno", |_args| Ok(PyObject::int(-1))),
     );
 
     // ── __enter__ / __exit__ for context manager ──

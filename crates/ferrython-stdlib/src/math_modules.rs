@@ -1389,13 +1389,59 @@ pub fn create_random_module() -> PyObjectRef {
     ])
 }
 
+// ── Seeded PRNG (xoshiro256**) for reproducible random sequences ──
+
+use std::cell::RefCell;
+
+/// Xoshiro256** state — fast, high-quality PRNG with proper seeding support.
+struct Xoshiro256 {
+    s: [u64; 4],
+}
+
+impl Xoshiro256 {
+    fn new(seed: u64) -> Self {
+        // SplitMix64 to expand a single u64 seed into 4 state words
+        let mut z = seed;
+        let mut s = [0u64; 4];
+        for item in &mut s {
+            z = z.wrapping_add(0x9e3779b97f4a7c15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+            *item = z ^ (z >> 31);
+        }
+        Self { s }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let result = (self.s[1].wrapping_mul(5)).rotate_left(7).wrapping_mul(9);
+        let t = self.s[1] << 17;
+        self.s[2] ^= self.s[0];
+        self.s[3] ^= self.s[1];
+        self.s[1] ^= self.s[2];
+        self.s[0] ^= self.s[3];
+        self.s[2] ^= t;
+        self.s[3] = self.s[3].rotate_left(45);
+        result
+    }
+
+    fn next_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+thread_local! {
+    static RNG: RefCell<Xoshiro256> = RefCell::new({
+        // Default seed from system time + thread id
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default().as_nanos() as u64;
+        let tid = format!("{:?}", std::thread::current().id()).len() as u64;
+        Xoshiro256::new(nanos ^ tid.wrapping_mul(0x517cc1b727220a95))
+    });
+}
+
 fn simple_random() -> f64 {
-    use std::time::SystemTime;
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let cnt = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().subsec_nanos() as u64;
-    let seed = nanos.wrapping_mul(6364136223846793005).wrapping_add(cnt.wrapping_mul(1442695040888963407));
-    (seed >> 11) as f64 / (1u64 << 53) as f64
+    RNG.with(|rng| rng.borrow_mut().next_f64())
 }
 
 fn random_random(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1429,7 +1475,31 @@ fn random_shuffle(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     Ok(PyObject::none())
 }
-fn random_seed(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn random_seed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let seed_val: u64 = if args.is_empty() || matches!(args[0].payload, PyObjectPayload::None) {
+        // No seed or None → use system time
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default().as_nanos() as u64
+    } else {
+        match &args[0].payload {
+            PyObjectPayload::Int(n) => {
+                let v = n.to_i64().unwrap_or(0);
+                v as u64
+            }
+            PyObjectPayload::Float(f) => f.to_bits(),
+            PyObjectPayload::Str(s) => {
+                // Hash the string for seed
+                let mut h: u64 = 0;
+                for b in s.as_bytes() {
+                    h = h.wrapping_mul(31).wrapping_add(*b as u64);
+                }
+                h
+            }
+            _ => args[0].py_to_string().len() as u64,
+        }
+    };
+    RNG.with(|rng| *rng.borrow_mut() = Xoshiro256::new(seed_val));
     Ok(PyObject::none())
 }
 fn random_randrange(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

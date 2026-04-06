@@ -118,14 +118,16 @@ fn traceback_extract_tb(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 // ── traceback.print_exc() ───────────────────────────────────────────────
 
 /// `traceback.print_exc(limit=None, file=None, chain=True)` — print current exception.
-fn traceback_print_exc(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn traceback_print_exc(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let file_obj = extract_kwarg(args, "file");
     let exc_info = ferrython_core::error::get_thread_exc_info();
     if let Some((kind, message, tb_entries)) = exc_info {
         let exc = PyException {
             kind, message, original: None,
             traceback: tb_entries, cause: None, context: None, value: None, os_error_info: None,
         };
-        eprint!("{}", crate::format_traceback(&exc));
+        let text = crate::format_traceback(&exc);
+        write_to_file_or_stderr(&file_obj, &text);
     }
     Ok(PyObject::none())
 }
@@ -135,20 +137,24 @@ fn traceback_print_exc(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// `traceback.print_exception(etype, value, tb, limit=None, file=None, chain=True)`
 fn traceback_print_exception(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("print_exception", args, 1)?;
+    let file_obj = extract_kwarg(args, "file");
     let entries = extract_tb_from_arg(args.get(2).or(args.get(0)));
     let (kind_str, msg) = extract_exc_type_msg(args);
 
+    let mut text = String::new();
     if !entries.is_empty() {
-        eprint!("Traceback (most recent call last):\n");
+        text.push_str("Traceback (most recent call last):\n");
         for entry in &entries {
-            eprint!("{}", crate::formatting::format_entry(entry));
+            text.push_str(&crate::formatting::format_entry(entry));
         }
     }
     if msg.is_empty() {
-        eprintln!("{}", kind_str);
+        text.push_str(&kind_str);
+        text.push('\n');
     } else {
-        eprintln!("{}: {}", kind_str, msg);
+        text.push_str(&format!("{}: {}\n", kind_str, msg));
     }
+    write_to_file_or_stderr(&file_obj, &text);
     Ok(PyObject::none())
 }
 
@@ -171,10 +177,13 @@ fn traceback_format_exception_only(args: &[PyObjectRef]) -> PyResult<PyObjectRef
 /// `traceback.print_tb(tb, limit=None, file=None)` — print traceback entries.
 fn traceback_print_tb(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("print_tb", args, 1)?;
+    let file_obj = extract_kwarg(args, "file");
     let entries = extract_tb_from_arg(Some(&args[0]));
+    let mut text = String::new();
     for entry in &entries {
-        eprint!("{}", crate::formatting::format_entry(entry));
+        text.push_str(&crate::formatting::format_entry(entry));
     }
+    write_to_file_or_stderr(&file_obj, &text);
     Ok(PyObject::none())
 }
 
@@ -432,5 +441,62 @@ fn extract_exc_type_msg(args: &[PyObjectRef]) -> (String, String) {
                 .unwrap_or_default();
             (type_name, msg)
         }
+    }
+}
+
+/// Extract a keyword argument from the trailing kwargs dict.
+fn extract_kwarg(args: &[PyObjectRef], key: &str) -> Option<PyObjectRef> {
+    if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(map) = &last.payload {
+            let r = map.read();
+            for (k, v) in r.iter() {
+                if k.to_object().py_to_string() == key {
+                    return Some(v.clone());
+                }
+            }
+        }
+    }
+    // Also check positional args that might be "file" by convention
+    None
+}
+
+/// Write text to a file object (calling its write() method) or to stderr.
+fn write_to_file_or_stderr(file_obj: &Option<PyObjectRef>, text: &str) {
+    if let Some(ref fobj) = file_obj {
+        if matches!(fobj.payload, PyObjectPayload::None) {
+            eprint!("{}", text);
+            return;
+        }
+        // Try to call write() on the file object
+        if let Some(write_fn) = fobj.get_attr("write") {
+            let text_obj = PyObject::str_val(CompactString::from(text));
+            match &write_fn.payload {
+                PyObjectPayload::NativeClosure { func, .. } => {
+                    let _ = func(&[text_obj]);
+                    return;
+                }
+                PyObjectPayload::NativeFunction { func, .. } => {
+                    let _ = func(&[text_obj]);
+                    return;
+                }
+                PyObjectPayload::BoundMethod { receiver, method } => {
+                    match &method.payload {
+                        PyObjectPayload::NativeClosure { func, .. } => {
+                            let _ = func(&[text_obj]);
+                            return;
+                        }
+                        PyObjectPayload::NativeFunction { func, .. } => {
+                            let _ = func(&[receiver.clone(), text_obj]);
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        eprint!("{}", text);
+    } else {
+        eprint!("{}", text);
     }
 }
