@@ -947,10 +947,18 @@ fn http_connection_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         host.clone()
     };
 
+    // Extract timeout kwarg (positional arg 2 or keyword)
+    let timeout_secs: u64 = if args.len() > 2 {
+        args[2].as_int().unwrap_or(30) as u64
+    } else {
+        30
+    };
+
     let conn_state: Arc<Mutex<HttpConnState>> =
         Arc::new(Mutex::new(HttpConnState {
             host: host_only,
             port,
+            timeout_secs,
             stream: None,
             response_data: None,
         }));
@@ -1000,9 +1008,21 @@ fn http_connection_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 .map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
 
             let addr = format!("{}:{}", guard.host, guard.port);
-            let mut stream = TcpStream::connect(&addr)
+            let timeout = Duration::from_secs(guard.timeout_secs);
+            let socket_addr: std::net::SocketAddr = addr.parse()
+                .or_else(|_| {
+                    // DNS resolution
+                    use std::net::ToSocketAddrs;
+                    addr.to_socket_addrs()
+                        .map_err(|e| PyException::os_error(format!("HTTPConnection DNS: {}", e)))
+                        .and_then(|mut addrs| addrs.next().ok_or_else(|| {
+                            PyException::os_error(format!("HTTPConnection: could not resolve {}", addr))
+                        }))
+                })?;
+            let mut stream = TcpStream::connect_timeout(&socket_addr, timeout)
                 .map_err(|e| PyException::os_error(format!("HTTPConnection: {}", e)))?;
-            stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
+            stream.set_read_timeout(Some(timeout)).ok();
+            stream.set_write_timeout(Some(timeout)).ok();
 
             let mut req = format!(
                 "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
@@ -1104,6 +1124,7 @@ fn http_connection_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 struct HttpConnState {
     host: String,
     port: u16,
+    timeout_secs: u64,
     stream: Option<TcpStream>,
     response_data: Option<Vec<u8>>,
 }
