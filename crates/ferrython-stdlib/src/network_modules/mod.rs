@@ -8,5 +8,5 @@ pub use http_module::{
     create_urllib_module, create_urllib_parse_module, create_http_module,
     create_http_server_module, create_http_cookiejar_module, create_ssl_module,
     create_smtplib_module, create_ftplib_module, create_imaplib_module,
-    create_poplib_module, create_cgi_module,
+    create_poplib_module, create_cgi_module, create_xmlrpc_module,
 };

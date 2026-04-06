@@ -13,5 +13,6 @@ pub use other::{
     create_binascii_module,
     create_codecs_module,
     create_shelve_module,
+    create_dbm_module,
 };
 pub(crate) use other::extract_bytes;

@@ -1597,3 +1597,58 @@ pub fn create_shelve_module() -> PyObjectRef {
         ("open", open_fn),
     ])
 }
+
+/// dbm module — simple key-value database stub (in-memory, not persistent)
+pub fn create_dbm_module() -> PyObjectRef {
+    let open_fn = make_builtin(|args: &[PyObjectRef]| {
+        let _filename = if !args.is_empty() { args[0].py_to_string() } else { "db".to_string() };
+        let cls = PyObject::class(CompactString::from("_Database"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            let data: Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>> = Arc::new(RwLock::new(IndexMap::new()));
+            let d1 = data.clone();
+            w.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+                "dbm.__getitem__", move |args: &[PyObjectRef]| {
+                    check_args_min("dbm.__getitem__", args, 1)?;
+                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    d1.read().get(&key).cloned().ok_or_else(|| PyException::key_error(args[0].py_to_string()))
+                }));
+            let d2 = data.clone();
+            w.insert(CompactString::from("__setitem__"), PyObject::native_closure(
+                "dbm.__setitem__", move |args: &[PyObjectRef]| {
+                    check_args_min("dbm.__setitem__", args, 2)?;
+                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    d2.write().insert(key, args[1].clone());
+                    Ok(PyObject::none())
+                }));
+            let d3 = data.clone();
+            w.insert(CompactString::from("__contains__"), PyObject::native_closure(
+                "dbm.__contains__", move |args: &[PyObjectRef]| {
+                    check_args_min("dbm.__contains__", args, 1)?;
+                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    Ok(PyObject::bool_val(d3.read().contains_key(&key)))
+                }));
+            let d4 = data.clone();
+            w.insert(CompactString::from("keys"), PyObject::native_closure(
+                "dbm.keys", move |_args: &[PyObjectRef]| {
+                    let keys: Vec<PyObjectRef> = d4.read().keys().map(|k| match k {
+                        HashableKey::Str(s) => PyObject::str_val(s.clone()),
+                        _ => PyObject::str_val(CompactString::from(format!("{:?}", k))),
+                    }).collect();
+                    Ok(PyObject::list(keys))
+                }));
+            w.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("__enter__"), make_builtin(|args: &[PyObjectRef]| {
+                check_args_min("dbm.__enter__", args, 1)?; Ok(args[0].clone())
+            }));
+            w.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+        }
+        Ok(inst)
+    });
+
+    make_module("dbm", vec![
+        ("open", open_fn),
+        ("error", PyObject::str_val(CompactString::from("dbm.error"))),
+    ])
+}

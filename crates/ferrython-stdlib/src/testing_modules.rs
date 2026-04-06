@@ -416,14 +416,42 @@ pub fn create_logging_module() -> PyObjectRef {
             } else {
                 CompactString::from(args[0].py_to_string())
             };
+            let fs = fmt_str.clone();
             attrs.insert(CompactString::from("_fmt"), PyObject::str_val(fmt_str));
-            attrs.insert(CompactString::from("format"), make_builtin(|args: &[PyObjectRef]| {
-                if args.len() >= 2 {
-                    Ok(PyObject::str_val(CompactString::from(args[1].py_to_string())))
-                } else {
-                    Ok(PyObject::str_val(CompactString::from("")))
-                }
-            }));
+            // format(record) — apply %(key)s substitution from record attrs
+            attrs.insert(CompactString::from("format"), PyObject::native_closure(
+                "Formatter.format", move |args: &[PyObjectRef]| {
+                    let record = if args.len() >= 1 { &args[0] } else {
+                        return Ok(PyObject::str_val(CompactString::from("")));
+                    };
+                    let mut result = fs.to_string();
+                    // Apply %(key)s, %(key)d style substitutions
+                    let mut i = 0;
+                    let bytes = result.as_bytes().to_vec();
+                    let mut output = String::new();
+                    while i < bytes.len() {
+                        if i + 1 < bytes.len() && bytes[i] == b'%' && bytes[i+1] == b'(' {
+                            // Find closing )s or )d
+                            if let Some(close) = bytes[i+2..].iter().position(|&b| b == b')') {
+                                let key = std::str::from_utf8(&bytes[i+2..i+2+close]).unwrap_or("");
+                                let spec_idx = i + 2 + close + 1;
+                                if spec_idx < bytes.len() {
+                                    let val = if let Some(attr) = record.get_attr(key) {
+                                        attr.py_to_string()
+                                    } else {
+                                        format!("%({})s", key)
+                                    };
+                                    output.push_str(&val);
+                                    i = spec_idx + 1; // skip the format char (s, d, f, etc.)
+                                    continue;
+                                }
+                            }
+                        }
+                        output.push(bytes[i] as char);
+                        i += 1;
+                    }
+                    Ok(PyObject::str_val(CompactString::from(output)))
+                }));
         }
         Ok(inst)
     });

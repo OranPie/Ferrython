@@ -258,6 +258,10 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "imaplib" => Some(network_modules::create_imaplib_module()),
         "poplib" => Some(network_modules::create_poplib_module()),
         "cgi" => Some(network_modules::create_cgi_module()),
+        // dbm stub
+        "dbm" | "dbm.dumb" | "dbm.gnu" | "dbm.ndbm" => Some(serial_modules::create_dbm_module()),
+        // xmlrpc stubs
+        "xmlrpc" | "xmlrpc.client" | "xmlrpc.server" => Some(network_modules::create_xmlrpc_module()),
         // Additional modules
         "cmd" => Some(misc_modules::create_cmd_module()),
         "compileall" => Some(misc_modules::create_compileall_module()),

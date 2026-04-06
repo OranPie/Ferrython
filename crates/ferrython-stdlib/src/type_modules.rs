@@ -385,6 +385,58 @@ pub fn create_typing_module() -> PyObjectRef {
     };
     attrs.push(("TypedDict", typed_dict_cls));
     attrs.push(("ForwardRef", make_typing_alias("ForwardRef")));
+
+    // Python 3.9+ additions
+    attrs.push(("Annotated", make_typing_alias("Annotated")));
+    attrs.push(("ParamSpec", PyObject::native_closure("ParamSpec", |args: &[PyObjectRef]| {
+        let name = if let Some(a) = args.first() { a.py_to_string() } else { "P".into() };
+        let cls = PyObject::class(CompactString::from("ParamSpec"), vec![], IndexMap::new());
+        let mut iattrs = IndexMap::new();
+        iattrs.insert(CompactString::from("__name__"), PyObject::str_val(CompactString::from(name.as_str())));
+        iattrs.insert(CompactString::from("args"), PyObject::str_val(CompactString::from(format!("{}.args", name))));
+        iattrs.insert(CompactString::from("kwargs"), PyObject::str_val(CompactString::from(format!("{}.kwargs", name))));
+        Ok(PyObject::instance_with_attrs(cls, iattrs))
+    })));
+    attrs.push(("TypeAlias", make_typing_alias("TypeAlias")));
+    attrs.push(("TypeGuard", make_typing_alias("TypeGuard")));
+
+    // Python 3.11+ additions
+    attrs.push(("Never", make_typing_alias("Never")));
+    attrs.push(("Self", make_typing_alias("Self")));
+    attrs.push(("assert_type", make_builtin(|args: &[PyObjectRef]| {
+        // assert_type(val, typ) → returns val (no-op at runtime)
+        check_args("assert_type", args, 2)?;
+        Ok(args[0].clone())
+    })));
+    attrs.push(("reveal_type", make_builtin(|args: &[PyObjectRef]| {
+        check_args("reveal_type", args, 1)?;
+        let val = &args[0];
+        eprintln!("Runtime type is '{}'", val.type_name());
+        Ok(val.clone())
+    })));
+
+    // Python 3.12+ additions
+    attrs.push(("TypeAliasType", make_typing_alias("TypeAliasType")));
+    attrs.push(("override", make_builtin(|args: &[PyObjectRef]| {
+        // @override decorator — no-op at runtime
+        check_args("override", args, 1)?;
+        Ok(args[0].clone())
+    })));
+
+    // Common type forms
+    attrs.push(("NoReturn", make_typing_alias("NoReturn")));
+    attrs.push(("AnyStr", make_typing_alias("AnyStr")));
+    attrs.push(("LiteralString", make_typing_alias("LiteralString")));
+    attrs.push(("Unpack", make_typing_alias("Unpack")));
+    attrs.push(("TypeVarTuple", PyObject::native_closure("TypeVarTuple", |args: &[PyObjectRef]| {
+        let name = if let Some(a) = args.first() { a.py_to_string() } else { "Ts".into() };
+        let cls = PyObject::class(CompactString::from("TypeVarTuple"), vec![], IndexMap::new());
+        let mut iattrs = IndexMap::new();
+        iattrs.insert(CompactString::from("__name__"), PyObject::str_val(CompactString::from(name.as_str())));
+        Ok(PyObject::instance_with_attrs(cls, iattrs))
+    })));
+    attrs.push(("Concatenate", make_typing_alias("Concatenate")));
+
     make_module("typing", attrs)
 }
 
