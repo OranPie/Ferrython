@@ -943,7 +943,7 @@ mod tests {
     fn test_indentation() {
         let mut lexer = Lexer::new("if True:\n    x = 1\n");
         let tokens = lexer.tokenize().unwrap();
-        let kinds: Vec<_> = tokens.iter().map(|t| std::mem::discriminant(&t.kind)).collect();
+        let _kinds: Vec<_> = tokens.iter().map(|t| std::mem::discriminant(&t.kind)).collect();
         // Should contain: If, True, Colon, Newline, Indent, Name, Equal, Int, Newline, Dedent, ...
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Indent)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Dedent)));

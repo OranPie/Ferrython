@@ -443,27 +443,25 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         _ => return Some(v),
                     }
                 }
-                for base in &cd.bases {
-                    if let Some(v) = base.get_attr(name) {
-                        // Rebind classmethods to the current class (Sub), not the base (Base)
-                        if let PyObjectPayload::BoundMethod { method, receiver } = &v.payload {
-                            if matches!(&receiver.payload, PyObjectPayload::Class(_)) {
-                                // Check if original in base namespace was a ClassMethod
-                                let is_cm = if let PyObjectPayload::Class(bcd) = &base.payload {
-                                    bcd.namespace.read().get(name)
-                                        .map(|v| matches!(&v.payload, PyObjectPayload::ClassMethod(_)))
-                                        .unwrap_or(false)
-                                } else { false };
-                                if is_cm {
+                // Walk the computed MRO (C3 linearization) for correct diamond resolution
+                let mro_chain: &[PyObjectRef] = if !cd.mro.is_empty() { &cd.mro } else { &cd.bases };
+                for base in mro_chain {
+                    if let PyObjectPayload::Class(bcd) = &base.payload {
+                        if let Some(v) = bcd.namespace.read().get(name).cloned() {
+                            match &v.payload {
+                                PyObjectPayload::StaticMethod(func) => return Some(func.clone()),
+                                PyObjectPayload::ClassMethod(func) => {
                                     return Some(Arc::new(PyObject {
                                         payload: PyObjectPayload::BoundMethod {
                                             receiver: obj.clone(),
-                                            method: method.clone(),
+                                            method: func.clone(),
                                         }
                                     }));
                                 }
+                                _ => return Some(v),
                             }
                         }
+                    } else if let Some(v) = base.get_attr(name) {
                         return Some(v);
                     }
                 }

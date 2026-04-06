@@ -1187,7 +1187,8 @@ pub(crate) fn exception_kind_matches(actual: &ExceptionKind, expected: &Exceptio
     match expected {
         ExceptionKind::BaseException => true, // catches everything
         ExceptionKind::Exception => !matches!(actual,
-            ExceptionKind::SystemExit | ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit
+            ExceptionKind::SystemExit | ExceptionKind::KeyboardInterrupt |
+            ExceptionKind::GeneratorExit | ExceptionKind::BaseExceptionGroup
         ),
         ExceptionKind::ArithmeticError => matches!(actual,
             ExceptionKind::ArithmeticError | ExceptionKind::FloatingPointError |
@@ -1199,7 +1200,16 @@ pub(crate) fn exception_kind_matches(actual: &ExceptionKind, expected: &Exceptio
         ExceptionKind::OSError => matches!(actual,
             ExceptionKind::OSError | ExceptionKind::BlockingIOError |
             ExceptionKind::BrokenPipeError | ExceptionKind::FileExistsError |
-            ExceptionKind::FileNotFoundError | ExceptionKind::PermissionError
+            ExceptionKind::FileNotFoundError | ExceptionKind::PermissionError |
+            ExceptionKind::TimeoutError | ExceptionKind::IsADirectoryError |
+            ExceptionKind::NotADirectoryError | ExceptionKind::ProcessLookupError |
+            ExceptionKind::ConnectionError | ExceptionKind::ConnectionResetError |
+            ExceptionKind::ConnectionAbortedError | ExceptionKind::ConnectionRefusedError |
+            ExceptionKind::InterruptedError | ExceptionKind::ChildProcessError
+        ),
+        ExceptionKind::ConnectionError => matches!(actual,
+            ExceptionKind::ConnectionError | ExceptionKind::ConnectionResetError |
+            ExceptionKind::ConnectionAbortedError | ExceptionKind::ConnectionRefusedError
         ),
         ExceptionKind::UnicodeError => matches!(actual,
             ExceptionKind::UnicodeError | ExceptionKind::UnicodeDecodeError |
@@ -1212,10 +1222,32 @@ pub(crate) fn exception_kind_matches(actual: &ExceptionKind, expected: &Exceptio
         ),
         ExceptionKind::Warning => matches!(actual,
             ExceptionKind::Warning | ExceptionKind::DeprecationWarning |
-            ExceptionKind::RuntimeWarning | ExceptionKind::UserWarning
+            ExceptionKind::RuntimeWarning | ExceptionKind::UserWarning |
+            ExceptionKind::SyntaxWarning | ExceptionKind::FutureWarning |
+            ExceptionKind::ImportWarning | ExceptionKind::UnicodeWarning |
+            ExceptionKind::BytesWarning | ExceptionKind::ResourceWarning |
+            ExceptionKind::PendingDeprecationWarning
         ),
         ExceptionKind::ImportError => matches!(actual,
             ExceptionKind::ImportError | ExceptionKind::ModuleNotFoundError
+        ),
+        ExceptionKind::RuntimeError => matches!(actual,
+            ExceptionKind::RuntimeError | ExceptionKind::NotImplementedError |
+            ExceptionKind::RecursionError
+        ),
+        ExceptionKind::NameError => matches!(actual,
+            ExceptionKind::NameError | ExceptionKind::UnboundLocalError
+        ),
+        ExceptionKind::SyntaxError => matches!(actual,
+            ExceptionKind::SyntaxError | ExceptionKind::IndentationError |
+            ExceptionKind::TabError
+        ),
+        ExceptionKind::SubprocessError => matches!(actual,
+            ExceptionKind::SubprocessError | ExceptionKind::CalledProcessError |
+            ExceptionKind::TimeoutExpired
+        ),
+        ExceptionKind::BaseExceptionGroup => matches!(actual,
+            ExceptionKind::BaseExceptionGroup | ExceptionKind::ExceptionGroup
         ),
         _ => false,
     }

@@ -381,6 +381,42 @@ pub fn create_typing_module() -> PyObjectRef {
             }
             Ok(PyObject::list(vec![]))
         }));
+        // __repr__ / __str__ — display as dict
+        td_ns.insert(CompactString::from("__repr__"), make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("{}"))); }
+            if let Some(data) = args[0].get_attr("_data") {
+                return Ok(PyObject::str_val(CompactString::from(data.py_to_string())));
+            }
+            Ok(PyObject::str_val(CompactString::from("{}")))
+        }));
+        td_ns.insert(CompactString::from("__str__"), make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("{}"))); }
+            if let Some(data) = args[0].get_attr("_data") {
+                return Ok(PyObject::str_val(CompactString::from(data.py_to_string())));
+            }
+            Ok(PyObject::str_val(CompactString::from("{}")))
+        }));
+        // __contains__ for 'key in td' syntax
+        td_ns.insert(CompactString::from("__contains__"), make_builtin(|args| {
+            if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+            if let Some(data) = args[0].get_attr("_data") {
+                if let PyObjectPayload::Dict(map) = &data.payload {
+                    let key_h = HashableKey::from_object(&args[1])?;
+                    return Ok(PyObject::bool_val(map.read().contains_key(&key_h)));
+                }
+            }
+            Ok(PyObject::bool_val(false))
+        }));
+        // __len__
+        td_ns.insert(CompactString::from("__len__"), make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::int(0)); }
+            if let Some(data) = args[0].get_attr("_data") {
+                if let PyObjectPayload::Dict(map) = &data.payload {
+                    return Ok(PyObject::int(map.read().len() as i64));
+                }
+            }
+            Ok(PyObject::int(0))
+        }));
         PyObject::class(CompactString::from("TypedDict"), vec![], td_ns)
     };
     attrs.push(("TypedDict", typed_dict_cls));
@@ -917,7 +953,38 @@ pub fn create_collections_abc_module() -> PyObjectRef {
             }
             ns.insert(CompactString::from("_abc_builtin_types"), PyObject::set(type_set));
         }
-        PyObject::class(CompactString::from(name), vec![], ns)
+        let cls = PyObject::class(CompactString::from(name), vec![], ns);
+        // Add register() method so ABCs support Mapping.register(MyClass)
+        if let PyObjectPayload::Class(ref cd) = cls.payload {
+            let cls_ref = cls.clone();
+            let register_fn = PyObject::native_closure(
+                &format!("{}.register", name),
+                move |args: &[PyObjectRef]| {
+                    let subclass = if args.is_empty() {
+                        return Err(PyException::type_error("register() requires a subclass argument"));
+                    } else {
+                        args.last().unwrap().clone()
+                    };
+                    if let PyObjectPayload::Class(ref cd) = cls_ref.payload {
+                        let mut ns = cd.namespace.write();
+                        let registry = ns.entry(CompactString::from("__abc_registry__"))
+                            .or_insert_with(|| PyObject::list(vec![]));
+                        if let PyObjectPayload::List(ref list) = registry.payload {
+                            list.write().push(subclass.clone());
+                        }
+                    }
+                    if let PyObjectPayload::Class(ref cd) = subclass.payload {
+                        cd.namespace.write().insert(
+                            CompactString::from("__abc_registered__"),
+                            cls_ref.clone(),
+                        );
+                    }
+                    Ok(subclass)
+                },
+            );
+            cd.namespace.write().insert(CompactString::from("register"), register_fn);
+        }
+        cls
     };
     make_module("collections.abc", vec![
         ("Hashable",        make_abc("Hashable", &["int", "float", "str", "bool", "bytes", "tuple", "frozenset", "NoneType"])),
