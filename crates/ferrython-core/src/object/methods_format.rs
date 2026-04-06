@@ -82,9 +82,13 @@ pub(super) fn py_format_value(obj: &PyObjectRef, spec: &str) -> PyResult<String>
                     if pre_dot.is_empty() {
                         return Ok(result);
                     }
-                    return Ok(apply_string_format_spec(&result, pre_dot));
+                    return Ok(apply_numeric_sign(&result, pre_dot));
                 }
                 let num_str = format!("{:.6}", f);
+                if !inner_spec.is_empty() {
+                    let clean: String = inner_spec.chars().filter(|c| *c != ',').collect();
+                    return Ok(apply_numeric_sign(&num_str, &clean));
+                }
                 if use_comma {
                     return Ok(add_thousands_separator(&num_str, ','));
                 }

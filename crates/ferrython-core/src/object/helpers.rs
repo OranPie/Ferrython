@@ -705,7 +705,8 @@ pub fn apply_string_format_spec(s: &str, spec: &str) -> String {
     };
     if width <= s.len() { return s.to_string(); }
     let pad_len = width - s.len();
-    match align.unwrap_or('>') {
+    // Strings default to left-aligned (CPython behavior)
+    match align.unwrap_or('<') {
         '<' => format!("{}{}", s, std::iter::repeat(fill).take(pad_len).collect::<String>()),
         '>' | '=' => format!("{}{}", std::iter::repeat(fill).take(pad_len).collect::<String>(), s),
         '^' => {
