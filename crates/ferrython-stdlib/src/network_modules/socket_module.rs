@@ -109,6 +109,7 @@ pub fn create_socket_module() -> PyObjectRef {
             ("gethostname", make_builtin(socket_gethostname)),
             ("gethostbyname", make_builtin(socket_gethostbyname)),
             ("getaddrinfo", make_builtin(socket_getaddrinfo)),
+            ("getfqdn", make_builtin(socket_getfqdn)),
             ("create_connection", make_builtin(socket_create_connection)),
         ],
     )
@@ -754,6 +755,31 @@ fn socket_gethostname(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "localhost".to_string());
     Ok(PyObject::str_val(CompactString::from(hostname)))
+}
+
+fn socket_getfqdn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let name = if args.is_empty() || args[0].py_to_string().is_empty() {
+        std::fs::read_to_string("/etc/hostname")
+            .map(|s| s.trim().to_string())
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .unwrap_or_else(|_| "localhost".to_string())
+    } else {
+        args[0].py_to_string()
+    };
+    // Try to resolve the hostname to get FQDN
+    use std::net::ToSocketAddrs;
+    match format!("{}:0", name).to_socket_addrs() {
+        Ok(mut addrs) => {
+            if let Some(_addr) = addrs.next() {
+                // In practice, getting the reverse DNS name would require more work.
+                // Return the hostname as-is, matching CPython behavior when DNS doesn't resolve FQDN.
+                Ok(PyObject::str_val(CompactString::from(name)))
+            } else {
+                Ok(PyObject::str_val(CompactString::from(name)))
+            }
+        }
+        Err(_) => Ok(PyObject::str_val(CompactString::from(name))),
+    }
 }
 
 fn socket_gethostbyname(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

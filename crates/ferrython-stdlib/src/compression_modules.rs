@@ -975,6 +975,8 @@ struct TarInner {
     mode: String,
     entries: Vec<TarEntry>,
     closed: bool,
+    /// The original Python BytesIO object (for writing tar data back on close)
+    fileobj: Option<PyObjectRef>,
 }
 
 fn build_tarinfo(name: &str, size: u64, is_dir: bool) -> PyObjectRef {
@@ -1172,11 +1174,11 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                     .map(|n| n.py_to_string())
                     .unwrap_or_default();
                 let data = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
-                    // Try reading data from fileobj — limited since we can't call VM
+                    // Try reading data from fileobj
                     if let PyObjectPayload::Bytes(b) = &args[1].payload {
                         b.clone()
                     } else {
-                        vec![]
+                        extract_bytes_from_fileobj(&args[1]).unwrap_or_default()
                     }
                 } else {
                     vec![]
@@ -1239,9 +1241,63 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
 }
 
 fn write_tar_to_disk(inner: &TarInner) -> PyResult<()> {
-    let filepath = &inner.filepath;
+    let build_tar_bytes = |entries: &[TarEntry]| -> PyResult<Vec<u8>> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut tar_builder = tar::Builder::new(cursor);
+        for entry in entries {
+            if entry.is_dir {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Directory);
+                header.set_size(0);
+                header.set_mode(0o755);
+                header.set_cksum();
+                tar_builder.append_data(&mut header, &entry.name, &[][..]).map_err(|e| {
+                    PyException::runtime_error(&format!("tarfile: {e}"))
+                })?;
+            } else {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_size(entry.data.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar_builder.append_data(&mut header, &entry.name, &entry.data[..]).map_err(|e| {
+                    PyException::runtime_error(&format!("tarfile: {e}"))
+                })?;
+            }
+        }
+        let cursor = tar_builder.into_inner().map_err(|e| {
+            PyException::runtime_error(&format!("tarfile: {e}"))
+        })?;
+        Ok(cursor.into_inner())
+    };
 
-    // Determine compression from file extension or mode
+    // Write to fileobj if present
+    if let Some(ref fobj) = inner.fileobj {
+        let data = build_tar_bytes(&inner.entries)?;
+        // Write data back to the BytesIO by calling its write method
+        if let Some(write_fn) = fobj.get_attr("write") {
+            match &write_fn.payload {
+                PyObjectPayload::NativeFunction { func, .. } => {
+                    func(&[PyObject::bytes(data)])?;
+                }
+                PyObjectPayload::NativeClosure { func, .. } => {
+                    func(&[PyObject::bytes(data)])?;
+                }
+                _ => {}
+            }
+        }
+        // Seek back to beginning
+        if let Some(seek_fn) = fobj.get_attr("seek") {
+            match &seek_fn.payload {
+                PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&[PyObject::int(0)]); }
+                PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[PyObject::int(0)]); }
+                _ => {}
+            }
+        }
+        return Ok(());
+    }
+
+    let filepath = &inner.filepath;
     let file = std::fs::File::create(filepath).map_err(|e| {
         PyException::runtime_error(&format!("tarfile.close: {e}"))
     })?;
@@ -1256,42 +1312,56 @@ fn write_tar_to_disk(inner: &TarInner) -> PyResult<()> {
         Box::new(file)
     };
 
-    let mut tar_builder = tar::Builder::new(writer);
-    for entry in &inner.entries {
-        if entry.is_dir {
-            let mut header = tar::Header::new_gnu();
-            header.set_entry_type(tar::EntryType::Directory);
-            header.set_size(0);
-            header.set_mode(0o755);
-            header.set_cksum();
-            tar_builder.append_data(&mut header, &entry.name, &[][..]).map_err(|e| {
-                PyException::runtime_error(&format!("tarfile: {e}"))
-            })?;
-        } else {
-            let mut header = tar::Header::new_gnu();
-            header.set_entry_type(tar::EntryType::Regular);
-            header.set_size(entry.data.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            tar_builder.append_data(&mut header, &entry.name, &entry.data[..]).map_err(|e| {
-                PyException::runtime_error(&format!("tarfile: {e}"))
-            })?;
-        }
-    }
-    tar_builder.finish().map_err(|e| {
+    let data = build_tar_bytes(&inner.entries)?;
+    let mut writer = writer;
+    writer.write_all(&data).map_err(|e| {
         PyException::runtime_error(&format!("tarfile: {e}"))
     })?;
     Ok(())
 }
 
 fn tarfile_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() {
+    // Parse kwargs from last arg if it's a Dict
+    let kwargs = args.last().and_then(|a| {
+        if let PyObjectPayload::Dict(kw) = &a.payload { Some(kw.clone()) } else { None }
+    });
+    let fileobj = kwargs.as_ref().and_then(|kw| {
+        let r = kw.read();
+        r.get(&HashableKey::Str(CompactString::from("fileobj"))).cloned()
+    });
+    let mode_kwarg = kwargs.as_ref().and_then(|kw| {
+        let r = kw.read();
+        r.get(&HashableKey::Str(CompactString::from("mode"))).map(|v| v.py_to_string())
+    });
+
+    // Determine mode: positional arg[1] > kwarg > default "r"
+    let pos_mode = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::Dict(_)) {
+        Some(args[1].py_to_string())
+    } else {
+        None
+    };
+    let mode = pos_mode.or(mode_kwarg).unwrap_or_else(|| "r".to_string());
+
+    // fileobj= path: read bytes from BytesIO-like object
+    if let Some(fobj) = fileobj {
+        let buf_data = extract_bytes_from_fileobj(&fobj)?;
+        let entries = if mode.starts_with('r') || mode.contains(":r") {
+            read_tar_entries_from_bytes(&buf_data)?
+        } else {
+            Vec::new()
+        };
+        return Ok(build_tarfile_object(Arc::new(Mutex::new(TarInner {
+            filepath: String::new(), mode, entries, closed: false,
+            fileobj: Some(fobj),
+        }))));
+    }
+
+    if args.is_empty() || matches!(&args[0].payload, PyObjectPayload::Dict(_)) {
         return Err(PyException::type_error(
             "tarfile.open() missing required argument: 'name'",
         ));
     }
     let filepath = args[0].py_to_string();
-    let mode = if args.len() > 1 { args[1].py_to_string() } else { "r".to_string() };
 
     let entries = if mode.starts_with('r') || mode.contains(":r") {
         read_tar_entries(&filepath)?
@@ -1300,8 +1370,65 @@ fn tarfile_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
 
     Ok(build_tarfile_object(Arc::new(Mutex::new(TarInner {
-        filepath, mode, entries, closed: false,
+        filepath, mode, entries, closed: false, fileobj: None,
     }))))
+}
+
+/// Extract raw bytes from a BytesIO or similar object
+fn extract_bytes_from_fileobj(fobj: &PyObjectRef) -> PyResult<Vec<u8>> {
+    // Try direct bytes payload
+    if let PyObjectPayload::Bytes(b) = &fobj.payload {
+        return Ok(b.clone());
+    }
+    // Try BytesIO: look for _buffer attribute
+    if let Some(buf_attr) = fobj.get_attr("_buffer") {
+        if let PyObjectPayload::Bytes(b) = &buf_attr.payload {
+            return Ok(b.clone());
+        }
+    }
+    // Try getvalue() method
+    if let Some(getvalue) = fobj.get_attr("getvalue") {
+        // Can't call Python method from native code, but NativeFunction is OK
+        if let PyObjectPayload::NativeFunction { func, .. } = &getvalue.payload {
+            let result = func(&[])?;
+            if let PyObjectPayload::Bytes(b) = &result.payload {
+                return Ok(b.clone());
+            }
+        }
+        if let PyObjectPayload::NativeClosure { func, .. } = &getvalue.payload {
+            let result = func(&[])?;
+            if let PyObjectPayload::Bytes(b) = &result.payload {
+                return Ok(b.clone());
+            }
+        }
+    }
+    Err(PyException::type_error("fileobj must be a BytesIO or bytes-like object"))
+}
+
+fn read_tar_entries_from_bytes(data: &[u8]) -> PyResult<Vec<TarEntry>> {
+    let reader = std::io::Cursor::new(data);
+    let mut archive = tar::Archive::new(reader);
+    let mut entries = Vec::new();
+    for entry_result in archive.entries().map_err(|e| {
+        PyException::runtime_error(&format!("tarfile: {e}"))
+    })? {
+        let mut entry = entry_result.map_err(|e| {
+            PyException::runtime_error(&format!("tarfile: {e}"))
+        })?;
+        let name = entry.path().map_err(|e| {
+            PyException::runtime_error(&format!("tarfile: {e}"))
+        })?.to_string_lossy().to_string();
+        let is_dir = entry.header().entry_type().is_dir();
+        let size = entry.size();
+        let mut edata = Vec::new();
+        if !is_dir {
+            entry.read_to_end(&mut edata).map_err(|e| {
+                PyException::runtime_error(&format!("tarfile: {e}"))
+            })?;
+        }
+        entries.push(TarEntry { name, data: edata, size, is_dir });
+    }
+    Ok(entries)
 }
 
 fn read_tar_entries(filepath: &str) -> PyResult<Vec<TarEntry>> {
@@ -1344,15 +1471,33 @@ fn read_tar_entries(filepath: &str) -> PyResult<Vec<TarEntry>> {
 }
 
 fn tarinfo_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let name = if !args.is_empty() {
-        args[0].py_to_string()
+    // Handle TarInfo(name=...) with kwargs or positional
+    let (name, size) = if !args.is_empty() {
+        if let PyObjectPayload::Dict(kw) = &args[0].payload {
+            let r = kw.read();
+            let n = r.get(&HashableKey::Str(CompactString::from("name")))
+                .map(|v| v.py_to_string())
+                .unwrap_or_default();
+            let s = r.get(&HashableKey::Str(CompactString::from("size")))
+                .and_then(|v| v.as_int())
+                .unwrap_or(0) as u64;
+            (n, s)
+        } else {
+            let n = args[0].py_to_string();
+            let s = if args.len() > 1 {
+                if let PyObjectPayload::Dict(kw) = &args[1].payload {
+                    let r = kw.read();
+                    r.get(&HashableKey::Str(CompactString::from("size")))
+                        .and_then(|v| v.as_int())
+                        .unwrap_or(0) as u64
+                } else {
+                    args[1].as_int().unwrap_or(0) as u64
+                }
+            } else { 0 };
+            (n, s)
+        }
     } else {
-        String::new()
-    };
-    let size = if args.len() > 1 {
-        args[1].as_int().unwrap_or(0) as u64
-    } else {
-        0
+        (String::new(), 0)
     };
     Ok(build_tarinfo(&name, size, false))
 }

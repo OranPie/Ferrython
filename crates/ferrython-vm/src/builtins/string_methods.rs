@@ -356,8 +356,8 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             let len = s.chars().count();
             if width <= len { return Ok(PyObject::str_val(CompactString::from(s))); }
             let pad = width - len;
-            let right = pad / 2;
-            let left = pad - right;
+            let left = pad / 2;
+            let right = pad - left;
             let result = format!("{}{}{}", fillchar.to_string().repeat(left), s, fillchar.to_string().repeat(right));
             Ok(PyObject::str_val(CompactString::from(result)))
         }
