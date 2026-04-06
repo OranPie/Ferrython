@@ -3,3 +3,4 @@
 pub mod venv;
 pub mod pyproject;
 pub mod paths;
+pub mod scaffold;

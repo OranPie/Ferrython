@@ -146,13 +146,32 @@ fn main() {
         println!("Usage: ferrython [options] [script.py]");
         println!();
         println!("Options:");
-        println!("  -c CMD        Execute CMD as a string");
-        println!("  -m MODULE     Run library module as a script (NYI)");
-        println!("  -V, --version Show version");
-        println!("  --dis FILE    Disassemble bytecode to stderr, then execute");
+        println!("  -c CMD          Execute CMD as a string");
+        println!("  -m MODULE       Run library module as a script");
+        println!("  -V, --version   Show version");
+        println!("  --dis FILE      Disassemble bytecode to stderr, then execute");
         println!("  --profile FILE  Run with execution profiling");
         println!("  --stats FILE    Show bytecode statistics");
-        println!("  -h, --help    Show this help");
+        println!("  -h, --help      Show this help");
+        println!();
+        println!("Project commands:");
+        println!("  new NAME        Create a new project with pyproject.toml");
+        println!("  init            Initialize current directory as a project");
+        return;
+    }
+
+    // Project management commands
+    if args[1] == "new" {
+        if args.len() < 3 {
+            eprintln!("Usage: ferrython new <project-name>");
+            process::exit(2);
+        }
+        run_new_project(&args[2], &args[3..]);
+        return;
+    }
+
+    if args[1] == "init" {
+        run_init_project(&args[2..]);
         return;
     }
 
@@ -445,6 +464,89 @@ fn run_venv_module() {
         }
         Err(e) => {
             eprintln!("Error creating venv: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+/// Handle `ferrython new <name>` — create a new project.
+fn run_new_project(name: &str, extra_args: &[String]) {
+    let mut opts = ferrython_toolchain::scaffold::ProjectOptions {
+        name: name.to_string(),
+        description: format!("A Python project: {}", name),
+        ..Default::default()
+    };
+
+    // Parse additional flags
+    let mut i = 0;
+    while i < extra_args.len() {
+        match extra_args[i].as_str() {
+            "--author" => {
+                i += 1;
+                if i < extra_args.len() {
+                    opts.author = Some(extra_args[i].clone());
+                }
+            }
+            "--email" => {
+                i += 1;
+                if i < extra_args.len() {
+                    opts.email = Some(extra_args[i].clone());
+                }
+            }
+            "--no-tests" => opts.with_tests = false,
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let dir = std::path::Path::new(name);
+    if dir.exists() {
+        eprintln!("Error: directory '{}' already exists", name);
+        process::exit(1);
+    }
+
+    match ferrython_toolchain::scaffold::create_project(dir, &opts) {
+        Ok(()) => {
+            println!("Created project '{}' in ./{}/", name, name);
+            println!();
+            println!("  cd {}", name);
+            println!("  ferrython -m venv .venv");
+            println!("  source .venv/bin/activate");
+            println!("  ferryip install -e .");
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+/// Handle `ferrython init` — initialize current directory as a project.
+fn run_init_project(extra_args: &[String]) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let name = cwd.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("myproject")
+        .to_string();
+
+    let mut opts = ferrython_toolchain::scaffold::ProjectOptions {
+        name: name.clone(),
+        description: format!("A Python project: {}", name),
+        ..Default::default()
+    };
+
+    for arg in extra_args {
+        if arg == "--no-tests" {
+            opts.with_tests = false;
+        }
+    }
+
+    match ferrython_toolchain::scaffold::init_project(&cwd, &opts) {
+        Ok(()) => {
+            println!("Initialized project '{}' in current directory", name);
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
             process::exit(1);
         }
     }
