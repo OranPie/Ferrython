@@ -2346,9 +2346,13 @@ impl VirtualMachine {
                     return func(&resolved);
                 }
                 let result = func(&args)?;
-                // Check if native function requested a VM method call
-                if let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
-                    return self.call_object(method, margs);
+                // Check if native function requested VM method calls
+                let mut last_result = None;
+                while let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
+                    last_result = Some(self.call_object(method, margs)?);
+                }
+                if let Some(r) = last_result {
+                    return Ok(r);
                 }
                 // Execute any deferred calls (e.g., HTMLParser.feed() callbacks)
                 let deferred = ferrython_stdlib::drain_deferred_calls();
@@ -2359,11 +2363,13 @@ impl VirtualMachine {
             }
             PyObjectPayload::NativeClosure { func, .. } => {
                 let result = func(&args)?;
-                // Check if stdlib requested a VM method call (e.g., operator.length_hint
-                // with a Python-defined __length_hint__). If so, call it and use that result.
-                if let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
-                    let vm_result = self.call_object(method, margs)?;
-                    return Ok(vm_result);
+                // Check if stdlib requested VM method calls (loop for multiple)
+                let mut last_result = None;
+                while let Some((method, margs)) = ferrython_core::error::take_pending_vm_call() {
+                    last_result = Some(self.call_object(method, margs)?);
+                }
+                if let Some(r) = last_result {
+                    return Ok(r);
                 }
                 // Execute any deferred calls (e.g., Thread.start() calling Python functions)
                 let deferred = ferrython_stdlib::drain_deferred_calls();

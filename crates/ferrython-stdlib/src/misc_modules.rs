@@ -110,6 +110,10 @@ pub fn create_contextlib_module() -> PyObjectRef {
                                         PyObjectPayload::NativeClosure { func, .. } => {
                                             let _ = func(&[]);
                                         }
+                                        PyObjectPayload::Function(_) => {
+                                            // Python function callback — use request_vm_call
+                                            ferrython_core::error::request_vm_call(cb.clone(), vec![]);
+                                        }
                                         _ => {}
                                     }
                                 }

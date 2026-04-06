@@ -372,17 +372,21 @@ pub fn get_thread_exc_info() -> Option<(ExceptionKind, String, Vec<TracebackEntr
 // request here and the VM executes it after the NativeClosure returns.
 
 thread_local! {
-    static PENDING_VM_CALL: RefCell<Option<(PyObjectRef, Vec<PyObjectRef>)>>
-        = RefCell::new(None);
+    static PENDING_VM_CALLS: RefCell<Vec<(PyObjectRef, Vec<PyObjectRef>)>>
+        = RefCell::new(Vec::new());
 }
 
 /// Request the VM to call `func` with `args` after the current NativeClosure returns.
-/// The VM will replace the NativeClosure's return value with the call result.
+/// Multiple calls can be queued — they execute in order.
 pub fn request_vm_call(func: PyObjectRef, args: Vec<PyObjectRef>) {
-    PENDING_VM_CALL.with(|c| *c.borrow_mut() = Some((func, args)));
+    PENDING_VM_CALLS.with(|c| c.borrow_mut().push((func, args)));
 }
 
 /// Take the pending VM call request (called by the VM after NativeClosure dispatch).
+/// Returns calls in FIFO order; returns None when queue is empty.
 pub fn take_pending_vm_call() -> Option<(PyObjectRef, Vec<PyObjectRef>)> {
-    PENDING_VM_CALL.with(|c| c.borrow_mut().take())
+    PENDING_VM_CALLS.with(|c| {
+        let mut calls = c.borrow_mut();
+        if calls.is_empty() { None } else { Some(calls.remove(0)) }
+    })
 }
