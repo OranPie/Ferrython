@@ -76,8 +76,11 @@ fn main() {
             eprintln!("No module name specified");
             process::exit(2);
         }
-        eprintln!("ferrython: -m flag not yet implemented");
-        process::exit(1);
+        let module_name = &args[2];
+        // Pass remaining args as sys.argv
+        let module_args: Vec<String> = args[2..].to_vec();
+        run_module(module_name, &module_args);
+        return;
     }
 
     if args[1] == "--version" || args[1] == "-V" {
@@ -263,5 +266,186 @@ fn stats_string(source: &str, filename: &str) {
     if let Err(e) = stats_pipeline(source, filename) {
         e.report(filename);
         process::exit(1);
+    }
+}
+
+/// Run a module using `-m module_name` semantics.
+///
+/// For known built-in modules (venv, pip, etc.), dispatch directly.
+/// For Python modules, find and execute their `__main__.py` or the module file.
+fn run_module(module_name: &str, _module_args: &[String]) {
+    match module_name {
+        "venv" => {
+            run_venv_module();
+        }
+        "pip" | "ferryip" => {
+            // Delegate to ferryip by running the binary
+            let ferryip = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|p| p.join("ferryip")))
+                .unwrap_or_else(|| std::path::PathBuf::from("ferryip"));
+
+            let pip_args: Vec<String> = std::env::args().skip(3).collect();
+            let status = std::process::Command::new(&ferryip)
+                .args(&pip_args)
+                .status();
+
+            match status {
+                Ok(s) => process::exit(s.code().unwrap_or(1)),
+                Err(_) => {
+                    eprintln!("ferrython: ferryip not found. Build with `cargo build -p ferrython-pip`");
+                    process::exit(1);
+                }
+            }
+        }
+        "ensurepip" => {
+            println!("ferryip is bundled with Ferrython. Use `ferrython -m pip` directly.");
+        }
+        "site" => {
+            // Print site-packages info (like `python -m site`)
+            let _layout = ferrython_toolchain::paths::InstallLayout::discover();
+            println!("sys.path = [");
+            for p in ferrython_import::get_search_paths() {
+                println!("    '{}',", p.display());
+            }
+            println!("]");
+            println!("USER_BASE: '{}/.local' (exists)", std::env::var("HOME").unwrap_or_default());
+            println!("USER_SITE: '{}/.local/lib/ferrython/site-packages'", std::env::var("HOME").unwrap_or_default());
+            println!("ENABLE_USER_SITE: True");
+        }
+        "sysconfig" => {
+            // Print sysconfig info
+            let layout = ferrython_toolchain::paths::InstallLayout::discover();
+            println!("Platform: \"{}\"", if cfg!(target_os = "linux") { "linux" } else if cfg!(target_os = "macos") { "darwin" } else { "unknown" });
+            println!("Python version: \"3.11\"");
+            println!("Paths:");
+            for name in &["stdlib", "purelib", "platlib", "include", "scripts", "data"] {
+                if let Some(p) = layout.get_path(name) {
+                    println!("  {}: \"{}\"", name, p.display());
+                }
+            }
+        }
+        _ => {
+            // Try to find and execute the module as Python code
+            // Look for module/__main__.py or module.py
+            match ferrython_import::resolve_module(module_name, "<cli>") {
+                Ok(ferrython_import::ResolvedModule::Source { code, name: _, file_path }) => {
+                    // Check for __main__.py in package
+                    let file = file_path.as_deref().unwrap_or("<module>");
+                    if file.ends_with("__init__.py") {
+                        // It's a package — look for __main__.py
+                        let main_py = file.replace("__init__.py", "__main__.py");
+                        if std::path::Path::new(&main_py).exists() {
+                            let source = std::fs::read_to_string(&main_py).unwrap_or_default();
+                            run_string(&source, &main_py);
+                            return;
+                        }
+                    }
+                    // Execute the module directly
+                    let mut vm = ferrython_vm::VirtualMachine::new();
+                    if let Err(e) = vm.execute((*code).clone()) {
+                        if e.kind == ferrython_core::error::ExceptionKind::SystemExit {
+                            let exit_code = e.value.as_ref()
+                                .map(|v| v.to_int().unwrap_or(1) as i32)
+                                .unwrap_or(0);
+                            process::exit(exit_code);
+                        }
+                        eprintln!("{}", ferrython_debug::format_traceback(&e));
+                        process::exit(1);
+                    }
+                }
+                Ok(ferrython_import::ResolvedModule::Builtin(_module)) => {
+                    eprintln!("ferrython: No code to run for built-in module '{}'", module_name);
+                    process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("ferrython: No module named '{}'", module_name);
+                    eprintln!("  {}", e.message);
+                    process::exit(1);
+                }
+            }
+        }
+    }
+}
+
+/// Handle `ferrython -m venv` — create virtual environments.
+fn run_venv_module() {
+    let args: Vec<String> = std::env::args().collect();
+    // Args after `-m venv`: ferrython -m venv [options] <dir>
+    let venv_args: Vec<&str> = args.iter().skip(3).map(|s| s.as_str()).collect();
+
+    if venv_args.is_empty() {
+        eprintln!("usage: ferrython -m venv [-h] [--clear] [--system-site-packages] [--prompt PROMPT] ENV_DIR");
+        process::exit(2);
+    }
+
+    let mut opts = ferrython_toolchain::venv::VenvOptions::default();
+    let mut dir_path = None;
+
+    let mut i = 0;
+    while i < venv_args.len() {
+        match venv_args[i] {
+            "-h" | "--help" => {
+                println!("usage: ferrython -m venv [-h] [--clear] [--system-site-packages] [--prompt PROMPT] ENV_DIR");
+                println!();
+                println!("Creates virtual Ferrython environments");
+                println!();
+                println!("positional arguments:");
+                println!("  ENV_DIR               A directory to create the environment in");
+                println!();
+                println!("optional arguments:");
+                println!("  -h, --help            show this help message and exit");
+                println!("  --clear               Delete the contents of the environment directory");
+                println!("  --system-site-packages Give access to the system site-packages");
+                println!("  --without-pip         Skip installing pip");
+                println!("  --prompt PROMPT       Set the environment prompt prefix");
+                println!("  --copies              Use copies instead of symlinks");
+                println!("  --upgrade             Upgrade an existing environment");
+                return;
+            }
+            "--clear" => opts.clear = true,
+            "--system-site-packages" => opts.system_site_packages = true,
+            "--without-pip" => opts.without_pip = true,
+            "--copies" => opts.symlinks = false,
+            "--symlinks" => opts.symlinks = true,
+            "--upgrade" => opts.upgrade = true,
+            "--prompt" => {
+                i += 1;
+                if i < venv_args.len() {
+                    opts.prompt = Some(venv_args[i].to_string());
+                } else {
+                    eprintln!("Error: --prompt requires a value");
+                    process::exit(2);
+                }
+            }
+            arg if arg.starts_with('-') => {
+                eprintln!("Unknown option: {}", arg);
+                process::exit(2);
+            }
+            dir => {
+                dir_path = Some(dir.to_string());
+            }
+        }
+        i += 1;
+    }
+
+    let dir = match dir_path {
+        Some(d) => d,
+        None => {
+            eprintln!("Error: you must provide a destination directory");
+            process::exit(2);
+        }
+    };
+
+    let venv_dir = std::path::Path::new(&dir);
+    match ferrython_toolchain::venv::create_venv(venv_dir, &opts) {
+        Ok(()) => {
+            println!("Created virtual environment in '{}'", venv_dir.display());
+            println!("  Activate with: source {}/bin/activate", venv_dir.display());
+        }
+        Err(e) => {
+            eprintln!("Error creating venv: {}", e);
+            process::exit(1);
+        }
     }
 }

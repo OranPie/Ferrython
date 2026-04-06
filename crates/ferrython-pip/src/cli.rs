@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use crate::{pypi, installer, registry};
+use crate::{pypi, registry, resolver};
 
 #[derive(Parser)]
 #[command(name = "ferryip", about = "Ferrython package manager (pip-compatible)")]
@@ -30,6 +30,10 @@ enum Commands {
         /// Upgrade already-installed packages
         #[arg(short = 'U', long)]
         upgrade: bool,
+
+        /// Install the current project (reads pyproject.toml or setup.cfg)
+        #[arg(short, long)]
+        editable: Option<Option<String>>,
     },
 
     /// Uninstall packages
@@ -72,6 +76,12 @@ enum Commands {
 
     /// Verify installed packages have compatible dependencies
     Check,
+
+    /// Install from pyproject.toml in current or given directory
+    Project {
+        /// Path to project directory (default: current dir)
+        path: Option<String>,
+    },
 }
 
 pub fn run() {
@@ -80,8 +90,11 @@ pub fn run() {
     let quiet = cli.quiet;
 
     let result = match cli.command {
-        Commands::Install { packages, requirement, upgrade } => {
-            if let Some(req_file) = requirement {
+        Commands::Install { packages, requirement, upgrade, editable } => {
+            if let Some(editable_path) = editable {
+                let proj_path = editable_path.unwrap_or_else(|| ".".to_string());
+                install_project(&proj_path, &site_packages, quiet)
+            } else if let Some(req_file) = requirement {
                 let reqs = parse_requirements_file(&req_file);
                 install_packages(&reqs, &site_packages, upgrade, quiet)
             } else if packages.is_empty() {
@@ -111,6 +124,10 @@ pub fn run() {
         }
         Commands::Check => {
             check_packages(&site_packages)
+        }
+        Commands::Project { path } => {
+            let proj_path = path.unwrap_or_else(|| ".".to_string());
+            install_project(&proj_path, &site_packages, quiet)
         }
     };
 
@@ -147,46 +164,18 @@ fn parse_requirements_file(path: &str) -> Vec<String> {
 }
 
 fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, quiet: bool) -> Result<(), String> {
+    let mut visited = std::collections::HashSet::new();
     for spec in specs {
         let (name, version_req) = pypi::parse_requirement(spec);
-        if !quiet {
-            if let Some(ref v) = version_req {
-                println!("Collecting {}=={}", name, v);
-            } else {
-                println!("Collecting {}", name);
-            }
-        }
-
-        // Check if already installed
-        if !upgrade {
-            if let Some(installed) = registry::get_installed(&name, site_packages) {
-                if version_req.as_ref().map_or(true, |v| v == &installed.version) {
-                    if !quiet {
-                        println!("Requirement already satisfied: {} ({})", name, installed.version);
-                    }
-                    continue;
-                }
-            }
-        }
-
-        // Fetch from PyPI
-        let release = pypi::fetch_package_info(&name, version_req.as_deref())
-            .map_err(|e| format!("Could not find {}: {}", name, e))?;
-
-        if !quiet {
-            println!("  Downloading {}-{}", release.name, release.version);
-        }
-
-        // Download and install
-        let wheel_path = pypi::download_wheel(&release)
-            .map_err(|e| format!("Download failed: {}", e))?;
-
-        installer::install_wheel(&wheel_path, site_packages, &release.name, &release.version)
-            .map_err(|e| format!("Install failed: {}", e))?;
-
-        if !quiet {
-            println!("Successfully installed {}-{}", release.name, release.version);
-        }
+        let spec_str = version_req.as_ref().map(|v| format!("=={}", v));
+        resolver::install_with_deps(
+            &name,
+            spec_str.as_deref(),
+            site_packages,
+            upgrade,
+            quiet,
+            &mut visited,
+        )?;
     }
     Ok(())
 }
@@ -321,4 +310,117 @@ fn check_packages(site_packages: &str) -> Result<(), String> {
         println!("No broken requirements found.");
     }
     Ok(())
+}
+
+/// Install dependencies from a project's pyproject.toml or setup.cfg.
+fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), String> {
+    let proj_dir = std::path::Path::new(path);
+
+    // Try pyproject.toml first
+    let pyproject_path = proj_dir.join("pyproject.toml");
+    if pyproject_path.exists() {
+        let pyproj = ferrython_toolchain::pyproject::parse_pyproject(&pyproject_path)?;
+        if !quiet {
+            if let Some(name) = pyproj.name() {
+                let version = pyproj.version().unwrap_or("0.0.0");
+                println!("Installing project: {} ({})", name, version);
+            }
+        }
+
+        // Install build-system requirements
+        let build_reqs = pyproj.build_requires();
+        if !build_reqs.is_empty() && !quiet {
+            println!("Installing build dependencies...");
+        }
+        let mut visited = std::collections::HashSet::new();
+        for req in &build_reqs {
+            let (name, spec) = pypi::parse_requirement(req);
+            let spec_str = spec.map(|v| format!("=={}", v));
+            resolver::install_with_deps(&name, spec_str.as_deref(), site_packages, false, quiet, &mut visited)?;
+        }
+
+        // Install project dependencies
+        let deps = pyproj.dependencies();
+        if !deps.is_empty() {
+            if !quiet {
+                println!("Installing project dependencies...");
+            }
+            for dep in &deps {
+                let (name, spec) = pypi::parse_requirement(dep);
+                let spec_str = spec.map(|v| format!("=={}", v));
+                resolver::install_with_deps(&name, spec_str.as_deref(), site_packages, false, quiet, &mut visited)?;
+            }
+        }
+
+        if !quiet {
+            println!("Project dependencies installed successfully.");
+        }
+        return Ok(());
+    }
+
+    // Fallback: try setup.cfg
+    let setup_cfg_path = proj_dir.join("setup.cfg");
+    if setup_cfg_path.exists() {
+        return install_from_setup_cfg(&setup_cfg_path, site_packages, quiet);
+    }
+
+    // Fallback: try requirements.txt
+    let req_path = proj_dir.join("requirements.txt");
+    if req_path.exists() {
+        let reqs = parse_requirements_file(&req_path.to_string_lossy());
+        return install_packages(&reqs, site_packages, false, quiet);
+    }
+
+    Err(format!(
+        "No pyproject.toml, setup.cfg, or requirements.txt found in {}",
+        proj_dir.display()
+    ))
+}
+
+/// Install dependencies from a setup.cfg file.
+fn install_from_setup_cfg(path: &std::path::Path, site_packages: &str, quiet: bool) -> Result<(), String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
+
+    let mut deps = Vec::new();
+    let mut in_install_requires = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[options]" || trimmed.starts_with("[options]") {
+            continue;
+        }
+        if trimmed.starts_with("install_requires") {
+            in_install_requires = true;
+            // Handle inline: install_requires = package1
+            if let Some(eq_pos) = trimmed.find('=') {
+                let val = trimmed[eq_pos + 1..].trim();
+                if !val.is_empty() {
+                    deps.push(val.to_string());
+                }
+            }
+            continue;
+        }
+        if in_install_requires {
+            if trimmed.is_empty() || (!trimmed.starts_with(' ') && !trimmed.starts_with('\t') && trimmed.contains('=')) {
+                in_install_requires = false;
+                continue;
+            }
+            if !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with('[') {
+                deps.push(trimmed.to_string());
+            }
+            if trimmed.starts_with('[') {
+                in_install_requires = false;
+            }
+        }
+    }
+
+    if deps.is_empty() {
+        if !quiet {
+            println!("No dependencies found in setup.cfg");
+        }
+        return Ok(());
+    }
+
+    install_packages(&deps, site_packages, false, quiet)
 }

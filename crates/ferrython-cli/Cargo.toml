@@ -20,6 +20,7 @@ ferrython-import = { workspace = true }
 ferrython-stdlib = { workspace = true }
 ferrython-gc = { workspace = true }
 ferrython-debug = { workspace = true }
+ferrython-toolchain = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

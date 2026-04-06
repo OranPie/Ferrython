@@ -13,6 +13,7 @@ ferrython-async = { workspace = true }
 ferrython-gc = { workspace = true }
 ferrython-parser = { workspace = true }
 ferrython-ast = { workspace = true }
+ferrython-toolchain = { workspace = true }
 compact_str = { workspace = true }
 indexmap = { workspace = true }
 parking_lot = { workspace = true }

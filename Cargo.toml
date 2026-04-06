@@ -17,6 +17,7 @@ members = [
     "crates/ferrython-stdlib",
     "crates/ferrython-cli",
     "crates/ferrython-pip",
+    "crates/ferrython-toolchain",
 ]
 
 [workspace.package]
@@ -44,6 +45,8 @@ ferrython-traceback = { path = "crates/ferrython-traceback" }
 ferrython-async = { path = "crates/ferrython-async" }
 ferrython-stdlib = { path = "crates/ferrython-stdlib" }
 ferrython-cli = { path = "crates/ferrython-cli" }
+ferrython-pip = { path = "crates/ferrython-pip" }
+ferrython-toolchain = { path = "crates/ferrython-toolchain" }
 
 # External crates
 num-bigint = "0.4"

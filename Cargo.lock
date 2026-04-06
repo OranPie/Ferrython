@@ -407,6 +407,7 @@ dependencies = [
  "ferrython-parser",
  "ferrython-repl",
  "ferrython-stdlib",
+ "ferrython-toolchain",
  "ferrython-vm",
  "thiserror 1.0.69",
  "tracing",
@@ -509,6 +510,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "digest",
+ "ferrython-toolchain",
  "flate2",
  "reqwest",
  "serde",
@@ -547,6 +549,7 @@ dependencies = [
  "ferrython-core",
  "ferrython-gc",
  "ferrython-parser",
+ "ferrython-toolchain",
  "ferrython-traceback",
  "flate2",
  "indexmap",
@@ -562,6 +565,15 @@ dependencies = [
  "thiserror 1.0.69",
  "xz2",
  "zip",
+]
+
+[[package]]
+name = "ferrython-toolchain"
+version = "0.1.0"
+dependencies = [
+ "ferrython-core",
+ "serde",
+ "toml",
 ]
 
 [[package]]

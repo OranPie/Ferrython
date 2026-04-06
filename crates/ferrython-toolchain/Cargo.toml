@@ -1,0 +1,12 @@
+[package]
+name = "ferrython-toolchain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Ferrython toolchain — venv creation, project scaffolding, and build orchestration"
+
+[dependencies]
+ferrython-core = { workspace = true }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }

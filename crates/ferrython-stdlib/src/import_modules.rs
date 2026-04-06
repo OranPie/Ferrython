@@ -281,34 +281,29 @@ pub fn create_importlib_metadata_module() -> PyObjectRef {
 }
 
 /// Read installed package metadata from dist-info directories.
-/// Searches site-packages and dist-info dirs on sys.path.
+/// Searches site-packages using the toolchain's discovered layout.
 fn find_dist_info(package_name: &str) -> Option<std::path::PathBuf> {
     let normalized = package_name.to_lowercase().replace('-', "_");
-    // Check common locations
-    let search_paths = vec![
-        std::path::PathBuf::from("site-packages"),
-        std::path::PathBuf::from("/usr/lib/python3/dist-packages"),
-        std::path::PathBuf::from("/usr/local/lib/python3.8/dist-packages"),
+    let layout = ferrython_toolchain::paths::InstallLayout::discover();
+
+    // Search paths: ferrython's site-packages, user site, system locations
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut search_paths = vec![
+        layout.site_packages.clone(),
+        std::path::PathBuf::from(format!("{}/.local/lib/ferrython/site-packages", home)),
     ];
-    // Also check cwd/site-packages for ferryip-installed packages
+
+    // Also check cwd-relative site-packages for development
     if let Ok(cwd) = std::env::current_dir() {
-        let local_site = cwd.join("site-packages");
+        let local_site = cwd.join("lib").join("ferrython").join("site-packages");
         if local_site.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&local_site) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.ends_with(".dist-info") {
-                        let dist_name = name.trim_end_matches(".dist-info")
-                            .split('-').next().unwrap_or("")
-                            .to_lowercase().replace('-', "_");
-                        if dist_name == normalized {
-                            return Some(entry.path());
-                        }
-                    }
-                }
-            }
+            search_paths.push(local_site);
         }
     }
+
+    // Add system Python dist-packages as fallback
+    search_paths.push(std::path::PathBuf::from("/usr/lib/python3/dist-packages"));
+
     for base in &search_paths {
         if !base.is_dir() { continue; }
         if let Ok(entries) = std::fs::read_dir(base) {

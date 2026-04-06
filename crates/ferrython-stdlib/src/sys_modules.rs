@@ -1916,13 +1916,45 @@ pub fn create_atexit_module() -> PyObjectRef {
 // ── site module ──
 
 pub fn create_site_module() -> PyObjectRef {
+    let layout = ferrython_toolchain::paths::InstallLayout::discover();
+    let site_packages_str = layout.site_packages.to_string_lossy().to_string();
+    let prefix_str = layout.prefix.to_string_lossy().to_string();
+
+    let sp_clone = site_packages_str.clone();
+    let getsitepackages = PyObject::native_closure("getsitepackages", move |_args: &[PyObjectRef]| {
+        Ok(PyObject::list(vec![
+            PyObject::str_val(CompactString::from(sp_clone.as_str())),
+        ]))
+    });
+
+    let getusersitepackages = make_builtin(|_args: &[PyObjectRef]| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let user_site = format!("{}/.local/lib/ferrython/site-packages", home);
+        Ok(PyObject::str_val(CompactString::from(user_site)))
+    });
+
+    let addsitedir = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(ferrython_core::error::PyException::type_error("addsitedir requires 1 argument"));
+        }
+        let _dir = args[0].py_to_string();
+        Ok(PyObject::none())
+    });
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let user_base = format!("{}/.local", home);
+    let user_site = format!("{}/lib/ferrython/site-packages", user_base);
+
     make_module("site", vec![
-        ("ENABLE_USER_SITE", PyObject::bool_val(false)),
-        ("USER_SITE", PyObject::none()),
-        ("USER_BASE", PyObject::none()),
-        ("PREFIXES", PyObject::list(vec![])),
-        ("getusersitepackages", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from(""))))),
-        ("getsitepackages", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::list(vec![])))),
+        ("ENABLE_USER_SITE", PyObject::bool_val(true)),
+        ("USER_SITE", PyObject::str_val(CompactString::from(user_site.as_str()))),
+        ("USER_BASE", PyObject::str_val(CompactString::from(user_base.as_str()))),
+        ("PREFIXES", PyObject::list(vec![
+            PyObject::str_val(CompactString::from(prefix_str.as_str())),
+        ])),
+        ("getusersitepackages", getusersitepackages),
+        ("getsitepackages", getsitepackages),
+        ("addsitedir", addsitedir),
     ])
 }
 
@@ -2219,6 +2251,8 @@ pub fn create_fcntl_module() -> PyObjectRef {
 // ── sysconfig module ──
 
 pub fn create_sysconfig_module() -> PyObjectRef {
+    let layout = ferrython_toolchain::paths::InstallLayout::discover();
+
     let get_python_version = make_builtin(|_args: &[PyObjectRef]| {
         Ok(PyObject::str_val(CompactString::from("3.11")))
     });
@@ -2236,51 +2270,68 @@ pub fn create_sysconfig_module() -> PyObjectRef {
         Ok(PyObject::str_val(CompactString::from(platform)))
     });
 
-    let get_path = make_builtin(|args: &[PyObjectRef]| {
+    let layout_path = layout.clone();
+    let get_path = PyObject::native_closure("get_path", move |args: &[PyObjectRef]| {
         let name = if args.is_empty() { String::from("stdlib") } else { args[0].py_to_string() };
-        match name.as_str() {
-            "stdlib" | "purelib" | "platlib" => {
-                Ok(PyObject::str_val(CompactString::from("/usr/lib/python3.11")))
-            }
-            "include" => Ok(PyObject::str_val(CompactString::from("/usr/include/python3.11"))),
-            "scripts" => Ok(PyObject::str_val(CompactString::from("/usr/bin"))),
-            "data" => Ok(PyObject::str_val(CompactString::from("/usr"))),
-            _ => Ok(PyObject::str_val(CompactString::from(""))),
-        }
+        let path_val = layout_path.get_path(&name)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Ok(PyObject::str_val(CompactString::from(path_val)))
     });
 
-    let get_paths = make_builtin(|_args: &[PyObjectRef]| {
-        let pairs = vec![
-            (PyObject::str_val(CompactString::from("stdlib")), PyObject::str_val(CompactString::from("/usr/lib/python3.11"))),
-            (PyObject::str_val(CompactString::from("purelib")), PyObject::str_val(CompactString::from("/usr/lib/python3.11/site-packages"))),
-            (PyObject::str_val(CompactString::from("platlib")), PyObject::str_val(CompactString::from("/usr/lib/python3.11/site-packages"))),
-            (PyObject::str_val(CompactString::from("include")), PyObject::str_val(CompactString::from("/usr/include/python3.11"))),
-            (PyObject::str_val(CompactString::from("scripts")), PyObject::str_val(CompactString::from("/usr/bin"))),
-            (PyObject::str_val(CompactString::from("data")), PyObject::str_val(CompactString::from("/usr"))),
-        ];
+    let layout_paths = layout.clone();
+    let get_paths = PyObject::native_closure("get_paths", move |_args: &[PyObjectRef]| {
+        let names = ["stdlib", "purelib", "platlib", "include", "scripts", "data"];
+        let pairs: Vec<(PyObjectRef, PyObjectRef)> = names.iter()
+            .map(|name| {
+                let path_val = layout_paths.get_path(name)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                (
+                    PyObject::str_val(CompactString::from(*name)),
+                    PyObject::str_val(CompactString::from(path_val)),
+                )
+            })
+            .collect();
         Ok(PyObject::dict_from_pairs(pairs))
     });
 
-    let get_config_var = make_builtin(|args: &[PyObjectRef]| {
+    let layout_var = layout.clone();
+    let get_config_var = PyObject::native_closure("get_config_var", move |args: &[PyObjectRef]| {
         if args.is_empty() { return Ok(PyObject::none()); }
         let name = args[0].py_to_string();
-        match name.as_str() {
-            "prefix" | "exec_prefix" => Ok(PyObject::str_val(CompactString::from("/usr"))),
-            "base_prefix" | "base_exec_prefix" => Ok(PyObject::str_val(CompactString::from("/usr"))),
-            "SOABI" => Ok(PyObject::str_val(CompactString::from("cpython-311-x86_64-linux-gnu"))),
-            "EXT_SUFFIX" => Ok(PyObject::str_val(CompactString::from(".cpython-311-x86_64-linux-gnu.so"))),
-            "BINDIR" => Ok(PyObject::str_val(CompactString::from("/usr/bin"))),
-            "py_version_short" => Ok(PyObject::str_val(CompactString::from("3.11"))),
-            "LDLIBRARY" => Ok(PyObject::str_val(CompactString::from("libpython3.11.so"))),
-            "installed_base" => Ok(PyObject::str_val(CompactString::from("/usr"))),
-            "Py_ENABLE_SHARED" => Ok(PyObject::int(1)),
-            "SIZEOF_VOID_P" => Ok(PyObject::int(std::mem::size_of::<usize>() as i64)),
-            _ => Ok(PyObject::none()),
+        match layout_var.get_config_var(&name) {
+            Some(val) => Ok(PyObject::str_val(CompactString::from(val))),
+            None => Ok(PyObject::none()),
         }
     });
 
-    let get_config_vars = make_builtin(|_args: &[PyObjectRef]| {
-        Ok(PyObject::dict_from_pairs(vec![]))
+    let layout_vars = layout.clone();
+    let get_config_vars = PyObject::native_closure("get_config_vars", move |_args: &[PyObjectRef]| {
+        let keys = ["prefix", "exec_prefix", "base_prefix", "BINDIR", "py_version_short",
+                     "SOABI", "EXT_SUFFIX", "SIZEOF_VOID_P", "installed_base"];
+        let pairs: Vec<(PyObjectRef, PyObjectRef)> = keys.iter()
+            .filter_map(|k| {
+                layout_vars.get_config_var(k).map(|v| (
+                    PyObject::str_val(CompactString::from(*k)),
+                    PyObject::str_val(CompactString::from(v)),
+                ))
+            })
+            .collect();
+        Ok(PyObject::dict_from_pairs(pairs))
+    });
+
+    let get_default_scheme = make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::str_val(CompactString::from("posix_prefix")))
+    });
+
+    let get_scheme_names = make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::list(vec![
+            PyObject::str_val(CompactString::from("posix_prefix")),
+            PyObject::str_val(CompactString::from("posix_user")),
+            PyObject::str_val(CompactString::from("nt")),
+            PyObject::str_val(CompactString::from("nt_user")),
+        ]))
     });
 
     make_module("sysconfig", vec![
@@ -2290,5 +2341,7 @@ pub fn create_sysconfig_module() -> PyObjectRef {
         ("get_paths", get_paths),
         ("get_config_var", get_config_var),
         ("get_config_vars", get_config_vars),
+        ("get_default_scheme", get_default_scheme),
+        ("get_scheme_names", get_scheme_names),
     ])
 }
