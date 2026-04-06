@@ -356,6 +356,16 @@ impl VirtualMachine {
                     return Ok(None);
                 }
             }
+            // Module with __contains__ (e.g., os.environ)
+            if let PyObjectPayload::Module(ref md) = &b.payload {
+                let contains_fn = md.attrs.read().get("__contains__").cloned();
+                if let Some(method) = contains_fn {
+                    let r = self.call_object(method, vec![b.clone(), a.clone()])?;
+                    let val = if op == 6 { r.is_truthy() } else { !r.is_truthy() };
+                    self.vm_push(PyObject::bool_val(val));
+                    return Ok(None);
+                }
+            }
         }
         let result = match op {
             0 => a.compare(&b, CompareOp::Lt)?,

@@ -199,7 +199,11 @@ impl VirtualMachine {
                     && !matches!(&v.payload,
                         PyObjectPayload::Function(_) |
                         PyObjectPayload::NativeFunction { .. } |
-                        PyObjectPayload::BuiltinFunction(_))
+                        PyObjectPayload::BuiltinFunction(_) |
+                        PyObjectPayload::Property { .. } |
+                        PyObjectPayload::NativeClosure { .. } |
+                        PyObjectPayload::StaticMethod(_) |
+                        PyObjectPayload::ClassMethod(_))
                 })
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect()

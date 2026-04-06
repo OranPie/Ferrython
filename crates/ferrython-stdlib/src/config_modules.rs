@@ -1130,16 +1130,38 @@ pub fn create_configparser_module() -> PyObjectRef {
         Ok(PyObject::none())
     }
 
-    // __getitem__: config["section"] returns a section proxy dict
+    // __getitem__: config["section"] returns a section proxy dict with interpolation
     fn cp_getitem(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         check_args_min("ConfigParser.__getitem__", args, 2)?;
         let section = args[1].py_to_string();
-        if section == "DEFAULT" {
-            // Return defaults dict
+
+        // Collect defaults snapshot for interpolation
+        let defaults_snap: Option<IndexMap<HashableKey, PyObjectRef>> =
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                if let Some(d) = inst.attrs.read().get("_defaults") {
-                    return Ok(d.clone());
+                inst.attrs.read().get("_defaults")
+                    .and_then(|d| if let PyObjectPayload::Dict(dd) = &d.payload {
+                        Some(dd.read().clone())
+                    } else { None })
+            } else { None };
+
+        if section == "DEFAULT" {
+            if let Some(snap) = &defaults_snap {
+                // Return interpolated defaults
+                let result = IndexMap::new();
+                let result_dict = PyObject::dict(result);
+                if let PyObjectPayload::Dict(rd) = &result_dict.payload {
+                    let mut w = rd.write();
+                    for (k, v) in snap.iter() {
+                        let val_str = v.py_to_string();
+                        if val_str.contains("%(") {
+                            let interp = interpolate_value(&val_str, Some(snap), None, 0);
+                            w.insert(k.clone(), PyObject::str_val(CompactString::from(&interp)));
+                        } else {
+                            w.insert(k.clone(), v.clone());
+                        }
+                    }
                 }
+                return Ok(result_dict);
             }
             return Ok(PyObject::dict(IndexMap::new()));
         }
@@ -1147,6 +1169,38 @@ pub fn create_configparser_module() -> PyObjectRef {
             let r = secs.read();
             let key = HashableKey::Str(CompactString::from(&section));
             if let Some(sec_dict) = r.get(&key) {
+                // Apply interpolation: merge section items + defaults, interpolate all values
+                if let PyObjectPayload::Dict(d) = &sec_dict.payload {
+                    let section_snap = d.read().clone();
+                    let result = IndexMap::new();
+                    let result_dict = PyObject::dict(result);
+                    if let PyObjectPayload::Dict(rd) = &result_dict.payload {
+                        let mut w = rd.write();
+                        // Include defaults as fallback
+                        if let Some(defs) = &defaults_snap {
+                            for (k, v) in defs.iter() {
+                                let val_str = v.py_to_string();
+                                if val_str.contains("%(") {
+                                    let interp = interpolate_value(&val_str, Some(&section_snap), Some(defs), 0);
+                                    w.insert(k.clone(), PyObject::str_val(CompactString::from(&interp)));
+                                } else {
+                                    w.insert(k.clone(), v.clone());
+                                }
+                            }
+                        }
+                        // Section values override defaults
+                        for (k, v) in section_snap.iter() {
+                            let val_str = v.py_to_string();
+                            if val_str.contains("%(") {
+                                let interp = interpolate_value(&val_str, Some(&section_snap), defaults_snap.as_ref(), 0);
+                                w.insert(k.clone(), PyObject::str_val(CompactString::from(&interp)));
+                            } else {
+                                w.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                    return Ok(result_dict);
+                }
                 return Ok(sec_dict.clone());
             }
         }

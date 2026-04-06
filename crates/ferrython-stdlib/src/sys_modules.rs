@@ -434,16 +434,112 @@ pub fn create_os_module() -> PyObjectRef {
         ("path", create_os_path_module()),
         ("getenv", make_builtin(os_getenv)),
         ("environ", {
-            // Build environ as a real Dict (so isinstance(os.environ, dict) == True)
-            // Note: modifications via os.environ["X"] = "Y" update the dict but not the OS env.
-            // Use os.putenv() to also update the OS env.
-            // os.getenv() reads from OS env (matches CPython).
-            PyObject::dict_from_pairs(
-                std::env::vars().map(|(k, v)| (
-                    PyObject::str_val(CompactString::from(k)),
-                    PyObject::str_val(CompactString::from(v)),
-                )).collect()
-            )
+            // Build _Environ instance: a dict-like object that syncs with OS env.
+            // os.environ["X"] = "Y" calls putenv; del os.environ["X"] calls unsetenv.
+            let initial_pairs: Vec<(PyObjectRef, PyObjectRef)> = std::env::vars().map(|(k, v)| (
+                PyObject::str_val(CompactString::from(k)),
+                PyObject::str_val(CompactString::from(v)),
+            )).collect();
+            let data = PyObject::dict_from_pairs(initial_pairs);
+            let data_ref = data.clone();
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("_data"), data.clone());
+
+            // Dunders are called via try_call_dunder which prepends self as args[0].
+            // StoreSubscr/DeleteSubscr Module handler calls directly without self.
+            // Use helper: last 1 arg = key, last 2 args = key+val.
+            attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+                "__getitem__", move |args| {
+                    // args may be [self, key] or [key]
+                    let key_str = args.last().ok_or_else(|| PyException::key_error("key required"))?.py_to_string();
+                    match std::env::var(&key_str) {
+                        Ok(val) => Ok(PyObject::str_val(CompactString::from(val))),
+                        Err(_) => Err(PyException::key_error(format!("'{}'", key_str))),
+                    }
+                }
+            ));
+            let d2 = data_ref.clone();
+            attrs.insert(CompactString::from("__setitem__"), PyObject::native_closure(
+                "__setitem__", move |args| {
+                    // args may be [self, key, val] or [key, val]
+                    if args.len() < 2 { return Err(PyException::type_error("__setitem__ requires key and value")); }
+                    let val_str = args[args.len() - 1].py_to_string();
+                    let key_str = args[args.len() - 2].py_to_string();
+                    unsafe { std::env::set_var(&key_str, &val_str); }
+                    if let PyObjectPayload::Dict(dd) = &d2.payload {
+                        dd.write().insert(
+                            HashableKey::Str(CompactString::from(&key_str)),
+                            PyObject::str_val(CompactString::from(&val_str)),
+                        );
+                    }
+                    Ok(PyObject::none())
+                }
+            ));
+            let d3 = data_ref.clone();
+            attrs.insert(CompactString::from("__delitem__"), PyObject::native_closure(
+                "__delitem__", move |args| {
+                    let key_str = args.last().ok_or_else(|| PyException::key_error("key required"))?.py_to_string();
+                    unsafe { std::env::remove_var(&key_str); }
+                    if let PyObjectPayload::Dict(dd) = &d3.payload {
+                        dd.write().swap_remove(&HashableKey::Str(CompactString::from(&key_str)));
+                    }
+                    Ok(PyObject::none())
+                }
+            ));
+            attrs.insert(CompactString::from("__contains__"), PyObject::native_closure(
+                "__contains__", move |args| {
+                    let key_str = args.last().map(|a| a.py_to_string()).unwrap_or_default();
+                    Ok(PyObject::bool_val(std::env::var(&key_str).is_ok()))
+                }
+            ));
+            attrs.insert(CompactString::from("get"), PyObject::native_closure(
+                "get", move |args| {
+                    // args: [self, key] or [self, key, default]
+                    // Skip self (first arg if module)
+                    let real_args = if args.len() > 1 && matches!(&args[0].payload, PyObjectPayload::Module(_)) {
+                        &args[1..]
+                    } else { args };
+                    if real_args.is_empty() { return Ok(PyObject::none()); }
+                    let key_str = real_args[0].py_to_string();
+                    match std::env::var(&key_str) {
+                        Ok(val) => Ok(PyObject::str_val(CompactString::from(val))),
+                        Err(_) => Ok(real_args.get(1).cloned().unwrap_or_else(PyObject::none)),
+                    }
+                }
+            ));
+            attrs.insert(CompactString::from("keys"), PyObject::native_closure(
+                "keys", move |_| {
+                    let keys: Vec<PyObjectRef> = std::env::vars()
+                        .map(|(k, _)| PyObject::str_val(CompactString::from(k)))
+                        .collect();
+                    Ok(PyObject::list(keys))
+                }
+            ));
+            attrs.insert(CompactString::from("values"), PyObject::native_closure(
+                "values", move |_| {
+                    let vals: Vec<PyObjectRef> = std::env::vars()
+                        .map(|(_, v)| PyObject::str_val(CompactString::from(v)))
+                        .collect();
+                    Ok(PyObject::list(vals))
+                }
+            ));
+            attrs.insert(CompactString::from("items"), PyObject::native_closure(
+                "items", move |_| {
+                    let items: Vec<PyObjectRef> = std::env::vars()
+                        .map(|(k, v)| PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from(k)),
+                            PyObject::str_val(CompactString::from(v)),
+                        ]))
+                        .collect();
+                    Ok(PyObject::list(items))
+                }
+            ));
+            attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+                "__repr__", move |_| {
+                    Ok(PyObject::str_val(CompactString::from("environ({...})")))
+                }
+            ));
+            PyObject::module_with_attrs(CompactString::from("_Environ"), attrs)
         }),
         ("cpu_count", make_builtin(os_cpu_count)),
         ("getpid", make_builtin(os_getpid)),

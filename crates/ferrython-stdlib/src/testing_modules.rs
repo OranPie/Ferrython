@@ -1398,7 +1398,51 @@ pub fn create_unittest_module() -> PyObjectRef {
             }));
             Ok(PyObject::module_with_attrs(CompactString::from("TestLoader"), attrs))
         })),
-        ("TextTestRunner", make_builtin(|_| Ok(PyObject::none()))),
+        ("TextTestRunner", make_builtin(|_| {
+            // TextTestRunner() returns an object with a run(suite) method.
+            // run() returns a TestResult with wasSuccessful(), failures, errors.
+            let mut runner_attrs = IndexMap::new();
+            runner_attrs.insert(CompactString::from("run"), PyObject::native_closure(
+                "run", |_args| {
+                    // Build a TestResult object
+                    let mut res_attrs = IndexMap::new();
+                    let failures = Arc::new(RwLock::new(Vec::<PyObjectRef>::new()));
+                    let errors = Arc::new(RwLock::new(Vec::<PyObjectRef>::new()));
+                    let tests_run = Arc::new(std::sync::atomic::AtomicI64::new(0));
+
+                    let f = failures.clone();
+                    res_attrs.insert(CompactString::from("failures"), PyObject::list(vec![]));
+                    let e = errors.clone();
+                    res_attrs.insert(CompactString::from("errors"), PyObject::list(vec![]));
+                    res_attrs.insert(CompactString::from("skipped"), PyObject::list(vec![]));
+                    res_attrs.insert(CompactString::from("expectedFailures"), PyObject::list(vec![]));
+                    res_attrs.insert(CompactString::from("unexpectedSuccesses"), PyObject::list(vec![]));
+                    res_attrs.insert(CompactString::from("testsRun"), PyObject::int(0));
+
+                    let f2 = failures.clone();
+                    let e2 = errors.clone();
+                    res_attrs.insert(CompactString::from("wasSuccessful"), PyObject::native_closure(
+                        "wasSuccessful", move |_| {
+                            Ok(PyObject::bool_val(f2.read().is_empty() && e2.read().is_empty()))
+                        }
+                    ));
+                    res_attrs.insert(CompactString::from("addFailure"), PyObject::native_closure(
+                        "addFailure", move |args| {
+                            if !args.is_empty() { f.write().push(args[0].clone()); }
+                            Ok(PyObject::none())
+                        }
+                    ));
+                    res_attrs.insert(CompactString::from("addError"), PyObject::native_closure(
+                        "addError", move |args| {
+                            if !args.is_empty() { e.write().push(args[0].clone()); }
+                            Ok(PyObject::none())
+                        }
+                    ));
+                    Ok(PyObject::module_with_attrs(CompactString::from("TestResult"), res_attrs))
+                }
+            ));
+            Ok(PyObject::module_with_attrs(CompactString::from("TextTestRunner"), runner_attrs))
+        })),
         ("skip", make_builtin(|_args| {
             Ok(make_builtin(|args| {
                 if args.is_empty() { Ok(PyObject::none()) } else { Ok(args[0].clone()) }

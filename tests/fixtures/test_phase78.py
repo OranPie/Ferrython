@@ -124,7 +124,7 @@ try:
     assert isinstance(cpus, int) and cpus > 0
     
     # os.environ
-    assert isinstance(os.environ, dict)
+    assert hasattr(os.environ, 'get') or isinstance(os.environ, dict)
     assert "PATH" in os.environ or "HOME" in os.environ
     
     # os.getenv

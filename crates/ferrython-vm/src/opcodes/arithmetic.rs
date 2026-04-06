@@ -569,6 +569,16 @@ impl VirtualMachine {
                                 "'{}' object does not support item assignment", obj.type_name())));
                         }
                     }
+                    PyObjectPayload::Module(ref md) => {
+                        // Module with __setitem__ (e.g., os.environ)
+                        let setitem = md.attrs.read().get("__setitem__").cloned();
+                        if let Some(m) = setitem {
+                            self.call_object(m, vec![key, value])?;
+                        } else {
+                            return Err(PyException::type_error(format!(
+                                "'{}' object does not support item assignment", obj.type_name())));
+                        }
+                    }
                     _ => return Err(PyException::type_error(format!(
                         "'{}' object does not support item assignment", obj.type_name()))),
                 }
@@ -632,6 +642,15 @@ impl VirtualMachine {
                         }
                         return Err(PyException::type_error(format!(
                             "'{}'  object does not support item deletion", obj.type_name())));
+                    }
+                    PyObjectPayload::Module(ref md) => {
+                        let delitem = md.attrs.read().get("__delitem__").cloned();
+                        if let Some(m) = delitem {
+                            self.call_object(m, vec![key])?;
+                        } else {
+                            return Err(PyException::type_error(format!(
+                                "'{}' object does not support item deletion", obj.type_name())));
+                        }
                     }
                     _ => return Err(PyException::type_error(format!(
                         "'{}' object does not support item deletion", obj.type_name()))),
