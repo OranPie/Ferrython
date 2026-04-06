@@ -163,7 +163,7 @@ impl Compiler {
                 args,
                 body,
                 decorator_list,
-                returns: _,
+                returns,
                 is_async,
                 ..
             } => {
@@ -172,6 +172,7 @@ impl Compiler {
                     args,
                     body,
                     decorator_list,
+                    returns.as_deref(),
                     *is_async,
                     stmt.location,
                 )?;
@@ -342,6 +343,7 @@ impl Compiler {
         args: &Arguments,
         body: &[Statement],
         decorator_list: &[Expression],
+        returns: Option<&Expression>,
         is_async: bool,
         _location: SourceLocation,
     ) -> Result<()> {
@@ -479,6 +481,33 @@ impl Compiler {
 
         let func_code = self.pop_function_unit();
 
+        // Build annotations dict from arg annotations and return type
+        let all_args: Vec<&Arg> = args.posonlyargs.iter()
+            .chain(args.args.iter())
+            .chain(args.vararg.iter())
+            .chain(args.kwonlyargs.iter())
+            .chain(args.kwarg.iter())
+            .collect();
+        let mut ann_count: u32 = 0;
+        for arg in &all_args {
+            if let Some(ref annotation) = arg.annotation {
+                let key_idx = self.add_const(ConstantValue::Str(arg.arg.clone()));
+                self.emit_arg(Opcode::LoadConst, key_idx);
+                self.compile_expression(annotation)?;
+                ann_count += 1;
+            }
+        }
+        if let Some(ret) = returns {
+            let key_idx = self.add_const(ConstantValue::Str("return".into()));
+            self.emit_arg(Opcode::LoadConst, key_idx);
+            self.compile_expression(ret)?;
+            ann_count += 1;
+        }
+        let has_annotations = ann_count > 0;
+        if has_annotations {
+            self.emit_arg(Opcode::BuildMap, ann_count);
+        }
+
         // If the function has free variables, emit closure
         let has_closure = !func_code.freevars.is_empty();
         if has_closure {
@@ -505,6 +534,9 @@ impl Compiler {
         }
         if has_kw_defaults {
             make_fn_flags |= 0x02;
+        }
+        if has_annotations {
+            make_fn_flags |= 0x04;
         }
         if has_closure {
             make_fn_flags |= 0x08;

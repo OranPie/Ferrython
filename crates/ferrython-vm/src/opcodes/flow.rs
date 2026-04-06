@@ -668,7 +668,17 @@ impl VirtualMachine {
                         _ => Vec::new(),
                     }
                 } else { Vec::new() };
-                if flags & 0x04 != 0 { frame.pop(); } // annotations
+                let mut annotations = IndexMap::new();
+                if flags & 0x04 != 0 {
+                    let ann_obj = frame.pop();
+                    if let PyObjectPayload::Dict(m) = &ann_obj.payload {
+                        for (k, v) in m.read().iter() {
+                            if let HashableKey::Str(name) = k {
+                                annotations.insert(name.clone(), v.clone());
+                            }
+                        }
+                    }
+                }
                 let kw_defaults = if flags & 0x02 != 0 {
                     let kwd_obj = frame.pop();
                     if let PyObjectPayload::Dict(m) = &kwd_obj.payload {
@@ -706,7 +716,7 @@ impl VirtualMachine {
                     kw_defaults,
                     globals: frame.globals.clone(),
                     closure: closure_cells,
-                    annotations: IndexMap::new(),
+                    annotations,
                     attrs: Arc::new(RwLock::new(IndexMap::new())),
                 };
                 frame.push(PyObject::function(func));

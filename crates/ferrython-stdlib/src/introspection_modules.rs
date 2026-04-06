@@ -454,6 +454,21 @@ pub fn create_inspect_module() -> PyObjectRef {
                 let params = PyObject::dict(params_map.clone());
                 w.insert(CompactString::from("parameters"), params);
 
+                // return_annotation
+                if let PyObjectPayload::Function(f) = &args[0].payload {
+                    if let Some(ret_ann) = f.annotations.get("return") {
+                        w.insert(CompactString::from("return_annotation"), ret_ann.clone());
+                    } else {
+                        w.insert(CompactString::from("return_annotation"), PyObject::instance(
+                            PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
+                        ));
+                    }
+                } else {
+                    w.insert(CompactString::from("return_annotation"), PyObject::instance(
+                        PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
+                    ));
+                }
+
                 // __contains__ — check if parameter name is in signature
                 let keys: Vec<String> = params_map.keys()
                     .filter_map(|k| if let HashableKey::Str(s) = k { Some(s.to_string()) } else { None })

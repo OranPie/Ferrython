@@ -1964,16 +1964,30 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let child_arc = Arc::new(Mutex::new(Some(child)));
 
     let cls = PyObject::class(CompactString::from("Popen"), vec![], IndexMap::new());
-    let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
-    attrs.insert(CompactString::from("returncode"), PyObject::none());
-    attrs.insert(CompactString::from("args"), args[0].clone());
-    attrs.insert(CompactString::from("pid"), PyObject::int(child_pid));
+    let inst_ref = PyObject::instance(cls);
+    let inst_attrs = if let PyObjectPayload::Instance(data) = &inst_ref.payload {
+        data.attrs.clone()
+    } else { unreachable!() };
+
+    // Set initial attributes
+    {
+        let mut a = inst_attrs.write();
+        a.insert(CompactString::from("returncode"), PyObject::none());
+        a.insert(CompactString::from("args"), args[0].clone());
+        a.insert(CompactString::from("pid"), PyObject::int(child_pid));
+    }
     let is_text = text_mode;
+
+    // Helper: update returncode on instance
+    fn set_returncode(attrs: &Arc<parking_lot::RwLock<IndexMap<CompactString, PyObjectRef>>>, code: i32) {
+        attrs.write().insert(CompactString::from("returncode"), PyObject::int(code as i64));
+    }
 
     // communicate(input=None)
     {
         let ch = child_arc.clone();
-        attrs.insert(CompactString::from("communicate"), PyObject::native_closure(
+        let ia = inst_attrs.clone();
+        inst_attrs.write().insert(CompactString::from("communicate"), PyObject::native_closure(
             "Popen.communicate", move |args| {
                 // input can be positional arg[0] or in a kwargs dict
                 let mut input_data: Option<Vec<u8>> = None;
@@ -1999,41 +2013,28 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 }
                 let mut guard = ch.lock().unwrap();
                 if let Some(child) = guard.take() {
+                    let mut child = child;
                     if let Some(data) = input_data {
-                        let mut child = child;
                         if let Some(ref mut stdin) = child.stdin {
                             use std::io::Write;
                             let _ = stdin.write_all(&data);
                         }
                         child.stdin.take(); // close stdin
-                        let out = child.wait_with_output()
-                            .map_err(|e| PyException::runtime_error(&format!("communicate: {e}")))?;
-                        let stdout = if is_text {
-                            PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stdout).as_ref()))
-                        } else {
-                            PyObject::bytes(out.stdout)
-                        };
-                        let stderr = if is_text {
-                            PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stderr).as_ref()))
-                        } else {
-                            PyObject::bytes(out.stderr)
-                        };
-                        Ok(PyObject::tuple(vec![stdout, stderr]))
-                    } else {
-                        let out = child.wait_with_output()
-                            .map_err(|e| PyException::runtime_error(&format!("communicate: {e}")))?;
-                        let stdout = if is_text {
-                            PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stdout).as_ref()))
-                        } else {
-                            PyObject::bytes(out.stdout)
-                        };
-                        let stderr = if is_text {
-                            PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stderr).as_ref()))
-                        } else {
-                            PyObject::bytes(out.stderr)
-                        };
-                        Ok(PyObject::tuple(vec![stdout, stderr]))
                     }
+                    let out = child.wait_with_output()
+                        .map_err(|e| PyException::runtime_error(&format!("communicate: {e}")))?;
+                    set_returncode(&ia, out.status.code().unwrap_or(-1));
+                    let stdout = if is_text {
+                        PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stdout).as_ref()))
+                    } else {
+                        PyObject::bytes(out.stdout)
+                    };
+                    let stderr = if is_text {
+                        PyObject::str_val(CompactString::from(String::from_utf8_lossy(&out.stderr).as_ref()))
+                    } else {
+                        PyObject::bytes(out.stderr)
+                    };
+                    Ok(PyObject::tuple(vec![stdout, stderr]))
                 } else {
                     let empty = if is_text { PyObject::str_val(CompactString::new("")) } else { PyObject::bytes(vec![]) };
                     Ok(PyObject::tuple(vec![empty.clone(), empty]))
@@ -2044,15 +2045,19 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // wait(timeout=None)
     {
         let ch = child_arc.clone();
-        attrs.insert(CompactString::from("wait"), PyObject::native_closure(
+        let ia = inst_attrs.clone();
+        inst_attrs.write().insert(CompactString::from("wait"), PyObject::native_closure(
             "Popen.wait", move |_args| {
                 let mut guard = ch.lock().unwrap();
                 if let Some(ref mut child) = *guard {
                     let status = child.wait()
                         .map_err(|e| PyException::runtime_error(&format!("wait: {e}")))?;
-                    Ok(PyObject::int(status.code().unwrap_or(-1) as i64))
+                    let code = status.code().unwrap_or(-1);
+                    set_returncode(&ia, code);
+                    Ok(PyObject::int(code as i64))
                 } else {
-                    Ok(PyObject::int(-1))
+                    let rc = ia.read().get("returncode").cloned();
+                    Ok(rc.unwrap_or_else(|| PyObject::int(-1)))
                 }
             }));
     }
@@ -2060,17 +2065,23 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // poll()
     {
         let ch = child_arc.clone();
-        attrs.insert(CompactString::from("poll"), PyObject::native_closure(
+        let ia = inst_attrs.clone();
+        inst_attrs.write().insert(CompactString::from("poll"), PyObject::native_closure(
             "Popen.poll", move |_args| {
                 let mut guard = ch.lock().unwrap();
                 if let Some(ref mut child) = *guard {
                     match child.try_wait() {
-                        Ok(Some(status)) => Ok(PyObject::int(status.code().unwrap_or(-1) as i64)),
+                        Ok(Some(status)) => {
+                            let code = status.code().unwrap_or(-1);
+                            set_returncode(&ia, code);
+                            Ok(PyObject::int(code as i64))
+                        }
                         Ok(None) => Ok(PyObject::none()),
                         Err(e) => Err(PyException::runtime_error(&format!("poll: {e}"))),
                     }
                 } else {
-                    Ok(PyObject::none())
+                    let rc = ia.read().get("returncode").cloned();
+                    Ok(rc.unwrap_or_else(PyObject::none))
                 }
             }));
     }
@@ -2078,7 +2089,7 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // kill()
     {
         let ch = child_arc.clone();
-        attrs.insert(CompactString::from("kill"), PyObject::native_closure(
+        inst_attrs.write().insert(CompactString::from("kill"), PyObject::native_closure(
             "Popen.kill", move |_args| {
                 let mut guard = ch.lock().unwrap();
                 if let Some(ref mut child) = *guard {
@@ -2091,7 +2102,7 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // terminate() — sends SIGTERM on Unix
     {
         let ch = child_arc.clone();
-        attrs.insert(CompactString::from("terminate"), PyObject::native_closure(
+        inst_attrs.write().insert(CompactString::from("terminate"), PyObject::native_closure(
             "Popen.terminate", move |_args| {
                 let mut guard = ch.lock().unwrap();
                 if let Some(ref mut child) = *guard {
@@ -2109,7 +2120,7 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // send_signal(sig)
     {
         let ch = child_arc.clone();
-        attrs.insert(CompactString::from("send_signal"), PyObject::native_closure(
+        inst_attrs.write().insert(CompactString::from("send_signal"), PyObject::native_closure(
             "Popen.send_signal", move |args| {
                 let sig = if !args.is_empty() {
                     args[0].as_int().unwrap_or(15) as i32
@@ -2127,25 +2138,25 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     // __enter__ / __exit__ for context manager
     {
-        let inst_ref = PyObject::instance_with_attrs(cls, attrs);
         let ir = inst_ref.clone();
-        if let PyObjectPayload::Instance(data) = &inst_ref.payload {
-            let mut a = data.attrs.write();
-            a.insert(CompactString::from("__enter__"), PyObject::native_closure(
-                "Popen.__enter__", move |_args| Ok(ir.clone())));
-            let ch = child_arc.clone();
-            a.insert(CompactString::from("__exit__"), PyObject::native_closure(
-                "Popen.__exit__", move |_args| {
-                    let mut guard = ch.lock().unwrap();
-                    if let Some(ref mut child) = *guard {
-                        let _ = child.kill();
-                        let _ = child.wait();
+        inst_attrs.write().insert(CompactString::from("__enter__"), PyObject::native_closure(
+            "Popen.__enter__", move |_args| Ok(ir.clone())));
+        let ch = child_arc.clone();
+        let ia = inst_attrs.clone();
+        inst_attrs.write().insert(CompactString::from("__exit__"), PyObject::native_closure(
+            "Popen.__exit__", move |_args| {
+                let mut guard = ch.lock().unwrap();
+                if let Some(ref mut child) = *guard {
+                    let _ = child.kill();
+                    if let Ok(s) = child.wait() {
+                        set_returncode(&ia, s.code().unwrap_or(-1));
                     }
-                    Ok(PyObject::bool_val(false))
-                }));
-        }
-        return Ok(inst_ref);
+                }
+                Ok(PyObject::bool_val(false))
+            }));
     }
+
+    Ok(inst_ref)
 }
 
 // ── byte extraction helper (used by zlib) ──
