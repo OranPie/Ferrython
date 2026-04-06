@@ -43,22 +43,27 @@ impl VirtualMachine {
                 // At this point, __aenter__() has already been called and awaited.
                 // TOS = result of __aenter__ (the value for `as` clause).
                 // Below TOS = the async context manager.
-                // We need to get __aexit__ and push it for cleanup, then set up With block.
                 let enter_result = self.vm_pop();
                 let ctx_mgr = self.vm_pop();
-                let exit_raw = ctx_mgr.get_attr("__aexit__").ok_or_else(||
-                    PyException::attribute_error("__aexit__"))?;
-                let exit_method = if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
-                    exit_raw
+                if matches!(&ctx_mgr.payload, PyObjectPayload::AsyncGenerator(_)) {
+                    // AsyncGenerator used as async context manager (from @asynccontextmanager)
+                    // Push the generator itself — WithCleanupStart will resume/close it
+                    self.vm_push(ctx_mgr.clone());
                 } else {
-                    Arc::new(PyObject {
-                        payload: PyObjectPayload::BoundMethod {
-                            receiver: ctx_mgr.clone(),
-                            method: exit_raw,
-                        }
-                    })
-                };
-                self.vm_push(exit_method);
+                    let exit_raw = ctx_mgr.get_attr("__aexit__").ok_or_else(||
+                        PyException::attribute_error("__aexit__"))?;
+                    let exit_method = if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                        exit_raw
+                    } else {
+                        Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: ctx_mgr.clone(),
+                                method: exit_raw,
+                            }
+                        })
+                    };
+                    self.vm_push(exit_method);
+                }
                 let frame = self.vm_frame();
                 frame.push_block(BlockKind::With, instr.arg as usize);
                 frame.push(enter_result);
@@ -96,6 +101,16 @@ impl VirtualMachine {
                         let f = self.vm_frame();
                         f.push(PyObject::none());
                         f.push(PyObject::none());
+                    } else if let PyObjectPayload::AsyncGenerator(gen_arc) = &exit_fn.payload {
+                        match self.resume_generator(gen_arc, PyObject::none()) {
+                            Ok(_) => {}
+                            Err(e) if e.kind == ExceptionKind::StopIteration
+                                   || e.kind == ExceptionKind::StopAsyncIteration => {}
+                            Err(e) => return Err(e),
+                        }
+                        let f = self.vm_frame();
+                        f.push(PyObject::none());
+                        f.push(PyObject::none());
                     } else {
                         let result = self.call_object(exit_fn, vec![
                             PyObject::none(), PyObject::none(), PyObject::none()
@@ -123,7 +138,7 @@ impl VirtualMachine {
                         self.restore_redirect(receiver);
                     }
 
-                    if let PyObjectPayload::Generator(gen_arc) = &exit_fn.payload {
+                    if let PyObjectPayload::Generator(gen_arc) | PyObjectPayload::AsyncGenerator(gen_arc) = &exit_fn.payload {
                         // Throw exception into generator so its except clauses can catch it
                         let exc_kind = match &exc_type.payload {
                             PyObjectPayload::ExceptionType(k) => k.clone(),
@@ -136,7 +151,8 @@ impl VirtualMachine {
                         };
                         let gen_arc_clone = gen_arc.clone();
                         match self.gen_throw(&gen_arc_clone, exc_kind, exc_msg) {
-                            Ok(_) | Err(PyException { kind: ExceptionKind::StopIteration, .. }) => {
+                            Ok(_) | Err(PyException { kind: ExceptionKind::StopIteration, .. })
+                                  | Err(PyException { kind: ExceptionKind::StopAsyncIteration, .. }) => {
                                 // Generator handled exception (suppressed)
                                 let f = self.vm_frame();
                                 f.push(PyObject::none());

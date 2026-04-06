@@ -182,3 +182,122 @@ class nullcontext:
 
     def __exit__(self, *excinfo):
         pass
+
+
+class AbstractContextManager:
+    """An abstract base class for context managers."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return None
+
+
+class AbstractAsyncContextManager:
+    """An abstract base class for async context managers."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        return None
+
+
+class _AsyncGeneratorContextManager:
+    """Helper for @asynccontextmanager decorator."""
+
+    def __init__(self, func, args, kwds):
+        self.gen = func(*args, **kwds)
+        self.func = func
+        self.args = args
+        self.kwds = kwds
+
+    async def __aenter__(self):
+        try:
+            return await self.gen.__anext__()
+        except StopAsyncIteration:
+            raise RuntimeError("async generator didn't yield")
+
+    async def __aexit__(self, typ, value, traceback):
+        if typ is None:
+            try:
+                await self.gen.__anext__()
+            except StopAsyncIteration:
+                return False
+            else:
+                raise RuntimeError("async generator didn't stop")
+        else:
+            try:
+                await self.gen.athrow(typ, value, traceback)
+            except StopAsyncIteration as exc:
+                return exc is not value
+            except RuntimeError as exc:
+                if exc is value:
+                    return False
+                if exc.__cause__ is value:
+                    return False
+                raise
+            except BaseException:
+                raise
+            else:
+                raise RuntimeError("async generator didn't stop after athrow()")
+
+
+def asynccontextmanager(func):
+    """@asynccontextmanager decorator for async generators."""
+    def helper(*args, **kwds):
+        return _AsyncGeneratorContextManager(func, args, kwds)
+    return helper
+
+
+class AsyncExitStack:
+    """Async context manager for dynamic management of a stack of exit callbacks."""
+
+    def __init__(self):
+        self._exit_callbacks = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_details):
+        received_exc = exc_details[0] is not None
+        suppressed_exc = False
+        pending_raise = False
+        new_exc_details = (None, None, None)
+
+        while self._exit_callbacks:
+            is_sync, cb = self._exit_callbacks.pop()
+            try:
+                if is_sync:
+                    cb_result = cb(*exc_details)
+                else:
+                    cb_result = await cb(*exc_details)
+                if cb_result:
+                    suppressed_exc = True
+                    pending_raise = False
+                    exc_details = (None, None, None)
+            except Exception:
+                pending_raise = True
+                import sys
+                exc_details = sys.exc_info()
+
+        return received_exc and suppressed_exc and not pending_raise
+
+    async def enter_async_context(self, cm):
+        result = await cm.__aenter__()
+        self._exit_callbacks.append((False, cm.__aexit__))
+        return result
+
+    def push_async_exit(self, exit_method):
+        self._exit_callbacks.append((False, exit_method))
+
+    def push_async_callback(self, callback, *args, **kwds):
+        async def _exit_wrapper(exc_type, exc, tb):
+            await callback(*args, **kwds)
+        self._exit_callbacks.append((False, _exit_wrapper))
+
+    def callback(self, callback, *args, **kwds):
+        def _exit_wrapper(exc_type, exc, tb):
+            callback(*args, **kwds)
+        self._exit_callbacks.append((True, _exit_wrapper))

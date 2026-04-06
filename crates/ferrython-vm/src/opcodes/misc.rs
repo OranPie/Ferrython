@@ -306,24 +306,36 @@ impl VirtualMachine {
                 // TOS = async context manager. Call __aenter__() → push awaitable result.
                 // Keep ctx_mgr on stack (peek) — SetupAsyncWith will pop it later.
                 let ctx_mgr = self.vm_frame().peek().clone();
-                let aenter_raw = ctx_mgr.get_attr("__aenter__").ok_or_else(||
-                    PyException::type_error(format!(
-                        "'{}' object does not support the async context manager protocol",
-                        ctx_mgr.type_name()
-                    )))?;
-                let (aenter_method, aenter_args) = if matches!(&aenter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
-                    (aenter_raw, vec![])
+                // Handle AsyncGenerator directly (from @asynccontextmanager)
+                if let PyObjectPayload::AsyncGenerator(gen_arc) = &ctx_mgr.payload {
+                    let enter_result = match self.resume_generator(gen_arc, PyObject::none()) {
+                        Ok(val) => val,
+                        Err(e) if e.kind == ExceptionKind::StopAsyncIteration
+                              || e.kind == ExceptionKind::StopIteration => PyObject::none(),
+                        Err(e) => return Err(e),
+                    };
+                    // Wrap in BuiltinAwaitable so GET_AWAITABLE + YIELD_FROM resolve it
+                    self.vm_push(PyObject::builtin_awaitable(enter_result));
                 } else {
-                    let bound = Arc::new(PyObject {
-                        payload: PyObjectPayload::BoundMethod {
-                            receiver: ctx_mgr.clone(),
-                            method: aenter_raw,
-                        }
-                    });
-                    (bound, vec![])
-                };
-                let result = self.call_object(aenter_method, aenter_args)?;
-                self.vm_push(result);
+                    let aenter_raw = ctx_mgr.get_attr("__aenter__").ok_or_else(||
+                        PyException::type_error(format!(
+                            "'{}' object does not support the async context manager protocol",
+                            ctx_mgr.type_name()
+                        )))?;
+                    let (aenter_method, aenter_args) = if matches!(&aenter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
+                        (aenter_raw, vec![])
+                    } else {
+                        let bound = Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: ctx_mgr.clone(),
+                                method: aenter_raw,
+                            }
+                        });
+                        (bound, vec![])
+                    };
+                    let result = self.call_object(aenter_method, aenter_args)?;
+                    self.vm_push(result);
+                }
             }
 
             Opcode::EndAsyncFor => {

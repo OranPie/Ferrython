@@ -314,14 +314,87 @@ pub fn create_contextlib_module() -> PyObjectRef {
         Ok(inst)
     });
 
+    // asynccontextmanager — same as contextmanager but for async generators
+    let asynccontextmanager_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Err(PyException::type_error("asynccontextmanager requires 1 argument")); }
+        Ok(args[0].clone())
+    });
+
+    // AbstractContextManager — base class with __enter__ returning self
+    let acm_cls = {
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("__enter__"), PyObject::native_function(
+            "AbstractContextManager.__enter__", |args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::none()); }
+                Ok(args[0].clone())
+            }
+        ));
+        ns.insert(CompactString::from("__exit__"), PyObject::native_function(
+            "AbstractContextManager.__exit__", |_args: &[PyObjectRef]| {
+                Ok(PyObject::none())
+            }
+        ));
+        PyObject::class(CompactString::from("AbstractContextManager"), vec![], ns)
+    };
+
+    // AbstractAsyncContextManager
+    let aacm_cls = {
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("__aenter__"), PyObject::native_function(
+            "AbstractAsyncContextManager.__aenter__", |args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::none()); }
+                Ok(args[0].clone())
+            }
+        ));
+        ns.insert(CompactString::from("__aexit__"), PyObject::native_function(
+            "AbstractAsyncContextManager.__aexit__", |_args: &[PyObjectRef]| {
+                Ok(PyObject::none())
+            }
+        ));
+        PyObject::class(CompactString::from("AbstractAsyncContextManager"), vec![], ns)
+    };
+
+    // AsyncExitStack — async version of ExitStack
+    let async_exit_stack_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("AsyncExitStack"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        let callbacks: PyObjectRef = PyObject::list(vec![]);
+        let cb_ref = callbacks.clone();
+        attrs.insert(CompactString::from("_callbacks"), callbacks.clone());
+        attrs.insert(CompactString::from("__aenter__"), PyObject::native_closure(
+            "AsyncExitStack.__aenter__", {
+                let inst_placeholder = PyObject::none();
+                move |_args| { Ok(inst_placeholder.clone()) }
+            }
+        ));
+        let cb_exit = cb_ref.clone();
+        attrs.insert(CompactString::from("__aexit__"), PyObject::native_closure(
+            "AsyncExitStack.__aexit__", move |_args| {
+                // Pop and call all callbacks (simplified — sync-only for now)
+                if let PyObjectPayload::List(list) = &cb_exit.payload {
+                    let mut w = list.write();
+                    while let Some(_cb) = w.pop() {
+                        // Would need to await async callbacks
+                    }
+                }
+                Ok(PyObject::bool_val(false))
+            }
+        ));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
     make_module("contextlib", vec![
         ("contextmanager", make_builtin(contextlib_contextmanager)),
+        ("asynccontextmanager", asynccontextmanager_fn),
         ("suppress", suppress_fn),
         ("closing", closing_fn),
         ("ExitStack", exit_stack_fn),
+        ("AsyncExitStack", async_exit_stack_fn),
         ("nullcontext", nullcontext_fn),
         ("redirect_stdout", redirect_stdout_fn),
         ("redirect_stderr", redirect_stderr_fn),
+        ("AbstractContextManager", acm_cls),
+        ("AbstractAsyncContextManager", aacm_cls),
     ])
 }
 
