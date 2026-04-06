@@ -504,11 +504,9 @@ impl VirtualMachine {
         let (prepared_ns, prepare_dict_obj): (IndexMap<CompactString, PyObjectRef>, Option<PyObjectRef>) =
             if let Some(ref meta) = metaclass {
                 if let Some(prepare) = meta.get_attr("__prepare__") {
-                    eprintln!("[DBG] calling __prepare__");
                     let name_obj = PyObject::str_val(class_name.clone());
                     let bases_tuple = PyObject::tuple(bases.clone());
                     let result = self.call_object(prepare, vec![name_obj, bases_tuple])?;
-                    eprintln!("[DBG] __prepare__ returned, payload={:?}", std::mem::discriminant(&result.payload));
                     // Extract initial contents into IndexMap for frame.local_names
                     let ns = match &result.payload {
                         PyObjectPayload::Dict(d) => {
@@ -531,8 +529,6 @@ impl VirtualMachine {
                 (IndexMap::new(), None)
             };
 
-        eprintln!("[DBG] executing class body, prepare_dict_obj={}", prepare_dict_obj.is_some());
-
         // Execute class body to get namespace
         let namespace = match &body_func.payload {
             PyObjectPayload::Function(pyfunc) => {
@@ -544,7 +540,7 @@ impl VirtualMachine {
                 for (k, v) in &prepared_ns {
                     frame.local_names.insert(k.clone(), v.clone());
                 }
-                // Attach the __prepare__ dict so STORE_NAME mirrors writes into it
+                // Store the __prepare__ dict on the frame (reserved for future use)
                 frame.prepare_dict = prepare_dict_obj.clone();
                 let n_cell = frame.code.cellvars.len();
                 for (i, cell) in pyfunc.closure.iter().enumerate() {
@@ -564,8 +560,6 @@ impl VirtualMachine {
         };
         let (namespace, class_cell_info) = namespace;
 
-        eprintln!("[DBG] class body done, ns keys={}", namespace.len());
-
         if let Some(meta) = metaclass {
             // Metaclass provided: call metaclass.__new__(mcs, name, bases, namespace_dict)
             // which should return the class object.
@@ -576,15 +570,33 @@ impl VirtualMachine {
             // If __prepare__ returned a dict, reuse that object so metaclass.__new__
             // receives the original (possibly custom) dict with all class body assignments.
             let ns_dict = if let Some(pd) = prepare_dict_obj {
-                eprintln!("[DBG] syncing ns into prepare dict");
-                // Ensure all class-body assignments are present in the prepare dict
-                if let PyObjectPayload::Dict(d) = &pd.payload {
-                    let mut map = d.write();
-                    for (k, v) in &namespace {
-                        map.insert(HashableKey::Str(k.clone()), v.clone());
+                // Sync class-body assignments into the __prepare__ dict.
+                match &pd.payload {
+                    PyObjectPayload::Dict(d) => {
+                        let mut map = d.write();
+                        for (k, v) in &namespace {
+                            map.insert(HashableKey::Str(k.clone()), v.clone());
+                        }
                     }
-                    drop(map);
-                    eprintln!("[DBG] synced into Dict payload");
+                    PyObjectPayload::Instance(inst) => {
+                        // Dict subclass: write into dict_storage and call __setitem__
+                        if let Some(ref ds) = inst.dict_storage {
+                            let mut map = ds.write();
+                            for (k, v) in &namespace {
+                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                            }
+                        }
+                        // Also call Python-level __setitem__ so overrides are triggered
+                        if let Some(setitem) = pd.get_attr("__setitem__") {
+                            for (k, v) in &namespace {
+                                let _ = self.call_object(
+                                    setitem.clone(),
+                                    vec![PyObject::str_val(k.clone()), v.clone()],
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 pd
             } else {
@@ -597,7 +609,6 @@ impl VirtualMachine {
             let name_obj = PyObject::str_val(class_name.clone());
             let bases_tuple = PyObject::tuple(bases_list.clone());
             
-            eprintln!("[DBG] looking for __new__ on metaclass");
             // Try calling metaclass.__new__(mcs, name, bases, namespace)
             let own_new = if let PyObjectPayload::Class(cd) = &meta.payload {
                 cd.namespace.read().get("__new__").cloned()
@@ -605,7 +616,6 @@ impl VirtualMachine {
                 None
             };
             let cls = if let Some(new_method) = own_new {
-                eprintln!("[DBG] calling own __new__");
                 // User-defined __new__ on the metaclass
                 let new_fn = match &new_method.payload {
                     PyObjectPayload::BoundMethod { method, .. } => method.clone(),
@@ -633,7 +643,6 @@ impl VirtualMachine {
                     result
                 }
             } else {
-                eprintln!("[DBG] no own __new__, building class directly");
                 // No __new__ — create class directly (like type.__new__)
                 PyObject::wrap(PyObjectPayload::Class(ClassData::new(
                     class_name.clone(),
@@ -655,7 +664,6 @@ impl VirtualMachine {
             }
             
             // Call metaclass's __init__ if it has one
-            eprintln!("[DBG] checking for __init__ on metaclass");
             if let Some(init) = meta.get_attr("__init__") {
                 if matches!(&init.payload, PyObjectPayload::BoundMethod { method, .. } if matches!(&method.payload, PyObjectPayload::Function(_))) {
                     let init_fn = match &init.payload {
