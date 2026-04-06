@@ -1792,10 +1792,11 @@ pub fn create_selectors_module() -> PyObjectRef {
                                     let key = keys[i].1.clone();
                                     // Map revents back to EVENT_READ/EVENT_WRITE
                                     let mut ready_events: i64 = 0;
-                                    if (pfd.revents as i32) & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+                                    let rev = pfd.revents;
+                                    if rev & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
                                         ready_events |= 1; // EVENT_READ
                                     }
-                                    if (pfd.revents as i32) & libc::POLLOUT != 0 {
+                                    if rev & libc::POLLOUT != 0 {
                                         ready_events |= 2; // EVENT_WRITE
                                     }
                                     PyObject::tuple(vec![key, PyObject::int(ready_events)])
