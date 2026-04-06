@@ -160,9 +160,9 @@ fn functools_partial(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("reduce() requires at least 2 arguments")); }
-    let func = args[0].clone();
+    let func = &args[0];
     let items = args[1].to_list()?;
-    let acc = if args.len() > 2 {
+    let mut acc = if args.len() > 2 {
         args[2].clone()
     } else if !items.is_empty() {
         items[0].clone()
@@ -171,11 +171,26 @@ fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
     let start_idx = if args.len() > 2 { 0 } else { 1 };
     for item in &items[start_idx..] {
-        // Call func(acc, item) — but we're a builtin, so we can't easily call Python funcs here.
-        // This would need VM access; for now we'll return a stub error.
-        let _ = func;
-        let _ = item;
-        return Err(PyException::type_error("functools.reduce not fully implemented yet"));
+        // Call func(acc, item) — dispatch to native or closure
+        acc = match &func.payload {
+            PyObjectPayload::NativeFunction { func: f, .. } => f(&[acc, item.clone()])?,
+            PyObjectPayload::NativeClosure { func: f, .. } => f(&[acc, item.clone()])?,
+            PyObjectPayload::BoundMethod { method, .. } => {
+                match &method.payload {
+                    PyObjectPayload::NativeFunction { func: f, .. } => f(&[acc, item.clone()])?,
+                    PyObjectPayload::NativeClosure { func: f, .. } => f(&[acc, item.clone()])?,
+                    _ => return Err(PyException::type_error(
+                        "reduce(): Python-defined functions require VM dispatch — use operator module functions instead")),
+                }
+            }
+            PyObjectPayload::Function(_) => {
+                // Python functions can't be called directly from native code.
+                // Set up a deferred call pattern using operator module for common cases.
+                return Err(PyException::type_error(
+                    "functools.reduce() with Python functions requires VM dispatch; use operator.add/mul or a lambda wrapping builtins"));
+            }
+            _ => return Err(PyException::type_error("reduce() arg 1 must be callable")),
+        };
     }
     Ok(acc)
 }

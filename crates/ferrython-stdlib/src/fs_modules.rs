@@ -646,8 +646,38 @@ pub fn create_shutil_module() -> PyObjectRef {
             }
             Ok(PyObject::none())
         })),
-        ("copystat", make_builtin(|_args| {
-            // Copies metadata (mtime, atime, permissions) — simplified
+        ("copystat", make_builtin(|args: &[PyObjectRef]| {
+            // Copies metadata (mtime, atime, permissions) from src to dst
+            if args.len() < 2 {
+                return Err(PyException::type_error("copystat() requires 2 arguments: src, dst"));
+            }
+            let src = args[0].py_to_string();
+            let dst = args[1].py_to_string();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // Copy permissions
+                if let Ok(meta) = std::fs::metadata(&src) {
+                    let perms = meta.permissions();
+                    let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(perms.mode()));
+                    // Copy timestamps via libc::utimensat
+                    use std::time::UNIX_EPOCH;
+                    let atime = meta.accessed().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok());
+                    let mtime = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok());
+                    if let (Some(at), Some(mt)) = (atime, mtime) {
+                        let times = [
+                            libc::timespec { tv_sec: at.as_secs() as libc::time_t, tv_nsec: at.subsec_nanos() as libc::c_long },
+                            libc::timespec { tv_sec: mt.as_secs() as libc::time_t, tv_nsec: mt.subsec_nanos() as libc::c_long },
+                        ];
+                        let c_dst = std::ffi::CString::new(dst.as_str()).unwrap_or_default();
+                        unsafe { libc::utimensat(libc::AT_FDCWD, c_dst.as_ptr(), times.as_ptr(), 0); }
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (src, dst);
+            }
             Ok(PyObject::none())
         })),
         ("ignore_patterns", make_builtin(|_args| {
