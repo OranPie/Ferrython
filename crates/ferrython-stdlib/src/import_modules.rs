@@ -403,3 +403,115 @@ fn metadata_requires(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     Ok(PyObject::none())
 }
+
+// ── importlib.resources ──
+
+pub fn create_importlib_resources_module() -> PyObjectRef {
+    use std::path::PathBuf;
+
+    // files(package) — return a Traversable for the package directory
+    let files_fn = make_builtin(|args: &[PyObjectRef]| {
+        let pkg_name = if !args.is_empty() { args[0].py_to_string() } else { String::new() };
+        // Convert package name to path
+        let pkg_path = pkg_name.replace('.', "/");
+        let cls = PyObject::class(CompactString::from("Path"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("_path"), PyObject::str_val(CompactString::from(&pkg_path)));
+
+            let pp = pkg_path.clone();
+            w.insert(CompactString::from("joinpath"), PyObject::native_closure("joinpath", move |a| {
+                let child = if !a.is_empty() { a[0].py_to_string() } else { String::new() };
+                let full = format!("{}/{}", pp, child);
+                Ok(PyObject::str_val(CompactString::from(&full)))
+            }));
+
+            let pp2 = pkg_path.clone();
+            w.insert(CompactString::from("__truediv__"), PyObject::native_closure("__truediv__", move |a| {
+                let child = if a.len() > 1 { a[1].py_to_string() } else if !a.is_empty() { a[0].py_to_string() } else { String::new() };
+                let full = format!("{}/{}", pp2, child);
+                Ok(PyObject::str_val(CompactString::from(&full)))
+            }));
+        }
+        Ok(inst)
+    });
+
+    // read_text(package, resource, encoding='utf-8', errors='strict')
+    let read_text_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("importlib.resources.read_text", args, 2)?;
+        let pkg = args[0].py_to_string().replace('.', "/");
+        let resource = args[1].py_to_string();
+        let path = PathBuf::from(&pkg).join(&resource);
+        match std::fs::read_to_string(&path) {
+            Ok(content) => Ok(PyObject::str_val(CompactString::from(&content))),
+            Err(e) => Err(PyException::runtime_error(format!("resource not found: {}", e))),
+        }
+    });
+
+    // read_binary(package, resource)
+    let read_binary_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("importlib.resources.read_binary", args, 2)?;
+        let pkg = args[0].py_to_string().replace('.', "/");
+        let resource = args[1].py_to_string();
+        let path = PathBuf::from(&pkg).join(&resource);
+        match std::fs::read(&path) {
+            Ok(data) => Ok(PyObject::bytes(data)),
+            Err(e) => Err(PyException::runtime_error(format!("resource not found: {}", e))),
+        }
+    });
+
+    // path(package, resource) — context manager yielding path
+    let path_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("importlib.resources.path", args, 2)?;
+        let pkg = args[0].py_to_string().replace('.', "/");
+        let resource = args[1].py_to_string();
+        let full = format!("{}/{}", pkg, resource);
+        let path_obj = PyObject::str_val(CompactString::from(&full));
+        // Wrap in a context manager
+        let cls = PyObject::class(CompactString::from("_ResourcePath"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            let p = path_obj.clone();
+            w.insert(CompactString::from("__enter__"), PyObject::native_closure("__enter__", move |_| Ok(p.clone())));
+            w.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+        }
+        Ok(inst)
+    });
+
+    // is_resource(package, name)
+    let is_resource_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("importlib.resources.is_resource", args, 2)?;
+        let pkg = args[0].py_to_string().replace('.', "/");
+        let name = args[1].py_to_string();
+        let path = PathBuf::from(&pkg).join(&name);
+        Ok(PyObject::bool_val(path.is_file()))
+    });
+
+    // contents(package)
+    let contents_fn = make_builtin(|args: &[PyObjectRef]| {
+        check_args_min("importlib.resources.contents", args, 1)?;
+        let pkg = args[0].py_to_string().replace('.', "/");
+        let path = PathBuf::from(&pkg);
+        match std::fs::read_dir(&path) {
+            Ok(entries) => {
+                let names: Vec<PyObjectRef> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| PyObject::str_val(CompactString::from(e.file_name().to_string_lossy().as_ref())))
+                    .collect();
+                Ok(PyObject::list(names))
+            }
+            Err(_) => Ok(PyObject::list(vec![])),
+        }
+    });
+
+    make_module("importlib.resources", vec![
+        ("files", files_fn),
+        ("read_text", read_text_fn),
+        ("read_binary", read_binary_fn),
+        ("path", path_fn),
+        ("is_resource", is_resource_fn),
+        ("contents", contents_fn),
+    ])
+}

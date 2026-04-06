@@ -159,6 +159,9 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "_thread" => Some(concurrency_modules::create_thread_module()),
         "signal" => Some(concurrency_modules::create_signal_module()),
         "multiprocessing" => Some(concurrency_modules::create_multiprocessing_module()),
+        "multiprocessing.pool" => Some(concurrency_modules::create_multiprocessing_module()),
+        "multiprocessing.managers" => Some(concurrency_modules::create_multiprocessing_module()),
+        "multiprocessing.queues" => Some(concurrency_modules::create_multiprocessing_module()),
         "selectors" => Some(concurrency_modules::create_selectors_module()),
         "select" => Some(concurrency_modules::create_select_module()),
         // OS-level
@@ -167,6 +170,12 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "fcntl" => Some(sys_modules::create_fcntl_module()),
         // Async
         "asyncio" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.events" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.tasks" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.futures" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.queues" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.locks" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.runners" => Some(ferrython_async::create_asyncio_module()),
         // Import system
         "importlib" => Some(import_modules::create_importlib_module()),
         "importlib.metadata" => Some(import_modules::create_importlib_metadata_module()),
@@ -277,6 +286,15 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "encodings.utf_8" => Some(text_modules::create_encodings_module()),
         "encodings.ascii" => Some(text_modules::create_encodings_module()),
         "encodings.latin_1" => Some(text_modules::create_encodings_module()),
+        // Unix user/group info
+        "grp" => Some(sys_modules::create_grp_module()),
+        "pwd" => Some(sys_modules::create_pwd_module()),
+        // Import resources
+        "importlib.resources" => Some(import_modules::create_importlib_resources_module()),
+        // Misc sub-module aliases
+        "html.entities" => None, // uses pure-python fallback in stdlib/Lib/html/entities.py
+        "email.parser" => None,  // uses pure-python fallback
+        "email.header" => None,  // uses pure-python fallback
         _ => None,
     }
 }
