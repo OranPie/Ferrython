@@ -521,6 +521,32 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             if check_abc_structural(obj, target_cd.name.as_str()) {
                 return true;
             }
+            // Check _abc_registry for ABCMeta.register() virtual subclasses
+            if let Some(registry) = target_cd.namespace.read().get("_abc_registry") {
+                if let PyObjectPayload::Dict(map) = &registry.payload {
+                    // Check if obj's class (or obj itself if it's a class) is registered
+                    let obj_class = match &obj.payload {
+                        PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
+                        PyObjectPayload::Class(_) => Some(obj.clone()),
+                        _ => None,
+                    };
+                    if let Some(oc) = obj_class {
+                        for (k, _) in map.read().iter() {
+                            if let HashableKey::Identity(_, registered) = k {
+                                if Arc::ptr_eq(registered, &oc) {
+                                    return true;
+                                }
+                                // Also match by class name
+                                if let (PyObjectPayload::Class(rc), PyObjectPayload::Class(occ)) = (&registered.payload, &oc.payload) {
+                                    if rc.name == occ.name {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // runtime_checkable Protocol check
             if let Some(flag) = target_cd.namespace.read().get("_is_runtime_checkable") {
                 if flag.is_truthy() {

@@ -171,6 +171,10 @@ impl VirtualMachine {
         ns.insert(intern_or_new("__namedtuple__"), PyObject::bool_val(true));
         ns.insert(CompactString::from("_fields"), fields_tuple);
         ns.insert(CompactString::from("_field_defaults"), PyObject::dict(defaults_map));
+
+        // Dunder methods (__len__, __getitem__, __iter__, __repr__, __eq__, _asdict, _replace)
+        // are handled by call_namedtuple_method() in instance_methods.rs via the
+        // builtins dispatch layer, so no need to store NativeClosures here.
     }
 
     /// Process enum class: transform simple attributes into enum member instances.
@@ -573,6 +577,37 @@ impl VirtualMachine {
                 for base in &cd.bases {
                     if let PyObjectPayload::Class(bcd) = &base.payload {
                         bcd.subclasses.write().push(Arc::downgrade(&cls));
+                    }
+                }
+                // If metaclass is ABCMeta, add register() method bound to this class
+                if let Some(ref mcs) = cd.metaclass {
+                    if let PyObjectPayload::Class(mcs_cd) = &mcs.payload {
+                        if mcs_cd.name.as_str() == "ABCMeta" {
+                            let cls_ref = cls.clone();
+                            cd.namespace.write().insert(
+                                CompactString::from("register"),
+                                PyObject::native_closure("register", move |args: &[PyObjectRef]| {
+                                    if args.is_empty() {
+                                        return Err(PyException::type_error("register() requires a subclass argument"));
+                                    }
+                                    let subclass = &args[0];
+                                    if let PyObjectPayload::Class(cd) = &cls_ref.payload {
+                                        let mut ns = cd.namespace.write();
+                                        let registry = ns.entry(CompactString::from("_abc_registry"))
+                                            .or_insert_with(|| PyObject::dict(IndexMap::new()))
+                                            .clone();
+                                        if let PyObjectPayload::Dict(map) = &registry.payload {
+                                            let ptr = std::sync::Arc::as_ptr(subclass) as usize;
+                                            map.write().insert(
+                                                HashableKey::Identity(ptr, subclass.clone()),
+                                                PyObject::bool_val(true),
+                                            );
+                                        }
+                                    }
+                                    Ok(subclass.clone())
+                                }),
+                            );
+                        }
                     }
                 }
             }

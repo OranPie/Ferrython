@@ -947,9 +947,36 @@ pub fn create_abc_module() -> PyObjectRef {
         Ok(marker)
     });
 
-    let abcmeta_cls = PyObject::class(
-        CompactString::from("ABCMeta"), vec![], IndexMap::new(),
-    );
+    let abcmeta_cls = {
+        let mut ns = IndexMap::new();
+        // register(cls, subclass) — register a virtual subclass
+        ns.insert(CompactString::from("register"), PyObject::native_closure(
+            "ABCMeta.register",
+            |args: &[PyObjectRef]| {
+                // args: [cls (ABCMeta instance), subclass]
+                if args.len() < 2 {
+                    return Err(PyException::type_error("register() requires a subclass argument"));
+                }
+                let cls = &args[0];
+                let subclass = &args[1];
+                // Store in _abc_registry on the class
+                if let PyObjectPayload::Class(cd) = &cls.payload {
+                    let mut ns = cd.namespace.write();
+                    let registry = ns.entry(CompactString::from("_abc_registry"))
+                        .or_insert_with(|| {
+                            PyObject::dict(IndexMap::new())
+                        }).clone();
+                    if let PyObjectPayload::Dict(map) = &registry.payload {
+                        let ptr = Arc::as_ptr(subclass) as usize;
+                        let key = HashableKey::Identity(ptr, subclass.clone());
+                        map.write().insert(key, PyObject::bool_val(true));
+                    }
+                }
+                Ok(subclass.clone())
+            },
+        ));
+        PyObject::class(CompactString::from("ABCMeta"), vec![], ns)
+    };
 
     let abstractclassmethod_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() {

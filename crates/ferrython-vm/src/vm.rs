@@ -1138,7 +1138,7 @@ impl VirtualMachine {
         &mut self, obj: &PyObjectRef, dunder: &str, args: Vec<PyObjectRef>,
     ) -> Result<Option<PyObjectRef>, PyException> {
         match &obj.payload {
-            PyObjectPayload::Instance(_) => {
+            PyObjectPayload::Instance(inst) => {
                 // Use resolve_instance_dunder to skip BuiltinBoundMethod from builtin type bases
                 if let Some(method) = Self::resolve_instance_dunder(obj, dunder) {
                     return Ok(Some(self.call_object(method, args)?));
@@ -1149,6 +1149,12 @@ impl VirtualMachine {
                     "__add__" | "__mul__" | "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__") {
                     if let Some(bv) = Self::get_builtin_value(obj) {
                         return self.try_call_dunder(&bv, dunder, args);
+                    }
+                }
+                // Namedtuple: delegate to builtin instance method dispatch
+                if inst.class.get_attr("__namedtuple__").is_some() {
+                    if let Ok(result) = builtins::call_method(obj, dunder, &args) {
+                        return Ok(Some(result));
                     }
                 }
             }

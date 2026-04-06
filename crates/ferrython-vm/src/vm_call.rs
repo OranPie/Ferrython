@@ -1671,6 +1671,10 @@ impl VirtualMachine {
                                 if let Some(ref ds) = inst.dict_storage {
                                     return Ok(PyObject::int(ds.read().len() as i64));
                                 }
+                                // Namedtuple: delegate to call_namedtuple_method
+                                if inst.class.get_attr("__namedtuple__").is_some() {
+                                    return builtins::call_method(&args[0], "__len__", &[]);
+                                }
                                 // Check for custom __len__ (skip BuiltinBoundMethod from BuiltinType base)
                                 if let Some(method) = args[0].get_attr("__len__") {
                                     if !matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod { .. }) {

@@ -711,19 +711,52 @@ fn pickle_serialize(obj: &PyObjectRef, buf: &mut Vec<u8>) -> PyResult<()> {
             } else {
                 "object".to_string()
             };
-            let attrs_r = inst.attrs.read();
+            // Check for __getstate__ — use its result as the state dict
+            let state_dict = if let Some(getstate) = obj.get_attr("__getstate__") {
+                match &getstate.payload {
+                    PyObjectPayload::NativeFunction { func, .. } => {
+                        let result = func(&[obj.clone()])?;
+                        Some(result)
+                    }
+                    PyObjectPayload::NativeClosure { func, .. } => {
+                        let result = func(&[obj.clone()])?;
+                        Some(result)
+                    }
+                    PyObjectPayload::BoundMethod { .. } | PyObjectPayload::Function(_) => {
+                        // Can't call Python functions from native code; fall back to attrs
+                        None
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
             let mut data_pairs: Vec<(CompactString, PyObjectRef)> = Vec::new();
-            for (k, v) in attrs_r.iter() {
-                match &v.payload {
-                    PyObjectPayload::NativeFunction { .. }
-                    | PyObjectPayload::NativeClosure { .. }
-                    | PyObjectPayload::Function(_)
-                    | PyObjectPayload::Class(_) => continue,
-                    _ => {
-                        data_pairs.push((k.clone(), v.clone()));
+            if let Some(state) = &state_dict {
+                // __getstate__ returned a dict — serialize its items
+                if let PyObjectPayload::Dict(map) = &state.payload {
+                    for (k, v) in map.read().iter() {
+                        if let HashableKey::Str(name) = k {
+                            data_pairs.push((name.clone(), v.clone()));
+                        }
+                    }
+                }
+            } else {
+                // Fall back to instance attrs
+                let attrs_r = inst.attrs.read();
+                for (k, v) in attrs_r.iter() {
+                    match &v.payload {
+                        PyObjectPayload::NativeFunction { .. }
+                        | PyObjectPayload::NativeClosure { .. }
+                        | PyObjectPayload::Function(_)
+                        | PyObjectPayload::Class(_) => continue,
+                        _ => {
+                            data_pairs.push((k.clone(), v.clone()));
+                        }
                     }
                 }
             }
+            let _has_custom_state = state_dict.is_some();
             // Serialize attrs as key-value pairs first (pushed to stack)
             for (k, v) in &data_pairs {
                 pickle_serialize(&PyObject::str_val(k.clone()), buf)?;

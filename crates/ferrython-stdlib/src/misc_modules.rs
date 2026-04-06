@@ -344,6 +344,8 @@ pub fn create_dataclasses_module() -> PyObjectRef {
             // kwargs passed as trailing dict by VM
             let mut compare = true;
             let mut init = true;
+            let mut repr_flag = true;
+            let mut hash_flag: Option<bool> = None;
             let mut default_val: Option<PyObjectRef> = None;
             let mut factory_val: Option<PyObjectRef> = None;
 
@@ -356,6 +358,14 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                     if let Some(v) = r.get(&HashableKey::Str(CompactString::from("init"))) {
                         init = v.is_truthy();
                     }
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("repr"))) {
+                        repr_flag = v.is_truthy();
+                    }
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("hash"))) {
+                        if !matches!(&v.payload, PyObjectPayload::None) {
+                            hash_flag = Some(v.is_truthy());
+                        }
+                    }
                     if let Some(f) = r.get(&HashableKey::Str(CompactString::from("default_factory"))) {
                         factory_val = Some(f.clone());
                     }
@@ -364,14 +374,31 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                     }
                 }
             }
-            // Always return a field sentinel Module
+            // Return a field sentinel Module with all metadata
             let mut attrs = IndexMap::new();
             attrs.insert(CompactString::from("__field_compare__"), PyObject::bool_val(compare));
             attrs.insert(CompactString::from("__field_init__"), PyObject::bool_val(init));
+            attrs.insert(CompactString::from("__field_repr__"), PyObject::bool_val(repr_flag));
+            attrs.insert(CompactString::from("repr"), PyObject::bool_val(repr_flag));
+            attrs.insert(CompactString::from("init"), PyObject::bool_val(init));
+            attrs.insert(CompactString::from("compare"), PyObject::bool_val(compare));
+            attrs.insert(CompactString::from("hash"), match hash_flag {
+                Some(v) => PyObject::bool_val(v),
+                None => PyObject::none(),
+            });
+            attrs.insert(CompactString::from("metadata"), PyObject::dict(IndexMap::new()));
+            attrs.insert(CompactString::from("kw_only"), PyObject::bool_val(false));
             if let Some(factory) = factory_val {
-                attrs.insert(CompactString::from("__field_factory__"), factory);
+                attrs.insert(CompactString::from("__field_factory__"), factory.clone());
+                attrs.insert(CompactString::from("default_factory"), factory);
+                attrs.insert(CompactString::from("default"), PyObject::none());
             } else if let Some(default) = default_val {
-                attrs.insert(CompactString::from("__field_default__"), default);
+                attrs.insert(CompactString::from("__field_default__"), default.clone());
+                attrs.insert(CompactString::from("default"), default);
+                attrs.insert(CompactString::from("default_factory"), PyObject::none());
+            } else {
+                attrs.insert(CompactString::from("default"), PyObject::none());
+                attrs.insert(CompactString::from("default_factory"), PyObject::none());
             }
             Ok(PyObject::module_with_attrs(CompactString::from("_field"), attrs))
         })),
@@ -447,7 +474,6 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                 if let PyObjectPayload::Tuple(field_tuples) = &fields_tuple.payload {
                     let field_objs: Vec<PyObjectRef> = field_tuples.iter().map(|ft| {
                         if let PyObjectPayload::Tuple(info) = &ft.payload {
-                            // Create a simple Field-like object with .name, .default, etc.
                             let name = info[0].py_to_string();
                             let mut field_attrs = IndexMap::new();
                             field_attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name.as_str())));
@@ -460,6 +486,15 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                             if info.len() > 4 {
                                 field_attrs.insert(CompactString::from("compare"), info[4].clone());
                             }
+                            if info.len() > 5 {
+                                field_attrs.insert(CompactString::from("repr"), info[5].clone());
+                            } else {
+                                field_attrs.insert(CompactString::from("repr"), PyObject::bool_val(true));
+                            }
+                            field_attrs.insert(CompactString::from("hash"), PyObject::none());
+                            field_attrs.insert(CompactString::from("metadata"), PyObject::dict(IndexMap::new()));
+                            field_attrs.insert(CompactString::from("kw_only"), PyObject::bool_val(false));
+                            field_attrs.insert(CompactString::from("default_factory"), PyObject::none());
                             PyObject::instance_with_attrs(
                                 PyObject::builtin_type(CompactString::from("Field")),
                                 field_attrs,
@@ -543,6 +578,7 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
     let mut field_defaults: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
     let mut compare_fields: Vec<CompactString> = Vec::new();
     let mut init_fields: Vec<CompactString> = Vec::new();
+    let mut repr_fields: Vec<CompactString> = Vec::new();
     
     if let PyObjectPayload::Class(cd) = &cls.payload {
         // Collect fields from base classes first (MRO order), then own class
@@ -561,6 +597,7 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                                 }
                                 let mut compare = true;
                                 let mut init = true;
+                                let mut field_repr = true;
                                 
                                 if let Some(default) = ns.get(name.as_str()) {
                                     if let PyObjectPayload::Module(md) = &default.payload {
@@ -570,6 +607,9 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                                         }
                                         if let Some(init_flag) = mod_attrs.get("__field_init__") {
                                             init = init_flag.is_truthy();
+                                        }
+                                        if let Some(repr_flag) = mod_attrs.get("__field_repr__") {
+                                            field_repr = repr_flag.is_truthy();
                                         }
                                         if let Some(factory) = mod_attrs.get("__field_factory__") {
                                             field_defaults.insert(name.clone(), factory.clone());
@@ -582,6 +622,7 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                                 }
                                 if compare { compare_fields.push(name.clone()); }
                                 if init { init_fields.push(name.clone()); }
+                                if field_repr { repr_fields.push(name.clone()); }
                             }
                         }
                     }
@@ -590,18 +631,20 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
         }
     }
     
-    // Store __dataclass_fields__ as tuple of (name, has_default, default_val, init, compare) tuples
+    // Store __dataclass_fields__ as tuple of (name, has_default, default_val, init, compare, repr) tuples
     let fields_info: Vec<PyObjectRef> = field_names.iter().map(|name| {
         let has_default = field_defaults.contains_key(name.as_str());
         let default_val = field_defaults.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
         let init_flag = init_fields.contains(name);
         let compare_flag = compare_fields.contains(name);
+        let repr_flag = repr_fields.contains(name);
         PyObject::tuple(vec![
             PyObject::str_val(CompactString::from(name.as_str())),
             PyObject::bool_val(has_default),
             default_val,
             PyObject::bool_val(init_flag),
             PyObject::bool_val(compare_flag),
+            PyObject::bool_val(repr_flag),
         ])
     }).collect();
     
@@ -639,7 +682,7 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
 
         // Generate __repr__ if repr=True (default)
         if repr {
-            let fields_for_repr = field_names.clone();
+            let fields_for_repr = repr_fields.clone();
             let cls_ref = cls.clone();
             ns.insert(CompactString::from("__repr__"), PyObject::native_closure("__repr__", move |args: &[PyObjectRef]| {
                 check_args("__repr__", args, 1)?;
