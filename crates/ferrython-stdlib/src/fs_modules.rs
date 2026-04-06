@@ -509,6 +509,17 @@ fn populate_path_instance(inst: &PyObjectRef, path_str: &str) -> PyResult<()> {
             let parent_path = make_path_instance(&parent_str)?;
             attrs.insert(CompactString::from("parent"), parent_path);
         }
+        // parents — list of all ancestor Path objects from immediate parent to root
+        let mut parents_list = Vec::new();
+        let mut cur = path.parent();
+        while let Some(p) = cur {
+            let ps = p.to_string_lossy().to_string();
+            if ps.is_empty() { break; }
+            parents_list.push(make_path_instance(&ps)?);
+            cur = p.parent();
+            if Some(p) == cur { break; } // root reached
+        }
+        attrs.insert(CompactString::from("parents"), PyObject::list(parents_list));
         attrs.insert(CompactString::from("parts"), PyObject::tuple(parts));
         attrs.insert(CompactString::from("__pathlib_path__"), PyObject::bool_val(true));
     }
