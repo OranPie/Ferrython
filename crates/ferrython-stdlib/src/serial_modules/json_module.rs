@@ -5,6 +5,45 @@ use ferrython_core::object::{
     make_module, make_builtin,
 };
 use ferrython_core::types::HashableKey;
+use std::cell::Cell;
+
+thread_local! {
+    static ENSURE_ASCII: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Escape a string for JSON, respecting the ensure_ascii setting.
+fn json_escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c < '\x20' => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c if !c.is_ascii() && ENSURE_ASCII.with(|f| f.get()) => {
+                // Escape non-ASCII to \uXXXX (or surrogate pairs for > U+FFFF)
+                let cp = c as u32;
+                if cp <= 0xFFFF {
+                    out.push_str(&format!("\\u{:04x}", cp));
+                } else {
+                    // Surrogate pair for supplementary characters
+                    let cp = cp - 0x10000;
+                    let hi = 0xD800 + (cp >> 10);
+                    let lo = 0xDC00 + (cp & 0x3FF);
+                    out.push_str(&format!("\\u{:04x}\\u{:04x}", hi, lo));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
 
 pub fn create_json_module() -> PyObjectRef {
     make_module("json", vec![
@@ -67,6 +106,7 @@ pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let mut item_sep = ", ".to_string();
     let mut kv_sep = ": ".to_string();
     let mut default_fn: Option<PyObjectRef> = None;
+    let mut ensure_ascii = true;
     if args.len() > 1 {
         if let PyObjectPayload::Dict(kw_map) = &args[args.len() - 1].payload {
             let r = kw_map.read();
@@ -79,6 +119,9 @@ pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
             if let Some(sk) = r.get(&HashableKey::Str(CompactString::from("sort_keys"))) {
                 sort_keys = sk.is_truthy();
+            }
+            if let Some(ea) = r.get(&HashableKey::Str(CompactString::from("ensure_ascii"))) {
+                ensure_ascii = ea.is_truthy();
             }
             if let Some(seps) = r.get(&HashableKey::Str(CompactString::from("separators"))) {
                 if let PyObjectPayload::Tuple(parts) = &seps.payload {
@@ -112,11 +155,13 @@ pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args[0].clone()
     };
+    ENSURE_ASCII.with(|f| f.set(ensure_ascii));
     let s = if let Some(indent_size) = indent {
         py_to_json_pretty(&obj, 0, indent_size, default_fn.as_ref())?
     } else {
         py_to_json_sep(&obj, &item_sep, &kv_sep, default_fn.as_ref())?
     };
+    ENSURE_ASCII.with(|f| f.set(true)); // restore default
     Ok(PyObject::str_val(CompactString::from(s)))
 }
 
@@ -169,7 +214,7 @@ fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize, default: Op
             if f.is_infinite() { return Err(PyException::value_error("Infinity is not JSON serializable")); }
             Ok(format!("{}", f))
         }
-        PyObjectPayload::Str(s) => Ok(format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"))),
+        PyObjectPayload::Str(s) => Ok(json_escape_string(s)),
         PyObjectPayload::List(items) => {
             let r = items.read();
             if r.is_empty() { return Ok("[]".into()); }
@@ -186,7 +231,7 @@ fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize, default: Op
             if r.is_empty() { return Ok("{}".into()); }
             let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
                 let key_str = match k {
-                    HashableKey::Str(s) => format!("\"{}\"", s),
+                    HashableKey::Str(s) => json_escape_string(s),
                     HashableKey::Int(n) => format!("\"{}\"", n),
                     _ => return Err(PyException::type_error("keys must be str")),
                 };
@@ -219,7 +264,7 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
             if f.is_infinite() { return Err(PyException::value_error("Infinity is not JSON serializable")); }
             Ok(format!("{}", f))
         }
-        PyObjectPayload::Str(s) => Ok(format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"))),
+        PyObjectPayload::Str(s) => Ok(json_escape_string(s)),
         PyObjectPayload::List(items) => {
             let r = items.read();
             let parts: Result<Vec<String>, PyException> = r.iter().map(|i| py_to_json_sep(i, item_sep, kv_sep, default)).collect();
@@ -233,7 +278,7 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
             let r = map.read();
             let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
                 let key_str = match k {
-                    HashableKey::Str(s) => format!("\"{}\"", s),
+                    HashableKey::Str(s) => json_escape_string(s),
                     HashableKey::Int(n) => format!("\"{}\"", n),
                     _ => return Err(PyException::type_error("keys must be str")),
                 };
@@ -245,7 +290,7 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
         PyObjectPayload::InstanceDict(attrs) => {
             let r = attrs.read();
             let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
-                let key_str = format!("\"{}\"", k);
+                let key_str = json_escape_string(k);
                 let val_str = py_to_json_sep(v, item_sep, kv_sep, default)?;
                 Ok(format!("{}{}{}", key_str, kv_sep, val_str))
             }).collect();
