@@ -306,8 +306,8 @@ pub enum HashableKey {
     Bytes(Vec<u8>),
     Tuple(Vec<HashableKey>),
     FrozenSet(Vec<HashableKey>),
-    /// Identity-based key using the Arc pointer address.
-    Identity(usize),
+    /// Identity-based key using the Arc pointer address, preserving the original object.
+    Identity(usize, PyObjectRef),
     /// Custom hashable key for objects with __hash__/__eq__.
     Custom {
         hash_value: i64,
@@ -348,19 +348,19 @@ impl HashableKey {
                     })
                 } else {
                     let ptr = std::sync::Arc::as_ptr(obj) as usize;
-                    Ok(HashableKey::Identity(ptr))
+                    Ok(HashableKey::Identity(ptr, obj.clone()))
                 }
             }
             // Functions/methods are hashable by identity in CPython
             PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } |
             PyObjectPayload::BoundMethod { .. } | PyObjectPayload::BuiltinBoundMethod { .. } => {
                 let ptr = std::sync::Arc::as_ptr(obj) as usize;
-                Ok(HashableKey::Identity(ptr))
+                Ok(HashableKey::Identity(ptr, obj.clone()))
             }
             // Class objects: hash by identity (each class definition is unique)
             PyObjectPayload::Class(_) => {
                 let ptr = std::sync::Arc::as_ptr(obj) as usize;
-                Ok(HashableKey::Identity(ptr))
+                Ok(HashableKey::Identity(ptr, obj.clone()))
             }
             // BuiltinType: hash by type name so type(42) matches int as dict key
             PyObjectPayload::BuiltinType(name) => {
@@ -383,8 +383,8 @@ impl HashableKey {
                 for k in keys { map.insert(k.clone(), k.to_object()); }
                 PyObject::frozenset(map)
             },
-            HashableKey::Identity(ptr) => {
-                PyObject::int(*ptr as i64)
+            HashableKey::Identity(_ptr, obj) => {
+                obj.clone()
             },
             HashableKey::Custom { object, .. } => object.clone(),
         }
@@ -423,7 +423,7 @@ impl PartialEq for HashableKey {
                 f.0 == (*b as i64 as f64)
             }
             // Identity
-            (HashableKey::Identity(a), HashableKey::Identity(b)) => a == b,
+            (HashableKey::Identity(a, _), HashableKey::Identity(b, _)) => a == b,
             // Custom
             (HashableKey::Custom { hash_value: ha, object: oa }, HashableKey::Custom { hash_value: hb, object: ob }) => {
                 if ha != hb { return false; }
@@ -466,7 +466,7 @@ impl Hash for HashableKey {
             HashableKey::Bytes(b) => { 4u8.hash(state); b.hash(state); },
             HashableKey::Tuple(items) => { 5u8.hash(state); items.hash(state); },
             HashableKey::FrozenSet(items) => { 6u8.hash(state); items.hash(state); },
-            HashableKey::Identity(ptr) => { 7u8.hash(state); ptr.hash(state); },
+            HashableKey::Identity(ptr, _) => { 7u8.hash(state); ptr.hash(state); },
             HashableKey::Custom { hash_value, .. } => { 8u8.hash(state); hash_value.hash(state); },
         }
     }

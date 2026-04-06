@@ -2152,7 +2152,7 @@ fn pformat_value(obj: &PyObjectRef, indent: usize, width: usize, depth: Option<u
                         _ => "...".to_string(),
                     }).collect::<Vec<_>>().join(", ")),
                     HashableKey::FrozenSet(_) => "frozenset(...)".to_string(),
-                    HashableKey::Bytes(_) | HashableKey::Identity(_) | HashableKey::Custom { .. } => "...".to_string(),
+                    HashableKey::Bytes(_) | HashableKey::Identity(_, _) | HashableKey::Custom { .. } => "...".to_string(),
                 };
                 let vs = pformat_value(v, indent, width, depth, current_depth + 1);
                 entries.push(format!("{}: {}", ks, vs));

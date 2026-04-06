@@ -290,7 +290,100 @@ pub fn create_typing_module() -> PyObjectRef {
         check_args("NewType", args, 2)?;
         Ok(args[1].clone()) // NewType(name, tp) returns tp
     })));
-    attrs.push(("TypedDict", make_typing_alias("TypedDict")));
+    // TypedDict: In CPython, TypedDict(name='X', year=2024) creates a dict.
+    // We implement it as a callable that, when used as a class base via __build_class__,
+    // produces a class whose instances behave as dicts.
+    // For simplicity, we make TypedDict a class with __init_subclass__ that installs
+    // __init__ and __getitem__ on subclasses.
+    let typed_dict_cls = {
+        let mut td_ns = IndexMap::new();
+        td_ns.insert(CompactString::from("__init_subclass__"), make_builtin(|_args| {
+            Ok(PyObject::none())
+        }));
+        // __init__ stores kwargs in _data dict and also as attributes
+        td_ns.insert(CompactString::from("__init__"), PyObject::native_closure(
+            "__init__", |args: &[PyObjectRef]| {
+                if args.is_empty() {
+                    return Ok(PyObject::none());
+                }
+                let self_obj = &args[0];
+                // Last arg may be kwargs dict
+                if args.len() > 1 {
+                    if let PyObjectPayload::Dict(kw_map) = &args[args.len() - 1].payload {
+                        let r = kw_map.read();
+                        let mut data = IndexMap::new();
+                        for (k, v) in r.iter() {
+                            let key_str = k.to_object().py_to_string();
+                            if let PyObjectPayload::Instance(ref inst) = self_obj.payload {
+                                inst.attrs.write().insert(CompactString::from(&*key_str), v.clone());
+                            }
+                            data.insert(HashableKey::Str(CompactString::from(&*key_str)), v.clone());
+                        }
+                        // Store _data as dict for subscript access
+                        if let PyObjectPayload::Instance(ref inst) = self_obj.payload {
+                            inst.attrs.write().insert(
+                                CompactString::from("_data"),
+                                PyObject::dict(data),
+                            );
+                        }
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+        // __getitem__ delegates to _data dict
+        td_ns.insert(CompactString::from("__getitem__"), make_builtin(|args| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("__getitem__() requires key"));
+            }
+            let self_obj = &args[0];
+            let key = &args[1];
+            // Try _data dict first
+            if let Some(data) = self_obj.get_attr("_data") {
+                if let PyObjectPayload::Dict(map) = &data.payload {
+                    let key_h = HashableKey::from_object(key)?;
+                    if let Some(val) = map.read().get(&key_h) {
+                        return Ok(val.clone());
+                    }
+                }
+            }
+            // Fall back to attribute access
+            let key_str = key.py_to_string();
+            self_obj.get_attr(&key_str).ok_or_else(|| {
+                PyException::key_error(&format!("'{}'", key_str))
+            })
+        }));
+        // __setitem__
+        td_ns.insert(CompactString::from("__setitem__"), make_builtin(|args| {
+            if args.len() < 3 {
+                return Err(PyException::type_error("__setitem__() requires key and value"));
+            }
+            let self_obj = &args[0];
+            let key = args[1].py_to_string();
+            let value = &args[2];
+            if let PyObjectPayload::Instance(ref inst) = self_obj.payload {
+                inst.attrs.write().insert(CompactString::from(&*key), value.clone());
+            }
+            if let Some(data) = self_obj.get_attr("_data") {
+                if let PyObjectPayload::Dict(map) = &data.payload {
+                    map.write().insert(HashableKey::Str(CompactString::from(&*key)), value.clone());
+                }
+            }
+            Ok(PyObject::none())
+        }));
+        // keys/values/items for dict-like access
+        td_ns.insert(CompactString::from("keys"), make_builtin(|args| {
+            if args.is_empty() { return Ok(PyObject::list(vec![])); }
+            if let Some(data) = args[0].get_attr("_data") {
+                if let PyObjectPayload::Dict(map) = &data.payload {
+                    let keys: Vec<PyObjectRef> = map.read().keys().map(|k| k.to_object()).collect();
+                    return Ok(PyObject::list(keys));
+                }
+            }
+            Ok(PyObject::list(vec![]))
+        }));
+        PyObject::class(CompactString::from("TypedDict"), vec![], td_ns)
+    };
+    attrs.push(("TypedDict", typed_dict_cls));
     attrs.push(("ForwardRef", make_typing_alias("ForwardRef")));
     make_module("typing", attrs)
 }

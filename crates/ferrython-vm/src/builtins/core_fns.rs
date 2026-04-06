@@ -443,7 +443,7 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             h as i64
         }
         HashableKey::Bytes(b) => { let mut h: u64 = 5381; for x in b { h = h.wrapping_mul(33).wrapping_add(x as u64); } h as i64 }
-        HashableKey::Identity(ptr) => ptr as i64,
+        HashableKey::Identity(ptr, _) => ptr as i64,
         HashableKey::Custom { hash_value, .. } => hash_value,
     };
     Ok(PyObject::int(h))
