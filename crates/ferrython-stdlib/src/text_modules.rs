@@ -2297,3 +2297,61 @@ pub fn create_pprint_module() -> PyObjectRef {
         })),
     ])
 }
+
+// ── encodings module ──
+
+pub fn create_encodings_module() -> PyObjectRef {
+    // The encodings module provides codec registration and lookup.
+    // In CPython this is a package (encodings/__init__.py) with sub-modules for each codec.
+    // We provide a minimal stub that covers common use cases.
+
+    let search_function = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        let name = args[0].py_to_string().to_lowercase().replace('-', "_");
+        match name.as_str() {
+            "utf_8" | "utf8" | "utf_8_sig" => {
+                Ok(PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from("utf-8")),
+                    PyObject::none(), // encode
+                    PyObject::none(), // decode
+                    PyObject::none(), // streamreader
+                    PyObject::none(), // streamwriter
+                ]))
+            }
+            "ascii" | "us_ascii" => {
+                Ok(PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from("ascii")),
+                    PyObject::none(),
+                    PyObject::none(),
+                    PyObject::none(),
+                    PyObject::none(),
+                ]))
+            }
+            "latin_1" | "iso8859_1" | "latin1" | "iso_8859_1" => {
+                Ok(PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from("latin-1")),
+                    PyObject::none(),
+                    PyObject::none(),
+                    PyObject::none(),
+                    PyObject::none(),
+                ]))
+            }
+            _ => Ok(PyObject::none()),
+        }
+    });
+
+    let normalize_encoding = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+        let name = args[0].py_to_string().to_lowercase().replace('-', "_").replace(' ', "_");
+        Ok(PyObject::str_val(CompactString::from(name)))
+    });
+
+    make_module("encodings", vec![
+        ("search_function", search_function),
+        ("normalize_encoding", normalize_encoding),
+        // Sub-module aliases
+        ("utf_8", make_builtin(|_| Ok(PyObject::none()))),
+        ("ascii", make_builtin(|_| Ok(PyObject::none()))),
+        ("latin_1", make_builtin(|_| Ok(PyObject::none()))),
+    ])
+}

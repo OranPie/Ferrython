@@ -331,37 +331,125 @@ impl VirtualMachine {
         // Mark as enum
         ns.insert(intern_or_new("__enum__"), PyObject::bool_val(true));
 
-        // For Flag-based enums, add bitwise operations (__or__, __and__, __contains__)
+        // For Flag-based enums, add bitwise operations (__or__, __and__, __xor__, __invert__, __contains__, __int__, __bool__)
         let is_flag = bases.iter().any(|b| {
             b.get_attr("__flag__").map(|m| m.is_truthy()).unwrap_or(false)
         });
         if is_flag {
             ns.insert(intern_or_new("__flag__"), PyObject::bool_val(true));
+
+            // Helper: decompose a combined flag value into member names using __members__
+            fn make_flag_instance(cls: &PyObjectRef, combined: i64) -> PyObjectRef {
+                let class_name = if let PyObjectPayload::Class(cd) = &cls.payload {
+                    cd.name.clone()
+                } else {
+                    CompactString::from("Flag")
+                };
+
+                // Decompose value into member names
+                let mut names = Vec::new();
+                if let PyObjectPayload::Class(cd) = &cls.payload {
+                    let ns = cd.namespace.read();
+                    if let Some(members) = ns.get("__members__") {
+                        if let PyObjectPayload::Dict(map) = &members.payload {
+                            let members_map = map.read();
+                            // Collect members in definition order (IndexMap preserves insertion order)
+                            let member_list: Vec<(CompactString, i64)> = members_map.iter()
+                                .filter_map(|(k, v)| {
+                                    if let HashableKey::Str(name) = k {
+                                        v.get_attr("value").and_then(|v| v.as_int())
+                                            .map(|val| (name.clone(), val))
+                                    } else { None }
+                                })
+                                .collect();
+                            // Greedy decomposition: highest values first, but output in definition order
+                            let mut sorted_by_val: Vec<(usize, &CompactString, i64)> = member_list.iter()
+                                .enumerate()
+                                .map(|(i, (n, v))| (i, n, *v))
+                                .collect();
+                            sorted_by_val.sort_by(|a, b| b.2.cmp(&a.2));
+                            let mut remaining = combined;
+                            let mut matched_indices = Vec::new();
+                            for (idx, _name, val) in &sorted_by_val {
+                                if *val > 0 && remaining & val == *val {
+                                    matched_indices.push(*idx);
+                                    remaining &= !val;
+                                }
+                            }
+                            // Sort by definition order
+                            matched_indices.sort();
+                            for idx in matched_indices {
+                                names.push(member_list[idx].0.clone());
+                            }
+                        }
+                    }
+                }
+
+                let name_str = if names.is_empty() {
+                    CompactString::from("None")
+                } else {
+                    CompactString::from(names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("|"))
+                };
+
+                let repr_str = CompactString::from(format!("<{}.{}: {}>", class_name, name_str, combined));
+                let str_val = CompactString::from(format!("{}.{}", class_name, name_str));
+                let repr_copy = repr_str.clone();
+                let str_copy = str_val.clone();
+
+                let mut attrs = IndexMap::new();
+                attrs.insert(CompactString::from("value"), PyObject::int(combined));
+                attrs.insert(CompactString::from("_value_"), PyObject::int(combined));
+                attrs.insert(CompactString::from("name"), PyObject::str_val(name_str.clone()));
+                attrs.insert(CompactString::from("_name_"), PyObject::str_val(name_str));
+                attrs.insert(intern_or_new("__repr__"), PyObject::native_closure(
+                    "__repr__", move |_args| Ok(PyObject::str_val(repr_copy.clone()))
+                ));
+                attrs.insert(intern_or_new("__str__"), PyObject::native_closure(
+                    "__str__", move |_args| Ok(PyObject::str_val(str_copy.clone()))
+                ));
+                PyObject::instance_with_attrs(cls.clone(), attrs)
+            }
+
             let cls_or = cls.clone();
             ns.insert(intern_or_new("__or__"), PyObject::native_closure("Flag.__or__", move |args: &[PyObjectRef]| {
                 if args.len() < 2 { return Ok(PyObject::none()); }
                 let a_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
                 let b_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                let combined = a_val | b_val;
-                let mut attrs = IndexMap::new();
-                attrs.insert(CompactString::from("value"), PyObject::int(combined));
-                attrs.insert(CompactString::from("_value_"), PyObject::int(combined));
-                attrs.insert(CompactString::from("name"), PyObject::none());
-                attrs.insert(CompactString::from("_name_"), PyObject::none());
-                Ok(PyObject::instance_with_attrs(cls_or.clone(), attrs))
+                Ok(make_flag_instance(&cls_or, a_val | b_val))
             }));
             let cls_and = cls.clone();
             ns.insert(intern_or_new("__and__"), PyObject::native_closure("Flag.__and__", move |args: &[PyObjectRef]| {
                 if args.len() < 2 { return Ok(PyObject::none()); }
                 let a_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
                 let b_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
-                let combined = a_val & b_val;
-                let mut attrs = IndexMap::new();
-                attrs.insert(CompactString::from("value"), PyObject::int(combined));
-                attrs.insert(CompactString::from("_value_"), PyObject::int(combined));
-                attrs.insert(CompactString::from("name"), PyObject::none());
-                attrs.insert(CompactString::from("_name_"), PyObject::none());
-                Ok(PyObject::instance_with_attrs(cls_and.clone(), attrs))
+                Ok(make_flag_instance(&cls_and, a_val & b_val))
+            }));
+            let cls_xor = cls.clone();
+            ns.insert(intern_or_new("__xor__"), PyObject::native_closure("Flag.__xor__", move |args: &[PyObjectRef]| {
+                if args.len() < 2 { return Ok(PyObject::none()); }
+                let a_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                let b_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                Ok(make_flag_instance(&cls_xor, a_val ^ b_val))
+            }));
+            let cls_inv = cls.clone();
+            ns.insert(intern_or_new("__invert__"), PyObject::native_closure("Flag.__invert__", move |args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::none()); }
+                let self_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                // Compute the bitmask of all defined member values
+                let mut all_bits: i64 = 0;
+                if let PyObjectPayload::Class(cd) = &cls_inv.payload {
+                    let ns = cd.namespace.read();
+                    if let Some(members) = ns.get("__members__") {
+                        if let PyObjectPayload::Dict(map) = &members.payload {
+                            for v in map.read().values() {
+                                if let Some(val) = v.get_attr("value").and_then(|v| v.as_int()) {
+                                    all_bits |= val;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(make_flag_instance(&cls_inv, all_bits & !self_val))
             }));
             ns.insert(intern_or_new("__contains__"), PyObject::native_closure("Flag.__contains__", move |args: &[PyObjectRef]| {
                 if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
@@ -369,6 +457,22 @@ impl VirtualMachine {
                 let other_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
                 Ok(PyObject::bool_val(self_val & other_val == other_val && other_val != 0))
             }));
+            // __int__ — allow int() on flag members
+            ns.insert(intern_or_new("__int__"), PyObject::native_function(
+                "Flag.__int__", |args: &[PyObjectRef]| {
+                    if args.is_empty() { return Ok(PyObject::int(0)); }
+                    let val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                    Ok(PyObject::int(val))
+                }
+            ));
+            // __bool__ — non-zero flag is truthy
+            ns.insert(intern_or_new("__bool__"), PyObject::native_function(
+                "Flag.__bool__", |args: &[PyObjectRef]| {
+                    if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+                    let val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                    Ok(PyObject::bool_val(val != 0))
+                }
+            ));
         }
 
         Ok(())

@@ -2148,3 +2148,80 @@ pub fn create_fcntl_module() -> PyObjectRef {
         ("FD_CLOEXEC", PyObject::int(1)),
     ])
 }
+
+// ── sysconfig module ──
+
+pub fn create_sysconfig_module() -> PyObjectRef {
+    let get_python_version = make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::str_val(CompactString::from("3.11")))
+    });
+
+    let get_platform = make_builtin(|_args: &[PyObjectRef]| {
+        let platform = if cfg!(target_os = "linux") {
+            "linux"
+        } else if cfg!(target_os = "macos") {
+            "darwin"
+        } else if cfg!(target_os = "windows") {
+            "win32"
+        } else {
+            "unknown"
+        };
+        Ok(PyObject::str_val(CompactString::from(platform)))
+    });
+
+    let get_path = make_builtin(|args: &[PyObjectRef]| {
+        let name = if args.is_empty() { String::from("stdlib") } else { args[0].py_to_string() };
+        match name.as_str() {
+            "stdlib" | "purelib" | "platlib" => {
+                Ok(PyObject::str_val(CompactString::from("/usr/lib/python3.11")))
+            }
+            "include" => Ok(PyObject::str_val(CompactString::from("/usr/include/python3.11"))),
+            "scripts" => Ok(PyObject::str_val(CompactString::from("/usr/bin"))),
+            "data" => Ok(PyObject::str_val(CompactString::from("/usr"))),
+            _ => Ok(PyObject::str_val(CompactString::from(""))),
+        }
+    });
+
+    let get_paths = make_builtin(|_args: &[PyObjectRef]| {
+        let pairs = vec![
+            (PyObject::str_val(CompactString::from("stdlib")), PyObject::str_val(CompactString::from("/usr/lib/python3.11"))),
+            (PyObject::str_val(CompactString::from("purelib")), PyObject::str_val(CompactString::from("/usr/lib/python3.11/site-packages"))),
+            (PyObject::str_val(CompactString::from("platlib")), PyObject::str_val(CompactString::from("/usr/lib/python3.11/site-packages"))),
+            (PyObject::str_val(CompactString::from("include")), PyObject::str_val(CompactString::from("/usr/include/python3.11"))),
+            (PyObject::str_val(CompactString::from("scripts")), PyObject::str_val(CompactString::from("/usr/bin"))),
+            (PyObject::str_val(CompactString::from("data")), PyObject::str_val(CompactString::from("/usr"))),
+        ];
+        Ok(PyObject::dict_from_pairs(pairs))
+    });
+
+    let get_config_var = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        let name = args[0].py_to_string();
+        match name.as_str() {
+            "prefix" | "exec_prefix" => Ok(PyObject::str_val(CompactString::from("/usr"))),
+            "base_prefix" | "base_exec_prefix" => Ok(PyObject::str_val(CompactString::from("/usr"))),
+            "SOABI" => Ok(PyObject::str_val(CompactString::from("cpython-311-x86_64-linux-gnu"))),
+            "EXT_SUFFIX" => Ok(PyObject::str_val(CompactString::from(".cpython-311-x86_64-linux-gnu.so"))),
+            "BINDIR" => Ok(PyObject::str_val(CompactString::from("/usr/bin"))),
+            "py_version_short" => Ok(PyObject::str_val(CompactString::from("3.11"))),
+            "LDLIBRARY" => Ok(PyObject::str_val(CompactString::from("libpython3.11.so"))),
+            "installed_base" => Ok(PyObject::str_val(CompactString::from("/usr"))),
+            "Py_ENABLE_SHARED" => Ok(PyObject::int(1)),
+            "SIZEOF_VOID_P" => Ok(PyObject::int(std::mem::size_of::<usize>() as i64)),
+            _ => Ok(PyObject::none()),
+        }
+    });
+
+    let get_config_vars = make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::dict_from_pairs(vec![]))
+    });
+
+    make_module("sysconfig", vec![
+        ("get_python_version", get_python_version),
+        ("get_platform", get_platform),
+        ("get_path", get_path),
+        ("get_paths", get_paths),
+        ("get_config_var", get_config_var),
+        ("get_config_vars", get_config_vars),
+    ])
+}

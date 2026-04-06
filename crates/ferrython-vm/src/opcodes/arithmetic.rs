@@ -39,7 +39,18 @@ impl VirtualMachine {
             }
             Opcode::UnaryInvert => {
                 let v = self.vm_pop();
-                if let Some(r) = self.try_call_dunder(&v, "__invert__", vec![])? {
+                // Try class MRO lookup + bind (like try_binary_dunder does)
+                let resolved = if let PyObjectPayload::Instance(inst) = &v.payload {
+                    if let Some(method) = lookup_in_class_mro(&inst.class, "__invert__") {
+                        let bound = self.bind_method(&v, method);
+                        Some(self.call_object(bound, vec![])?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(r) = resolved.or_else(|| self.try_call_dunder(&v, "__invert__", vec![]).ok().flatten()) {
                     self.vm_push(r);
                 } else {
                     self.vm_push(v.invert()?);

@@ -265,6 +265,14 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "quopri" => Some(misc_modules::create_quopri_module()),
         "stringprep" => Some(misc_modules::create_stringprep_module()),
         "plistlib" => Some(misc_modules::create_plistlib_module()),
+        // System configuration
+        "sysconfig" => Some(sys_modules::create_sysconfig_module()),
+        "_sysconfig" => Some(sys_modules::create_sysconfig_module()),
+        // Encodings
+        "encodings" => Some(text_modules::create_encodings_module()),
+        "encodings.utf_8" => Some(text_modules::create_encodings_module()),
+        "encodings.ascii" => Some(text_modules::create_encodings_module()),
+        "encodings.latin_1" => Some(text_modules::create_encodings_module()),
         _ => None,
     }
 }
