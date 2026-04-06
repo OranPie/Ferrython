@@ -1507,10 +1507,99 @@ pub(crate) static BREAKPOINT_TRIGGERED: std::sync::atomic::AtomicBool =
 
 pub(super) fn builtin_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        println!("Help is not available in ferrython. Use Python's official documentation at https://docs.python.org/3/");
-    } else {
-        println!("Help on {}: Help is not available in ferrython.", args[0].type_name());
+        println!("Welcome to Ferrython help!");
+        println!("Type help(object) for help about an object.");
+        println!("Type help('topic') for help on a topic.");
+        println!();
+        println!("See https://docs.python.org/3/ for full Python documentation.");
+        return Ok(PyObject::none());
     }
+
+    let obj = &args[0];
+    let type_name = obj.type_name();
+
+    // Get the object's name
+    let name = obj.get_attr("__name__")
+        .map(|n| n.py_to_string())
+        .unwrap_or_else(|| type_name.to_string());
+
+    // Get docstring
+    let doc = obj.get_attr("__doc__")
+        .map(|d| d.py_to_string())
+        .unwrap_or_default();
+
+    // Print header
+    match &obj.payload {
+        PyObjectPayload::Class(cd) => {
+            println!("Help on class {}:", cd.name);
+            println!();
+            println!("class {}({})", cd.name,
+                cd.bases.iter()
+                    .filter_map(|b| b.get_attr("__name__").map(|n| n.py_to_string()))
+                    .collect::<Vec<_>>().join(", "));
+        }
+        PyObjectPayload::Module(md) => {
+            println!("Help on module {}:", md.name);
+        }
+        PyObjectPayload::Function(fd) => {
+            println!("Help on function {}:", fd.name);
+        }
+        PyObjectPayload::BuiltinFunction(n) => {
+            println!("Help on built-in function {}:", n);
+        }
+        _ => {
+            println!("Help on {} object:", type_name);
+        }
+    }
+
+    // Print docstring
+    if !doc.is_empty() && doc != "None" {
+        println!(" |  {}", doc.replace('\n', "\n |  "));
+    }
+
+    // Print methods for classes and modules
+    match &obj.payload {
+        PyObjectPayload::Class(cd) => {
+            println!(" |");
+            println!(" |  Methods defined here:");
+            let ns = cd.namespace.read();
+            let mut names: Vec<_> = ns.keys().collect();
+            names.sort();
+            for name in names {
+                if name.starts_with("__") && name.ends_with("__") && name.len() > 4 {
+                    continue; // Skip dunder methods in default view
+                }
+                let val = &ns[name];
+                let method_doc = val.get_attr("__doc__")
+                    .map(|d| d.py_to_string())
+                    .unwrap_or_default();
+                println!(" |  {}(self, ...)", name);
+                if !method_doc.is_empty() && method_doc != "None" {
+                    println!(" |      {}", method_doc.lines().next().unwrap_or(""));
+                }
+            }
+        }
+        PyObjectPayload::Module(md) => {
+            println!(" |");
+            println!(" |  Functions and classes:");
+            let attrs = md.attrs.read();
+            let mut names: Vec<_> = attrs.keys().collect();
+            names.sort();
+            for name in names {
+                if name.starts_with("_") { continue; }
+                let val = &attrs[name];
+                let desc = match &val.payload {
+                    PyObjectPayload::Function(_) => "function",
+                    PyObjectPayload::Class(_) => "class",
+                    PyObjectPayload::BuiltinFunction(_) => "built-in function",
+                    _ => continue,
+                };
+                println!(" |  {} - {}", name, desc);
+            }
+        }
+        _ => {}
+    }
+    println!();
     Ok(PyObject::none())
 }
 
