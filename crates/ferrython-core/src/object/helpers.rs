@@ -1071,6 +1071,71 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             }
             Ok(inst)
         })),
+        ("str", "__new__") => Some(PyObject::native_function("str.__new__", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("str.__new__ requires cls"));
+            }
+            let cls = &args[0];
+            let value = if args.len() > 1 {
+                args[1].py_to_string()
+            } else {
+                String::new()
+            };
+            let inst = PyObject::instance(cls.clone());
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                inst_data.attrs.write().insert(
+                    intern_or_new("__builtin_value__"),
+                    PyObject::str_val(CompactString::from(value)),
+                );
+            }
+            Ok(inst)
+        })),
+        ("int", "__new__") => Some(PyObject::native_function("int.__new__", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("int.__new__ requires cls"));
+            }
+            let cls = &args[0];
+            let value = if args.len() > 1 {
+                args[1].to_int()?
+            } else {
+                0
+            };
+            let inst = PyObject::instance(cls.clone());
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                inst_data.attrs.write().insert(
+                    intern_or_new("__builtin_value__"),
+                    PyObject::int(value),
+                );
+            }
+            Ok(inst)
+        })),
+        ("float", "__new__") => Some(PyObject::native_function("float.__new__", |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("float.__new__ requires cls"));
+            }
+            let cls = &args[0];
+            let value = if args.len() > 1 {
+                match &args[1].payload {
+                    PyObjectPayload::Float(f) => *f,
+                    PyObjectPayload::Int(n) => n.to_f64(),
+                    PyObjectPayload::Bool(b) => if *b { 1.0 } else { 0.0 },
+                    PyObjectPayload::Str(s) => s.parse::<f64>().map_err(|_|
+                        PyException::value_error(format!("could not convert string to float: '{}'", s)))?,
+                    _ => return Err(PyException::type_error(
+                        format!("float() argument must be a string or a number, not '{}'", args[1].type_name()))),
+                }
+            } else {
+                0.0
+            };
+            let inst = PyObject::instance(cls.clone());
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                inst_data.attrs.write().insert(
+                    intern_or_new("__builtin_value__"),
+                    PyObject::float(value),
+                );
+            }
+            Ok(inst)
+        })),
         ("object", "__new__") => Some(PyObject::native_function("object.__new__", |args| {
             if args.is_empty() {
                 return Err(PyException::type_error("object.__new__ requires cls"));

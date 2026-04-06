@@ -429,11 +429,12 @@ impl VirtualMachine {
                 PyObjectPayload::BuiltinBoundMethod { receiver, .. }
                     if matches!(&receiver.payload, PyObjectPayload::BuiltinType(_))
             );
-            // Also recognize builtin __new__ NativeFunctions (tuple.__new__, list.__new__)
+            // Also recognize builtin __new__ NativeFunctions (tuple.__new__, list.__new__, etc.)
             let is_native_builtin_new = matches!(&new_method.payload,
                 PyObjectPayload::NativeFunction { name, .. }
                     if name.ends_with(".__new__") && matches!(name.as_str(),
-                        "tuple.__new__" | "list.__new__" | "object.__new__")
+                        "tuple.__new__" | "list.__new__" | "str.__new__" | "int.__new__"
+                        | "float.__new__" | "object.__new__")
             );
             if is_builtin_new || is_native_builtin_new {
                 let inst = PyObject::instance(cls.clone());
