@@ -8,8 +8,10 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin, check_args_min,
+    make_module, make_builtin, check_args_min, InstanceData,
 };
+use ferrython_core::types::HashableKey;
+use parking_lot::RwLock;
 use indexmap::IndexMap;
 use std::cell::RefCell;
 
@@ -57,6 +59,7 @@ pub fn create_importlib_module() -> PyObjectRef {
         ("util", create_importlib_util_module()),
         ("abc", create_importlib_abc_module()),
         ("machinery", create_importlib_machinery_module()),
+        ("metadata", create_importlib_metadata_module()),
     ])
 }
 
@@ -260,5 +263,149 @@ fn importlib_import_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             package: None,
         });
     });
+    Ok(PyObject::none())
+}
+
+// ── importlib.metadata ──────────────────────────────────────────────────
+// Provides metadata about installed packages (version, name, etc.)
+
+pub fn create_importlib_metadata_module() -> PyObjectRef {
+    make_module("importlib.metadata", vec![
+        ("version", make_builtin(metadata_version)),
+        ("metadata", make_builtin(metadata_metadata)),
+        ("packages_distributions", make_builtin(metadata_packages_distributions)),
+        ("requires", make_builtin(metadata_requires)),
+        ("PackageNotFoundError", PyObject::exception_type(
+            ferrython_core::error::ExceptionKind::ModuleNotFoundError
+        )),
+    ])
+}
+
+/// Read installed package metadata from dist-info directories.
+/// Searches site-packages and dist-info dirs on sys.path.
+fn find_dist_info(package_name: &str) -> Option<std::path::PathBuf> {
+    let normalized = package_name.to_lowercase().replace('-', "_");
+    // Check common locations
+    let search_paths = vec![
+        std::path::PathBuf::from("site-packages"),
+        std::path::PathBuf::from("/usr/lib/python3/dist-packages"),
+        std::path::PathBuf::from("/usr/local/lib/python3.8/dist-packages"),
+    ];
+    // Also check cwd/site-packages for ferryip-installed packages
+    if let Ok(cwd) = std::env::current_dir() {
+        let local_site = cwd.join("site-packages");
+        if local_site.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&local_site) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.ends_with(".dist-info") {
+                        let dist_name = name.trim_end_matches(".dist-info")
+                            .split('-').next().unwrap_or("")
+                            .to_lowercase().replace('-', "_");
+                        if dist_name == normalized {
+                            return Some(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for base in &search_paths {
+        if !base.is_dir() { continue; }
+        if let Ok(entries) = std::fs::read_dir(base) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".dist-info") {
+                    let dist_name = name.trim_end_matches(".dist-info")
+                        .split('-').next().unwrap_or("")
+                        .to_lowercase().replace('-', "_");
+                    if dist_name == normalized {
+                        return Some(entry.path());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_metadata_file(path: &std::path::Path) -> IndexMap<CompactString, CompactString> {
+    let mut result = IndexMap::new();
+    if let Ok(content) = std::fs::read_to_string(path) {
+        for line in content.lines() {
+            if let Some((key, value)) = line.split_once(": ") {
+                result.insert(
+                    CompactString::from(key.trim()),
+                    CompactString::from(value.trim()),
+                );
+            }
+        }
+    }
+    result
+}
+
+fn metadata_version(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("importlib.metadata.version", args, 1)?;
+    let name = args[0].as_str()
+        .ok_or_else(|| PyException::type_error("version() argument must be str"))?;
+    if let Some(dist_info) = find_dist_info(name) {
+        let metadata_path = dist_info.join("METADATA");
+        let meta = parse_metadata_file(&metadata_path);
+        if let Some(version) = meta.get("Version") {
+            return Ok(PyObject::str_val(version.clone()));
+        }
+    }
+    Err(PyException::runtime_error(format!(
+        "No package metadata found for '{}'", name
+    )))
+}
+
+fn metadata_metadata(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("importlib.metadata.metadata", args, 1)?;
+    let name = args[0].as_str()
+        .ok_or_else(|| PyException::type_error("metadata() argument must be str"))?;
+    if let Some(dist_info) = find_dist_info(name) {
+        let metadata_path = dist_info.join("METADATA");
+        let meta = parse_metadata_file(&metadata_path);
+        let mut dict_map = IndexMap::new();
+        for (k, v) in &meta {
+            dict_map.insert(
+                HashableKey::Str(k.clone()),
+                PyObject::str_val(v.clone()),
+            );
+        }
+        return Ok(PyObject::dict(dict_map));
+    }
+    Err(PyException::runtime_error(format!(
+        "No package metadata found for '{}'", name
+    )))
+}
+
+fn metadata_packages_distributions(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::dict(IndexMap::new()))
+}
+
+fn metadata_requires(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("importlib.metadata.requires", args, 1)?;
+    let name = args[0].as_str()
+        .ok_or_else(|| PyException::type_error("requires() argument must be str"))?;
+    if let Some(dist_info) = find_dist_info(name) {
+        let metadata_path = dist_info.join("METADATA");
+        let meta = parse_metadata_file(&metadata_path);
+        let mut requires = Vec::new();
+        // Collect all "Requires-Dist" entries
+        if let Ok(content) = std::fs::read_to_string(&metadata_path) {
+            for line in content.lines() {
+                if line.starts_with("Requires-Dist: ") {
+                    let req = line.trim_start_matches("Requires-Dist: ");
+                    requires.push(PyObject::str_val(CompactString::from(req)));
+                }
+            }
+        }
+        if requires.is_empty() {
+            return Ok(PyObject::none());
+        }
+        return Ok(PyObject::list(requires));
+    }
     Ok(PyObject::none())
 }

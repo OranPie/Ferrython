@@ -169,6 +169,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "asyncio" => Some(ferrython_async::create_asyncio_module()),
         // Import system
         "importlib" => Some(import_modules::create_importlib_module()),
+        "importlib.metadata" => Some(import_modules::create_importlib_metadata_module()),
         // Networking
         "socket" => Some(network_modules::create_socket_module()),
         "urllib" => Some(network_modules::create_urllib_module()),

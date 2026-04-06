@@ -12,7 +12,9 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 pub fn create_collections_module() -> PyObjectRef {
+    let abc_module = crate::type_modules::create_collections_abc_module();
     make_module("collections", vec![
+        ("abc", abc_module),
         ("OrderedDict", PyObject::native_function("collections.OrderedDict", collections_ordered_dict)),
         ("defaultdict", PyObject::native_function("collections.defaultdict", collections_defaultdict)),
         ("Counter", PyObject::native_function("collections.Counter", collections_counter)),
