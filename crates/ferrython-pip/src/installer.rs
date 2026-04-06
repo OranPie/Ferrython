@@ -59,6 +59,9 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
     // Write RECORD file for tracking
     write_record(site, &dist_info_dir, name, version, &installed_files)?;
 
+    // Generate console_scripts from entry_points.txt if present
+    generate_console_scripts(site, &dist_info_dir)?;
+
     Ok(())
 }
 
@@ -160,4 +163,69 @@ fn write_record(site: &Path, dist_info_dir: &str, name: &str, version: &str, fil
 /// Normalize package name for directory naming (PEP 503)
 fn normalize_name(name: &str) -> String {
     name.to_lowercase().replace('-', "_").replace('.', "_")
+}
+
+/// Generate console_scripts from entry_points.txt in a dist-info directory.
+fn generate_console_scripts(site: &Path, dist_info_dir: &str) -> Result<(), String> {
+    let entry_points_path = site.join(dist_info_dir).join("entry_points.txt");
+    if !entry_points_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&entry_points_path)
+        .map_err(|e| format!("Read entry_points.txt: {}", e))?;
+
+    let mut in_console_scripts = false;
+    let bin_dir = site.parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("bin"))
+        .unwrap_or_else(|| site.join("../bin"));
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[console_scripts]" {
+            in_console_scripts = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_console_scripts = false;
+            continue;
+        }
+        if !in_console_scripts || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Parse: script_name = module:function
+        if let Some((script_name, entry)) = trimmed.split_once('=') {
+            let script_name = script_name.trim();
+            let entry = entry.trim();
+
+            if let Some((module, func)) = entry.split_once(':') {
+                let module = module.trim();
+                let func = func.trim();
+
+                let script_content = format!(
+                    "#!/usr/bin/env ferrython\nimport sys\nfrom {} import {}\nsys.exit({}())\n",
+                    module, func, func
+                );
+
+                let _ = fs::create_dir_all(&bin_dir);
+                let script_path = bin_dir.join(script_name);
+                fs::write(&script_path, &script_content)
+                    .map_err(|e| format!("Write script {}: {}", script_name, e))?;
+
+                // Make executable on Unix
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(
+                        &script_path,
+                        fs::Permissions::from_mode(0o755),
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
