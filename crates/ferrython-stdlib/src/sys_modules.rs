@@ -575,6 +575,64 @@ pub fn create_os_module() -> PyObjectRef {
         // Path constants
         ("pathsep", PyObject::str_val(CompactString::from(if cfg!(windows) { ";" } else { ":" }))),
         ("altsep", PyObject::none()),
+        // Low-level file descriptor operations
+        ("close", make_builtin(|args| {
+            check_args("os.close", args, 1)?;
+            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
+            #[cfg(unix)] {
+                let ret = unsafe { libc::close(fd) };
+                if ret != 0 { return Err(PyException::os_error(format!("Bad file descriptor: {}", fd))); }
+            }
+            Ok(PyObject::none())
+        })),
+        ("open", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("os.open requires path, flags, and optional mode")); }
+            let path = args[0].py_to_string();
+            let flags = if args.len() > 1 { args[1].as_int().unwrap_or(0) as i32 } else { 0 };
+            let mode = if args.len() > 2 { args[2].as_int().unwrap_or(0o666) as u32 } else { 0o666 };
+            #[cfg(unix)] {
+                let cpath = std::ffi::CString::new(path.as_str())
+                    .map_err(|_| PyException::value_error("invalid path"))?;
+                let fd = unsafe { libc::open(cpath.as_ptr(), flags, mode) };
+                if fd < 0 { return Err(PyException::os_error(format!("No such file or directory: '{}'", path))); }
+                Ok(PyObject::int(fd as i64))
+            }
+            #[cfg(not(unix))] { Err(PyException::not_implemented_error("os.open not available")) }
+        })),
+        ("read", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("os.read requires fd and count")); }
+            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
+            let count = args[1].as_int().ok_or_else(|| PyException::type_error("count must be int"))? as usize;
+            #[cfg(unix)] {
+                let mut buf = vec![0u8; count];
+                let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, count) };
+                if n < 0 { return Err(PyException::os_error("read failed".to_string())); }
+                buf.truncate(n as usize);
+                Ok(PyObject::bytes(buf))
+            }
+            #[cfg(not(unix))] { Err(PyException::not_implemented_error("os.read not available")) }
+        })),
+        ("write", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("os.write requires fd and data")); }
+            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
+            let data = match &args[1].payload {
+                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                _ => return Err(PyException::type_error("data must be bytes-like")),
+            };
+            #[cfg(unix)] {
+                let n = unsafe { libc::write(fd, data.as_ptr() as *const libc::c_void, data.len()) };
+                if n < 0 { return Err(PyException::os_error("write failed".to_string())); }
+                Ok(PyObject::int(n as i64))
+            }
+            #[cfg(not(unix))] { Err(PyException::not_implemented_error("os.write not available")) }
+        })),
+        ("fdopen", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("os.fdopen requires fd")); }
+            let _fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))?;
+            // For now, return a simple wrapper — full implementation would create a file object
+            Err(PyException::not_implemented_error("os.fdopen not fully implemented; use open() instead"))
+        })),
     ])
 }
 
