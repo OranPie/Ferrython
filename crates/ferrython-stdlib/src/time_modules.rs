@@ -1858,7 +1858,181 @@ pub fn create_calendar_module() -> PyObjectRef {
         ("FRIDAY", PyObject::int(4)),
         ("SATURDAY", PyObject::int(5)),
         ("SUNDAY", PyObject::int(6)),
+        ("TextCalendar", build_text_calendar_class(
+            is_leap, days_in_month, weekday,
+        )),
+        ("HTMLCalendar", build_html_calendar_class(
+            is_leap, days_in_month, weekday,
+        )),
+        ("Calendar", build_text_calendar_class(
+            is_leap, days_in_month, weekday,
+        )),
     ])
+}
+
+fn format_month_text(
+    year: i64, month: i64, w: usize,
+    days_in_month: fn(i64, i64) -> i64,
+    weekday: fn(i64, i64, i64) -> i64,
+) -> String {
+    let month_names = ["", "January", "February", "March", "April", "May", "June",
+                       "July", "August", "September", "October", "November", "December"];
+    let mname = month_names.get(month as usize).unwrap_or(&"");
+    let header = format!("{} {}", mname, year);
+    let col_w = w.max(2);
+    let total_w = col_w * 7 + 6;
+    let mut lines = vec![format!("{:^width$}", header, width = total_w)];
+    let day_hdrs: Vec<String> = ["Mo","Tu","We","Th","Fr","Sa","Su"]
+        .iter().map(|d| format!("{:>width$}", d, width = col_w)).collect();
+    lines.push(day_hdrs.join(" "));
+    let first_wd = weekday(year, month, 1) as usize;
+    let ndays = days_in_month(year, month) as usize;
+    let mut line = format!("{:>width$} ", "", width = col_w).repeat(first_wd);
+    // trim trailing space if line starts with padding
+    if first_wd > 0 { line = line.trim_end().to_string(); line.push(' '); }
+    let mut col = first_wd;
+    for d in 1..=ndays {
+        line.push_str(&format!("{:>width$}", d, width = col_w));
+        col += 1;
+        if col == 7 { lines.push(line.trim_end().to_string()); line = String::new(); col = 0; }
+        else { line.push(' '); }
+    }
+    if col > 0 { lines.push(line.trim_end().to_string()); }
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn build_text_calendar_class(
+    _is_leap: fn(i64) -> bool,
+    days_in_month: fn(i64, i64) -> i64,
+    weekday: fn(i64, i64, i64) -> i64,
+) -> PyObjectRef {
+    let cls = PyObject::class(CompactString::from("TextCalendar"), vec![], IndexMap::new());
+    let cls_ref = cls.clone();
+    PyObject::native_closure("TextCalendar", move |args: &[PyObjectRef]| {
+        let _firstweekday = if !args.is_empty() {
+            args[0].to_int().unwrap_or(0)
+        } else { 0 };
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("firstweekday"), PyObject::int(_firstweekday));
+
+        attrs.insert(CompactString::from("formatmonth"),
+            PyObject::native_closure("formatmonth", move |a: &[PyObjectRef]| {
+                if a.len() < 2 {
+                    return Err(PyException::type_error("formatmonth(year, month[, w[, l]])"));
+                }
+                let year = a[0].to_int()?;
+                let month = a[1].to_int()?;
+                let w = if a.len() > 2 { a[2].to_int().unwrap_or(2) as usize } else { 2 };
+                Ok(PyObject::str_val(CompactString::from(
+                    format_month_text(year, month, w, days_in_month, weekday)
+                )))
+            }));
+
+        attrs.insert(CompactString::from("prmonth"),
+            PyObject::native_closure("prmonth", move |a: &[PyObjectRef]| {
+                if a.len() < 2 {
+                    return Err(PyException::type_error("prmonth(year, month[, w[, l]])"));
+                }
+                let year = a[0].to_int()?;
+                let month = a[1].to_int()?;
+                let w = if a.len() > 2 { a[2].to_int().unwrap_or(2) as usize } else { 2 };
+                let text = format_month_text(year, month, w, days_in_month, weekday);
+                print!("{}", text);
+                Ok(PyObject::none())
+            }));
+
+        attrs.insert(CompactString::from("formatyear"),
+            PyObject::native_closure("formatyear", move |a: &[PyObjectRef]| {
+                if a.is_empty() {
+                    return Err(PyException::type_error("formatyear(year[, w[, l[, c[, m]]]])"));
+                }
+                let year = a[0].to_int()?;
+                let w = if a.len() > 1 { a[1].to_int().unwrap_or(2) as usize } else { 2 };
+                let mut result = format!("{:^66}\n\n", year);
+                for q in 0..4 {
+                    for m in 1..=3 {
+                        let month = q * 3 + m;
+                        result.push_str(&format_month_text(
+                            year, month as i64, w, days_in_month, weekday
+                        ));
+                        result.push('\n');
+                    }
+                }
+                Ok(PyObject::str_val(CompactString::from(result)))
+            }));
+
+        attrs.insert(CompactString::from("pryear"),
+            PyObject::native_closure("pryear", move |a: &[PyObjectRef]| {
+                if a.is_empty() {
+                    return Err(PyException::type_error("pryear(year[, w[, l[, c[, m]]]])"));
+                }
+                let year = a[0].to_int()?;
+                let mut result = format!("{:^66}\n\n", year);
+                for q in 0..4 {
+                    for m in 1..=3 {
+                        let month = q * 3 + m;
+                        result.push_str(&format_month_text(
+                            year, month as i64, 2, days_in_month, weekday
+                        ));
+                        result.push('\n');
+                    }
+                }
+                print!("{}", result);
+                Ok(PyObject::none())
+            }));
+
+        Ok(PyObject::instance_with_attrs(cls_ref.clone(), attrs))
+    })
+}
+
+fn build_html_calendar_class(
+    _is_leap: fn(i64) -> bool,
+    days_in_month: fn(i64, i64) -> i64,
+    weekday: fn(i64, i64, i64) -> i64,
+) -> PyObjectRef {
+    let cls = PyObject::class(CompactString::from("HTMLCalendar"), vec![], IndexMap::new());
+    let cls_ref = cls.clone();
+    PyObject::native_closure("HTMLCalendar", move |args: &[PyObjectRef]| {
+        let _firstweekday = if !args.is_empty() {
+            args[0].to_int().unwrap_or(0)
+        } else { 0 };
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("firstweekday"), PyObject::int(_firstweekday));
+
+        attrs.insert(CompactString::from("formatmonth"),
+            PyObject::native_closure("formatmonth", move |a: &[PyObjectRef]| {
+                if a.len() < 2 {
+                    return Err(PyException::type_error("formatmonth(year, month)"));
+                }
+                let year = a[0].to_int()?;
+                let month = a[1].to_int()?;
+                let month_names = ["", "January", "February", "March", "April", "May", "June",
+                                   "July", "August", "September", "October", "November", "December"];
+                let mname = month_names.get(month as usize).unwrap_or(&"");
+                let first_wd = weekday(year, month, 1) as usize;
+                let ndays = days_in_month(year, month) as usize;
+                let mut html = String::from("<table border=\"0\" cellpadding=\"0\" cellspacing=\"0\" class=\"month\">\n");
+                html.push_str(&format!("<tr><th colspan=\"7\" class=\"month\">{} {}</th></tr>\n", mname, year));
+                html.push_str("<tr>");
+                for dh in &["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] {
+                    html.push_str(&format!("<th class=\"{dh}\">{dh}</th>"));
+                }
+                html.push_str("</tr>\n<tr>");
+                for _ in 0..first_wd { html.push_str("<td class=\"noday\">&nbsp;</td>"); }
+                let mut col = first_wd;
+                for d in 1..=ndays {
+                    html.push_str(&format!("<td class=\"day\">{}</td>", d));
+                    col += 1;
+                    if col == 7 { html.push_str("</tr>\n<tr>"); col = 0; }
+                }
+                while col > 0 && col < 7 { html.push_str("<td class=\"noday\">&nbsp;</td>"); col += 1; }
+                html.push_str("</tr>\n</table>\n");
+                Ok(PyObject::str_val(CompactString::from(html)))
+            }));
+
+        Ok(PyObject::instance_with_attrs(cls_ref.clone(), attrs))
+    })
 }
 
 // ── weakref module ──

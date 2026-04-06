@@ -1268,7 +1268,14 @@ pub fn create_decimal_module() -> PyObjectRef {
             }));
             Ok(inst)
         })),
-        ("setcontext", make_builtin(|_| Ok(PyObject::none()))),
+        ("setcontext", make_builtin(|args| {
+            // Accept the context object but don't change global state yet
+            // This is a no-op that accepts 1 argument without error
+            if args.is_empty() {
+                return Err(PyException::type_error("setcontext() requires 1 argument"));
+            }
+            Ok(PyObject::none())
+        })),
         ("InvalidOperation", PyObject::str_val(CompactString::from("InvalidOperation"))),
     ])
 }
@@ -1401,8 +1408,37 @@ pub fn create_random_module() -> PyObjectRef {
             }
             Ok(PyObject::int(result))
         })),
-        ("getstate", make_builtin(|_| Ok(PyObject::none()))),
-        ("setstate", make_builtin(|_| Ok(PyObject::none()))),
+        ("getstate", make_builtin(|_| {
+            RNG.with(|rng| {
+                let r = rng.borrow();
+                Ok(PyObject::tuple(vec![
+                    PyObject::int(r.s[0] as i64),
+                    PyObject::int(r.s[1] as i64),
+                    PyObject::int(r.s[2] as i64),
+                    PyObject::int(r.s[3] as i64),
+                ]))
+            })
+        })),
+        ("setstate", make_builtin(|args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("setstate() requires 1 argument"));
+            }
+            let state = &args[0];
+            if let PyObjectPayload::Tuple(items) = &state.payload {
+                if items.len() >= 4 {
+                    let s0 = items[0].to_int()? as u64;
+                    let s1 = items[1].to_int()? as u64;
+                    let s2 = items[2].to_int()? as u64;
+                    let s3 = items[3].to_int()? as u64;
+                    RNG.with(|rng| {
+                        let mut r = rng.borrow_mut();
+                        r.s = [s0, s1, s2, s3];
+                    });
+                    return Ok(PyObject::none());
+                }
+            }
+            Err(PyException::type_error("state must be a 4-tuple of integers"))
+        })),
     ])
 }
 

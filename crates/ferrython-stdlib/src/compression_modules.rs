@@ -7,6 +7,7 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin,
 };
+use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -1118,8 +1119,19 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                     return Err(PyException::type_error("add() requires name argument"));
                 }
                 let filepath = args[0].py_to_string();
-                let arcname = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
-                    args[1].py_to_string()
+                // Parse arcname from positional arg[1] or kwargs dict
+                let arcname = if args.len() > 1 {
+                    if let PyObjectPayload::Dict(kw) = &args[args.len() - 1].payload {
+                        // Last arg is kwargs dict
+                        let r = kw.read();
+                        r.get(&HashableKey::Str(CompactString::from("arcname")))
+                            .map(|v| v.py_to_string())
+                            .unwrap_or_else(|| filepath.clone())
+                    } else if !matches!(&args[1].payload, PyObjectPayload::None) {
+                        args[1].py_to_string()
+                    } else {
+                        filepath.clone()
+                    }
                 } else {
                     filepath.clone()
                 };

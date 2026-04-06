@@ -1654,16 +1654,49 @@ fn call_native(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef
 
 
 pub fn create_subprocess_module() -> PyObjectRef {
+    // CalledProcessError(returncode, cmd, output=None, stderr=None)
+    let cpe_cls = PyObject::class(CompactString::from("CalledProcessError"), vec![], IndexMap::new());
+    let cpe_cls_ref = cpe_cls.clone();
+    let called_process_error = PyObject::native_closure("CalledProcessError", move |args: &[PyObjectRef]| {
+        let returncode = if !args.is_empty() { args[0].clone() } else { PyObject::int(1) };
+        let cmd = if args.len() > 1 { args[1].clone() } else { PyObject::str_val(CompactString::from("")) };
+        let output = if args.len() > 2 { args[2].clone() } else { PyObject::none() };
+        let stderr = if args.len() > 3 { args[3].clone() } else { PyObject::none() };
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("returncode"), returncode.clone());
+        attrs.insert(CompactString::from("cmd"), cmd.clone());
+        attrs.insert(CompactString::from("output"), output);
+        attrs.insert(CompactString::from("stderr"), stderr);
+        let msg = format!("Command '{}' returned non-zero exit status {}.",
+            cmd.py_to_string(), returncode.py_to_string());
+        attrs.insert(CompactString::from("args"), PyObject::tuple(vec![PyObject::str_val(CompactString::from(&msg))]));
+        attrs.insert(CompactString::from("__str__"), PyObject::native_closure("__str__", move |_: &[PyObjectRef]| {
+            Ok(PyObject::str_val(CompactString::from(&msg)))
+        }));
+        Ok(PyObject::instance_with_attrs(cpe_cls_ref.clone(), attrs))
+    });
+
     make_module("subprocess", vec![
         ("PIPE", PyObject::int(-1)),
         ("STDOUT", PyObject::int(-2)),
         ("DEVNULL", PyObject::int(-3)),
-        ("CalledProcessError", make_builtin(|_| Ok(PyObject::none()))),
+        ("CalledProcessError", called_process_error),
         ("run", make_builtin(subprocess_run)),
         ("call", make_builtin(subprocess_call)),
         ("check_output", make_builtin(subprocess_check_output)),
         ("check_call", make_builtin(subprocess_call)),
         ("Popen", make_builtin(subprocess_popen)),
+        ("TimeoutExpired", make_builtin(|args: &[PyObjectRef]| {
+            let cmd = if !args.is_empty() { args[0].clone() } else { PyObject::str_val(CompactString::from("")) };
+            let timeout = if args.len() > 1 { args[1].clone() } else { PyObject::none() };
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("cmd"), cmd);
+            attrs.insert(CompactString::from("timeout"), timeout);
+            attrs.insert(CompactString::from("output"), PyObject::none());
+            attrs.insert(CompactString::from("stderr"), PyObject::none());
+            let cls = PyObject::class(CompactString::from("TimeoutExpired"), vec![], IndexMap::new());
+            Ok(PyObject::instance_with_attrs(cls, attrs))
+        })),
     ])
 }
 

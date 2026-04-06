@@ -808,13 +808,18 @@ pub fn create_abc_module() -> PyObjectRef {
             PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(IndexMap::new())))),
         );
         // ABC.register(subclass) — registers subclass as a virtual subclass
-        let register_fn = make_builtin(|args: &[PyObjectRef]| {
-            // args[0] = cls (the ABC), args[1] = subclass
-            if args.len() < 2 {
+        let abc_ref = abc_class.clone();
+        let register_fn = PyObject::native_closure("register", move |args: &[PyObjectRef]| {
+            // When called as Printable.register(MyInt), args = [MyInt]
+            // When called bound, args = [Printable, MyInt]
+            let (cls, subclass) = if args.len() >= 2 && matches!(&args[0].payload, PyObjectPayload::Class(_)) {
+                (args[0].clone(), args[1].clone())
+            } else if args.len() == 1 {
+                // Called unbound: use the ABC class this register was defined on
+                (abc_ref.clone(), args[0].clone())
+            } else {
                 return Err(PyException::type_error("register() requires a subclass argument"));
-            }
-            let cls = &args[0];
-            let subclass = &args[1];
+            };
             // Store virtual subclass in __abc_registry__ on the ABC class
             if let PyObjectPayload::Class(ref cd) = cls.payload {
                 let mut ns = cd.namespace.write();
