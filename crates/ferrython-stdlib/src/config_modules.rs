@@ -179,6 +179,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
 
             // ── add_mutually_exclusive_group(required=False) ──
             let ad3 = arg_defs.clone();
+            let meg_inst_ref = inst.clone();
             attrs.insert(CompactString::from("add_mutually_exclusive_group"), PyObject::native_closure(
                 "add_mutually_exclusive_group", move |meg_args: &[PyObjectRef]| {
                     let mut required = false;
@@ -190,17 +191,20 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                             }
                         }
                     }
-                    let group_dests: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+                    let group_dests: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(Vec::new()));
                     let meg_cls = PyObject::class(CompactString::from("_MutuallyExclusiveGroup"), vec![], IndexMap::new());
                     let meg_inst = PyObject::instance(meg_cls);
                     if let PyObjectPayload::Instance(ref gd) = meg_inst.payload {
                         let mut ga = gd.attrs.write();
                         ga.insert(CompactString::from("required"), PyObject::bool_val(required));
+                        // Store __dests__ as a shared list that gets updated by add_argument
+                        let dests_list = PyObject::list(vec![]);
+                        ga.insert(CompactString::from("__dests__"), dests_list.clone());
                         let ad4 = ad3.clone();
                         let gd_c = group_dests.clone();
+                        let dests_ref = dests_list;
                         ga.insert(CompactString::from("add_argument"), PyObject::native_closure(
                             "add_argument", move |args: &[PyObjectRef]| {
-                                // Delegate to parent's arg_defs, also track dest
                                 let mut names: Vec<String> = Vec::new();
                                 let mut kwargs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
                                 for arg in args {
@@ -224,11 +228,24 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                                     let chosen = long.or(names.first());
                                     chosen.map(|n| n.trim_start_matches('-').replace('-', "_")).unwrap_or_default()
                                 };
-                                gd_c.write().push(dest);
+                                // Track dest in shared list for mutual exclusion check
+                                if let PyObjectPayload::List(items) = &dests_ref.payload {
+                                    items.write().push(PyObject::str_val(CompactString::from(dest.as_str())));
+                                }
+                                gd_c.write().push(PyObject::str_val(CompactString::from(dest.as_str())));
                                 ad4.write().push((names, kwargs));
                                 Ok(PyObject::none())
                             }
                         ));
+                    }
+                    // Register group on parser instance for enforcement
+                    if let PyObjectPayload::Instance(ref pid) = meg_inst_ref.payload {
+                        let mut pa = pid.attrs.write();
+                        let groups = pa.entry(CompactString::from("__mutually_exclusive_groups__"))
+                            .or_insert_with(|| PyObject::list(vec![]));
+                        if let PyObjectPayload::List(items) = &groups.payload {
+                            items.write().push(meg_inst.clone());
+                        }
                     }
                     Ok(meg_inst)
                 }
@@ -356,12 +373,37 @@ fn argparse_parse_args(
                 }
             }
         }
-        let type_fn = kwargs.get("type").map(|t| t.py_to_string());
-        Ok(match type_fn.as_deref() {
-            Some("int") => PyObject::int(val_str.parse::<i64>().unwrap_or(0)),
-            Some("float") => PyObject::float(val_str.parse::<f64>().unwrap_or(0.0)),
-            _ => PyObject::str_val(CompactString::from(val_str)),
-        })
+        if let Some(type_obj) = kwargs.get("type") {
+            // Check if it's a callable (NativeFunction/NativeClosure/Class)
+            match &type_obj.payload {
+                PyObjectPayload::NativeFunction { func, .. } => {
+                    return func(&[PyObject::str_val(CompactString::from(val_str))]);
+                }
+                PyObjectPayload::NativeClosure { func, .. } => {
+                    return func(&[PyObject::str_val(CompactString::from(val_str))]);
+                }
+                PyObjectPayload::Class(_) | PyObjectPayload::BuiltinType(_) => {
+                    // Handle builtin type names
+                    let name = type_obj.py_to_string();
+                    return Ok(match name.as_str() {
+                        "int" | "<class 'int'>" => PyObject::int(val_str.parse::<i64>().map_err(|_|
+                            PyException::value_error(format!("invalid literal for int(): '{}'", val_str)))?),
+                        "float" | "<class 'float'>" => PyObject::float(val_str.parse::<f64>().map_err(|_|
+                            PyException::value_error(format!("could not convert string to float: '{}'", val_str)))?),
+                        _ => PyObject::str_val(CompactString::from(val_str)),
+                    });
+                }
+                _ => {
+                    let type_str = type_obj.py_to_string();
+                    return Ok(match type_str.as_str() {
+                        "int" => PyObject::int(val_str.parse::<i64>().unwrap_or(0)),
+                        "float" => PyObject::float(val_str.parse::<f64>().unwrap_or(0.0)),
+                        _ => PyObject::str_val(CompactString::from(val_str)),
+                    });
+                }
+            }
+        }
+        Ok(PyObject::str_val(CompactString::from(val_str)))
     }
 
     fn get_nargs(kwargs: &IndexMap<CompactString, PyObjectRef>) -> Option<String> {
@@ -619,6 +661,66 @@ fn argparse_parse_args(
                 }
             }
         }
+        // Check required positional arguments (nargs not * or ?)
+        for (dest, kwargs) in positional_defs.iter().take(pos_idx.max(positional_defs.len())) {
+            if pos_idx <= positional_defs.iter().position(|d| d.0 == *dest).unwrap_or(0) {
+                let nargs = get_nargs(kwargs);
+                match nargs.as_deref() {
+                    Some("*") | Some("?") => {} // optional
+                    _ => {
+                        // This positional was not provided
+                        return Err(PyException::runtime_error(
+                            format!("the following arguments are required: {}", dest)
+                        ));
+                    }
+                }
+            }
+        }
+        // Enforce mutually exclusive groups
+        if let Some(pinst) = parser_inst {
+            if let PyObjectPayload::Instance(ref pid) = pinst.payload {
+                let pr = pid.attrs.read();
+                if let Some(meg_list) = pr.get("__mutually_exclusive_groups__") {
+                    if let Ok(groups) = meg_list.to_list() {
+                        for group in &groups {
+                            if let PyObjectPayload::Instance(ref gdata) = group.payload {
+                                let ga = gdata.attrs.read();
+                                let required = ga.get("required")
+                                    .map(|v| v.is_truthy()).unwrap_or(false);
+                                let dests: Vec<String> = ga.get("__dests__")
+                                    .and_then(|v| v.to_list().ok())
+                                    .map(|l| l.iter().map(|i| i.py_to_string()).collect())
+                                    .unwrap_or_default();
+                                // Count how many were set
+                                let mut count = 0;
+                                if let PyObjectPayload::Instance(ref nd) = ns_inst.payload {
+                                    let attrs = nd.attrs.read();
+                                    for d in &dests {
+                                        if let Some(v) = attrs.get(d.as_str()) {
+                                            if !matches!(v.payload, PyObjectPayload::None)
+                                                && !matches!(v.payload, PyObjectPayload::Bool(false)) {
+                                                count += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                                if count > 1 {
+                                    return Err(PyException::runtime_error(
+                                        format!("argument: not allowed with argument (mutually exclusive)")
+                                    ));
+                                }
+                                if required && count == 0 {
+                                    return Err(PyException::runtime_error(
+                                        format!("one of the arguments {} is required",
+                                            dests.iter().map(|d| format!("--{}", d)).collect::<Vec<_>>().join(" "))
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Ok((ns_inst, remaining))
@@ -680,30 +782,90 @@ pub fn create_configparser_module() -> PyObjectRef {
         let mut sections: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
         let mut current_section = CompactString::from("DEFAULT");
         let mut current_items: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+        let mut last_key: Option<CompactString> = None;
 
         for line in content.lines() {
+            // Blank lines or comments
             let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') { continue; }
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+                last_key = None;
+                continue;
+            }
+            // Section header
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 if !current_items.is_empty() {
                     sections.insert(HashableKey::Str(current_section.clone()), PyObject::dict(current_items.clone()));
                     current_items.clear();
                 }
                 current_section = CompactString::from(&trimmed[1..trimmed.len()-1]);
+                last_key = None;
+            } else if line.starts_with(' ') || line.starts_with('\t') {
+                // Continuation line (multiline value): append to last key's value
+                if let Some(ref key) = last_key {
+                    let key_h = HashableKey::Str(key.clone());
+                    if let Some(existing) = current_items.get(&key_h) {
+                        let prev = existing.py_to_string();
+                        let combined = format!("{}\n{}", prev, trimmed);
+                        current_items.insert(key_h, PyObject::str_val(CompactString::from(&combined)));
+                    }
+                }
             } else if let Some(eq_pos) = trimmed.find('=') {
-                let key = trimmed[..eq_pos].trim();
+                let key = CompactString::from(trimmed[..eq_pos].trim());
                 let val = trimmed[eq_pos+1..].trim();
-                current_items.insert(HashableKey::Str(CompactString::from(key)), PyObject::str_val(CompactString::from(val)));
-            } else if let Some(eq_pos) = trimmed.find(':') {
-                let key = trimmed[..eq_pos].trim();
-                let val = trimmed[eq_pos+1..].trim();
-                current_items.insert(HashableKey::Str(CompactString::from(key)), PyObject::str_val(CompactString::from(val)));
+                current_items.insert(HashableKey::Str(key.clone()), PyObject::str_val(CompactString::from(val)));
+                last_key = Some(key);
+            } else if let Some(col_pos) = trimmed.find(':') {
+                let key = CompactString::from(trimmed[..col_pos].trim());
+                let val = trimmed[col_pos+1..].trim();
+                current_items.insert(HashableKey::Str(key.clone()), PyObject::str_val(CompactString::from(val)));
+                last_key = Some(key);
             }
         }
         if !current_items.is_empty() {
             sections.insert(HashableKey::Str(current_section), PyObject::dict(current_items));
         }
         sections
+    }
+
+    /// Perform %(name)s interpolation on a value, resolving from section then defaults.
+    fn interpolate_value(
+        raw: &str,
+        section_items: Option<&IndexMap<HashableKey, PyObjectRef>>,
+        defaults: Option<&IndexMap<HashableKey, PyObjectRef>>,
+        depth: usize,
+    ) -> String {
+        if depth > 10 { return raw.to_string(); } // guard against infinite recursion
+        let mut result = String::new();
+        let mut chars = raw.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '%' && chars.peek() == Some(&'(') {
+                chars.next(); // skip '('
+                let mut var_name = String::new();
+                loop {
+                    match chars.next() {
+                        Some(')') => break,
+                        Some(c) => var_name.push(c),
+                        None => { result.push_str("%("); result.push_str(&var_name); break; }
+                    }
+                }
+                // Skip the format char (usually 's')
+                if chars.peek() == Some(&'s') { chars.next(); }
+                // Look up the variable
+                let var_key = HashableKey::Str(CompactString::from(var_name.to_lowercase().as_str()));
+                let resolved = section_items
+                    .and_then(|s| s.get(&var_key))
+                    .or_else(|| defaults.and_then(|d| d.get(&var_key)));
+                if let Some(val) = resolved {
+                    let val_str = val.py_to_string();
+                    result.push_str(&interpolate_value(&val_str, section_items, defaults, depth + 1));
+                } else {
+                    result.push_str(&format!("%({})", var_name));
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+        result
     }
 
     fn apply_parsed(obj: &PyObjectRef, parsed: IndexMap<HashableKey, PyObjectRef>) {
@@ -777,6 +939,20 @@ pub fn create_configparser_module() -> PyObjectRef {
         let section = CompactString::from(args[1].py_to_string());
         let option = args[2].py_to_string().to_lowercase();
         let option_key = HashableKey::Str(CompactString::from(&option));
+
+        // Check for raw=True kwarg (skip interpolation)
+        let raw = if args.len() > 3 {
+            if let PyObjectPayload::Dict(kw) = &args[args.len()-1].payload {
+                kw.read().get(&HashableKey::Str(CompactString::from("raw")))
+                    .map(|v| v.is_truthy()).unwrap_or(false)
+            } else { false }
+        } else { false };
+
+        // Collect section items and defaults for interpolation
+        let mut section_items_snap: Option<IndexMap<HashableKey, PyObjectRef>> = None;
+        let mut defaults_snap: Option<IndexMap<HashableKey, PyObjectRef>> = None;
+        let mut raw_val: Option<PyObjectRef> = None;
+
         // Check section first
         if let Some(secs) = get_sections(&args[0]) {
             let r = secs.read();
@@ -784,14 +960,17 @@ pub fn create_configparser_module() -> PyObjectRef {
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
                     let dr = d.read();
                     if let Some(val) = dr.get(&option_key) {
-                        return Ok(val.clone());
-                    }
-                    // Try case-insensitive fallback
-                    for (k, v) in dr.iter() {
-                        if k.to_object().py_to_string().to_lowercase() == option {
-                            return Ok(v.clone());
+                        raw_val = Some(val.clone());
+                    } else {
+                        // Case-insensitive fallback
+                        for (k, v) in dr.iter() {
+                            if k.to_object().py_to_string().to_lowercase() == option {
+                                raw_val = Some(v.clone());
+                                break;
+                            }
                         }
                     }
+                    section_items_snap = Some(dr.clone());
                 }
             }
         }
@@ -800,18 +979,43 @@ pub fn create_configparser_module() -> PyObjectRef {
             if let Some(defaults) = inst.attrs.read().get("_defaults") {
                 if let PyObjectPayload::Dict(d) = &defaults.payload {
                     let dr = d.read();
-                    if let Some(val) = dr.get(&option_key) {
-                        return Ok(val.clone());
-                    }
-                    for (k, v) in dr.iter() {
-                        if k.to_object().py_to_string().to_lowercase() == option {
-                            return Ok(v.clone());
+                    if raw_val.is_none() {
+                        if let Some(val) = dr.get(&option_key) {
+                            raw_val = Some(val.clone());
+                        } else {
+                            for (k, v) in dr.iter() {
+                                if k.to_object().py_to_string().to_lowercase() == option {
+                                    raw_val = Some(v.clone());
+                                    break;
+                                }
+                            }
                         }
                     }
+                    defaults_snap = Some(dr.clone());
                 }
             }
         }
-        if args.len() > 3 { return Ok(args[3].clone()); } // fallback
+
+        if let Some(val) = raw_val {
+            if raw {
+                return Ok(val);
+            }
+            // Apply %(name)s interpolation
+            let val_str = val.py_to_string();
+            if val_str.contains("%(") {
+                let interpolated = interpolate_value(
+                    &val_str,
+                    section_items_snap.as_ref(),
+                    defaults_snap.as_ref(),
+                    0,
+                );
+                return Ok(PyObject::str_val(CompactString::from(&interpolated)));
+            }
+            return Ok(val);
+        }
+        if args.len() > 3 && !matches!(&args[3].payload, PyObjectPayload::Dict(_)) {
+            return Ok(args[3].clone()); // fallback
+        }
         Err(PyException::key_error(format!("No option '{}' in section", option)))
     }
 

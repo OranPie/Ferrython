@@ -20,26 +20,74 @@ pub fn create_csv_module() -> PyObjectRef {
     ])
 }
 
-fn csv_parse_line(s: &str) -> Vec<String> {
+/// CSV dialect settings extracted from kwargs.
+struct CsvDialect {
+    delimiter: char,
+    quotechar: char,
+    escapechar: Option<char>,
+    doublequote: bool,
+}
+
+impl Default for CsvDialect {
+    fn default() -> Self {
+        Self { delimiter: ',', quotechar: '"', escapechar: None, doublequote: true }
+    }
+}
+
+/// Extract CSV dialect parameters from kwargs dict (trailing dict arg).
+fn extract_csv_dialect(args: &[PyObjectRef], skip: usize) -> CsvDialect {
+    let mut d = CsvDialect::default();
+    // Check for trailing kwargs dict
+    for arg in args.iter().skip(skip) {
+        if let PyObjectPayload::Dict(kw) = &arg.payload {
+            let r = kw.read();
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("delimiter"))) {
+                let s = v.py_to_string();
+                if let Some(c) = s.chars().next() { d.delimiter = c; }
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("quotechar"))) {
+                let s = v.py_to_string();
+                if let Some(c) = s.chars().next() { d.quotechar = c; }
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("escapechar"))) {
+                let s = v.py_to_string();
+                d.escapechar = s.chars().next();
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("doublequote"))) {
+                d.doublequote = v.is_truthy();
+            }
+            break;
+        }
+    }
+    d
+}
+
+fn csv_parse_line(s: &str, dialect: &CsvDialect) -> Vec<String> {
     let mut fields = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;
     let mut chars = s.chars().peekable();
     while let Some(ch) = chars.next() {
         if in_quotes {
-            if ch == '"' {
-                if chars.peek() == Some(&'"') {
-                    current.push('"');
+            if ch == dialect.quotechar {
+                if dialect.doublequote && chars.peek() == Some(&dialect.quotechar) {
+                    current.push(dialect.quotechar);
                     chars.next();
                 } else {
                     in_quotes = false;
                 }
+            } else if dialect.escapechar == Some(ch) {
+                // Escape char inside quotes: next char is literal
+                if let Some(next) = chars.next() { current.push(next); }
             } else {
                 current.push(ch);
             }
-        } else if ch == '"' {
+        } else if ch == dialect.quotechar {
             in_quotes = true;
-        } else if ch == ',' {
+        } else if dialect.escapechar == Some(ch) && !in_quotes {
+            // Escape char outside quotes: next char is literal
+            if let Some(next) = chars.next() { current.push(next); }
+        } else if ch == dialect.delimiter {
             fields.push(current.clone());
             current.clear();
         } else {
@@ -54,6 +102,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("csv.reader requires an iterable"));
     }
+    let dialect = extract_csv_dialect(args, 1);
     // Try to get lines from the iterable
     let lines = match args[0].to_list() {
         Ok(items) => items,
@@ -96,7 +145,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     for line in &lines {
         let s = line.py_to_string();
         if s.trim().is_empty() { continue; }
-        let fields: Vec<PyObjectRef> = csv_parse_line(&s)
+        let fields: Vec<PyObjectRef> = csv_parse_line(&s, &dialect)
             .into_iter()
             .map(|f| PyObject::str_val(CompactString::from(f.trim())))
             .collect();
@@ -220,14 +269,14 @@ fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         args[1].to_list()?.iter().map(|f| f.py_to_string()).collect()
     } else {
         // First row is header
-        csv_parse_line(&lines[0].py_to_string()).into_iter().map(|f| f.trim().to_string()).collect()
+        csv_parse_line(&lines[0].py_to_string(), &CsvDialect::default()).into_iter().map(|f| f.trim().to_string()).collect()
     };
     let data_start = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { 1 };
     let mut rows = Vec::new();
     for line in &lines[data_start..] {
         let s = line.py_to_string();
         if s.trim().is_empty() { continue; }
-        let values = csv_parse_line(&s);
+        let values = csv_parse_line(&s, &CsvDialect::default());
         let mut map = indexmap::IndexMap::new();
         for (i, name) in fieldnames.iter().enumerate() {
             let val = values.get(i).map(|v| v.trim().to_string()).unwrap_or_default();

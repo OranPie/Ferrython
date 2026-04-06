@@ -503,9 +503,47 @@ fn parse_json_string(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
                 'n' => result.push('\n'),
                 't' => result.push('\t'),
                 'r' => result.push('\r'),
+                'b' => result.push('\u{0008}'),
+                'f' => result.push('\u{000C}'),
                 '"' => result.push('"'),
                 '\\' => result.push('\\'),
                 '/' => result.push('/'),
+                'u' => {
+                    // Parse \uXXXX unicode escape (and surrogate pairs)
+                    if *pos + 4 >= s.len() {
+                        return Err(PyException::json_decode_error("Incomplete \\uXXXX escape"));
+                    }
+                    let hex = &s[*pos + 1..*pos + 5];
+                    let cp = u32::from_str_radix(hex, 16).map_err(|_|
+                        PyException::json_decode_error("Invalid \\uXXXX escape"))?;
+                    *pos += 4; // skip 4 hex digits (loop will +1 more)
+                    // Handle UTF-16 surrogate pairs: \uD800-\uDBFF followed by \uDC00-\uDFFF
+                    if (0xD800..=0xDBFF).contains(&cp) {
+                        // High surrogate — expect \uDCxx low surrogate
+                        if *pos + 6 < s.len() && s.as_bytes()[*pos + 1] == b'\\' && s.as_bytes()[*pos + 2] == b'u' {
+                            let lo_hex = &s[*pos + 3..*pos + 7];
+                            if let Ok(lo) = u32::from_str_radix(lo_hex, 16) {
+                                if (0xDC00..=0xDFFF).contains(&lo) {
+                                    let combined = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                                    if let Some(c) = char::from_u32(combined) {
+                                        result.push(c);
+                                    }
+                                    *pos += 6; // skip \uXXXX of low surrogate
+                                } else {
+                                    result.push(char::REPLACEMENT_CHARACTER);
+                                }
+                            } else {
+                                result.push(char::REPLACEMENT_CHARACTER);
+                            }
+                        } else {
+                            result.push(char::REPLACEMENT_CHARACTER);
+                        }
+                    } else if let Some(c) = char::from_u32(cp) {
+                        result.push(c);
+                    } else {
+                        result.push(char::REPLACEMENT_CHARACTER);
+                    }
+                }
                 _ => { result.push('\\'); result.push(esc); }
             }
         } else {

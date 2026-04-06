@@ -15,6 +15,10 @@ use super::serial_modules::extract_bytes;
 // ── hashlib module ──
 
 pub fn create_hashlib_module() -> PyObjectRef {
+    let algos = vec!["md5", "sha1", "sha224", "sha256", "sha384", "sha512"];
+    let algo_set: IndexMap<ferrython_core::types::HashableKey, PyObjectRef> = algos.iter()
+        .map(|&a| (ferrython_core::types::HashableKey::Str(CompactString::from(a)), PyObject::none()))
+        .collect();
     make_module("hashlib", vec![
         ("md5", make_builtin(hashlib_md5)),
         ("sha1", make_builtin(hashlib_sha1)),
@@ -23,6 +27,8 @@ pub fn create_hashlib_module() -> PyObjectRef {
         ("sha224", make_builtin(hashlib_sha224)),
         ("sha384", make_builtin(hashlib_sha384)),
         ("new", make_builtin(hashlib_new)),
+        ("algorithms_guaranteed", PyObject::frozenset(algo_set.clone())),
+        ("algorithms_available", PyObject::frozenset(algo_set)),
     ])
 }
 

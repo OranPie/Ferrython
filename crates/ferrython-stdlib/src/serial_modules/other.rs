@@ -129,6 +129,8 @@ pub fn create_base64_module() -> PyObjectRef {
         })),
         ("encodebytes", make_builtin(base64_encode)),
         ("decodebytes", make_builtin(base64_decode)),
+        ("standard_b64encode", make_builtin(base64_encode)),
+        ("standard_b64decode", make_builtin(base64_decode)),
     ])
 }
 
