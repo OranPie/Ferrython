@@ -8,6 +8,7 @@ use ferrython_core::object::{
     InstanceData,
 };
 use ferrython_core::types::HashableKey;
+use ferrython_bytecode::CodeFlags;
 use indexmap::IndexMap;
 
 // ── subprocess module (basic) ──
@@ -701,6 +702,152 @@ pub fn create_inspect_module() -> PyObjectRef {
                 Ok(PyObject::tuple(mro))
             } else {
                 Err(PyException::type_error("argument is not a class"))
+            }
+        })),
+        // getfullargspec(func) → FullArgSpec namedtuple-like
+        ("getfullargspec", make_builtin(|args| {
+            check_args("inspect.getfullargspec", args, 1)?;
+            let func = &args[0];
+            if let PyObjectPayload::Function(pf) = &func.payload {
+                let code = &pf.code;
+                let mut positional = Vec::new();
+                let ac = code.arg_count as usize;
+                let has_varargs = code.flags.contains(CodeFlags::VARARGS);
+                let has_varkw = code.flags.contains(CodeFlags::VARKEYWORDS);
+                let kwonly_count = code.kwonlyarg_count as usize;
+
+                for i in 0..ac {
+                    if i < code.varnames.len() {
+                        positional.push(PyObject::str_val(code.varnames[i].clone()));
+                    }
+                }
+                let varargs = if has_varargs {
+                    let idx = ac;
+                    if idx < code.varnames.len() {
+                        Some(PyObject::str_val(code.varnames[idx].clone()))
+                    } else { None }
+                } else { None };
+
+                let kw_start = ac + if has_varargs { 1 } else { 0 };
+                let mut kwonly = Vec::new();
+                for i in 0..kwonly_count {
+                    let idx = kw_start + i;
+                    if idx < code.varnames.len() {
+                        kwonly.push(PyObject::str_val(code.varnames[idx].clone()));
+                    }
+                }
+                let varkw = if has_varkw {
+                    let idx = kw_start + kwonly_count;
+                    if idx < code.varnames.len() {
+                        Some(PyObject::str_val(code.varnames[idx].clone()))
+                    } else { None }
+                } else { None };
+
+                // Build defaults tuple
+                let defaults = if pf.defaults.is_empty() {
+                    PyObject::tuple(vec![])
+                } else {
+                    PyObject::tuple(pf.defaults.clone())
+                };
+
+                let cls = PyObject::class(CompactString::from("FullArgSpec"), vec![], IndexMap::new());
+                // Add __getitem__ to support spec["args"] style access (namedtuple-like)
+                if let PyObjectPayload::Class(ref cd) = cls.payload {
+                    let mut ns = cd.namespace.write();
+                    ns.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+                        "FullArgSpec.__getitem__", move |args: &[PyObjectRef]| {
+                            if args.len() < 2 {
+                                return Err(PyException::type_error("__getitem__ requires key"));
+                            }
+                            let key = args[1].py_to_string();
+                            match args[0].get_attr(&key) {
+                                Some(v) => Ok(v),
+                                None => Err(PyException::key_error(key)),
+                            }
+                        }));
+                }
+                let inst = PyObject::instance(cls);
+                if let PyObjectPayload::Instance(ref d) = inst.payload {
+                    let mut a = d.attrs.write();
+                    a.insert(CompactString::from("args"), PyObject::list(positional));
+                    a.insert(CompactString::from("varargs"), varargs.unwrap_or_else(PyObject::none));
+                    a.insert(CompactString::from("varkw"), varkw.clone().unwrap_or_else(PyObject::none));
+                    a.insert(CompactString::from("defaults"), defaults);
+                    a.insert(CompactString::from("kwonlyargs"), PyObject::list(kwonly));
+                    a.insert(CompactString::from("kwonlydefaults"), if pf.kw_defaults.is_empty() {
+                        PyObject::none()
+                    } else {
+                        let mut kw_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+                        for (k, v) in &pf.kw_defaults {
+                            kw_dict.insert(HashableKey::Str(k.clone()), v.clone());
+                        }
+                        PyObject::dict(kw_dict)
+                    });
+                    a.insert(CompactString::from("annotations"), PyObject::dict(IndexMap::new()));
+                }
+                Ok(inst)
+            } else {
+                Err(PyException::type_error("unsupported callable"))
+            }
+        })),
+        // iscoroutinefunction(obj) — check if function is async
+        ("iscoroutinefunction", make_builtin(|args| {
+            check_args("inspect.iscoroutinefunction", args, 1)?;
+            let is_coro = if let PyObjectPayload::Function(pf) = &args[0].payload {
+                pf.code.flags.contains(CodeFlags::COROUTINE)
+            } else { false };
+            Ok(PyObject::bool_val(is_coro))
+        })),
+        // isgeneratorfunction(obj) — check if function is a generator
+        ("isgeneratorfunction", make_builtin(|args| {
+            check_args("inspect.isgeneratorfunction", args, 1)?;
+            let is_gen = if let PyObjectPayload::Function(pf) = &args[0].payload {
+                pf.code.flags.contains(CodeFlags::GENERATOR)
+            } else { false };
+            Ok(PyObject::bool_val(is_gen))
+        })),
+        // isasyncgenfunction(obj) — check if function is an async generator
+        ("isasyncgenfunction", make_builtin(|args| {
+            check_args("inspect.isasyncgenfunction", args, 1)?;
+            let is_agen = if let PyObjectPayload::Function(pf) = &args[0].payload {
+                pf.code.flags.contains(CodeFlags::ASYNC_GENERATOR)
+            } else { false };
+            Ok(PyObject::bool_val(is_agen))
+        })),
+        // getdoc(obj) — return cleaned docstring
+        ("getdoc", make_builtin(|args| {
+            check_args("inspect.getdoc", args, 1)?;
+            match args[0].get_attr("__doc__") {
+                Some(doc) if !matches!(&doc.payload, PyObjectPayload::None) => {
+                    // Clean indentation like CPython's inspect.cleandoc
+                    let s = doc.py_to_string();
+                    let lines: Vec<&str> = s.lines().collect();
+                    if lines.is_empty() {
+                        return Ok(PyObject::none());
+                    }
+                    // Find minimum indentation (skip first line)
+                    let min_indent = lines.iter().skip(1)
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| l.len() - l.trim_start().len())
+                        .min()
+                        .unwrap_or(0);
+                    let mut result = String::from(lines[0].trim());
+                    for line in &lines[1..] {
+                        result.push('\n');
+                        if line.len() > min_indent {
+                            result.push_str(&line[min_indent..]);
+                        } else {
+                            result.push_str(line.trim());
+                        }
+                    }
+                    // Strip trailing whitespace from each line
+                    let cleaned: String = result.lines()
+                        .map(|l| l.trim_end())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Ok(PyObject::str_val(CompactString::from(cleaned.trim_end())))
+                }
+                _ => Ok(PyObject::none()),
             }
         })),
     ])

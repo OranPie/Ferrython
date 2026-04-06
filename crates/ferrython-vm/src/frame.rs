@@ -67,6 +67,10 @@ pub struct Frame {
     pub global_cache: Option<Vec<Option<PyObjectRef>>>,
     /// The globals_version at which global_cache was populated.
     pub global_cache_version: u64,
+    /// The dict returned by metaclass.__prepare__() (PEP 3115).
+    /// When set, STORE_NAME in class scope also writes to this dict so that
+    /// custom dict subclasses (e.g. enum._EnumDict) see every assignment.
+    pub prepare_dict: Option<PyObjectRef>,
 }
 
 impl Frame {
@@ -95,6 +99,7 @@ impl Frame {
             constant_cache,
             global_cache: None,
             global_cache_version: u64::MAX, // force miss on first access
+            prepare_dict: None,
         }
     }
 
@@ -139,6 +144,7 @@ impl Frame {
             constant_cache,
             global_cache: None,
             global_cache_version: u64::MAX,
+            prepare_dict: None,
         }
     }
 

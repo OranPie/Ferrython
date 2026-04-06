@@ -10,6 +10,7 @@ use ferrython_core::object::{
     PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::intern;
+use ferrython_core::types::HashableKey;
 use std::sync::Arc;
 
 // ── Group 1: Stack + LoadConst ───────────────────────────────────────
@@ -88,7 +89,15 @@ impl VirtualMachine {
                         frame.globals.write().insert(name, value);
                         crate::frame::bump_globals_version();
                     }
-                    ScopeKind::Class => { frame.local_names.insert(name, value); }
+                    ScopeKind::Class => {
+                        frame.local_names.insert(name.clone(), value.clone());
+                        // Mirror the write into the __prepare__ dict (PEP 3115)
+                        if let Some(ref pd) = frame.prepare_dict {
+                            if let PyObjectPayload::Dict(d) = &pd.payload {
+                                d.write().insert(HashableKey::Str(name), value);
+                            }
+                        }
+                    }
                     ScopeKind::Function => { frame.local_names.insert(name, value); }
                 }
             }

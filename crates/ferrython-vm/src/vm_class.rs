@@ -501,31 +501,33 @@ impl VirtualMachine {
             .map(|(_, v)| v.clone());
 
         // Call __prepare__ on metaclass if available (PEP 3115)
-        let prepared_ns: IndexMap<CompactString, PyObjectRef> = if let Some(ref meta) = metaclass {
-            if let Some(prepare) = meta.get_attr("__prepare__") {
-                let name_obj = PyObject::str_val(class_name.clone());
-                let bases_tuple = PyObject::tuple(bases.clone());
-                let result = self.call_object(prepare, vec![name_obj, bases_tuple])?;
-                // Convert returned dict to IndexMap
-                match &result.payload {
-                    PyObjectPayload::Dict(d) => {
-                        let d = d.read();
-                        let mut ns = IndexMap::new();
-                        for (k, v) in d.iter() {
-                            if let HashableKey::Str(s) = k {
-                                ns.insert(s.clone(), v.clone());
+        let (prepared_ns, prepare_dict_obj): (IndexMap<CompactString, PyObjectRef>, Option<PyObjectRef>) =
+            if let Some(ref meta) = metaclass {
+                if let Some(prepare) = meta.get_attr("__prepare__") {
+                    let name_obj = PyObject::str_val(class_name.clone());
+                    let bases_tuple = PyObject::tuple(bases.clone());
+                    let result = self.call_object(prepare, vec![name_obj, bases_tuple])?;
+                    // Extract initial contents into IndexMap for frame.local_names
+                    let ns = match &result.payload {
+                        PyObjectPayload::Dict(d) => {
+                            let d = d.read();
+                            let mut ns = IndexMap::new();
+                            for (k, v) in d.iter() {
+                                if let HashableKey::Str(s) = k {
+                                    ns.insert(s.clone(), v.clone());
+                                }
                             }
+                            ns
                         }
-                        ns
-                    }
-                    _ => IndexMap::new(),
+                        _ => IndexMap::new(),
+                    };
+                    (ns, Some(result))
+                } else {
+                    (IndexMap::new(), None)
                 }
             } else {
-                IndexMap::new()
-            }
-        } else {
-            IndexMap::new()
-        };
+                (IndexMap::new(), None)
+            };
 
         // Execute class body to get namespace
         let namespace = match &body_func.payload {
@@ -538,6 +540,8 @@ impl VirtualMachine {
                 for (k, v) in &prepared_ns {
                     frame.local_names.insert(k.clone(), v.clone());
                 }
+                // Attach the __prepare__ dict so STORE_NAME mirrors writes into it
+                frame.prepare_dict = prepare_dict_obj.clone();
                 let n_cell = frame.code.cellvars.len();
                 for (i, cell) in pyfunc.closure.iter().enumerate() {
                     let free_idx = n_cell + i;
@@ -562,8 +566,20 @@ impl VirtualMachine {
             let bases_list: Vec<PyObjectRef> = bases.clone();
             let mro = Self::compute_mro(&bases_list)?;
             
-            // Build namespace dict for passing to __new__
-            let ns_dict = {
+            // Build namespace dict for passing to __new__.
+            // If __prepare__ returned a dict, reuse that object so metaclass.__new__
+            // receives the original (possibly custom) dict with all class body assignments.
+            let ns_dict = if let Some(pd) = prepare_dict_obj {
+                // Ensure all class-body assignments are present in the prepare dict
+                if let PyObjectPayload::Dict(d) = &pd.payload {
+                    let mut map = d.write();
+                    for (k, v) in &namespace {
+                        map.insert(HashableKey::Str(k.clone()), v.clone());
+                    }
+                    drop(map);
+                }
+                pd
+            } else {
                 let mut map = IndexMap::new();
                 for (k, v) in &namespace {
                     map.insert(HashableKey::Str(k.clone()), v.clone());
