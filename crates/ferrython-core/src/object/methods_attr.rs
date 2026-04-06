@@ -669,7 +669,21 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     "__subclasses__", "__subclasshook__",
                                 ].into_iter().collect()
                             });
+                            // Container-only dunders: not valid for numeric/NoneType
+                            static CONTAINER_DUNDERS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+                                [
+                                    "__len__", "__getitem__", "__setitem__", "__delitem__",
+                                    "__contains__", "__iter__", "__next__", "__reversed__",
+                                    "__missing__",
+                                ].into_iter().collect()
+                            });
                             if BUILTIN_DUNDERS.contains(name) {
+                                // Exclude container dunders for non-container types
+                                let is_non_container = matches!(n.as_str(),
+                                    "int" | "float" | "complex" | "bool" | "NoneType" | "type");
+                                if is_non_container && CONTAINER_DUNDERS.contains(name) {
+                                    return None;
+                                }
                                 // Check if resolve_builtin_type_method has a real implementation
                                 if let Some(native) = resolve_builtin_type_method(n, name) {
                                     return Some(native);
