@@ -2,7 +2,6 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    InstanceData,
     make_module, make_builtin,
     CompareOp,
 };
@@ -663,27 +662,218 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn collections_chainmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let maps: Vec<PyObjectRef> = args.to_vec();
-    let mut merged = IndexMap::new();
-    for m in maps.iter().rev() {
-        if let PyObjectPayload::Dict(dict) = &m.payload {
-            let rd = dict.read();
-            for (k, v) in rd.iter() {
-                merged.insert(k.clone(), v.clone());
+    // Create a class with __getitem__/__setitem__ that delegates to the maps list
+    let maps_list = PyObject::list(maps.clone());
+    let mut ns = IndexMap::new();
+
+    // __getitem__ — walk maps in order
+    let ml = maps_list.clone();
+    ns.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+        "ChainMap.__getitem__", move |call_args| {
+            if call_args.len() < 2 { return Err(PyException::type_error("__getitem__ requires key")); }
+            let key = &call_args[1];
+            let hk = HashableKey::from_object(key)?;
+            if let PyObjectPayload::List(list) = &ml.payload {
+                for m in list.read().iter() {
+                    if let PyObjectPayload::Dict(dict) = &m.payload {
+                        if let Some(val) = dict.read().get(&hk) {
+                            return Ok(val.clone());
+                        }
+                    }
+                }
             }
+            Err(PyException::key_error(&key.py_to_string()))
         }
-    }
-    let cls = PyObject::class(CompactString::from("ChainMap"), vec![], IndexMap::new());
-    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
-        class: cls,
-        attrs: Arc::new(RwLock::new(IndexMap::new())),
-        is_special: true, dict_storage: Some(Arc::new(RwLock::new(merged))),
-    }));
+    ));
+    // __setitem__ — write to first map
+    let ml2 = maps_list.clone();
+    ns.insert(CompactString::from("__setitem__"), PyObject::native_closure(
+        "ChainMap.__setitem__", move |call_args| {
+            if call_args.len() < 3 { return Err(PyException::type_error("__setitem__ requires key and value")); }
+            let key = &call_args[1];
+            let value = &call_args[2];
+            let hk = HashableKey::from_object(key)?;
+            if let PyObjectPayload::List(list) = &ml2.payload {
+                let r = list.read();
+                if let Some(first) = r.first() {
+                    if let PyObjectPayload::Dict(dict) = &first.payload {
+                        dict.write().insert(hk, value.clone());
+                    }
+                }
+            }
+            Ok(PyObject::none())
+        }
+    ));
+    // __delitem__ — delete from first map
+    let ml3 = maps_list.clone();
+    ns.insert(CompactString::from("__delitem__"), PyObject::native_closure(
+        "ChainMap.__delitem__", move |call_args| {
+            if call_args.len() < 2 { return Err(PyException::type_error("__delitem__ requires key")); }
+            let key = &call_args[1];
+            let hk = HashableKey::from_object(key)?;
+            if let PyObjectPayload::List(list) = &ml3.payload {
+                let r = list.read();
+                if let Some(first) = r.first() {
+                    if let PyObjectPayload::Dict(dict) = &first.payload {
+                        if dict.write().shift_remove(&hk).is_none() {
+                            return Err(PyException::key_error(&key.py_to_string()));
+                        }
+                        return Ok(PyObject::none());
+                    }
+                }
+            }
+            Err(PyException::key_error(&call_args[1].py_to_string()))
+        }
+    ));
+    // __contains__
+    let ml4 = maps_list.clone();
+    ns.insert(CompactString::from("__contains__"), PyObject::native_closure(
+        "ChainMap.__contains__", move |call_args| {
+            if call_args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+            let hk = HashableKey::from_object(&call_args[1])?;
+            if let PyObjectPayload::List(list) = &ml4.payload {
+                for m in list.read().iter() {
+                    if let PyObjectPayload::Dict(dict) = &m.payload {
+                        if dict.read().contains_key(&hk) {
+                            return Ok(PyObject::bool_val(true));
+                        }
+                    }
+                }
+            }
+            Ok(PyObject::bool_val(false))
+        }
+    ));
+    // __len__ — count unique keys
+    let ml5 = maps_list.clone();
+    ns.insert(CompactString::from("__len__"), PyObject::native_closure(
+        "ChainMap.__len__", move |_call_args| {
+            let mut all_keys = IndexMap::new();
+            if let PyObjectPayload::List(list) = &ml5.payload {
+                for m in list.read().iter() {
+                    if let PyObjectPayload::Dict(dict) = &m.payload {
+                        for (k, _) in dict.read().iter() {
+                            all_keys.entry(k.clone()).or_insert(());
+                        }
+                    }
+                }
+            }
+            Ok(PyObject::int(all_keys.len() as i64))
+        }
+    ));
+    // __repr__
+    let ml6 = maps_list.clone();
+    ns.insert(CompactString::from("__repr__"), PyObject::native_closure(
+        "ChainMap.__repr__", move |_call_args| {
+            let mut parts = Vec::new();
+            if let PyObjectPayload::List(list) = &ml6.payload {
+                for m in list.read().iter() {
+                    parts.push(m.py_to_string());
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(format!("ChainMap({})", parts.join(", ")))))
+        }
+    ));
+    // keys — all unique keys across maps
+    let ml7 = maps_list.clone();
+    ns.insert(CompactString::from("keys"), PyObject::native_closure(
+        "ChainMap.keys", move |_call_args| {
+            let mut all_keys = IndexMap::<HashableKey, ()>::new();
+            if let PyObjectPayload::List(list) = &ml7.payload {
+                for m in list.read().iter() {
+                    if let PyObjectPayload::Dict(dict) = &m.payload {
+                        for (k, _) in dict.read().iter() {
+                            all_keys.entry(k.clone()).or_insert(());
+                        }
+                    }
+                }
+            }
+            let keys: Vec<PyObjectRef> = all_keys.keys().map(|k| k.to_object()).collect();
+            Ok(PyObject::list(keys))
+        }
+    ));
+    // values — values for unique keys (first occurrence wins)
+    let ml8 = maps_list.clone();
+    ns.insert(CompactString::from("values"), PyObject::native_closure(
+        "ChainMap.values", move |_call_args| {
+            let mut seen = IndexMap::<HashableKey, PyObjectRef>::new();
+            if let PyObjectPayload::List(list) = &ml8.payload {
+                for m in list.read().iter() {
+                    if let PyObjectPayload::Dict(dict) = &m.payload {
+                        for (k, v) in dict.read().iter() {
+                            seen.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
+                }
+            }
+            Ok(PyObject::list(seen.values().cloned().collect()))
+        }
+    ));
+    // items — (key, value) pairs for unique keys
+    let ml9 = maps_list.clone();
+    ns.insert(CompactString::from("items"), PyObject::native_closure(
+        "ChainMap.items", move |_call_args| {
+            let mut seen = IndexMap::<HashableKey, PyObjectRef>::new();
+            if let PyObjectPayload::List(list) = &ml9.payload {
+                for m in list.read().iter() {
+                    if let PyObjectPayload::Dict(dict) = &m.payload {
+                        for (k, v) in dict.read().iter() {
+                            seen.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
+                }
+            }
+            let items: Vec<PyObjectRef> = seen.iter()
+                .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()]))
+                .collect();
+            Ok(PyObject::list(items))
+        }
+    ));
+    // get(key, default=None)
+    let ml10 = maps_list.clone();
+    ns.insert(CompactString::from("get"), PyObject::native_closure(
+        "ChainMap.get", move |call_args| {
+            if call_args.len() < 2 { return Err(PyException::type_error("get requires key")); }
+            let key = &call_args[1];
+            let default = call_args.get(2).cloned().unwrap_or_else(PyObject::none);
+            let hk = HashableKey::from_object(key)?;
+            if let PyObjectPayload::List(list) = &ml10.payload {
+                for m in list.read().iter() {
+                    if let PyObjectPayload::Dict(dict) = &m.payload {
+                        if let Some(val) = dict.read().get(&hk) {
+                            return Ok(val.clone());
+                        }
+                    }
+                }
+            }
+            Ok(default)
+        }
+    ));
+    // __iter__ — iterate unique keys
+    let ml11 = maps_list.clone();
+    ns.insert(CompactString::from("__iter__"), PyObject::native_closure(
+        "ChainMap.__iter__", move |_call_args| {
+            let mut all_keys = IndexMap::<HashableKey, ()>::new();
+            if let PyObjectPayload::List(list) = &ml11.payload {
+                for m in list.read().iter() {
+                    if let PyObjectPayload::Dict(dict) = &m.payload {
+                        for (k, _) in dict.read().iter() {
+                            all_keys.entry(k.clone()).or_insert(());
+                        }
+                    }
+                }
+            }
+            let keys: Vec<PyObjectRef> = all_keys.keys().map(|k| k.to_object()).collect();
+            Ok(PyObject::list(keys))
+        }
+    ));
+
+    let cls = PyObject::class(CompactString::from("ChainMap"), vec![], ns);
+    let inst = PyObject::instance(cls.clone());
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
         w.insert(CompactString::from("__chainmap__"), PyObject::bool_val(true));
-        let maps_list = PyObject::list(maps.clone());
-        w.insert(CompactString::from("maps"), maps_list);
-        // new_child(m=None) — creates new ChainMap with m followed by current maps
+        w.insert(CompactString::from("maps"), maps_list.clone());
+        // new_child(m=None)
         let captured_maps = maps.clone();
         w.insert(CompactString::from("new_child"), PyObject::native_closure(
             "ChainMap.new_child", move |call_args| {
@@ -697,8 +887,6 @@ fn collections_chainmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 collections_chainmap(&new_maps)
             }
         ));
-        // parents — eagerly create ChainMap of all maps except first
-        // Only compute if we have maps, to avoid infinite recursion
         if maps.len() > 1 {
             let parents_val = collections_chainmap(&maps[1..])?;
             w.insert(CompactString::from("parents"), parents_val);
