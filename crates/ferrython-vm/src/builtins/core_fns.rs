@@ -1361,6 +1361,20 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
         }
         // Any type is subclass of object
         (_, PyObjectPayload::BuiltinType(b)) if b.as_str() == "object" => true,
+        // Class checking against BuiltinType: walk MRO for matching BuiltinType
+        (PyObjectPayload::Class(sub_cd), PyObjectPayload::BuiltinType(target)) => {
+            for base in &sub_cd.mro {
+                if let PyObjectPayload::BuiltinType(bt) = &base.payload {
+                    if bt == target { return true; }
+                }
+            }
+            for base in &sub_cd.bases {
+                if let PyObjectPayload::BuiltinType(bt) = &base.payload {
+                    if bt == target { return true; }
+                }
+            }
+            false
+        }
         // BuiltinType vs ABC Class: check _abc_builtin_types registry
         (PyObjectPayload::BuiltinType(type_name), PyObjectPayload::Class(sup_cd)) => {
             if let Some(registry) = sup_cd.namespace.read().get("_abc_builtin_types") {

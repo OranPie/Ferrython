@@ -1164,7 +1164,16 @@ impl VirtualMachine {
                             let cls_default = if default_fn.is_none() {
                                 kwargs.iter()
                                     .find(|(k, _)| k.as_str() == "cls")
-                                    .and_then(|(_, v)| v.get_attr("default"))
+                                    .and_then(|(_, cls_val)| {
+                                        // Create an encoder instance and bind its default method
+                                        let encoder_inst = PyObject::instance(cls_val.clone());
+                                        cls_val.get_attr("default").map(|method| {
+                                            PyObject::wrap(PyObjectPayload::BoundMethod {
+                                                receiver: encoder_inst,
+                                                method,
+                                            })
+                                        })
+                                    })
                             } else { None };
                             let effective_default = default_fn.or(cls_default);
                             if let Some(ref def) = effective_default {
@@ -1512,9 +1521,10 @@ impl VirtualMachine {
                                         PyObjectPayload::Instance(inst) => inst.class.clone(),
                                         _ => PyObject::builtin_type(CompactString::from(obj.type_name())),
                                     };
-                                    let result = self.call_object(hook, vec![obj_type])?;
-                                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
-                                        return Ok(PyObject::bool_val(result.is_truthy()));
+                                    if let Ok(result) = self.call_object(hook, vec![obj_type]) {
+                                        if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                                            return Ok(PyObject::bool_val(result.is_truthy()));
+                                        }
                                     }
                                 }
                                 // Check for runtime_checkable Protocol — structural subtyping
@@ -1547,10 +1557,10 @@ impl VirtualMachine {
                                 }
                                 // Check __subclasshook__ on the superclass (ABC protocol)
                                 if let Some(hook) = sup.get_attr("__subclasshook__") {
-                                    let result = self.call_object(hook, vec![args[0].clone()])?;
-                                    // If NotImplemented, fall through to normal check
-                                    if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
-                                        return Ok(PyObject::bool_val(result.is_truthy()));
+                                    if let Ok(result) = self.call_object(hook, vec![args[0].clone()]) {
+                                        if !matches!(&result.payload, PyObjectPayload::NotImplemented) {
+                                            return Ok(PyObject::bool_val(result.is_truthy()));
+                                        }
                                     }
                                 }
                             }

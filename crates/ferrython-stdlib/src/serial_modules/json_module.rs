@@ -139,10 +139,33 @@ pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 if let Some(cls) = r.get(&HashableKey::Str(CompactString::from("cls"))) {
                     let encoder_inst = PyObject::instance(cls.clone());
                     if let Some(default_method) = cls.get_attr("default") {
-                        default_fn = Some(PyObject::wrap(PyObjectPayload::BoundMethod {
-                            receiver: encoder_inst,
-                            method: default_method,
-                        }));
+                        match &default_method.payload {
+                            // Native default method — can call directly
+                            PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => {
+                                default_fn = Some(PyObject::wrap(PyObjectPayload::BoundMethod {
+                                    receiver: encoder_inst,
+                                    method: default_method,
+                                }));
+                            }
+                            // Python default method — pre-convert object tree then serialize
+                            PyObjectPayload::Function(_) => {
+                                let converted = pre_convert_for_json(&args[0]);
+                                let obj_to_serialize = if sort_keys {
+                                    sort_dict_keys_recursive(&converted)
+                                } else {
+                                    converted
+                                };
+                                ENSURE_ASCII.with(|f| f.set(ensure_ascii));
+                                let s = if let Some(indent_size) = indent {
+                                    py_to_json_pretty(&obj_to_serialize, 0, indent_size, None)?
+                                } else {
+                                    py_to_json_sep(&obj_to_serialize, &item_sep, &kv_sep, None)?
+                                };
+                                ENSURE_ASCII.with(|f| f.set(true));
+                                return Ok(PyObject::str_val(CompactString::from(s)));
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -167,6 +190,73 @@ pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
     ENSURE_ASCII.with(|f| f.set(true)); // restore default
     Ok(PyObject::str_val(CompactString::from(s)))
+}
+
+/// Recursively convert non-JSON-serializable types to serializable equivalents.
+/// Handles: set/frozenset → list, bytes → str, Instance with __dict__ → dict.
+/// Used when cls= is provided with a Python default method (which can't be called
+/// from native code synchronously).
+fn pre_convert_for_json(obj: &PyObjectRef) -> PyObjectRef {
+    match &obj.payload {
+        PyObjectPayload::Dict(map) => {
+            let r = map.read();
+            let entries: Vec<_> = r.iter()
+                .map(|(k, v)| (k.clone(), pre_convert_for_json(v)))
+                .collect();
+            drop(r);
+            let new_dict = PyObject::dict_from_pairs(vec![]);
+            if let PyObjectPayload::Dict(new_map) = &new_dict.payload {
+                let mut w = new_map.write();
+                for (k, v) in entries {
+                    w.insert(k, v);
+                }
+            }
+            new_dict
+        }
+        PyObjectPayload::List(items) => {
+            let r = items.read();
+            let converted: Vec<_> = r.iter().map(|i| pre_convert_for_json(i)).collect();
+            drop(r);
+            PyObject::list(converted)
+        }
+        PyObjectPayload::Tuple(items) => {
+            let converted: Vec<_> = items.iter().map(|i| pre_convert_for_json(i)).collect();
+            PyObject::list(converted)
+        }
+        PyObjectPayload::Set(set) => {
+            let r = set.read();
+            let items: Vec<_> = r.keys().map(|k| pre_convert_for_json(&k.to_object())).collect();
+            drop(r);
+            PyObject::list(items)
+        }
+        PyObjectPayload::FrozenSet(set) => {
+            let items: Vec<_> = set.keys().map(|k| pre_convert_for_json(&k.to_object())).collect();
+            PyObject::list(items)
+        }
+        PyObjectPayload::Bytes(b) => {
+            let s = String::from_utf8_lossy(b).to_string();
+            PyObject::str_val(CompactString::from(s))
+        }
+        PyObjectPayload::Instance(inst) => {
+            let attrs = inst.attrs.read();
+            if attrs.is_empty() {
+                obj.clone()
+            } else {
+                let new_dict = PyObject::dict_from_pairs(vec![]);
+                if let PyObjectPayload::Dict(new_map) = &new_dict.payload {
+                    let mut w = new_map.write();
+                    for (k, v) in attrs.iter() {
+                        w.insert(
+                            HashableKey::Str(k.clone()),
+                            pre_convert_for_json(v),
+                        );
+                    }
+                }
+                new_dict
+            }
+        }
+        _ => obj.clone(),
+    }
 }
 
 /// Recursively sort dictionary keys for sort_keys=True in json.dumps
