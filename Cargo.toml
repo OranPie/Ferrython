@@ -16,6 +16,7 @@ members = [
     "crates/ferrython-async",
     "crates/ferrython-stdlib",
     "crates/ferrython-cli",
+    "crates/ferrython-pip",
 ]
 
 [workspace.package]

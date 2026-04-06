@@ -474,29 +474,40 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     
     // If called as @dataclass(eq=True, ...) the first arg is kwargs dict, not a class.
     if !matches!(&cls.payload, PyObjectPayload::Class(_)) {
+        let mut eq = true;
         let mut order = false;
         let mut frozen = false;
+        let mut repr = true;
+        let mut unsafe_hash = false;
         if let PyObjectPayload::Dict(map) = &cls.payload {
             let m = map.read();
+            if let Some(v) = m.get(&HashableKey::Str(CompactString::from("eq"))) {
+                eq = v.is_truthy();
+            }
             if let Some(v) = m.get(&HashableKey::Str(CompactString::from("order"))) {
                 order = v.is_truthy();
             }
             if let Some(v) = m.get(&HashableKey::Str(CompactString::from("frozen"))) {
                 frozen = v.is_truthy();
             }
+            if let Some(v) = m.get(&HashableKey::Str(CompactString::from("repr"))) {
+                repr = v.is_truthy();
+            }
+            if let Some(v) = m.get(&HashableKey::Str(CompactString::from("unsafe_hash"))) {
+                unsafe_hash = v.is_truthy();
+            }
         }
-        let order_flag = order;
-        let frozen_flag = frozen;
         return Ok(PyObject::native_closure("dataclass", move |args: &[PyObjectRef]| {
             if args.is_empty() { return Err(PyException::type_error("dataclass requires 1 argument")); }
-            dataclass_apply(&args[0], order_flag, frozen_flag)
+            dataclass_apply(&args[0], eq, order, frozen, repr, unsafe_hash)
         }));
     }
     
-    dataclass_apply(cls, false, false)
+    // Default: eq=True, order=False, frozen=False, repr=True, unsafe_hash=False
+    dataclass_apply(cls, true, false, false, true, false)
 }
 
-fn dataclass_apply(cls: &PyObjectRef, order: bool, frozen: bool) -> PyResult<PyObjectRef> {
+fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr: bool, unsafe_hash: bool) -> PyResult<PyObjectRef> {
     
     // Get annotations to discover fields — walk MRO for inherited dataclass fields
     let mut field_names: Vec<CompactString> = Vec::new();
@@ -575,6 +586,89 @@ fn dataclass_apply(cls: &PyObjectRef, order: bool, frozen: bool) -> PyResult<PyO
             ns.insert(CompactString::from("__dataclass_frozen__"), PyObject::bool_val(true));
         }
 
+        // Generate __repr__ if repr=True (default)
+        if repr {
+            let fields_for_repr = field_names.clone();
+            let cls_ref = cls.clone();
+            ns.insert(CompactString::from("__repr__"), PyObject::native_closure("__repr__", move |args: &[PyObjectRef]| {
+                check_args("__repr__", args, 1)?;
+                let cls_name = if let PyObjectPayload::Class(cd) = &cls_ref.payload {
+                    cd.name.clone()
+                } else {
+                    CompactString::from("???")
+                };
+                let mut parts = Vec::new();
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    let attrs = inst.attrs.read();
+                    for f in &fields_for_repr {
+                        let val = attrs.get(f.as_str()).cloned().unwrap_or_else(PyObject::none);
+                        let val_repr = val.repr();
+                        parts.push(format!("{}={}", f, val_repr));
+                    }
+                }
+                Ok(PyObject::str_val(CompactString::from(
+                    format!("{}({})", cls_name, parts.join(", "))
+                )))
+            }));
+        }
+
+        // Generate __eq__ if eq=True (default)
+        if eq {
+            let fields_for_eq = compare_fields.clone();
+            ns.insert(CompactString::from("__eq__"), PyObject::native_closure("__eq__", move |args: &[PyObjectRef]| {
+                check_args("__eq__", args, 2)?;
+                let (a, b) = (&args[0], &args[1]);
+                // Must be same type
+                if !same_class(a, b) {
+                    return Ok(PyObject::not_implemented());
+                }
+                let tup_a = extract_compare_tuple(a, &fields_for_eq);
+                let tup_b = extract_compare_tuple(b, &fields_for_eq);
+                tup_a.compare(&tup_b, ferrython_core::object::CompareOp::Eq)
+            }));
+
+            let fields_for_ne = compare_fields.clone();
+            ns.insert(CompactString::from("__ne__"), PyObject::native_closure("__ne__", move |args: &[PyObjectRef]| {
+                check_args("__ne__", args, 2)?;
+                let (a, b) = (&args[0], &args[1]);
+                if !same_class(a, b) {
+                    return Ok(PyObject::not_implemented());
+                }
+                let tup_a = extract_compare_tuple(a, &fields_for_ne);
+                let tup_b = extract_compare_tuple(b, &fields_for_ne);
+                tup_a.compare(&tup_b, ferrython_core::object::CompareOp::Ne)
+            }));
+        }
+
+        // Generate __hash__
+        // CPython: if eq=True and frozen=True, generate __hash__
+        //          if eq=True and frozen=False, set __hash__ = None (unhashable)
+        //          if unsafe_hash=True, always generate __hash__
+        if unsafe_hash || (eq && frozen) {
+            let fields_for_hash = compare_fields.clone();
+            ns.insert(CompactString::from("__hash__"), PyObject::native_closure("__hash__", move |args: &[PyObjectRef]| {
+                check_args("__hash__", args, 1)?;
+                use std::hash::{Hash, Hasher};
+                use std::collections::hash_map::DefaultHasher;
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    let attrs = inst.attrs.read();
+                    let vals: Vec<PyObjectRef> = fields_for_hash.iter()
+                        .map(|f| attrs.get(f.as_str()).cloned().unwrap_or_else(PyObject::none))
+                        .collect();
+                    let tup = PyObject::tuple(vals);
+                    let hk = tup.to_hashable_key()?;
+                    let mut hasher = DefaultHasher::new();
+                    hk.hash(&mut hasher);
+                    Ok(PyObject::int(hasher.finish() as i64))
+                } else {
+                    Ok(PyObject::int(0))
+                }
+            }));
+        } else if eq {
+            // eq=True, frozen=False → unhashable (like CPython)
+            ns.insert(CompactString::from("__hash__"), PyObject::none());
+        }
+
         // Generate ordering methods if order=True
         if order {
             let fields_for_lt = compare_fields.clone();
@@ -628,6 +722,16 @@ fn extract_compare_tuple(obj: &PyObjectRef, fields: &[CompactString]) -> PyObjec
         PyObject::tuple(vals)
     } else {
         PyObject::tuple(vec![])
+    }
+}
+
+/// Check if two instances share the same class (by Arc pointer identity).
+fn same_class(a: &PyObjectRef, b: &PyObjectRef) -> bool {
+    match (&a.payload, &b.payload) {
+        (PyObjectPayload::Instance(ia), PyObjectPayload::Instance(ib)) => {
+            Arc::ptr_eq(&ia.class, &ib.class)
+        }
+        _ => false,
     }
 }
 
