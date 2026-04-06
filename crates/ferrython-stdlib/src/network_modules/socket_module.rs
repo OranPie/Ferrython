@@ -176,9 +176,33 @@ fn build_socket_object(
             if guard.closed {
                 return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
             }
-            match TcpStream::connect(&addr_str) {
+            let timeout = guard.timeout;
+            let connect_result = if let Some(t) = timeout {
+                use std::net::ToSocketAddrs;
+                let addrs: Vec<_> = addr_str
+                    .to_socket_addrs()
+                    .map_err(|e| PyException::os_error(format!("getaddrinfo: {}", e)))?
+                    .collect();
+                let mut last_err = None;
+                let mut result = None;
+                for addr in &addrs {
+                    match TcpStream::connect_timeout(addr, t) {
+                        Ok(s) => { result = Some(s); break; }
+                        Err(e) => last_err = Some(e),
+                    }
+                }
+                match result {
+                    Some(s) => Ok(s),
+                    None => Err(last_err.unwrap_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no addresses to connect to")
+                    })),
+                }
+            } else {
+                TcpStream::connect(&addr_str)
+            };
+            match connect_result {
                 Ok(stream) => {
-                    if let Some(t) = guard.timeout {
+                    if let Some(t) = timeout {
                         stream.set_read_timeout(Some(t)).ok();
                         stream.set_write_timeout(Some(t)).ok();
                     }
@@ -200,7 +224,7 @@ fn build_socket_object(
                             ExceptionKind::ConnectionAbortedError,
                             format!("[Errno 103] Connection aborted: {}", e),
                         ),
-                        ErrorKind::TimedOut => PyException::new(
+                        ErrorKind::TimedOut | ErrorKind::WouldBlock => PyException::new(
                             ExceptionKind::TimeoutError,
                             format!("[Errno 110] Connection timed out: {}", e),
                         ),
@@ -711,6 +735,231 @@ fn build_socket_object(
             Err(PyException::os_error(
                 "[Errno 107] Transport endpoint is not connected",
             ))
+        }),
+    );
+
+    // ── sendto(data, address) → int (UDP) ──
+    let st = inner.clone();
+    attrs.insert(
+        CompactString::from("sendto"),
+        PyObject::native_closure("sendto", move |args| {
+            if args.len() < 2 {
+                return Err(PyException::type_error(
+                    "sendto() requires data and address arguments",
+                ));
+            }
+            let data = match &args[0].payload {
+                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                _ => {
+                    return Err(PyException::type_error(
+                        "a bytes-like object is required",
+                    ))
+                }
+            };
+            let (host, port) = extract_host_port(&args[1])?;
+            let dest = format!("{}:{}", host, port);
+            let mut guard = lock_inner(&st)?;
+            if guard.closed {
+                return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
+            }
+            if guard.udp_socket.is_none() && guard.sock_type == 2 {
+                match UdpSocket::bind("0.0.0.0:0") {
+                    Ok(sock) => {
+                        if let Some(t) = guard.timeout {
+                            sock.set_read_timeout(Some(t)).ok();
+                            sock.set_write_timeout(Some(t)).ok();
+                        }
+                        guard.udp_socket = Some(sock);
+                    }
+                    Err(e) => return Err(PyException::os_error(format!("sendto bind: {}", e))),
+                }
+            }
+            if let Some(ref sock) = guard.udp_socket {
+                match sock.send_to(&data, &dest) {
+                    Ok(n) => Ok(PyObject::int(n as i64)),
+                    Err(e) => Err(PyException::os_error(format!("sendto: {}", e))),
+                }
+            } else {
+                Err(PyException::os_error("sendto() on non-UDP socket without connection"))
+            }
+        }),
+    );
+
+    // ── recvfrom(bufsize) → (bytes, (host, port)) ──
+    let st = inner.clone();
+    attrs.insert(
+        CompactString::from("recvfrom"),
+        PyObject::native_closure("recvfrom", move |args| {
+            let bufsize = if !args.is_empty() {
+                args[0].as_int().unwrap_or(4096)
+            } else {
+                4096
+            };
+            if bufsize < 0 {
+                return Err(PyException::value_error("negative buffersize in recvfrom"));
+            }
+            let guard = lock_inner(&st)?;
+            if guard.closed {
+                return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
+            }
+            if let Some(ref sock) = guard.udp_socket {
+                let mut buf = vec![0u8; bufsize as usize];
+                match sock.recv_from(&mut buf) {
+                    Ok((n, addr)) => {
+                        buf.truncate(n);
+                        let addr_tuple = PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from(addr.ip().to_string())),
+                            PyObject::int(addr.port() as i64),
+                        ]);
+                        Ok(PyObject::tuple(vec![PyObject::bytes(buf), addr_tuple]))
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut
+                        || e.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        Err(PyException::new(ExceptionKind::TimeoutError, "timed out"))
+                    }
+                    Err(e) => Err(PyException::os_error(format!("recvfrom: {}", e))),
+                }
+            } else {
+                Err(PyException::os_error("recvfrom() requires a bound UDP socket"))
+            }
+        }),
+    );
+
+    // ── makefile(mode='r', buffering=-1) → file-like wrapper ──
+    let st = inner.clone();
+    attrs.insert(
+        CompactString::from("makefile"),
+        PyObject::native_closure("makefile", move |args| {
+            let mode = if !args.is_empty() {
+                args[0].py_to_string()
+            } else {
+                "r".to_string()
+            };
+            let guard = lock_inner(&st)?;
+            if guard.closed {
+                return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
+            }
+            if let Some(ref stream) = guard.tcp_stream {
+                let cloned = stream.try_clone()
+                    .map_err(|e| PyException::os_error(format!("makefile: {}", e)))?;
+                let inner_stream = Arc::new(Mutex::new(cloned));
+                let mut file_attrs = IndexMap::new();
+                file_attrs.insert(
+                    CompactString::from("mode"),
+                    PyObject::str_val(CompactString::from(&mode)),
+                );
+                let is = inner_stream.clone();
+                file_attrs.insert(
+                    CompactString::from("read"),
+                    PyObject::native_closure("read", move |args| {
+                        let size = if !args.is_empty() { args[0].as_int().unwrap_or(-1) } else { -1 };
+                        let mut stream = is.lock().map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
+                        if size < 0 {
+                            let mut buf = Vec::new();
+                            stream.read_to_end(&mut buf).map_err(|e| PyException::os_error(format!("read: {}", e)))?;
+                            Ok(PyObject::bytes(buf))
+                        } else {
+                            let mut buf = vec![0u8; size as usize];
+                            let n = stream.read(&mut buf).map_err(|e| PyException::os_error(format!("read: {}", e)))?;
+                            buf.truncate(n);
+                            Ok(PyObject::bytes(buf))
+                        }
+                    }),
+                );
+                let is = inner_stream.clone();
+                file_attrs.insert(
+                    CompactString::from("readline"),
+                    PyObject::native_closure("readline", {
+                        let mode = mode.clone();
+                        move |_args| {
+                            let mut stream = is.lock().map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
+                            let mut line = Vec::new();
+                            let mut byte = [0u8; 1];
+                            loop {
+                                match stream.read(&mut byte) {
+                                    Ok(0) => break,
+                                    Ok(_) => {
+                                        line.push(byte[0]);
+                                        if byte[0] == b'\n' { break; }
+                                    }
+                                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut
+                                        || e.kind() == std::io::ErrorKind::WouldBlock => break,
+                                    Err(e) => return Err(PyException::os_error(format!("readline: {}", e))),
+                                }
+                            }
+                            if mode.contains('b') {
+                                Ok(PyObject::bytes(line))
+                            } else {
+                                Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(&line).as_ref())))
+                            }
+                        }
+                    }),
+                );
+                let is = inner_stream.clone();
+                file_attrs.insert(
+                    CompactString::from("write"),
+                    PyObject::native_closure("write", move |args| {
+                        if args.is_empty() { return Err(PyException::type_error("write() requires data")); }
+                        let data = match &args[0].payload {
+                            PyObjectPayload::Bytes(b) => b.clone(),
+                            PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                            _ => return Err(PyException::type_error("a bytes-like object is required")),
+                        };
+                        let mut stream = is.lock().map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
+                        let n = stream.write(&data).map_err(|e| PyException::os_error(format!("write: {}", e)))?;
+                        Ok(PyObject::int(n as i64))
+                    }),
+                );
+                let is = inner_stream.clone();
+                file_attrs.insert(
+                    CompactString::from("flush"),
+                    PyObject::native_closure("flush", move |_args| {
+                        let mut stream = is.lock().map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
+                        stream.flush().map_err(|e| PyException::os_error(format!("flush: {}", e)))?;
+                        Ok(PyObject::none())
+                    }),
+                );
+                file_attrs.insert(
+                    CompactString::from("close"),
+                    PyObject::native_closure("close", move |_args| Ok(PyObject::none())),
+                );
+                file_attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
+                Ok(PyObject::module_with_attrs(CompactString::from("socket.makefile"), file_attrs))
+            } else {
+                Err(PyException::os_error("makefile() requires a connected TCP socket"))
+            }
+        }),
+    );
+
+    // ── __repr__ ──
+    let st = inner.clone();
+    attrs.insert(
+        CompactString::from("__repr__"),
+        PyObject::native_closure("__repr__", move |_args| {
+            let guard = lock_inner(&st)?;
+            let fd_str = if guard.closed {
+                "fd=-1".to_string()
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::io::AsRawFd;
+                    let fd = guard.tcp_stream.as_ref().map(|s| s.as_raw_fd())
+                        .or_else(|| guard.udp_socket.as_ref().map(|s| s.as_raw_fd()))
+                        .or_else(|| guard.tcp_listener.as_ref().map(|s| s.as_raw_fd()));
+                    match fd {
+                        Some(fd) => format!("fd={}", fd),
+                        None => "fd=-1".to_string(),
+                    }
+                }
+                #[cfg(not(unix))]
+                { "fd=-1".to_string() }
+            };
+            Ok(PyObject::str_val(CompactString::from(format!(
+                "<socket.socket {}, family={}, type={}, proto={}>",
+                fd_str, guard.family, guard.sock_type, guard.proto
+            ))))
         }),
     );
 

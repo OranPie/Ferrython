@@ -357,7 +357,18 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                     format!("<{} object>", cd.name)
                 } else { "<object>".into() }
             }
-            PyObjectPayload::Module(m) => format!("<module '{}'>", m.name),
+            PyObjectPayload::Module(m) => {
+                // Check for custom __repr__ NativeClosure (e.g. socket objects)
+                let attrs = m.attrs.read();
+                if let Some(repr_fn) = attrs.get("__repr__") {
+                    if let PyObjectPayload::NativeClosure { func, .. } = &repr_fn.payload {
+                        if let Ok(result) = func(&[]) {
+                            return result.py_to_string();
+                        }
+                    }
+                }
+                format!("<module '{}'>", m.name)
+            }
             PyObjectPayload::Iterator(_) => "<iterator>".into(),
             PyObjectPayload::Range { start, stop, step } => {
                 if *step == 1 { format!("range({}, {})", start, stop) }
