@@ -445,7 +445,6 @@ pub fn create_datetime_module() -> PyObjectRef {
                 let positional_end = {
                     let last = &args[args.len() - 1];
                     if matches!(&last.payload, PyObjectPayload::Dict(_)) {
-                        // Extract tzinfo from kwargs dict
                         if let PyObjectPayload::Dict(ref map) = last.payload {
                             let map_r = map.read();
                             if let Some(v) = map_r.get(&HashableKey::Str(CompactString::from("tzinfo"))) {
@@ -465,20 +464,12 @@ pub fn create_datetime_module() -> PyObjectRef {
                 let minute = if positional_end > 5 { args[5].to_int()? } else { 0 };
                 let second = if positional_end > 6 { args[6].to_int()? } else { 0 };
                 let microsecond = if positional_end > 7 { args[7].to_int()? } else { 0 };
-                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
-                    let mut w = inst.attrs.write();
-                    w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
-                    w.insert(CompactString::from("year"), PyObject::int(year));
-                    w.insert(CompactString::from("month"), PyObject::int(month));
-                    w.insert(CompactString::from("day"), PyObject::int(day));
-                    w.insert(CompactString::from("hour"), PyObject::int(hour));
-                    w.insert(CompactString::from("minute"), PyObject::int(minute));
-                    w.insert(CompactString::from("second"), PyObject::int(second));
-                    w.insert(CompactString::from("microsecond"), PyObject::int(microsecond));
-                    if let Some(tz) = tzinfo_val {
-                        w.insert(CompactString::from("tzinfo"), tz);
-                    } else {
-                        w.insert(CompactString::from("tzinfo"), PyObject::none());
+
+                // Build instance with all methods via install_datetime_methods
+                install_datetime_methods(&args[0], year, month, day, hour, minute, second, microsecond);
+                if let Some(tz) = tzinfo_val {
+                    if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                        inst.attrs.write().insert(CompactString::from("tzinfo"), tz);
                     }
                 }
                 Ok(PyObject::none())
@@ -874,6 +865,13 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
         attrs: Arc::new(RwLock::new(IndexMap::new())),
         is_special: true, dict_storage: None,
     }));
+    install_datetime_methods(&inst, year, month, day, hour, minute, second, microsecond);
+    inst
+}
+
+/// Install all datetime instance methods (isoformat, strftime, astimezone, etc.) on the given instance.
+/// Called from both make_datetime_instance and __init__.
+fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, microsecond: i64) {
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
         w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
@@ -981,6 +979,61 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
             }
         ));
 
+        // astimezone(tz) -> datetime converted to target timezone
+        // This closure receives args from method call; self attrs read at call-time
+        let inst_ref = inst.clone();
+        w.insert(CompactString::from("astimezone"), PyObject::native_closure(
+            "datetime.astimezone", move |args: &[PyObjectRef]| {
+                if args.is_empty() {
+                    return Ok(inst_ref.clone());
+                }
+                // Read source datetime fields from the instance
+                let sy = inst_ref.get_attr("year").and_then(|v| v.as_int()).unwrap_or(1970);
+                let smo = inst_ref.get_attr("month").and_then(|v| v.as_int()).unwrap_or(1);
+                let sda = inst_ref.get_attr("day").and_then(|v| v.as_int()).unwrap_or(1);
+                let sh = inst_ref.get_attr("hour").and_then(|v| v.as_int()).unwrap_or(0);
+                let smi = inst_ref.get_attr("minute").and_then(|v| v.as_int()).unwrap_or(0);
+                let ss = inst_ref.get_attr("second").and_then(|v| v.as_int()).unwrap_or(0);
+                let sus = inst_ref.get_attr("microsecond").and_then(|v| v.as_int()).unwrap_or(0);
+
+                // Get source timezone offset (0 if naive or UTC)
+                let src_offset = inst_ref.get_attr("tzinfo")
+                    .and_then(|tz| tz.get_attr("_offset_seconds"))
+                    .and_then(|v| v.to_float().ok())
+                    .unwrap_or(0.0);
+
+                let target_tz = &args[0];
+                let target_offset = target_tz.get_attr("_offset_seconds")
+                    .and_then(|v| v.to_float().ok())
+                    .unwrap_or(0.0);
+
+                // Convert to UTC epoch seconds, then to target timezone
+                let epoch_days = ymd_to_ordinal(sy, smo, sda) - ymd_to_ordinal(1970, 1, 1);
+                let utc_secs = epoch_days as f64 * 86400.0
+                    + sh as f64 * 3600.0 + smi as f64 * 60.0 + ss as f64
+                    + sus as f64 / 1_000_000.0
+                    - src_offset; // subtract source offset to get UTC
+
+                let local_secs = utc_secs + target_offset;
+                let total_days = (local_secs / 86400.0).floor() as i64;
+                let day_secs = local_secs - total_days as f64 * 86400.0;
+                let ord = ymd_to_ordinal(1970, 1, 1) + total_days;
+                let (ny, nm, nd) = ordinal_to_ymd(ord);
+                let nh = (day_secs / 3600.0).floor() as i64;
+                let nmi = ((day_secs - nh as f64 * 3600.0) / 60.0).floor() as i64;
+                let ns = (day_secs - nh as f64 * 3600.0 - nmi as f64 * 60.0).floor() as i64;
+                let nus = ((day_secs.fract()) * 1_000_000.0).round() as i64;
+                Ok(make_datetime_instance(ny, nm, nd, nh, nmi, ns, nus))
+            }
+        ));
+
+        // utcoffset() -> timedelta or None
+        w.insert(CompactString::from("utcoffset"), PyObject::native_closure(
+            "datetime.utcoffset", move |_: &[PyObjectRef]| {
+                Ok(PyObject::none())
+            }
+        ));
+
         // replace(**kwargs) -> datetime with replaced fields
         let (ry, rmo, rda, rh, rmi, rs, rus) = (year, month, day, hour, minute, second, microsecond);
         w.insert(CompactString::from("replace"), PyObject::native_closure(
@@ -1014,7 +1067,6 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
             }
         ));
     }
-    inst
 }
 
 fn datetime_time_obj(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1268,6 +1320,8 @@ fn make_timedelta_with_ops(days: i64, seconds: i64, microseconds: i64, total_sec
     td_ns.insert(CompactString::from("__sub__"), make_builtin(timedelta_sub));
     td_ns.insert(CompactString::from("__radd__"), make_builtin(timedelta_add));
     td_ns.insert(CompactString::from("__mul__"), make_builtin(timedelta_mul));
+    td_ns.insert(CompactString::from("__truediv__"), make_builtin(timedelta_truediv));
+    td_ns.insert(CompactString::from("__floordiv__"), make_builtin(timedelta_floordiv));
     td_ns.insert(CompactString::from("__eq__"), make_builtin(|args: &[PyObjectRef]| {
         if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
         let a_ts = args[0].get_attr("_total_seconds").and_then(|v| v.to_float().ok()).unwrap_or(f64::NAN);
@@ -1442,6 +1496,68 @@ fn timedelta_mul(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let microseconds = rem % 1_000_000;
     let total = total_us as f64 / 1_000_000.0;
     make_timedelta_with_ops(days, seconds, microseconds, total)
+}
+
+/// timedelta / int_or_float → timedelta, timedelta / timedelta → float
+fn timedelta_truediv(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("timedelta.__truediv__ requires 2 args")); }
+    let td = &args[0];
+    let other = &args[1];
+    let td_us = td.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0) * 86_400_000_000
+        + td.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0) * 1_000_000
+        + td.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
+
+    // timedelta / timedelta → float ratio
+    if other.get_attr("__timedelta__").is_some() {
+        let other_us = other.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0) * 86_400_000_000
+            + other.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0) * 1_000_000
+            + other.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
+        if other_us == 0 { return Err(PyException::runtime_error("division by zero")); }
+        return Ok(PyObject::float(td_us as f64 / other_us as f64));
+    }
+
+    // timedelta / number → timedelta
+    let divisor = other.to_float().map_err(|_| PyException::type_error(
+        "unsupported operand type(s) for /: 'timedelta' and non-numeric"
+    ))?;
+    if divisor == 0.0 { return Err(PyException::runtime_error("division by zero")); }
+    let result_us = (td_us as f64 / divisor).round() as i64;
+    let days = result_us / 86_400_000_000;
+    let rem = result_us % 86_400_000_000;
+    let seconds = rem / 1_000_000;
+    let microseconds = rem % 1_000_000;
+    make_timedelta_with_ops(days, seconds, microseconds, result_us as f64 / 1_000_000.0)
+}
+
+/// timedelta // int → timedelta, timedelta // timedelta → int
+fn timedelta_floordiv(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("timedelta.__floordiv__ requires 2 args")); }
+    let td = &args[0];
+    let other = &args[1];
+    let td_us = td.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0) * 86_400_000_000
+        + td.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0) * 1_000_000
+        + td.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
+
+    // timedelta // timedelta → int
+    if other.get_attr("__timedelta__").is_some() {
+        let other_us = other.get_attr("days").and_then(|v| v.as_int()).unwrap_or(0) * 86_400_000_000
+            + other.get_attr("seconds").and_then(|v| v.as_int()).unwrap_or(0) * 1_000_000
+            + other.get_attr("microseconds").and_then(|v| v.as_int()).unwrap_or(0);
+        if other_us == 0 { return Err(PyException::runtime_error("division by zero")); }
+        return Ok(PyObject::int(td_us / other_us));
+    }
+
+    // timedelta // int → timedelta
+    let divisor = other.to_int().map_err(|_| PyException::type_error(
+        "unsupported operand type(s) for //: 'timedelta' and non-numeric"
+    ))?;
+    if divisor == 0 { return Err(PyException::runtime_error("division by zero")); }
+    let result_us = td_us / divisor;
+    let days = result_us / 86_400_000_000;
+    let rem = result_us % 86_400_000_000;
+    let seconds = rem / 1_000_000;
+    let microseconds = rem % 1_000_000;
+    make_timedelta_with_ops(days, seconds, microseconds, result_us as f64 / 1_000_000.0)
 }
 
 /// datetime + timedelta → datetime
