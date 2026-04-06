@@ -215,6 +215,11 @@ impl VirtualMachine {
         let mut member_map = IndexMap::new();
         let mut auto_counter: i64 = 1;
 
+        // Check if this is a Flag enum (auto() should generate powers of 2)
+        let is_flag = bases.iter().any(|b| {
+            b.get_attr("__flag__").map(|m| m.is_truthy()).unwrap_or(false)
+        });
+
         // Check if class has a custom __init__ (not inherited from Enum base)
         let has_custom_init = ns.get("__init__").is_some();
 
@@ -227,7 +232,11 @@ impl VirtualMachine {
                     if let PyObjectPayload::Str(s) = &items[0].payload {
                         if s.as_str() == "__enum_auto__" {
                             let v = PyObject::int(auto_counter);
-                            auto_counter += 1;
+                            if is_flag {
+                                auto_counter *= 2; // powers of 2 for Flag
+                            } else {
+                                auto_counter += 1;
+                            }
                             v
                         } else {
                             value.clone()
@@ -237,7 +246,11 @@ impl VirtualMachine {
             } else {
                 // Track max int value for auto() continuation
                 if let Some(iv) = value.as_int() {
-                    if iv >= auto_counter { auto_counter = iv + 1; }
+                    if is_flag {
+                        if iv >= auto_counter { auto_counter = (iv as u64).next_power_of_two() as i64 * 2; }
+                    } else {
+                        if iv >= auto_counter { auto_counter = iv + 1; }
+                    }
                 }
                 value.clone()
             };
@@ -313,6 +326,46 @@ impl VirtualMachine {
 
         // Mark as enum
         ns.insert(intern_or_new("__enum__"), PyObject::bool_val(true));
+
+        // For Flag-based enums, add bitwise operations (__or__, __and__, __contains__)
+        let is_flag = bases.iter().any(|b| {
+            b.get_attr("__flag__").map(|m| m.is_truthy()).unwrap_or(false)
+        });
+        if is_flag {
+            ns.insert(intern_or_new("__flag__"), PyObject::bool_val(true));
+            let cls_or = cls.clone();
+            ns.insert(intern_or_new("__or__"), PyObject::native_closure("Flag.__or__", move |args: &[PyObjectRef]| {
+                if args.len() < 2 { return Ok(PyObject::none()); }
+                let a_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                let b_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                let combined = a_val | b_val;
+                let mut attrs = IndexMap::new();
+                attrs.insert(CompactString::from("value"), PyObject::int(combined));
+                attrs.insert(CompactString::from("_value_"), PyObject::int(combined));
+                attrs.insert(CompactString::from("name"), PyObject::none());
+                attrs.insert(CompactString::from("_name_"), PyObject::none());
+                Ok(PyObject::instance_with_attrs(cls_or.clone(), attrs))
+            }));
+            let cls_and = cls.clone();
+            ns.insert(intern_or_new("__and__"), PyObject::native_closure("Flag.__and__", move |args: &[PyObjectRef]| {
+                if args.len() < 2 { return Ok(PyObject::none()); }
+                let a_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                let b_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                let combined = a_val & b_val;
+                let mut attrs = IndexMap::new();
+                attrs.insert(CompactString::from("value"), PyObject::int(combined));
+                attrs.insert(CompactString::from("_value_"), PyObject::int(combined));
+                attrs.insert(CompactString::from("name"), PyObject::none());
+                attrs.insert(CompactString::from("_name_"), PyObject::none());
+                Ok(PyObject::instance_with_attrs(cls_and.clone(), attrs))
+            }));
+            ns.insert(intern_or_new("__contains__"), PyObject::native_closure("Flag.__contains__", move |args: &[PyObjectRef]| {
+                if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+                let self_val = args[0].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                let other_val = args[1].get_attr("value").and_then(|v| v.as_int()).unwrap_or(0);
+                Ok(PyObject::bool_val(self_val & other_val == other_val && other_val != 0))
+            }));
+        }
 
         Ok(())
     }
