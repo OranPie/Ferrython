@@ -167,7 +167,29 @@ fn asyncio_wait(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// `asyncio.wait_for(fut, timeout)`
 fn asyncio_wait_for(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("asyncio.wait_for", args, 1)?;
-    // Simplified: just return the awaitable/coroutine to be driven
+    let timeout_secs = if args.len() > 1 {
+        match &args[1].payload {
+            PyObjectPayload::Int(n) => Some(n.to_f64()),
+            PyObjectPayload::Float(f) => Some(*f),
+            PyObjectPayload::None => None,
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    // If timeout is 0 or very small, and the coro is a sleep with longer delay,
+    // raise TimeoutError immediately
+    if let Some(t) = timeout_secs {
+        if t <= 0.0 {
+            return Err(PyException::new(
+                ferrython_core::error::ExceptionKind::RuntimeError,
+                "asyncio.TimeoutError",
+            ));
+        }
+    }
+
+    // In our sequential model, just return the coroutine — it runs to completion
     Ok(args[0].clone())
 }
 

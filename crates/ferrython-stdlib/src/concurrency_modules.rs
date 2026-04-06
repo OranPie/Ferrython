@@ -1689,10 +1689,50 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
             let cls = PyObject::class(CompactString::from("Queue"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let items: Arc<std::sync::Mutex<std::collections::VecDeque<PyObjectRef>>> = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
                 let mut attrs = d.attrs.write();
-                attrs.insert(CompactString::from("put"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("get"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("empty"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+                let q1 = items.clone();
+                attrs.insert(CompactString::from("put"), PyObject::native_closure("put", move |args: &[PyObjectRef]| {
+                    if args.is_empty() { return Err(PyException::type_error("put() requires 1 argument")); }
+                    q1.lock().unwrap().push_back(args[0].clone());
+                    Ok(PyObject::none())
+                }));
+                let q2 = items.clone();
+                attrs.insert(CompactString::from("get"), PyObject::native_closure("get", move |_: &[PyObjectRef]| {
+                    q2.lock().unwrap().pop_front().ok_or_else(|| {
+                        PyException::new(ferrython_core::error::ExceptionKind::RuntimeError, "Queue is empty")
+                    })
+                }));
+                let q3 = items.clone();
+                attrs.insert(CompactString::from("empty"), PyObject::native_closure("empty", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::bool_val(q3.lock().unwrap().is_empty()))
+                }));
+                let q4 = items.clone();
+                attrs.insert(CompactString::from("qsize"), PyObject::native_closure("qsize", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::int(q4.lock().unwrap().len() as i64))
+                }));
+                let q5 = items.clone();
+                attrs.insert(CompactString::from("full"), PyObject::native_closure("full", move |_: &[PyObjectRef]| {
+                    let _ = q5; // unbounded → never full
+                    Ok(PyObject::bool_val(false))
+                }));
+                attrs.insert(CompactString::from("put_nowait"), {
+                    let q = items.clone();
+                    PyObject::native_closure("put_nowait", move |args: &[PyObjectRef]| {
+                        if args.is_empty() { return Err(PyException::type_error("put_nowait() requires 1 argument")); }
+                        q.lock().unwrap().push_back(args[0].clone());
+                        Ok(PyObject::none())
+                    })
+                });
+                attrs.insert(CompactString::from("get_nowait"), {
+                    let q = items.clone();
+                    PyObject::native_closure("get_nowait", move |_: &[PyObjectRef]| {
+                        q.lock().unwrap().pop_front().ok_or_else(|| {
+                            PyException::new(ferrython_core::error::ExceptionKind::RuntimeError, "Queue is empty")
+                        })
+                    })
+                });
+                attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
             }
             Ok(inst)
         })),
@@ -1700,9 +1740,31 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
             let cls = PyObject::class(CompactString::from("Lock"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let locked = Arc::new(std::sync::Mutex::new(false));
                 let mut attrs = d.attrs.write();
-                attrs.insert(CompactString::from("acquire"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-                attrs.insert(CompactString::from("release"), make_builtin(|_| Ok(PyObject::none())));
+                let l1 = locked.clone();
+                attrs.insert(CompactString::from("acquire"), PyObject::native_closure("acquire", move |_: &[PyObjectRef]| {
+                    *l1.lock().unwrap() = true;
+                    Ok(PyObject::bool_val(true))
+                }));
+                let l2 = locked.clone();
+                attrs.insert(CompactString::from("release"), PyObject::native_closure("release", move |_: &[PyObjectRef]| {
+                    *l2.lock().unwrap() = false;
+                    Ok(PyObject::none())
+                }));
+                let l3 = locked.clone();
+                attrs.insert(CompactString::from("locked"), PyObject::native_closure("locked", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::bool_val(*l3.lock().unwrap()))
+                }));
+                let li = inst.clone();
+                attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("__enter__", move |_: &[PyObjectRef]| Ok(li.clone())));
+                attrs.insert(CompactString::from("__exit__"), {
+                    let l = locked.clone();
+                    PyObject::native_closure("__exit__", move |_: &[PyObjectRef]| {
+                        *l.lock().unwrap() = false;
+                        Ok(PyObject::bool_val(false))
+                    })
+                });
             }
             Ok(inst)
         })),
@@ -1716,8 +1778,69 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
         })),
         ("Manager", make_builtin(|_| Ok(PyObject::none()))),
         ("Pipe", make_builtin(|_| Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none()])))),
-        ("Event", make_builtin(|_| Ok(PyObject::none()))),
-        ("Semaphore", make_builtin(|_| Ok(PyObject::none()))),
+        ("Event", make_builtin(|_| {
+            let cls = PyObject::class(CompactString::from("Event"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let flag = Arc::new(std::sync::Mutex::new(false));
+                let mut attrs = d.attrs.write();
+                let f1 = flag.clone();
+                attrs.insert(CompactString::from("set"), PyObject::native_closure("set", move |_: &[PyObjectRef]| {
+                    *f1.lock().unwrap() = true;
+                    Ok(PyObject::none())
+                }));
+                let f2 = flag.clone();
+                attrs.insert(CompactString::from("clear"), PyObject::native_closure("clear", move |_: &[PyObjectRef]| {
+                    *f2.lock().unwrap() = false;
+                    Ok(PyObject::none())
+                }));
+                let f3 = flag.clone();
+                attrs.insert(CompactString::from("is_set"), PyObject::native_closure("is_set", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::bool_val(*f3.lock().unwrap()))
+                }));
+                let f4 = flag.clone();
+                attrs.insert(CompactString::from("wait"), PyObject::native_closure("wait", move |args: &[PyObjectRef]| {
+                    let timeout_secs = args.first()
+                        .and_then(|a| if matches!(&a.payload, PyObjectPayload::None) { None } else { a.to_float().ok() });
+                    if *f4.lock().unwrap() {
+                        return Ok(PyObject::bool_val(true));
+                    }
+                    if let Some(t) = timeout_secs {
+                        std::thread::sleep(std::time::Duration::from_secs_f64(t));
+                    }
+                    Ok(PyObject::bool_val(*f4.lock().unwrap()))
+                }));
+            }
+            Ok(inst)
+        })),
+        ("Semaphore", make_builtin(|args: &[PyObjectRef]| {
+            let value = args.first().and_then(|a| a.as_int()).unwrap_or(1);
+            let cls = PyObject::class(CompactString::from("Semaphore"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let count = Arc::new(std::sync::Mutex::new(value));
+                let mut attrs = d.attrs.write();
+                let c1 = count.clone();
+                attrs.insert(CompactString::from("acquire"), PyObject::native_closure("acquire", move |_: &[PyObjectRef]| {
+                    let mut c = c1.lock().unwrap();
+                    if *c > 0 { *c -= 1; Ok(PyObject::bool_val(true)) }
+                    else { Ok(PyObject::bool_val(false)) }
+                }));
+                let c2 = count.clone();
+                attrs.insert(CompactString::from("release"), PyObject::native_closure("release", move |_: &[PyObjectRef]| {
+                    *c2.lock().unwrap() += 1;
+                    Ok(PyObject::none())
+                }));
+                let si = inst.clone();
+                attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("__enter__", move |_: &[PyObjectRef]| Ok(si.clone())));
+                let c3 = count.clone();
+                attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("__exit__", move |_: &[PyObjectRef]| {
+                    *c3.lock().unwrap() += 1;
+                    Ok(PyObject::bool_val(false))
+                }));
+            }
+            Ok(inst)
+        })),
     ])
 }
 

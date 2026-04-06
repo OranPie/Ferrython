@@ -934,15 +934,99 @@ fn execute_drop_table(db: &mut Database, sql: &str) -> PyResult<QueryResult> {
     Ok(QueryResult { rows: vec![], columns: vec![], rowcount: 0, lastrowid: 0 })
 }
 
+// ── sqlite3.Row implementation ─────────────────────────────────────────
+
+fn build_sqlite_row(columns: &[String], values: &[PyObjectRef]) -> PyObjectRef {
+    let col_names: Vec<String> = columns.to_vec();
+    let val_list: Vec<PyObjectRef> = values.to_vec();
+    let mut attrs = IndexMap::new();
+
+    // Store column-value pairs for string key access
+    let col_map: IndexMap<CompactString, PyObjectRef> = col_names.iter()
+        .zip(val_list.iter())
+        .map(|(k, v)| (CompactString::from(k.as_str()), v.clone()))
+        .collect();
+    let cm = Arc::new(col_map.clone());
+
+    // __getitem__ — access by string key or integer index
+    let cm2 = cm.clone();
+    let vl = val_list.clone();
+    attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+        "Row.__getitem__", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("__getitem__ requires a key"));
+            }
+            match &args[0].payload {
+                PyObjectPayload::Str(key) => {
+                    cm2.get(key.as_str())
+                        .cloned()
+                        .ok_or_else(|| PyException::key_error(format!("'{}'", key)))
+                }
+                PyObjectPayload::Int(idx) => {
+                    let i = idx.to_i64().unwrap_or(0);
+                    let idx = if i < 0 { (vl.len() as i64 + i) as usize } else { i as usize };
+                    vl.get(idx)
+                        .cloned()
+                        .ok_or_else(|| PyException::index_error("index out of range"))
+                }
+                _ => Err(PyException::type_error("Row indices must be integers or strings")),
+            }
+        }));
+
+    // keys()
+    let cn = col_names.clone();
+    attrs.insert(CompactString::from("keys"), PyObject::native_closure(
+        "Row.keys", move |_| {
+            Ok(PyObject::list(cn.iter().map(|s| PyObject::str_val(CompactString::from(s.as_str()))).collect()))
+        }));
+
+    // values() (the row data as a tuple)
+    let vl = val_list.clone();
+    attrs.insert(CompactString::from("values"), PyObject::native_closure(
+        "Row.values", move |_| {
+            Ok(PyObject::list(vl.clone()))
+        }));
+
+    // __len__
+    let n = val_list.len();
+    attrs.insert(CompactString::from("__len__"), PyObject::native_closure(
+        "Row.__len__", move |_| Ok(PyObject::int(n as i64))));
+
+    // __repr__
+    let cm3 = cm.clone();
+    attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+        "Row.__repr__", move |_| {
+            let pairs: Vec<String> = cm3.iter()
+                .map(|(k, v)| format!("{}={}", k, v.py_to_string()))
+                .collect();
+            Ok(PyObject::str_val(CompactString::from(format!("Row({})", pairs.join(", ")))))
+        }));
+
+    // __iter__ — iterate over values
+    let vl = val_list.clone();
+    attrs.insert(CompactString::from("__iter__"), PyObject::native_closure(
+        "Row.__iter__", move |_| {
+            Ok(PyObject::list(vl.clone()))
+        }));
+
+    // Make it tuple-like: store values as a tuple
+    let cls = PyObject::class(CompactString::from("Row"), vec![], IndexMap::new());
+    PyObject::instance_with_attrs(cls, attrs)
+}
+
 // ── Cursor builder ─────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn build_cursor_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
+    build_cursor_object_with_conn(db, None)
+}
+
+fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObjectRef>) -> PyObjectRef {
     let result_rows: Arc<Mutex<Vec<Vec<DbValue>>>> = Arc::new(Mutex::new(Vec::new()));
     let result_cols: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let fetch_pos: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
     let rowcount: Arc<Mutex<i64>> = Arc::new(Mutex::new(-1));
     let lastrowid: Arc<Mutex<i64>> = Arc::new(Mutex::new(0));
-    // Self-reference for returning cursor from execute()
     let self_ref: Arc<Mutex<Option<PyObjectRef>>> = Arc::new(Mutex::new(None));
 
     let mut attrs = IndexMap::new();
@@ -1032,6 +1116,8 @@ fn build_cursor_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
     // fetchone()
     let rows_ref = result_rows.clone();
     let pos_ref = fetch_pos.clone();
+    let cols_for_fetch = result_cols.clone();
+    let conn_one = conn.clone();
     attrs.insert(CompactString::from("fetchone"), PyObject::native_closure("fetchone", move |_args| {
         let rows = rows_ref.lock().unwrap();
         let mut pos = pos_ref.lock().unwrap();
@@ -1041,20 +1127,40 @@ fn build_cursor_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
         let row = &rows[*pos];
         *pos += 1;
         let items: Vec<PyObjectRef> = row.iter().map(|v| v.to_pyobject()).collect();
-        Ok(PyObject::tuple(items))
+        let use_row = conn_one.as_ref()
+            .and_then(|c| c.get_attr("row_factory"))
+            .map(|rf| !matches!(&rf.payload, PyObjectPayload::None))
+            .unwrap_or(false);
+        if use_row {
+            let cols = cols_for_fetch.lock().unwrap();
+            Ok(build_sqlite_row(&cols, &items))
+        } else {
+            Ok(PyObject::tuple(items))
+        }
     }));
 
     // fetchall()
     let rows_ref = result_rows.clone();
     let pos_ref = fetch_pos.clone();
+    let cols_for_fetch = result_cols.clone();
+    let conn_all = conn.clone();
     attrs.insert(CompactString::from("fetchall"), PyObject::native_closure("fetchall", move |_args| {
         let rows = rows_ref.lock().unwrap();
         let mut pos = pos_ref.lock().unwrap();
+        let use_row = conn_all.as_ref()
+            .and_then(|c| c.get_attr("row_factory"))
+            .map(|rf| !matches!(&rf.payload, PyObjectPayload::None))
+            .unwrap_or(false);
+        let cols = if use_row { cols_for_fetch.lock().unwrap().clone() } else { vec![] };
         let mut result = Vec::new();
         while *pos < rows.len() {
             let row = &rows[*pos];
             let items: Vec<PyObjectRef> = row.iter().map(|v| v.to_pyobject()).collect();
-            result.push(PyObject::tuple(items));
+            if use_row {
+                result.push(build_sqlite_row(&cols, &items));
+            } else {
+                result.push(PyObject::tuple(items));
+            }
             *pos += 1;
         }
         Ok(PyObject::list(result))
@@ -1145,16 +1251,23 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
     let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("__sqlite_conn__"), PyObject::bool_val(true));
 
+    // Self-reference so cursor() can pass the connection for row_factory access
+    let conn_ref: Arc<Mutex<Option<PyObjectRef>>> = Arc::new(Mutex::new(None));
+
     // cursor()
     let db_ref = db.clone();
+    let cr = conn_ref.clone();
     attrs.insert(CompactString::from("cursor"), PyObject::native_closure("cursor", move |_args| {
-        Ok(build_cursor_object(db_ref.clone()))
+        let conn = cr.lock().unwrap().clone();
+        Ok(build_cursor_object_with_conn(db_ref.clone(), conn))
     }));
 
     // execute(sql, params=()) — convenience: creates cursor, executes, returns cursor
     let db_ref = db.clone();
+    let cr = conn_ref.clone();
     attrs.insert(CompactString::from("execute"), PyObject::native_closure("execute", move |args| {
-        let cursor = build_cursor_object(db_ref.clone());
+        let conn = cr.lock().unwrap().clone();
+        let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
         if let PyObjectPayload::Instance(ref d) = cursor.payload {
             let r = d.attrs.read();
             if let Some(exec_fn) = r.get(&CompactString::from("execute")) {
@@ -1168,8 +1281,10 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
 
     // executemany(sql, seq_of_params)
     let db_ref = db.clone();
+    let cr = conn_ref.clone();
     attrs.insert(CompactString::from("executemany"), PyObject::native_closure("executemany", move |args| {
-        let cursor = build_cursor_object(db_ref.clone());
+        let conn = cr.lock().unwrap().clone();
+        let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
         if let PyObjectPayload::Instance(ref d) = cursor.payload {
             let r = d.attrs.read();
             if let Some(exec_fn) = r.get(&CompactString::from("executemany")) {
@@ -1201,7 +1316,6 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
 
     // create_function(name, num_params, func)
     attrs.insert(CompactString::from("create_function"), PyObject::native_function("create_function", |_args| {
-        // Stub — real function registration not supported in dict-based DB
         Ok(PyObject::none())
     }));
 
@@ -1216,7 +1330,8 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
     // isolation_level
     attrs.insert(CompactString::from("isolation_level"), PyObject::str_val(CompactString::from("")));
 
-    // row_factory
+    // row_factory — set via conn.row_factory = sqlite3.Row
+    // Cursors read it dynamically via get_attr on the connection
     attrs.insert(CompactString::from("row_factory"), PyObject::none());
 
     // __enter__ / __exit__ for context manager
@@ -1227,14 +1342,16 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
 
     let db_ref = db.clone();
     attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("__exit__", move |_args| {
-        // auto-commit on exit
         let guard = db_ref.lock().unwrap();
         drop(guard);
         Ok(PyObject::bool_val(false))
     }));
 
     let cls = PyObject::class(CompactString::from("Connection"), vec![], IndexMap::new());
-    PyObject::instance_with_attrs(cls, attrs)
+    let connection = PyObject::instance_with_attrs(cls, attrs);
+    // Populate self-reference so cursor() can pass connection for row_factory
+    *conn_ref.lock().unwrap() = Some(connection.clone());
+    connection
 }
 
 // ── Module constructor ─────────────────────────────────────────────────
@@ -1264,6 +1381,6 @@ pub fn create_sqlite3_module() -> PyObjectRef {
         ("IntegrityError", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
         ("ProgrammingError", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
         ("InterfaceError", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
-        ("Row", make_builtin(|_args: &[PyObjectRef]| Ok(PyObject::none()))),
+        ("Row", PyObject::class(CompactString::from("Row"), vec![], IndexMap::new())),
     ])
 }
