@@ -2,6 +2,7 @@
 
 use std::env;
 use std::fs;
+use std::io::{self, Read};
 use std::process;
 
 use ferrython_core::object::PyObjectMethods;
@@ -48,6 +49,15 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
+        // If stdin is not a terminal, read from stdin as a script
+        if atty::isnt(atty::Stream::Stdin) {
+            let mut source = String::new();
+            io::stdin().read_to_string(&mut source).unwrap_or_default();
+            if !source.trim().is_empty() {
+                run_string(&source, "<stdin>");
+                return;
+            }
+        }
         ferrython_repl::run_repl();
         return;
     }

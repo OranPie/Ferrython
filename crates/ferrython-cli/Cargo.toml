@@ -23,6 +23,7 @@ ferrython-debug = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+atty = "0.2"
 
 [dev-dependencies]
 ferrython-vm = { workspace = true }
