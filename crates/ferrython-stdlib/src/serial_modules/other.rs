@@ -1345,6 +1345,38 @@ fn decode_utf32_be(bytes: &[u8]) -> PyResult<PyObjectRef> {
     Ok(PyObject::str_val(CompactString::from(s?)))
 }
 
+fn backslashreplace_char(c: char) -> String {
+    let cp = c as u32;
+    if cp <= 0xFF {
+        format!("\\x{:02x}", cp)
+    } else if cp <= 0xFFFF {
+        format!("\\u{:04x}", cp)
+    } else {
+        format!("\\U{:08x}", cp)
+    }
+}
+
+fn xmlcharrefreplace_char(c: char) -> String {
+    format!("&#{};", c as u32)
+}
+
+fn resolve_encoding(norm: &str) -> &str {
+    match norm {
+        "utf_8" | "utf8" => "utf_8",
+        "ascii" | "us_ascii" => "ascii",
+        "latin_1" | "latin1" | "iso_8859_1" | "iso8859_1" => "latin_1",
+        "utf_16" | "utf16" => "utf_16",
+        "utf_16_le" | "utf16_le" => "utf_16_le",
+        "utf_16_be" | "utf16_be" => "utf_16_be",
+        "utf_32" | "utf32" => "utf_32",
+        "utf_32_le" | "utf32_le" => "utf_32_le",
+        "utf_32_be" | "utf32_be" => "utf_32_be",
+        "cp1252" | "windows_1252" => "cp1252",
+        "rot_13" | "rot13" => "rot_13",
+        other => other,
+    }
+}
+
 // ── codecs module ──────────────────────────────────────────────────
 pub fn create_codecs_module() -> PyObjectRef {
     make_module("codecs", vec![
@@ -1362,64 +1394,98 @@ fn codecs_encode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("codecs.encode", args, 1)?;
     let s = args[0].py_to_string();
     let encoding = if args.len() > 1 { args[1].py_to_string() } else { "utf-8".to_string() };
+    let errors = if args.len() > 2 { args[2].py_to_string() } else { "strict".to_string() };
     let norm = normalize_encoding(&encoding);
-    match norm.as_str() {
-        "utf_8" | "utf8" => Ok(PyObject::bytes(s.as_bytes().to_vec())),
+    let enc = resolve_encoding(&norm);
+    match enc {
+        "utf_8" => Ok(PyObject::bytes(s.as_bytes().to_vec())),
         "ascii" => {
+            let mut out = Vec::new();
             for (i, c) in s.chars().enumerate() {
-                if !c.is_ascii() {
-                    return Err(PyException::value_error(format!(
-                        "'ascii' codec can't encode character '\\u{:04x}' in position {}", c as u32, i
-                    )));
+                if c.is_ascii() {
+                    out.push(c as u8);
+                } else {
+                    match errors.as_str() {
+                        "ignore" => {}
+                        "replace" => out.push(b'?'),
+                        "backslashreplace" => out.extend_from_slice(backslashreplace_char(c).as_bytes()),
+                        "xmlcharrefreplace" => out.extend_from_slice(xmlcharrefreplace_char(c).as_bytes()),
+                        _ => return Err(PyException::value_error(format!(
+                            "'ascii' codec can't encode character '\\u{:04x}' in position {}", c as u32, i
+                        ))),
+                    }
                 }
             }
-            Ok(PyObject::bytes(s.bytes().collect()))
+            Ok(PyObject::bytes(out))
         }
-        "latin_1" | "latin1" | "iso_8859_1" | "iso8859_1" => {
+        "latin_1" => {
+            let mut out = Vec::new();
             for (i, c) in s.chars().enumerate() {
-                if c as u32 > 255 {
-                    return Err(PyException::value_error(format!(
-                        "'latin-1' codec can't encode character '\\u{:04x}' in position {}", c as u32, i
-                    )));
+                if (c as u32) <= 255 {
+                    out.push(c as u8);
+                } else {
+                    match errors.as_str() {
+                        "ignore" => {}
+                        "replace" => out.push(b'?'),
+                        "backslashreplace" => out.extend_from_slice(backslashreplace_char(c).as_bytes()),
+                        "xmlcharrefreplace" => out.extend_from_slice(xmlcharrefreplace_char(c).as_bytes()),
+                        _ => return Err(PyException::value_error(format!(
+                            "'latin-1' codec can't encode character '\\u{:04x}' in position {}", c as u32, i
+                        ))),
+                    }
                 }
             }
-            Ok(PyObject::bytes(s.chars().map(|c| c as u8).collect()))
+            Ok(PyObject::bytes(out))
         }
-        "utf_16" | "utf16" => {
+        "utf_16" => {
             let mut bytes = vec![0xFF, 0xFE]; // BOM (little-endian)
             for c in s.encode_utf16() {
                 bytes.extend_from_slice(&c.to_le_bytes());
             }
             Ok(PyObject::bytes(bytes))
         }
-        "utf_16_le" | "utf16_le" => {
+        "utf_16_le" => {
             let bytes: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
             Ok(PyObject::bytes(bytes))
         }
-        "utf_16_be" | "utf16_be" => {
+        "utf_16_be" => {
             let bytes: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_be_bytes()).collect();
             Ok(PyObject::bytes(bytes))
         }
-        "utf_32" | "utf32" => {
+        "utf_32" => {
             let mut bytes = vec![0xFF, 0xFE, 0x00, 0x00]; // BOM (little-endian)
             for c in s.chars() {
                 bytes.extend_from_slice(&(c as u32).to_le_bytes());
             }
             Ok(PyObject::bytes(bytes))
         }
-        "utf_32_le" | "utf32_le" => {
+        "utf_32_le" => {
             let bytes: Vec<u8> = s.chars().flat_map(|c| (c as u32).to_le_bytes()).collect();
             Ok(PyObject::bytes(bytes))
         }
-        "utf_32_be" | "utf32_be" => {
+        "utf_32_be" => {
             let bytes: Vec<u8> = s.chars().flat_map(|c| (c as u32).to_be_bytes()).collect();
             Ok(PyObject::bytes(bytes))
         }
-        "cp1252" | "windows_1252" => {
-            let bytes: Result<Vec<u8>, _> = s.chars().map(|c| cp1252_encode(c)).collect();
-            Ok(PyObject::bytes(bytes.map_err(|e| PyException::value_error(e))?))
+        "cp1252" => {
+            let mut out = Vec::new();
+            for (i, c) in s.chars().enumerate() {
+                match cp1252_encode(c) {
+                    Ok(b) => out.push(b),
+                    Err(_) => match errors.as_str() {
+                        "ignore" => {}
+                        "replace" => out.push(b'?'),
+                        "backslashreplace" => out.extend_from_slice(backslashreplace_char(c).as_bytes()),
+                        "xmlcharrefreplace" => out.extend_from_slice(xmlcharrefreplace_char(c).as_bytes()),
+                        _ => return Err(PyException::value_error(format!(
+                            "'cp1252' codec can't encode character '\\u{:04x}' in position {}", c as u32, i
+                        ))),
+                    },
+                }
+            }
+            Ok(PyObject::bytes(out))
         }
-        "rot_13" | "rot13" => {
+        "rot_13" => {
             let rotated: String = s.chars().map(|c| rot13(c)).collect();
             Ok(PyObject::str_val(CompactString::from(rotated)))
         }
@@ -1430,53 +1496,61 @@ fn codecs_encode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn codecs_decode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("codecs.decode", args, 1)?;
     let encoding = if args.len() > 1 { args[1].py_to_string() } else { "utf-8".to_string() };
+    let errors = if args.len() > 2 { args[2].py_to_string() } else { "strict".to_string() };
     let norm = normalize_encoding(&encoding);
+    let enc = resolve_encoding(&norm);
     // rot_13 decode works on strings
-    if norm == "rot_13" || norm == "rot13" {
+    if enc == "rot_13" {
         let s = args[0].py_to_string();
         let rotated: String = s.chars().map(|c| rot13(c)).collect();
         return Ok(PyObject::str_val(CompactString::from(rotated)));
     }
     let bytes = extract_bytes(&args[0])?;
-    match norm.as_str() {
-        "utf_8" | "utf8" => {
-            let s = String::from_utf8(bytes).map_err(|_| PyException::value_error("invalid utf-8"))?;
-            Ok(PyObject::str_val(CompactString::from(s)))
+    match enc {
+        "utf_8" => {
+            match String::from_utf8(bytes.clone()) {
+                Ok(s) => Ok(PyObject::str_val(CompactString::from(s))),
+                Err(_) => match errors.as_str() {
+                    "ignore" => {
+                        let s: String = bytes.iter().filter(|b| b.is_ascii()).map(|&b| b as char).collect();
+                        Ok(PyObject::str_val(CompactString::from(s)))
+                    }
+                    "replace" => {
+                        let s = String::from_utf8_lossy(&bytes).to_string();
+                        Ok(PyObject::str_val(CompactString::from(s)))
+                    }
+                    _ => Err(PyException::value_error("invalid utf-8")),
+                },
+            }
         }
         "ascii" => {
+            let mut out = String::new();
             for (i, &b) in bytes.iter().enumerate() {
-                if b > 127 {
-                    return Err(PyException::value_error(format!(
-                        "'ascii' codec can't decode byte 0x{:02x} in position {}", b, i
-                    )));
+                if b <= 127 {
+                    out.push(b as char);
+                } else {
+                    match errors.as_str() {
+                        "ignore" => {}
+                        "replace" => out.push('\u{FFFD}'),
+                        _ => return Err(PyException::value_error(format!(
+                            "'ascii' codec can't decode byte 0x{:02x} in position {}", b, i
+                        ))),
+                    }
                 }
             }
+            Ok(PyObject::str_val(CompactString::from(out)))
+        }
+        "latin_1" => {
             let s: String = bytes.iter().map(|&b| b as char).collect();
             Ok(PyObject::str_val(CompactString::from(s)))
         }
-        "latin_1" | "latin1" | "iso_8859_1" | "iso8859_1" => {
-            let s: String = bytes.iter().map(|&b| b as char).collect();
-            Ok(PyObject::str_val(CompactString::from(s)))
-        }
-        "utf_16" | "utf16" => {
-            decode_utf16_with_bom(&bytes)
-        }
-        "utf_16_le" | "utf16_le" => {
-            decode_utf16_le(&bytes)
-        }
-        "utf_16_be" | "utf16_be" => {
-            decode_utf16_be(&bytes)
-        }
-        "utf_32" | "utf32" => {
-            decode_utf32_with_bom(&bytes)
-        }
-        "utf_32_le" | "utf32_le" => {
-            decode_utf32_le(&bytes)
-        }
-        "utf_32_be" | "utf32_be" => {
-            decode_utf32_be(&bytes)
-        }
-        "cp1252" | "windows_1252" => {
+        "utf_16" => decode_utf16_with_bom(&bytes),
+        "utf_16_le" => decode_utf16_le(&bytes),
+        "utf_16_be" => decode_utf16_be(&bytes),
+        "utf_32" => decode_utf32_with_bom(&bytes),
+        "utf_32_le" => decode_utf32_le(&bytes),
+        "utf_32_be" => decode_utf32_be(&bytes),
+        "cp1252" => {
             let s: String = bytes.iter().map(|&b| cp1252_decode(b)).collect();
             Ok(PyObject::str_val(CompactString::from(s)))
         }
@@ -1486,22 +1560,23 @@ fn codecs_decode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn codecs_lookup(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("codecs.lookup", args, 1)?;
-    let encoding = normalize_encoding(&args[0].py_to_string());
-    let known = matches!(encoding.as_str(),
-        "utf_8" | "utf8" | "ascii" | "latin_1" | "latin1" | "iso_8859_1" | "iso8859_1"
-        | "utf_16" | "utf16" | "utf_16_le" | "utf16_le" | "utf_16_be" | "utf16_be"
-        | "utf_32" | "utf32" | "utf_32_le" | "utf32_le" | "utf_32_be" | "utf32_be"
-        | "cp1252" | "windows_1252" | "rot_13" | "rot13"
+    let norm = normalize_encoding(&args[0].py_to_string());
+    let enc = resolve_encoding(&norm);
+    let known = matches!(enc,
+        "utf_8" | "ascii" | "latin_1"
+        | "utf_16" | "utf_16_le" | "utf_16_be"
+        | "utf_32" | "utf_32_le" | "utf_32_be"
+        | "cp1252" | "rot_13"
     );
     if known {
         Ok(PyObject::tuple(vec![
-            PyObject::str_val(CompactString::from(&encoding)),
+            PyObject::str_val(CompactString::from(enc)),
             PyObject::none(),
             PyObject::none(),
             PyObject::none(),
         ]))
     } else {
-        Err(PyException::value_error(format!("unknown encoding: {}", encoding)))
+        Err(PyException::value_error(format!("unknown encoding: {}", norm)))
     }
 }
 

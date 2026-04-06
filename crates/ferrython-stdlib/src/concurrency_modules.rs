@@ -1738,17 +1738,85 @@ pub fn create_selectors_module() -> PyObjectRef {
                 // select(timeout=None) -> list of (key, events)
                 let reg3 = registry.clone();
                 attrs.insert(CompactString::from("select"), PyObject::native_closure(
-                    "select", move |_: &[PyObjectRef]| {
-                        let r = reg3.read();
-                        let results: Vec<PyObjectRef> = r.values().map(|key| {
-                            let events = if let PyObjectPayload::Instance(ref d) = key.payload {
-                                d.attrs.read().get(&CompactString::from("events")).cloned().unwrap_or_else(|| PyObject::int(0))
+                    "select", move |args: &[PyObjectRef]| {
+                        let timeout_ms: i32 = if let Some(t_arg) = args.first() {
+                            if matches!(&t_arg.payload, PyObjectPayload::None) {
+                                -1 // block forever
+                            } else if let Some(t) = t_arg.as_int() {
+                                (t * 1000) as i32
+                            } else if let Ok(t) = t_arg.to_float() {
+                                (t * 1000.0) as i32
                             } else {
-                                PyObject::int(0)
+                                -1
+                            }
+                        } else {
+                            -1
+                        };
+
+                        let r = reg3.read();
+
+                        #[cfg(unix)]
+                        {
+                            if r.is_empty() {
+                                return Ok(PyObject::list(vec![]));
+                            }
+
+                            // Build pollfd array from registered fds
+                            let mut pollfds: Vec<libc::pollfd> = Vec::with_capacity(r.len());
+                            let mut keys: Vec<(&i64, &PyObjectRef)> = Vec::with_capacity(r.len());
+
+                            for (fd, key) in r.iter() {
+                                let events_val = if let PyObjectPayload::Instance(ref d) = key.payload {
+                                    d.attrs.read().get(&CompactString::from("events")).and_then(|e| e.as_int()).unwrap_or(0)
+                                } else { 0 };
+                                // Map EVENT_READ (1) -> POLLIN, EVENT_WRITE (2) -> POLLOUT
+                                let mut poll_events: i16 = 0;
+                                if events_val & 1 != 0 { poll_events |= libc::POLLIN as i16; }
+                                if events_val & 2 != 0 { poll_events |= libc::POLLOUT as i16; }
+                                pollfds.push(libc::pollfd { fd: *fd as i32, events: poll_events, revents: 0 });
+                                keys.push((fd, key));
+                            }
+
+                            let ret = unsafe {
+                                libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, timeout_ms)
                             };
-                            PyObject::tuple(vec![key.clone(), events])
-                        }).collect();
-                        Ok(PyObject::list(results))
+
+                            if ret < 0 {
+                                return Err(PyException::os_error("select: poll() failed"));
+                            }
+
+                            // Only return keys where revents is non-zero
+                            let results: Vec<PyObjectRef> = pollfds.iter().enumerate()
+                                .filter(|(_, pfd)| pfd.revents != 0)
+                                .map(|(i, pfd)| {
+                                    let key = keys[i].1.clone();
+                                    // Map revents back to EVENT_READ/EVENT_WRITE
+                                    let mut ready_events: i64 = 0;
+                                    if (pfd.revents as i32) & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+                                        ready_events |= 1; // EVENT_READ
+                                    }
+                                    if (pfd.revents as i32) & libc::POLLOUT != 0 {
+                                        ready_events |= 2; // EVENT_WRITE
+                                    }
+                                    PyObject::tuple(vec![key, PyObject::int(ready_events)])
+                                })
+                                .collect();
+                            return Ok(PyObject::list(results));
+                        }
+
+                        #[cfg(not(unix))]
+                        {
+                            let _ = timeout_ms;
+                            let results: Vec<PyObjectRef> = r.values().map(|key| {
+                                let events = if let PyObjectPayload::Instance(ref d) = key.payload {
+                                    d.attrs.read().get(&CompactString::from("events")).cloned().unwrap_or_else(|| PyObject::int(0))
+                                } else {
+                                    PyObject::int(0)
+                                };
+                                PyObject::tuple(vec![key.clone(), events])
+                            }).collect();
+                            Ok(PyObject::list(results))
+                        }
                     }));
 
                 // close()

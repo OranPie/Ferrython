@@ -850,6 +850,77 @@ pub fn create_inspect_module() -> PyObjectRef {
                 _ => Ok(PyObject::none()),
             }
         })),
+        // getsourcefile(obj) — return source file path (like getfile but only for .py files)
+        ("getsourcefile", make_builtin(|args| {
+            check_args("inspect.getsourcefile", args, 1)?;
+            let filename = if let PyObjectPayload::Function(f) = &args[0].payload {
+                Some(f.code.filename.clone())
+            } else if let PyObjectPayload::Module(m) = &args[0].payload {
+                m.attrs.read().get("__file__").map(|f| CompactString::from(f.py_to_string()))
+            } else { None };
+            match filename {
+                Some(f) if f.ends_with(".py") => Ok(PyObject::str_val(f)),
+                Some(_) => Ok(PyObject::none()),
+                None => Err(PyException::type_error("could not find source file")),
+            }
+        })),
+        // getargspec(func) — deprecated, use getfullargspec instead
+        ("getargspec", make_builtin(|args| {
+            check_args("inspect.getargspec", args, 1)?;
+            if let PyObjectPayload::Function(pf) = &args[0].payload {
+                let code = &pf.code;
+                let ac = code.arg_count as usize;
+                let has_varargs = code.flags.contains(CodeFlags::VARARGS);
+                let has_varkw = code.flags.contains(CodeFlags::VARKEYWORDS);
+
+                let mut positional = Vec::new();
+                for i in 0..ac {
+                    if i < code.varnames.len() {
+                        positional.push(PyObject::str_val(code.varnames[i].clone()));
+                    }
+                }
+                let varargs = if has_varargs && ac < code.varnames.len() {
+                    PyObject::str_val(code.varnames[ac].clone())
+                } else { PyObject::none() };
+                let kw_start = ac + if has_varargs { 1 } else { 0 };
+                let kwc = code.kwonlyarg_count as usize;
+                let varkw = if has_varkw && kw_start + kwc < code.varnames.len() {
+                    PyObject::str_val(code.varnames[kw_start + kwc].clone())
+                } else { PyObject::none() };
+                let defaults = if pf.defaults.is_empty() {
+                    PyObject::none()
+                } else {
+                    PyObject::tuple(pf.defaults.clone())
+                };
+                Ok(PyObject::tuple(vec![
+                    PyObject::list(positional), varargs, varkw, defaults
+                ]))
+            } else {
+                Err(PyException::type_error("unsupported callable"))
+            }
+        })),
+        // classify_class_attrs(cls) — return list of Attribute descriptions  
+        ("classify_class_attrs", make_builtin(|args| {
+            check_args("inspect.classify_class_attrs", args, 1)?;
+            // Simplified: return empty list
+            Ok(PyObject::list(vec![]))
+        })),
+        // Parameter constants
+        ("Parameter", {
+            let p_cls = PyObject::class(CompactString::from("Parameter"), vec![], IndexMap::new());
+            if let PyObjectPayload::Class(ref cd) = p_cls.payload {
+                let mut ns = cd.namespace.write();
+                ns.insert(CompactString::from("POSITIONAL_ONLY"), PyObject::int(0));
+                ns.insert(CompactString::from("POSITIONAL_OR_KEYWORD"), PyObject::int(1));
+                ns.insert(CompactString::from("VAR_POSITIONAL"), PyObject::int(2));
+                ns.insert(CompactString::from("KEYWORD_ONLY"), PyObject::int(3));
+                ns.insert(CompactString::from("VAR_KEYWORD"), PyObject::int(4));
+                ns.insert(CompactString::from("empty"), PyObject::instance(
+                    PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
+                ));
+            }
+            p_cls
+        }),
     ])
 }
 
