@@ -942,6 +942,8 @@ fn build_cursor_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
     let fetch_pos: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
     let rowcount: Arc<Mutex<i64>> = Arc::new(Mutex::new(-1));
     let lastrowid: Arc<Mutex<i64>> = Arc::new(Mutex::new(0));
+    // Self-reference for returning cursor from execute()
+    let self_ref: Arc<Mutex<Option<PyObjectRef>>> = Arc::new(Mutex::new(None));
 
     let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("__sqlite_cursor__"), PyObject::bool_val(true));
@@ -954,6 +956,7 @@ fn build_cursor_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
     let pos_ref = fetch_pos.clone();
     let rc_ref = rowcount.clone();
     let lid_ref = lastrowid.clone();
+    let sr = self_ref.clone();
     attrs.insert(CompactString::from("execute"), PyObject::native_closure("execute", move |args| {
         if args.is_empty() {
             return Err(PyException::type_error("execute() requires at least 1 argument"));
@@ -982,13 +985,15 @@ fn build_cursor_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
         *pos_ref.lock().unwrap() = 0;
         *rc_ref.lock().unwrap() = result.rowcount;
         *lid_ref.lock().unwrap() = result.lastrowid;
-        Ok(PyObject::none())
+        // Return cursor (self) for chaining: cursor.execute(...).fetchall()
+        Ok(sr.lock().unwrap().clone().unwrap_or_else(|| PyObject::none()))
     }));
 
     // executemany(sql, seq_of_params)
     let db_ref = db.clone();
     let rc_ref = rowcount.clone();
     let lid_ref = lastrowid.clone();
+    let sr = self_ref.clone();
     attrs.insert(CompactString::from("executemany"), PyObject::native_closure("executemany", move |args| {
         if args.len() < 2 {
             return Err(PyException::type_error("executemany() requires 2 arguments"));
@@ -1021,7 +1026,7 @@ fn build_cursor_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
         }
         *rc_ref.lock().unwrap() = total_rowcount;
         *lid_ref.lock().unwrap() = last_id;
-        Ok(PyObject::none())
+        Ok(sr.lock().unwrap().clone().unwrap_or_else(|| PyObject::none()))
     }));
 
     // fetchone()
@@ -1128,7 +1133,10 @@ fn build_cursor_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
     }));
 
     let cls = PyObject::class(CompactString::from("Cursor"), vec![], IndexMap::new());
-    PyObject::instance_with_attrs(cls, attrs)
+    let cursor = PyObject::instance_with_attrs(cls, attrs);
+    // Populate self-reference so execute() can return the cursor
+    *self_ref.lock().unwrap() = Some(cursor.clone());
+    cursor
 }
 
 // ── Connection builder ─────────────────────────────────────────────────

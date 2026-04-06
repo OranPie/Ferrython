@@ -48,22 +48,25 @@ pub fn create_warnings_module() -> PyObjectRef {
     let warn_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() { return Ok(PyObject::none()); }
         let message = args[0].py_to_string();
-        // category can be positional arg[1] or in kwargs dict
-        let category = get_kwarg(args, "category")
-            .map(|cat| {
-                if let PyObjectPayload::Class(cd) = &cat.payload { cd.name.to_string() }
-                else { cat.py_to_string() }
-            })
-            .unwrap_or_else(|| {
-                // Check positional arg[1] if it's not a dict
+        // Resolve category class object and name
+        let (category, category_cls) = {
+            let from_kwarg = get_kwarg(args, "category");
+            let cat_obj = from_kwarg.or_else(|| {
                 if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::Dict(_) | PyObjectPayload::None) {
-                    let cat = &args[1];
-                    if let PyObjectPayload::Class(cd) = &cat.payload { cd.name.to_string() }
-                    else { cat.py_to_string() }
+                    Some(args[1].clone())
                 } else {
-                    "UserWarning".to_string()
+                    None
                 }
             });
+            if let Some(cat) = cat_obj {
+                let name = if let PyObjectPayload::Class(cd) = &cat.payload { cd.name.to_string() }
+                           else { cat.py_to_string() };
+                (name, cat)
+            } else {
+                let cls = PyObject::class(CompactString::from("UserWarning"), vec![], IndexMap::new());
+                ("UserWarning".to_string(), cls)
+            }
+        };
 
         // Check filters
         let module = "<stdin>";
@@ -101,7 +104,7 @@ pub fn create_warnings_module() -> PyObjectRef {
                 let cls = PyObject::class(CompactString::from("WarningMessage"), vec![], IndexMap::new());
                 let mut attrs = IndexMap::new();
                 attrs.insert(CompactString::from("message"), args[0].clone());
-                attrs.insert(CompactString::from("category"), PyObject::str_val(CompactString::from(&category)));
+                attrs.insert(CompactString::from("category"), category_cls.clone());
                 attrs.insert(CompactString::from("filename"), PyObject::str_val(CompactString::from("<stdin>")));
                 attrs.insert(CompactString::from("lineno"), PyObject::int(1));
                 let warning_obj = PyObject::instance_with_attrs(cls, attrs);
@@ -375,6 +378,9 @@ pub fn create_inspect_module() -> PyObjectRef {
             // Build a Signature object with .parameters (OrderedDict of Parameter objects)
             let sig_cls = PyObject::class(CompactString::from("Signature"), vec![], IndexMap::new());
             let param_cls = PyObject::class(CompactString::from("Parameter"), vec![], IndexMap::new());
+            let empty_sentinel = PyObject::instance(
+                PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
+            );
 
             let mut params_map = IndexMap::new();
 
@@ -400,18 +406,16 @@ pub fn create_inspect_module() -> PyObjectRef {
                             if let Some(kw_def) = f.kw_defaults.get(&kw_name) {
                                 w.insert(CompactString::from("default"), kw_def.clone());
                             } else {
-                                w.insert(CompactString::from("default"), PyObject::instance(
-                                    PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
-                                ));
+                                w.insert(CompactString::from("default"), empty_sentinel.clone());
                             }
                         } else {
-                            w.insert(CompactString::from("default"), PyObject::instance(
-                                PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
-                            ));
+                            w.insert(CompactString::from("default"), empty_sentinel.clone());
                         }
-                        // Annotation
+                        // Annotation (always set, use _empty if missing)
                         if let Some(ann) = f.annotations.get(name) {
                             w.insert(CompactString::from("annotation"), ann.clone());
+                        } else {
+                            w.insert(CompactString::from("annotation"), empty_sentinel.clone());
                         }
                     }
                     params_map.insert(
@@ -428,6 +432,8 @@ pub fn create_inspect_module() -> PyObjectRef {
                         let mut w = inst.attrs.write();
                         w.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
                         w.insert(CompactString::from("kind"), PyObject::int(2)); // VAR_POSITIONAL
+                        w.insert(CompactString::from("default"), empty_sentinel.clone());
+                        w.insert(CompactString::from("annotation"), empty_sentinel.clone());
                     }
                     params_map.insert(HashableKey::Str(name.clone()), p);
                 }
@@ -442,6 +448,8 @@ pub fn create_inspect_module() -> PyObjectRef {
                             let mut w = inst.attrs.write();
                             w.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
                             w.insert(CompactString::from("kind"), PyObject::int(4)); // VAR_KEYWORD
+                            w.insert(CompactString::from("default"), empty_sentinel.clone());
+                            w.insert(CompactString::from("annotation"), empty_sentinel.clone());
                         }
                         params_map.insert(HashableKey::Str(name.clone()), p);
                     }
@@ -459,14 +467,10 @@ pub fn create_inspect_module() -> PyObjectRef {
                     if let Some(ret_ann) = f.annotations.get("return") {
                         w.insert(CompactString::from("return_annotation"), ret_ann.clone());
                     } else {
-                        w.insert(CompactString::from("return_annotation"), PyObject::instance(
-                            PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
-                        ));
+                        w.insert(CompactString::from("return_annotation"), empty_sentinel.clone());
                     }
                 } else {
-                    w.insert(CompactString::from("return_annotation"), PyObject::instance(
-                        PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
-                    ));
+                    w.insert(CompactString::from("return_annotation"), empty_sentinel.clone());
                 }
 
                 // __contains__ — check if parameter name is in signature
