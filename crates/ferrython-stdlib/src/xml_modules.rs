@@ -611,28 +611,42 @@ fn etree_element(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let tag = args[0].py_to_string();
     let mut elem = XmlElement::new(&tag);
 
-    // attrib dict
-    if args.len() > 1 {
-        if let PyObjectPayload::Dict(map) = &args[1].payload {
-            let r = map.read();
-            for (k, v) in r.iter() {
-                if let HashableKey::Str(ks) = k {
-                    elem.attrib.push((ks.to_string(), v.py_to_string()));
+    // Extract attrib from either positional arg or kwargs
+    let last = args.len().saturating_sub(1);
+    let has_kwargs = last > 0 && matches!(&args[last].payload, PyObjectPayload::Dict(_));
+
+    // Check kwargs for attrib={}
+    if has_kwargs {
+        if let PyObjectPayload::Dict(kw) = &args[last].payload {
+            let r = kw.read();
+            // attrib={...} kwarg
+            if let Some(att) = r.get(&HashableKey::Str(CompactString::from("attrib"))) {
+                if let PyObjectPayload::Dict(am) = &att.payload {
+                    let ar = am.read();
+                    for (k, v) in ar.iter() {
+                        if let HashableKey::Str(ks) = k {
+                            elem.attrib.push((ks.to_string(), v.py_to_string()));
+                        }
+                    }
                 }
             }
-        }
-    }
-
-    // kwargs
-    if args.len() > 2 {
-        if let PyObjectPayload::Dict(map) = &args[args.len() - 1].payload {
-            let r = map.read();
+            // Additional kwargs become attributes (except 'attrib' itself)
             for (k, v) in r.iter() {
                 if let HashableKey::Str(ks) = k {
                     let key = ks.to_string();
                     if key != "attrib" {
                         elem.attrib.push((key, v.py_to_string()));
                     }
+                }
+            }
+        }
+    } else if args.len() > 1 {
+        // Positional attrib dict
+        if let PyObjectPayload::Dict(map) = &args[1].payload {
+            let r = map.read();
+            for (k, v) in r.iter() {
+                if let HashableKey::Str(ks) = k {
+                    elem.attrib.push((ks.to_string(), v.py_to_string()));
                 }
             }
         }
@@ -648,7 +662,33 @@ fn etree_subelement(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let tag = args[1].py_to_string();
     let mut child_elem = XmlElement::new(&tag);
 
-    if args.len() > 2 {
+    // Extract attrib from positional arg or kwargs
+    let last = args.len().saturating_sub(1);
+    let has_kwargs = last > 1 && matches!(&args[last].payload, PyObjectPayload::Dict(_));
+
+    if has_kwargs {
+        if let PyObjectPayload::Dict(kw) = &args[last].payload {
+            let r = kw.read();
+            if let Some(att) = r.get(&HashableKey::Str(CompactString::from("attrib"))) {
+                if let PyObjectPayload::Dict(am) = &att.payload {
+                    let ar = am.read();
+                    for (k, v) in ar.iter() {
+                        if let HashableKey::Str(ks) = k {
+                            child_elem.attrib.push((ks.to_string(), v.py_to_string()));
+                        }
+                    }
+                }
+            }
+            for (k, v) in r.iter() {
+                if let HashableKey::Str(ks) = k {
+                    let key = ks.to_string();
+                    if key != "attrib" {
+                        child_elem.attrib.push((key, v.py_to_string()));
+                    }
+                }
+            }
+        }
+    } else if args.len() > 2 {
         if let PyObjectPayload::Dict(map) = &args[2].payload {
             let r = map.read();
             for (k, v) in r.iter() {

@@ -1339,6 +1339,56 @@ fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(PyObject::bytes(b[start..end].to_vec()))
         }));
 
+        // readlines() — read all remaining lines
+        let rls_buf = buf.clone();
+        let rls_pos = pos.clone();
+        attrs.insert(CompactString::from("readlines"), PyObject::native_closure("BytesIO.readlines", move |_: &[PyObjectRef]| {
+            let b = rls_buf.read();
+            let mut p = rls_pos.write();
+            let mut lines = Vec::new();
+            while *p < b.len() {
+                let start = *p;
+                let end = b[start..].iter().position(|&c| c == b'\n')
+                    .map(|i| start + i + 1)
+                    .unwrap_or(b.len());
+                *p = end;
+                lines.push(PyObject::bytes(b[start..end].to_vec()));
+            }
+            Ok(PyObject::list(lines))
+        }));
+
+        // writelines(lines) — write a list of bytes objects
+        let wl_buf = buf.clone();
+        let wl_pos = pos.clone();
+        attrs.insert(CompactString::from("writelines"), PyObject::native_closure("BytesIO.writelines", move |a: &[PyObjectRef]| {
+            if a.is_empty() { return Ok(PyObject::none()); }
+            let items = a[0].to_list()?;
+            let mut b = wl_buf.write();
+            let mut p = wl_pos.write();
+            for item in items {
+                if let PyObjectPayload::Bytes(data) = &item.payload {
+                    let d = data;
+                    let pos_val = *p;
+                    if pos_val == b.len() {
+                        b.extend_from_slice(d);
+                    } else {
+                        let end = (pos_val + d.len()).min(b.len());
+                        b.splice(pos_val..end, d.iter().cloned());
+                    }
+                    *p += d.len();
+                }
+            }
+            Ok(PyObject::none())
+        }));
+
+        // readable/writable/seekable/closed
+        attrs.insert(CompactString::from("readable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+        attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
+        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        attrs.insert(CompactString::from("flush"), make_builtin(|_| Ok(PyObject::none())));
+
         // __enter__ / __exit__
         let inst_ref = inst.clone();
         attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("BytesIO.__enter__", move |_: &[PyObjectRef]| {

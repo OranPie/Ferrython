@@ -783,11 +783,28 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Arc::new(std::sync::Mutex::new(IteratorData::List { items: vec![], index: 0 }))
         )));
     }
-    let sources: Vec<PyObjectRef> = args.iter()
+    // Check for trailing kwargs dict with strict=True
+    let mut strict = false;
+    let iter_args = if let Some(last) = args.last() {
+        if let PyObjectPayload::Dict(kw) = &last.payload {
+            let r = kw.read();
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("strict"))) {
+                strict = v.is_truthy();
+                &args[..args.len() - 1]
+            } else {
+                args
+            }
+        } else {
+            args
+        }
+    } else {
+        args
+    };
+    let sources: Vec<PyObjectRef> = iter_args.iter()
         .map(|a| get_iter_from_obj(a))
         .collect::<PyResult<Vec<_>>>()?;
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Arc::new(std::sync::Mutex::new(IteratorData::Zip { sources }))
+        Arc::new(std::sync::Mutex::new(IteratorData::Zip { sources, strict }))
     )))
 }
 

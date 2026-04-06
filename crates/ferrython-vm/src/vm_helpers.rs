@@ -1219,15 +1219,33 @@ impl VirtualMachine {
                     None => Ok(None),
                 }
             }
-            IteratorData::Zip { sources } => {
+            IteratorData::Zip { sources, strict } => {
                 let srcs: Vec<PyObjectRef> = sources.clone();
+                let is_strict = *strict;
                 drop(data);
                 let mut items = Vec::with_capacity(srcs.len());
-                for src in &srcs {
+                let mut exhausted = Vec::new();
+                for (i, src) in srcs.iter().enumerate() {
                     match self.vm_iter_next(src)? {
                         Some(val) => items.push(val),
-                        None => return Ok(None),
+                        None => {
+                            if is_strict {
+                                exhausted.push(i);
+                                // Continue checking remaining sources
+                                items.push(PyObject::none());
+                            } else {
+                                return Ok(None);
+                            }
+                        }
                     }
+                }
+                if is_strict && !exhausted.is_empty() {
+                    if exhausted.len() != srcs.len() {
+                        return Err(PyException::value_error(
+                            "zip() has arguments with different lengths"
+                        ));
+                    }
+                    return Ok(None); // All exhausted at same time
                 }
                 Ok(Some(PyObject::tuple(items)))
             }

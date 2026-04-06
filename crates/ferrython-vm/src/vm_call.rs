@@ -1628,9 +1628,29 @@ impl VirtualMachine {
                         return builtins::dispatch("enumerate", &args);
                     }
                     "zip" => {
-                        // Pre-resolve custom __iter__ before dispatching to zip
-                        let resolved = self.resolve_iterables(&args)?;
-                        return builtins::dispatch("zip", &resolved);
+                        // Check for trailing kwargs dict (e.g. strict=True)
+                        let mut strict = false;
+                        let iter_end = if let Some(last) = args.last() {
+                            if let PyObjectPayload::Dict(kw) = &last.payload {
+                                let r = kw.read();
+                                if let Some(v) = r.get(&HashableKey::Str(CompactString::from("strict"))) {
+                                    strict = v.is_truthy();
+                                }
+                                drop(r);
+                                args.len() - 1
+                            } else { args.len() }
+                        } else { args.len() };
+                        let resolved = self.resolve_iterables(&args[..iter_end])?;
+                        let mut full_args = resolved;
+                        if strict {
+                            // Re-add kwargs dict so builtin_zip can pick it up
+                            let kw = PyObject::dict(indexmap::IndexMap::from([(
+                                HashableKey::Str(CompactString::from("strict")),
+                                PyObject::bool_val(true),
+                            )]));
+                            full_args.push(kw);
+                        }
+                        return builtins::dispatch("zip", &full_args);
                     }
                     "len" => {
                         if args.len() == 1 {
