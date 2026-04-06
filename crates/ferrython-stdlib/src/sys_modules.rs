@@ -19,6 +19,12 @@ static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(1000);
 thread_local! {
     static ACTIVE_EXC_INFO: std::cell::RefCell<Option<(ExceptionKind, String, Option<PyObjectRef>)>> =
         const { std::cell::RefCell::new(None) };
+    static TRACE_FUNC: std::cell::RefCell<Option<PyObjectRef>> =
+        const { std::cell::RefCell::new(None) };
+    static PROFILE_FUNC: std::cell::RefCell<Option<PyObjectRef>> =
+        const { std::cell::RefCell::new(None) };
+    static EXCEPT_HOOK: std::cell::RefCell<Option<PyObjectRef>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Called by VM when entering an except handler.
@@ -36,6 +42,36 @@ pub fn get_exc_info() -> Option<(ExceptionKind, String)> {
     ACTIVE_EXC_INFO.with(|c| {
         c.borrow().as_ref().map(|(k, m, _)| (k.clone(), m.clone()))
     })
+}
+
+/// Get the current trace function (for VM hook dispatch).
+pub fn get_trace_func() -> Option<PyObjectRef> {
+    TRACE_FUNC.with(|c| c.borrow().clone())
+}
+
+/// Set the trace function (called by sys.settrace).
+pub fn set_trace_func(func: Option<PyObjectRef>) {
+    TRACE_FUNC.with(|c| *c.borrow_mut() = func);
+}
+
+/// Get the current profile function (for VM hook dispatch).
+pub fn get_profile_func() -> Option<PyObjectRef> {
+    PROFILE_FUNC.with(|c| c.borrow().clone())
+}
+
+/// Set the profile function (called by sys.setprofile).
+pub fn set_profile_func(func: Option<PyObjectRef>) {
+    PROFILE_FUNC.with(|c| *c.borrow_mut() = func);
+}
+
+/// Get the custom excepthook (for unhandled exception display).
+pub fn get_excepthook() -> Option<PyObjectRef> {
+    EXCEPT_HOOK.with(|c| c.borrow().clone())
+}
+
+/// Set the custom excepthook.
+pub fn set_excepthook(func: Option<PyObjectRef>) {
+    EXCEPT_HOOK.with(|c| *c.borrow_mut() = func);
 }
 
 /// Get the current recursion limit (for VM stack depth checking).
@@ -88,6 +124,12 @@ pub fn create_sys_module() -> PyObjectRef {
         ("setrecursionlimit", make_builtin(sys_setrecursionlimit)),
         ("exit", make_builtin(sys_exit)),
         ("getsizeof", make_builtin(sys_getsizeof)),
+        ("settrace", make_builtin(sys_settrace)),
+        ("gettrace", make_builtin(sys_gettrace)),
+        ("setprofile", make_builtin(sys_setprofile)),
+        ("getprofile", make_builtin(sys_getprofile)),
+        ("excepthook", make_builtin(sys_excepthook_default)),
+        ("__excepthook__", make_builtin(sys_excepthook_default)),
         ("getdefaultencoding", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("utf-8"))))),
         ("getfilesystemencoding", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("utf-8"))))),
         ("intern", make_builtin(|args| { check_args("sys.intern", args, 1)?; Ok(args[0].clone()) })),
@@ -187,6 +229,52 @@ fn sys_exit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn sys_getsizeof(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("sys.getsizeof", args, 1)?;
     Ok(PyObject::int(std::mem::size_of::<PyObject>() as i64))
+}
+
+fn sys_settrace(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("sys.settrace", args, 1)?;
+    if matches!(&args[0].payload, PyObjectPayload::None) {
+        set_trace_func(None);
+    } else {
+        set_trace_func(Some(args[0].clone()));
+    }
+    Ok(PyObject::none())
+}
+
+fn sys_gettrace(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(get_trace_func().unwrap_or_else(PyObject::none))
+}
+
+fn sys_setprofile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("sys.setprofile", args, 1)?;
+    if matches!(&args[0].payload, PyObjectPayload::None) {
+        set_profile_func(None);
+    } else {
+        set_profile_func(Some(args[0].clone()));
+    }
+    Ok(PyObject::none())
+}
+
+fn sys_getprofile(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(get_profile_func().unwrap_or_else(PyObject::none))
+}
+
+/// Default sys.excepthook: prints exception to stderr.
+fn sys_excepthook_default(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 3 {
+        return Err(PyException::type_error("excepthook requires 3 arguments"));
+    }
+    let exc_type = &args[0];
+    let exc_value = &args[1];
+    let _exc_tb = &args[2];
+    let type_name = exc_type.py_to_string();
+    let value_str = exc_value.py_to_string();
+    if value_str.is_empty() {
+        eprintln!("{}", type_name);
+    } else {
+        eprintln!("{}: {}", type_name, value_str);
+    }
+    Ok(PyObject::none())
 }
 
 /// Create a file-like object for stdin/stdout/stderr

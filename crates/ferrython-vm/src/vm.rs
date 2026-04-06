@@ -92,6 +92,18 @@ impl VirtualMachine {
     /// Execute a code object as a function call with arguments.
     pub(crate) fn run_frame(&mut self) -> PyResult<PyObjectRef> {
         let profiling = self.profiler.is_enabled();
+        let has_trace = ferrython_stdlib::get_trace_func().is_some();
+        let has_profile = ferrython_stdlib::get_profile_func().is_some();
+
+        // Fire "call" event at frame entry
+        if has_trace {
+            self.fire_trace_event("call", PyObject::none());
+        }
+        if has_profile {
+            self.fire_profile_event("call", PyObject::none());
+        }
+
+        let mut last_line: u32 = 0;
         loop {
             let frame = self.call_stack.last().unwrap();
             if frame.ip >= frame.code.instructions.len() {
@@ -99,6 +111,25 @@ impl VirtualMachine {
             }
 
             let instr = frame.code.instructions[frame.ip];
+
+            // Compute line number for trace event before mutable borrow
+            let fire_line = if has_trace {
+                let current_line = Self::ip_to_line(&frame.code, frame.ip);
+                if current_line != last_line {
+                    last_line = current_line;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            // Fire "line" event before mutable borrow of frame
+            if fire_line {
+                self.fire_trace_event("line", PyObject::none());
+            }
+
             let frame = self.call_stack.last_mut().unwrap();
             frame.ip += 1;
 
@@ -643,12 +674,28 @@ impl VirtualMachine {
             match result {
                 Ok(Some(ret)) => {
                     if profiling { self.profiler.end_instruction(instr.op); }
+                    // Fire "return" event
+                    if has_trace {
+                        self.fire_trace_event("return", ret.clone());
+                    }
+                    if has_profile {
+                        self.fire_profile_event("return", ret.clone());
+                    }
                     return Ok(ret);
                 }
                 Ok(None) => {
                     if profiling { self.profiler.end_instruction(instr.op); }
                 }
                 Err(mut exc) => {
+                    // Fire "exception" trace event
+                    if has_trace {
+                        let exc_info = PyObject::tuple(vec![
+                            PyObject::exception_type(exc.kind.clone()),
+                            PyObject::str_val(CompactString::from(exc.message.as_str())),
+                            PyObject::none(),
+                        ]);
+                        self.fire_trace_event("exception", exc_info);
+                    }
                     // Always attach traceback from the call stack
                     if exc.traceback.is_empty() {
                         self.attach_traceback(&mut exc);
@@ -953,6 +1000,82 @@ impl VirtualMachine {
                 "unimplemented opcode: {:?}", instr.op
             ))),
         }
+    }
+
+    /// Build a minimal frame object for trace/profile callbacks.
+    fn make_trace_frame(&self) -> PyObjectRef {
+        let frame = self.call_stack.last().unwrap();
+        let ip = if frame.ip > 0 { frame.ip - 1 } else { 0 };
+        let lineno = Self::ip_to_line(&frame.code, ip);
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("f_code"), {
+            let mut code_attrs = IndexMap::new();
+            code_attrs.insert(CompactString::from("co_filename"),
+                PyObject::str_val(frame.code.filename.clone()));
+            code_attrs.insert(CompactString::from("co_name"),
+                PyObject::str_val(frame.code.name.clone()));
+            code_attrs.insert(CompactString::from("co_firstlineno"),
+                PyObject::int(frame.code.first_line_number as i64));
+            PyObject::module_with_attrs(CompactString::from("code"), code_attrs)
+        });
+        attrs.insert(CompactString::from("f_lineno"), PyObject::int(lineno as i64));
+        attrs.insert(CompactString::from("f_locals"), PyObject::dict_from_pairs(vec![]));
+        attrs.insert(CompactString::from("f_globals"), PyObject::dict_from_pairs(vec![]));
+        attrs.insert(CompactString::from("f_back"), PyObject::none());
+        PyObject::module_with_attrs(CompactString::from("frame"), attrs)
+    }
+
+    /// Resolve instruction pointer to source line number.
+    fn ip_to_line(code: &CodeObject, ip: usize) -> u32 {
+        let mut line = code.first_line_number;
+        for &(offset, ln) in &code.line_number_table {
+            if offset as usize > ip { break; }
+            line = ln;
+        }
+        line
+    }
+
+    /// Fire a trace event to the registered sys.settrace function.
+    /// Events: "call", "line", "return", "exception"
+    fn fire_trace_event(&mut self, event: &str, arg: PyObjectRef) {
+        let trace_fn = match ferrython_stdlib::get_trace_func() {
+            Some(f) => f,
+            None => return,
+        };
+        let frame_obj = self.make_trace_frame();
+        let event_str = PyObject::str_val(CompactString::from(event));
+        // Call trace_fn(frame, event, arg) — ignore errors to avoid infinite recursion
+        // Temporarily disable trace during callback to prevent re-entrant calls
+        ferrython_stdlib::set_trace_func(None);
+        let result = self.call_object(trace_fn.clone(), vec![frame_obj, event_str, arg]);
+        // If the trace function returns None, tracing is disabled for this scope
+        // Otherwise, re-install (could be a different local trace function)
+        match result {
+            Ok(ref val) if !matches!(&val.payload, PyObjectPayload::None) => {
+                ferrython_stdlib::set_trace_func(Some(trace_fn));
+            }
+            Ok(_) => {
+                // Returned None — re-install the global trace function
+                ferrython_stdlib::set_trace_func(Some(trace_fn));
+            }
+            Err(_) => {
+                // Error in trace function — disable tracing (CPython behavior)
+            }
+        }
+    }
+
+    /// Fire a profile event to the registered sys.setprofile function.
+    /// Events: "call", "return", "c_call", "c_return", "c_exception"
+    fn fire_profile_event(&mut self, event: &str, arg: PyObjectRef) {
+        let profile_fn = match ferrython_stdlib::get_profile_func() {
+            Some(f) => f,
+            None => return,
+        };
+        let frame_obj = self.make_trace_frame();
+        let event_str = PyObject::str_val(CompactString::from(event));
+        ferrython_stdlib::set_profile_func(None);
+        let _ = self.call_object(profile_fn.clone(), vec![frame_obj, event_str, arg]);
+        ferrython_stdlib::set_profile_func(Some(profile_fn));
     }
 
 
