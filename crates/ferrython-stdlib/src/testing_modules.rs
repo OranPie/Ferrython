@@ -207,24 +207,22 @@ pub fn create_logging_module() -> PyObjectRef {
                         } else { msg.clone() }
                     } else { msg.clone() };
 
-                    // Write to stream (directly to StringIO buffer)
-                    if let PyObjectPayload::Instance(ref si) = stream2.payload {
-                        let attrs_r = si.attrs.read();
-                        if attrs_r.contains_key("__stringio__") {
-                            drop(attrs_r);
-                            let mut attrs_w = si.attrs.write();
-                            let line = format!("{}\n", formatted);
-                            if let Some(buf) = attrs_w.get("_buffer") {
-                                let cur = buf.py_to_string();
-                                attrs_w.insert(
-                                    CompactString::from("_buffer"),
-                                    PyObject::str_val(CompactString::from(format!("{}{}", cur, line))),
-                                );
+                    // Write to stream via its write() method
+                    let line = format!("{}\n", formatted);
+                    if let Some(write_fn) = stream2.get_attr("write") {
+                        let line_obj = PyObject::str_val(CompactString::from(&line));
+                        match &write_fn.payload {
+                            PyObjectPayload::NativeClosure { func, .. } => {
+                                let _ = func(&[line_obj]);
                             }
-                            return Ok(PyObject::none());
+                            PyObjectPayload::NativeFunction { func, .. } => {
+                                let _ = func(&[line_obj]);
+                            }
+                            _ => { eprintln!("{}", formatted); }
                         }
+                    } else {
+                        eprintln!("{}", formatted);
                     }
-                    eprintln!("{}", formatted);
                     Ok(PyObject::none())
                 }
             ));
