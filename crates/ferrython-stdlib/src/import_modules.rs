@@ -10,6 +10,7 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args_min,
 };
+use indexmap::IndexMap;
 use std::cell::RefCell;
 
 // ── Thread-local: import_module() signal ────────────────────────────────
@@ -53,6 +54,142 @@ pub fn create_importlib_module() -> PyObjectRef {
         ("reload", make_builtin(importlib_reload)),
         ("invalidate_caches", make_builtin(importlib_invalidate_caches)),
         ("__import__", make_builtin(importlib_import_fn)),
+        ("util", create_importlib_util_module()),
+        ("abc", create_importlib_abc_module()),
+        ("machinery", create_importlib_machinery_module()),
+    ])
+}
+
+// ── importlib.util ──────────────────────────────────────────────────────
+
+fn create_importlib_util_module() -> PyObjectRef {
+    // spec_from_file_location(name, location)
+    let spec_from_file = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        check_args_min("importlib.util.spec_from_file_location", args, 1)?;
+        let name = CompactString::from(args[0].py_to_string());
+        let location = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
+            CompactString::from(args[1].py_to_string())
+        } else {
+            CompactString::from("")
+        };
+        let cls = PyObject::class(CompactString::from("ModuleSpec"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
+        attrs.insert(CompactString::from("origin"), PyObject::str_val(location.clone()));
+        attrs.insert(CompactString::from("submodule_search_locations"), PyObject::none());
+        attrs.insert(CompactString::from("loader"), PyObject::none());
+        attrs.insert(CompactString::from("cached"), PyObject::none());
+        attrs.insert(CompactString::from("parent"), {
+            if let Some(dot) = name.rfind('.') {
+                PyObject::str_val(CompactString::from(&name[..dot]))
+            } else {
+                PyObject::str_val(CompactString::from(""))
+            }
+        });
+        attrs.insert(CompactString::from("has_location"), PyObject::bool_val(!location.is_empty()));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
+    // find_spec(name, package=None)
+    let find_spec = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        check_args_min("importlib.util.find_spec", args, 1)?;
+        let name = args[0].py_to_string();
+        // Check if module exists in sys.modules (can't check directly without VM)
+        // Return a spec if the file exists on disk
+        let possible_paths = vec![
+            format!("{}.py", name.replace('.', "/")),
+            format!("{}/__init__.py", name.replace('.', "/")),
+        ];
+        for path in &possible_paths {
+            if std::path::Path::new(path).exists() {
+                let cls = PyObject::class(CompactString::from("ModuleSpec"), vec![], IndexMap::new());
+                let mut attrs = IndexMap::new();
+                attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name.clone())));
+                attrs.insert(CompactString::from("origin"), PyObject::str_val(CompactString::from(path.as_str())));
+                attrs.insert(CompactString::from("loader"), PyObject::none());
+                attrs.insert(CompactString::from("submodule_search_locations"), PyObject::none());
+                return Ok(PyObject::instance_with_attrs(cls, attrs));
+            }
+        }
+        Ok(PyObject::none())
+    });
+
+    // module_from_spec(spec) — create empty module from spec
+    let module_from_spec = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        check_args_min("importlib.util.module_from_spec", args, 1)?;
+        let spec = &args[0];
+        let name = spec.get_attr("name").map(|n| n.py_to_string()).unwrap_or_else(|| "<unknown>".to_string());
+        let module = make_module(&name, vec![]);
+        if let PyObjectPayload::Module(ref md) = module.payload {
+            let mut attrs = md.attrs.write();
+            attrs.insert(CompactString::from("__spec__"), spec.clone());
+            if let Some(origin) = spec.get_attr("origin") {
+                attrs.insert(CompactString::from("__file__"), origin);
+            }
+        }
+        Ok(module)
+    });
+
+    // resolve_name(name, package) — resolve relative module name
+    let resolve_name = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        check_args_min("importlib.util.resolve_name", args, 2)?;
+        let name = args[0].py_to_string();
+        let package = args[1].py_to_string();
+        if name.starts_with('.') {
+            let dots = name.chars().take_while(|c| *c == '.').count();
+            let parts: Vec<&str> = package.split('.').collect();
+            if dots > parts.len() {
+                return Err(PyException::import_error("attempted relative import beyond top-level package"));
+            }
+            let base = parts[..parts.len() - (dots - 1).min(parts.len())].join(".");
+            let remainder = &name[dots..];
+            let resolved = if remainder.is_empty() { base } else { format!("{}.{}", base, remainder) };
+            Ok(PyObject::str_val(CompactString::from(resolved)))
+        } else {
+            Ok(PyObject::str_val(CompactString::from(name)))
+        }
+    });
+
+    make_module("importlib.util", vec![
+        ("spec_from_file_location", spec_from_file),
+        ("find_spec", find_spec),
+        ("module_from_spec", module_from_spec),
+        ("resolve_name", resolve_name),
+        ("MAGIC_NUMBER", PyObject::bytes(vec![0x42, 0x0d, 0x0d, 0x0a])),
+    ])
+}
+
+// ── importlib.abc ───────────────────────────────────────────────────────
+
+fn create_importlib_abc_module() -> PyObjectRef {
+    make_module("importlib.abc", vec![
+        ("Loader", PyObject::class(CompactString::from("Loader"), vec![], IndexMap::new())),
+        ("MetaPathFinder", PyObject::class(CompactString::from("MetaPathFinder"), vec![], IndexMap::new())),
+        ("PathEntryFinder", PyObject::class(CompactString::from("PathEntryFinder"), vec![], IndexMap::new())),
+        ("SourceLoader", PyObject::class(CompactString::from("SourceLoader"), vec![], IndexMap::new())),
+        ("FileLoader", PyObject::class(CompactString::from("FileLoader"), vec![], IndexMap::new())),
+    ])
+}
+
+// ── importlib.machinery ─────────────────────────────────────────────────
+
+fn create_importlib_machinery_module() -> PyObjectRef {
+    make_module("importlib.machinery", vec![
+        ("ModuleSpec", PyObject::class(CompactString::from("ModuleSpec"), vec![], IndexMap::new())),
+        ("SourceFileLoader", PyObject::class(CompactString::from("SourceFileLoader"), vec![], IndexMap::new())),
+        ("SOURCE_SUFFIXES", PyObject::list(vec![
+            PyObject::str_val(CompactString::from(".py")),
+        ])),
+        ("BYTECODE_SUFFIXES", PyObject::list(vec![
+            PyObject::str_val(CompactString::from(".pyc")),
+        ])),
+        ("EXTENSION_SUFFIXES", PyObject::list(vec![])),
+        ("all_suffixes", make_builtin(|_| {
+            Ok(PyObject::list(vec![
+                PyObject::str_val(CompactString::from(".py")),
+                PyObject::str_val(CompactString::from(".pyc")),
+            ]))
+        })),
     ])
 }
 

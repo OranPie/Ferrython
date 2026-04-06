@@ -610,8 +610,36 @@ pub fn create_inspect_module() -> PyObjectRef {
                 Err(PyException::runtime_error("could not find source lines"))
             }
         })),
-        ("currentframe", make_builtin(|_| Ok(PyObject::none()))),
-        ("stack", make_builtin(|_| Ok(PyObject::list(vec![])))),
+        ("currentframe", make_builtin(|_| {
+            // Return a frame-like object with basic attributes
+            let cls = PyObject::class(CompactString::from("frame"), vec![], IndexMap::new());
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("f_lineno"), PyObject::int(0));
+            attrs.insert(CompactString::from("f_code"), {
+                let code_cls = PyObject::class(CompactString::from("code"), vec![], IndexMap::new());
+                let mut code_attrs = IndexMap::new();
+                code_attrs.insert(CompactString::from("co_filename"), PyObject::str_val(CompactString::from("<unknown>")));
+                code_attrs.insert(CompactString::from("co_name"), PyObject::str_val(CompactString::from("<module>")));
+                code_attrs.insert(CompactString::from("co_firstlineno"), PyObject::int(0));
+                PyObject::instance_with_attrs(code_cls, code_attrs)
+            });
+            attrs.insert(CompactString::from("f_locals"), PyObject::dict(IndexMap::new()));
+            attrs.insert(CompactString::from("f_globals"), PyObject::dict(IndexMap::new()));
+            attrs.insert(CompactString::from("f_back"), PyObject::none());
+            Ok(PyObject::instance_with_attrs(cls, attrs))
+        })),
+        ("stack", make_builtin(|_| {
+            // Return a list with one FrameInfo representing current position
+            let cls = PyObject::class(CompactString::from("FrameInfo"), vec![], IndexMap::new());
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("filename"), PyObject::str_val(CompactString::from("<unknown>")));
+            attrs.insert(CompactString::from("lineno"), PyObject::int(0));
+            attrs.insert(CompactString::from("function"), PyObject::str_val(CompactString::from("<module>")));
+            attrs.insert(CompactString::from("code_context"), PyObject::none());
+            attrs.insert(CompactString::from("index"), PyObject::none());
+            let frame_info = PyObject::instance_with_attrs(cls, attrs);
+            Ok(PyObject::list(vec![frame_info]))
+        })),
         ("getmro", make_builtin(|args| {
             check_args("inspect.getmro", args, 1)?;
             if let PyObjectPayload::Class(cd) = &args[0].payload {

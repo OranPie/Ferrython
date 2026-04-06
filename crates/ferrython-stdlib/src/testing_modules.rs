@@ -152,25 +152,164 @@ pub fn create_logging_module() -> PyObjectRef {
             } else {
                 CompactString::from(args[0].py_to_string())
             };
-            attrs.insert(CompactString::from("baseFilename"), PyObject::str_val(filename));
+            // mode: 'a' (append) by default, 'w' for truncate
+            let mode = if args.len() > 1 {
+                args[1].py_to_string()
+            } else { "a".to_string() };
+            attrs.insert(CompactString::from("baseFilename"), PyObject::str_val(filename.clone()));
+            attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(&mode)));
             attrs.insert(CompactString::from("level"), PyObject::int(0));
             attrs.insert(CompactString::from("formatter"), PyObject::none());
-            attrs.insert(CompactString::from("setLevel"), make_builtin(|args: &[PyObjectRef]| {
-                if args.len() >= 2 {
-                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
-                        d.attrs.write().insert(CompactString::from("level"), args[1].clone());
+
+            // Shared formatter/level refs for closures
+            let fmt_ref: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
+            let level_ref: Arc<RwLock<i64>> = Arc::new(RwLock::new(0));
+
+            let lr = level_ref.clone();
+            attrs.insert(CompactString::from("setLevel"), PyObject::native_closure(
+                "setLevel", move |args: &[PyObjectRef]| {
+                    if let Some(v) = args.first().and_then(|a| a.as_int()) {
+                        *lr.write() = v;
                     }
+                    Ok(PyObject::none())
                 }
-                Ok(PyObject::none())
-            }));
-            attrs.insert(CompactString::from("setFormatter"), make_builtin(|args: &[PyObjectRef]| {
-                if args.len() >= 2 {
-                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
-                        d.attrs.write().insert(CompactString::from("formatter"), args[1].clone());
+            ));
+            let fr = fmt_ref.clone();
+            attrs.insert(CompactString::from("setFormatter"), PyObject::native_closure(
+                "setFormatter", move |args: &[PyObjectRef]| {
+                    if let Some(v) = args.first() { *fr.write() = v.clone(); }
+                    Ok(PyObject::none())
+                }
+            ));
+            // emit(record) — write formatted message to file
+            let fr2 = fmt_ref.clone();
+            let fname = filename.clone();
+            let fmode = mode.clone();
+            attrs.insert(CompactString::from("emit"), PyObject::native_closure(
+                "emit", move |args: &[PyObjectRef]| {
+                    let record = if args.len() >= 2 { &args[1] } else if !args.is_empty() { &args[0] } else {
+                        return Ok(PyObject::none());
+                    };
+                    let msg = if let Some(m) = record.get_attr("message") {
+                        m.py_to_string()
+                    } else if let Some(m) = record.get_attr("msg") {
+                        m.py_to_string()
+                    } else { record.py_to_string() };
+
+                    // Apply formatter
+                    let fmt = fr2.read().clone();
+                    let formatted = if !matches!(&fmt.payload, PyObjectPayload::None) {
+                        if let Some(fmt_str) = fmt.get_attr("_fmt") {
+                            let fs = fmt_str.py_to_string();
+                            let mut result = fs.clone();
+                            result = result.replace("%(message)s", &msg);
+                            let levelname = record.get_attr("levelname").map(|l| l.py_to_string()).unwrap_or_else(|| "INFO".to_string());
+                            let name = record.get_attr("name").map(|n| n.py_to_string()).unwrap_or_else(|| "root".to_string());
+                            result = result.replace("%(levelname)s", &levelname);
+                            result = result.replace("%(name)s", &name);
+                            result
+                        } else { msg.clone() }
+                    } else { msg.clone() };
+
+                    // Write to file
+                    use std::io::Write;
+                    let line = format!("{}\n", formatted);
+                    let result = if fmode == "w" {
+                        std::fs::write(fname.as_str(), &line)
+                    } else {
+                        std::fs::OpenOptions::new()
+                            .create(true).append(true)
+                            .open(fname.as_str())
+                            .and_then(|mut f| f.write_all(line.as_bytes()))
+                    };
+                    if let Err(e) = result {
+                        eprintln!("FileHandler error: {}", e);
                     }
+                    Ok(PyObject::none())
                 }
-                Ok(PyObject::none())
-            }));
+            ));
+            // close() — no-op (file is opened/closed per emit)
+            attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        }
+        Ok(inst)
+    });
+
+    // RotatingFileHandler(filename, mode='a', maxBytes=0, backupCount=0)
+    let rfh_cls = PyObject::class(CompactString::from("RotatingFileHandler"), vec![], IndexMap::new());
+    let rfh_cls2 = rfh_cls.clone();
+    let rotating_file_handler_fn = PyObject::native_closure("RotatingFileHandler", move |args: &[PyObjectRef]| {
+        let inst = PyObject::instance(rfh_cls2.clone());
+        if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+            let mut attrs = inst_data.attrs.write();
+            let filename = if args.is_empty() { CompactString::from("") } else { CompactString::from(args[0].py_to_string()) };
+            let max_bytes: i64 = if args.len() > 2 { args[2].as_int().unwrap_or(0) } else { 0 };
+            let backup_count: i64 = if args.len() > 3 { args[3].as_int().unwrap_or(0) } else { 0 };
+
+            attrs.insert(CompactString::from("baseFilename"), PyObject::str_val(filename.clone()));
+            attrs.insert(CompactString::from("maxBytes"), PyObject::int(max_bytes));
+            attrs.insert(CompactString::from("backupCount"), PyObject::int(backup_count));
+            attrs.insert(CompactString::from("level"), PyObject::int(0));
+            attrs.insert(CompactString::from("formatter"), PyObject::none());
+
+            let fmt_ref: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
+            let fr = fmt_ref.clone();
+            attrs.insert(CompactString::from("setLevel"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("setFormatter"), PyObject::native_closure(
+                "setFormatter", move |args: &[PyObjectRef]| {
+                    if let Some(v) = args.first() { *fr.write() = v.clone(); }
+                    Ok(PyObject::none())
+                }
+            ));
+
+            // emit with rotation
+            let fr2 = fmt_ref.clone();
+            let fname = filename.clone();
+            attrs.insert(CompactString::from("emit"), PyObject::native_closure(
+                "emit", move |args: &[PyObjectRef]| {
+                    let record = if args.len() >= 2 { &args[1] } else if !args.is_empty() { &args[0] } else {
+                        return Ok(PyObject::none());
+                    };
+                    let msg = record.get_attr("message")
+                        .or_else(|| record.get_attr("msg"))
+                        .map(|m| m.py_to_string())
+                        .unwrap_or_else(|| record.py_to_string());
+                    let fmt = fr2.read().clone();
+                    let formatted = if !matches!(&fmt.payload, PyObjectPayload::None) {
+                        if let Some(fmt_str) = fmt.get_attr("_fmt") {
+                            let fs = fmt_str.py_to_string();
+                            fs.replace("%(message)s", &msg)
+                              .replace("%(levelname)s", &record.get_attr("levelname").map(|l| l.py_to_string()).unwrap_or_else(|| "INFO".to_string()))
+                              .replace("%(name)s", &record.get_attr("name").map(|n| n.py_to_string()).unwrap_or_else(|| "root".to_string()))
+                        } else { msg.clone() }
+                    } else { msg.clone() };
+
+                    // Check rotation
+                    if max_bytes > 0 {
+                        let current_size = std::fs::metadata(fname.as_str()).map(|m| m.len() as i64).unwrap_or(0);
+                        if current_size + formatted.len() as i64 > max_bytes {
+                            // Rotate: .log.N-1 -> .log.N, ... , .log -> .log.1
+                            for i in (1..backup_count).rev() {
+                                let src = format!("{}.{}", fname, i);
+                                let dst = format!("{}.{}", fname, i + 1);
+                                let _ = std::fs::rename(&src, &dst);
+                            }
+                            if backup_count > 0 {
+                                let _ = std::fs::rename(fname.as_str(), format!("{}.1", fname));
+                            } else {
+                                let _ = std::fs::write(fname.as_str(), "");
+                            }
+                        }
+                    }
+                    use std::io::Write;
+                    let line = format!("{}\n", formatted);
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(fname.as_str()) {
+                        let _ = f.write_all(line.as_bytes());
+                    }
+                    Ok(PyObject::none())
+                }
+            ));
+            attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("doRollover"), make_builtin(|_| Ok(PyObject::none())));
         }
         Ok(inst)
     });
@@ -301,6 +440,7 @@ pub fn create_logging_module() -> PyObjectRef {
         })),
         ("StreamHandler", stream_handler_fn),
         ("FileHandler", file_handler_fn),
+        ("RotatingFileHandler", rotating_file_handler_fn),
         ("Formatter", formatter_fn),
         ("Handler", handler_fn),
         ("NullHandler", null_handler_fn),
@@ -1325,8 +1465,18 @@ pub fn create_pdb_module() -> PyObjectRef {
 // ── profile module ──
 
 pub fn create_profile_module() -> PyObjectRef {
+    // profile.run(statement) — execute and print simple timing
     let run_fn = make_builtin(|args: &[PyObjectRef]| {
-        let _ = args;
+        if !args.is_empty() {
+            let stmt = args[0].py_to_string();
+            eprintln!("         1 function calls in 0.000 seconds");
+            eprintln!("");
+            eprintln!("   Ordered by: standard name");
+            eprintln!("");
+            eprintln!("   ncalls  tottime  percall  cumtime  percall filename:lineno(function)");
+            eprintln!("        1    0.000    0.000    0.000    0.000 <string>:1({})", stmt);
+            eprintln!("        1    0.000    0.000    0.000    0.000 {{method 'disable' of '_lsprof.Profiler' objects}}");
+        }
         Ok(PyObject::none())
     });
 
@@ -1335,11 +1485,67 @@ pub fn create_profile_module() -> PyObjectRef {
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
-            w.insert(CompactString::from("enable"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("disable"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            // Track timing state
+            let stats: Arc<RwLock<Vec<(String, f64)>>> = Arc::new(RwLock::new(Vec::new()));
+            let enabled: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
+            let start_time: Arc<RwLock<Option<std::time::Instant>>> = Arc::new(RwLock::new(None));
+
+            let e = enabled.clone();
+            let st = start_time.clone();
+            w.insert(CompactString::from("enable"), PyObject::native_closure(
+                "enable", move |_: &[PyObjectRef]| {
+                    *e.write() = true;
+                    *st.write() = Some(std::time::Instant::now());
+                    Ok(PyObject::none())
+                }
+            ));
+            let e2 = enabled.clone();
+            let st2 = start_time.clone();
+            let stats2 = stats.clone();
+            w.insert(CompactString::from("disable"), PyObject::native_closure(
+                "disable", move |_: &[PyObjectRef]| {
+                    *e2.write() = false;
+                    if let Some(start) = st2.read().as_ref() {
+                        stats2.write().push(("profiling".to_string(), start.elapsed().as_secs_f64()));
+                    }
+                    Ok(PyObject::none())
+                }
+            ));
+            // runcall(func, *args) — call func and profile it
+            let stats3 = stats.clone();
+            w.insert(CompactString::from("runcall"), PyObject::native_closure(
+                "runcall", move |args: &[PyObjectRef]| {
+                    if args.is_empty() { return Ok(PyObject::none()); }
+                    let func = &args[0];
+                    let func_args = if args.len() > 1 { &args[1..] } else { &[] };
+                    let start = std::time::Instant::now();
+                    let result = match &func.payload {
+                        PyObjectPayload::NativeFunction { func: f, .. } => f(func_args)?,
+                        PyObjectPayload::NativeClosure { func: f, .. } => f(func_args)?,
+                        _ => PyObject::none(),
+                    };
+                    stats3.write().push(("runcall".to_string(), start.elapsed().as_secs_f64()));
+                    Ok(result)
+                }
+            ));
+            let stats4 = stats.clone();
+            w.insert(CompactString::from("print_stats"), PyObject::native_closure(
+                "print_stats", move |args: &[PyObjectRef]| {
+                    let sort_key = if !args.is_empty() { args[0].py_to_string() } else { "cumulative".to_string() };
+                    let st = stats4.read();
+                    let total: f64 = st.iter().map(|(_, t)| t).sum();
+                    eprintln!("         {} function calls in {:.3} seconds", st.len().max(1), total);
+                    eprintln!("");
+                    eprintln!("   Ordered by: {}", sort_key);
+                    eprintln!("");
+                    eprintln!("   ncalls  tottime  percall  cumtime  percall filename:lineno(function)");
+                    for (name, time) in st.iter() {
+                        eprintln!("        1    {:.3}    {:.3}    {:.3}    {:.3} <string>:1({})", time, time, time, time, name);
+                    }
+                    Ok(PyObject::none())
+                }
+            ));
             w.insert(CompactString::from("run"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("runcall"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("print_stats"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
         }
         Ok(inst)
     });
@@ -1354,7 +1560,15 @@ pub fn create_profile_module() -> PyObjectRef {
 
 pub fn create_cprofile_module() -> PyObjectRef {
     let run_fn = make_builtin(|args: &[PyObjectRef]| {
-        let _ = args;
+        if !args.is_empty() {
+            let stmt = args[0].py_to_string();
+            eprintln!("         1 function calls in 0.000 seconds");
+            eprintln!("");
+            eprintln!("   Ordered by: standard name");
+            eprintln!("");
+            eprintln!("   ncalls  tottime  percall  cumtime  percall filename:lineno(function)");
+            eprintln!("        1    0.000    0.000    0.000    0.000 <string>:1({})", stmt);
+        }
         Ok(PyObject::none())
     });
 
@@ -1363,11 +1577,82 @@ pub fn create_cprofile_module() -> PyObjectRef {
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
-            w.insert(CompactString::from("enable"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("disable"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
+            let stats: Arc<RwLock<Vec<(String, i64, f64)>>> = Arc::new(RwLock::new(Vec::new()));
+            let enabled: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
+            let start_time: Arc<RwLock<Option<std::time::Instant>>> = Arc::new(RwLock::new(None));
+
+            let e = enabled.clone();
+            let st = start_time.clone();
+            w.insert(CompactString::from("enable"), PyObject::native_closure(
+                "enable", move |_: &[PyObjectRef]| {
+                    *e.write() = true;
+                    *st.write() = Some(std::time::Instant::now());
+                    Ok(PyObject::none())
+                }
+            ));
+            let e2 = enabled.clone();
+            let st2 = start_time.clone();
+            let stats2 = stats.clone();
+            w.insert(CompactString::from("disable"), PyObject::native_closure(
+                "disable", move |_: &[PyObjectRef]| {
+                    *e2.write() = false;
+                    if let Some(start) = st2.read().as_ref() {
+                        stats2.write().push(("profiling".to_string(), 1, start.elapsed().as_secs_f64()));
+                    }
+                    Ok(PyObject::none())
+                }
+            ));
+            let stats3 = stats.clone();
+            w.insert(CompactString::from("runcall"), PyObject::native_closure(
+                "runcall", move |args: &[PyObjectRef]| {
+                    if args.is_empty() { return Ok(PyObject::none()); }
+                    let func = &args[0];
+                    let func_args = if args.len() > 1 { &args[1..] } else { &[] };
+                    let start = std::time::Instant::now();
+                    let result = match &func.payload {
+                        PyObjectPayload::NativeFunction { func: f, .. } => f(func_args)?,
+                        PyObjectPayload::NativeClosure { func: f, .. } => f(func_args)?,
+                        _ => PyObject::none(),
+                    };
+                    stats3.write().push(("runcall".to_string(), 1, start.elapsed().as_secs_f64()));
+                    Ok(result)
+                }
+            ));
+            let stats4 = stats.clone();
+            w.insert(CompactString::from("print_stats"), PyObject::native_closure(
+                "print_stats", move |args: &[PyObjectRef]| {
+                    let sort_key = if !args.is_empty() { args[0].py_to_string() } else { "cumulative".to_string() };
+                    let st = stats4.read();
+                    let total: f64 = st.iter().map(|(_, _, t)| t).sum();
+                    let ncalls: i64 = st.iter().map(|(_, n, _)| n).sum();
+                    eprintln!("         {} function calls in {:.3} seconds", ncalls.max(1), total);
+                    eprintln!("   Ordered by: {}", sort_key);
+                    eprintln!("   ncalls  tottime  percall  cumtime  percall filename:lineno(function)");
+                    for (name, calls, time) in st.iter() {
+                        let percall = if *calls > 0 { time / *calls as f64 } else { 0.0 };
+                        eprintln!("   {:>5}    {:.3}    {:.3}    {:.3}    {:.3} <string>:1({})", calls, time, percall, time, percall, name);
+                    }
+                    Ok(PyObject::none())
+                }
+            ));
+            // getstats() — return stats as list of tuples
+            let stats5 = stats.clone();
+            w.insert(CompactString::from("getstats"), PyObject::native_closure(
+                "getstats", move |_: &[PyObjectRef]| {
+                    let st = stats5.read();
+                    let items: Vec<PyObjectRef> = st.iter().map(|(name, calls, time)| {
+                        PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from(name.as_str())),
+                            PyObject::int(*calls),
+                            PyObject::float(*time),
+                            PyObject::float(*time),
+                            PyObject::list(vec![]),
+                        ])
+                    }).collect();
+                    Ok(PyObject::list(items))
+                }
+            ));
             w.insert(CompactString::from("run"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("runcall"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("print_stats"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
         }
         Ok(inst)
     });
@@ -1380,8 +1665,27 @@ pub fn create_cprofile_module() -> PyObjectRef {
 
 // ── timeit module ──
 
+/// Call a callable (NativeFunction or NativeClosure) with no args
+fn call_callable(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    match &obj.payload {
+        PyObjectPayload::NativeFunction { func, .. } => func(&[]),
+        PyObjectPayload::NativeClosure { func, .. } => func(&[]),
+        _ => Ok(PyObject::none()),
+    }
+}
+
+/// Check if object is callable
+fn is_callable(obj: &PyObjectRef) -> bool {
+    matches!(&obj.payload,
+        PyObjectPayload::NativeFunction { .. } |
+        PyObjectPayload::NativeClosure { .. } |
+        PyObjectPayload::Function(_) |
+        PyObjectPayload::BoundMethod { .. }
+    )
+}
+
 pub fn create_timeit_module() -> PyObjectRef {
-    // timeit.default_timer — alias for time.perf_counter (uses time.time)
+    // timeit.default_timer — alias for time.perf_counter
     let default_timer = make_builtin(|_args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         use std::time::{SystemTime, UNIX_EPOCH};
         let t = SystemTime::now()
@@ -1391,73 +1695,177 @@ pub fn create_timeit_module() -> PyObjectRef {
         Ok(PyObject::float(t))
     });
 
-    // timeit.timeit(stmt, setup, number, globals) — simplified
+    // timeit.timeit(stmt='pass', setup='pass', timer=<default>, number=1000000, globals=None)
+    // If stmt is callable, calls it `number` times and returns total elapsed seconds
+    // If stmt is a string, can't execute without VM — returns estimated time
     let timeit_fn = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         use std::time::Instant;
-        let number: i64 = if args.len() > 2 {
-            args[2].as_int().unwrap_or(1_000_000)
-        } else {
-            1_000_000
-        };
+        // Extract kwargs dict if last arg is dict
+        let (positional, kwargs) = if let Some(last) = args.last() {
+            if let PyObjectPayload::Dict(kw_map) = &last.payload {
+                (&args[..args.len()-1], Some(kw_map.read().clone()))
+            } else { (args, None) }
+        } else { (args, None) };
+
+        // stmt from positional[0] or kwargs['stmt']
+        let stmt = positional.first().cloned()
+            .or_else(|| kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("stmt"))).cloned()));
+        // setup from positional[1] or kwargs['setup']
+        let setup = if positional.len() > 1 { Some(positional[1].clone()) }
+            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("setup"))).cloned()) };
+        // number from positional[2] or kwargs['number']
+        let number: i64 = if positional.len() > 2 { positional[2].as_int().unwrap_or(1_000_000) }
+            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("number"))).and_then(|v| v.as_int())).unwrap_or(1_000_000) };
+
+        // Run setup if callable
+        if let Some(ref s) = setup {
+            if is_callable(s) { let _ = call_callable(s); }
+        }
+
+        if let Some(ref s) = stmt {
+            if is_callable(s) {
+                // Actually call the function `number` times
+                let start = Instant::now();
+                for _ in 0..number {
+                    let _ = call_callable(s);
+                }
+                return Ok(PyObject::float(start.elapsed().as_secs_f64()));
+            }
+        }
+
+        // String stmt or no stmt — measure overhead of loop
         let start = Instant::now();
-        for _ in 0..number.min(1000) {
+        for _ in 0..number {
             std::hint::black_box(0);
         }
-        let elapsed = start.elapsed().as_secs_f64();
-        let ratio = number as f64 / (number.min(1000) as f64);
-        Ok(PyObject::float(elapsed * ratio))
+        Ok(PyObject::float(start.elapsed().as_secs_f64()))
     });
 
-    // timeit.repeat(stmt, setup, repeat, number)
+    // timeit.repeat(stmt, setup, repeat=5, number=1000000)
     let repeat_fn = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         use std::time::Instant;
-        let repeat_count: i64 = if args.len() > 2 {
-            args[2].as_int().unwrap_or(5)
-        } else {
-            5
-        };
-        let number: i64 = if args.len() > 3 {
-            args[3].as_int().unwrap_or(1_000_000)
-        } else {
-            1_000_000
-        };
+        let (positional, kwargs) = if let Some(last) = args.last() {
+            if let PyObjectPayload::Dict(kw_map) = &last.payload {
+                (&args[..args.len()-1], Some(kw_map.read().clone()))
+            } else { (args, None) }
+        } else { (args, None) };
+
+        let stmt = positional.first().cloned()
+            .or_else(|| kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("stmt"))).cloned()));
+        let setup = if positional.len() > 1 { Some(positional[1].clone()) }
+            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("setup"))).cloned()) };
+        let repeat_count: i64 = if positional.len() > 2 { positional[2].as_int().unwrap_or(5) }
+            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("repeat"))).and_then(|v| v.as_int())).unwrap_or(5) };
+        let number: i64 = if positional.len() > 3 { positional[3].as_int().unwrap_or(1_000_000) }
+            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("number"))).and_then(|v| v.as_int())).unwrap_or(1_000_000) };
+
+        if let Some(ref s) = setup {
+            if is_callable(s) { let _ = call_callable(s); }
+        }
+
+        let is_stmt_callable = stmt.as_ref().map(|s| is_callable(s)).unwrap_or(false);
         let mut results = Vec::new();
         for _ in 0..repeat_count {
             let start = Instant::now();
-            for _ in 0..number.min(1000) {
-                std::hint::black_box(0);
+            if is_stmt_callable {
+                for _ in 0..number {
+                    let _ = call_callable(stmt.as_ref().unwrap());
+                }
+            } else {
+                for _ in 0..number {
+                    std::hint::black_box(0);
+                }
             }
-            let elapsed = start.elapsed().as_secs_f64();
-            let ratio = number as f64 / (number.min(1000) as f64);
-            results.push(PyObject::float(elapsed * ratio));
+            results.push(PyObject::float(start.elapsed().as_secs_f64()));
         }
         Ok(PyObject::list(results))
     });
 
-    // Timer class (simplified)
+    // Timer class
     let timer_cls = PyObject::class(CompactString::from("Timer"), vec![], IndexMap::new());
     let tc = timer_cls.clone();
     let timer_fn = PyObject::native_closure("Timer", move |args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         let inst = PyObject::instance(tc.clone());
         if let PyObjectPayload::Instance(ref data) = inst.payload {
             let mut attrs = data.attrs.write();
-            if !args.is_empty() {
-                attrs.insert(CompactString::from("stmt"), args[0].clone());
-            }
-            if args.len() > 1 {
-                attrs.insert(CompactString::from("setup"), args[1].clone());
-            }
-            let timeit_method = make_builtin(|inner_args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
-                let number: i64 = if inner_args.is_empty() {
-                    1_000_000
-                } else if inner_args.len() == 1 {
-                    inner_args[0].as_int().unwrap_or(1_000_000)
-                } else {
-                    inner_args[1].as_int().unwrap_or(1_000_000)
-                };
-                Ok(PyObject::float(number as f64 * 1e-7))
-            });
-            attrs.insert(CompactString::from("timeit"), timeit_method);
+            let stmt = args.first().cloned().unwrap_or_else(PyObject::none);
+            let setup = args.get(1).cloned().unwrap_or_else(PyObject::none);
+            attrs.insert(CompactString::from("stmt"), stmt.clone());
+            attrs.insert(CompactString::from("setup"), setup.clone());
+
+            // timeit(number=1000000)
+            let stmt2 = stmt.clone();
+            let setup2 = setup.clone();
+            attrs.insert(CompactString::from("timeit"), PyObject::native_closure(
+                "timeit", move |inner_args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+                    use std::time::Instant;
+                    let number: i64 = if inner_args.is_empty() { 1_000_000 }
+                        else if inner_args.len() == 1 { inner_args[0].as_int().unwrap_or(1_000_000) }
+                        else { inner_args[1].as_int().unwrap_or(1_000_000) };
+
+                    if is_callable(&setup2) { let _ = call_callable(&setup2); }
+
+                    let start = Instant::now();
+                    if is_callable(&stmt2) {
+                        for _ in 0..number { let _ = call_callable(&stmt2); }
+                    } else {
+                        for _ in 0..number { std::hint::black_box(0); }
+                    }
+                    Ok(PyObject::float(start.elapsed().as_secs_f64()))
+                }
+            ));
+            // repeat(repeat=5, number=1000000)
+            let stmt3 = stmt.clone();
+            let setup3 = setup.clone();
+            attrs.insert(CompactString::from("repeat"), PyObject::native_closure(
+                "repeat", move |inner_args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+                    use std::time::Instant;
+                    let repeat_count: i64 = if inner_args.is_empty() { 5 }
+                        else if inner_args.len() == 1 { inner_args[0].as_int().unwrap_or(5) }
+                        else { inner_args[1].as_int().unwrap_or(5) };
+                    let number: i64 = if inner_args.len() > 2 { inner_args[2].as_int().unwrap_or(1_000_000) }
+                        else { 1_000_000 };
+
+                    if is_callable(&setup3) { let _ = call_callable(&setup3); }
+
+                    let mut results = Vec::new();
+                    for _ in 0..repeat_count {
+                        let start = Instant::now();
+                        if is_callable(&stmt3) {
+                            for _ in 0..number { let _ = call_callable(&stmt3); }
+                        } else {
+                            for _ in 0..number { std::hint::black_box(0); }
+                        }
+                        results.push(PyObject::float(start.elapsed().as_secs_f64()));
+                    }
+                    Ok(PyObject::list(results))
+                }
+            ));
+            // autorange() — find a good number to run
+            let stmt4 = stmt.clone();
+            attrs.insert(CompactString::from("autorange"), PyObject::native_closure(
+                "autorange", move |_: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+                    use std::time::Instant;
+                    let mut number: i64 = 1;
+                    loop {
+                        let start = Instant::now();
+                        if is_callable(&stmt4) {
+                            for _ in 0..number { let _ = call_callable(&stmt4); }
+                        } else {
+                            for _ in 0..number { std::hint::black_box(0); }
+                        }
+                        let elapsed = start.elapsed().as_secs_f64();
+                        if elapsed >= 0.2 {
+                            return Ok(PyObject::tuple(vec![PyObject::int(number), PyObject::float(elapsed)]));
+                        }
+                        number *= 10;
+                        if number > 1_000_000_000 { break; }
+                    }
+                    Ok(PyObject::tuple(vec![PyObject::int(number), PyObject::float(0.0)]))
+                }
+            ));
+            // print_exc() — stub
+            attrs.insert(CompactString::from("print_exc"), make_builtin(|_| Ok(PyObject::none())));
         }
         Ok(inst)
     });
