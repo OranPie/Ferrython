@@ -473,6 +473,68 @@ pub fn create_typing_module() -> PyObjectRef {
     })));
     attrs.push(("Concatenate", make_typing_alias("Concatenate")));
 
+    // Python 3.11+ Required/NotRequired/ReadOnly for TypedDict
+    attrs.push(("Required", make_typing_alias("Required")));
+    attrs.push(("NotRequired", make_typing_alias("NotRequired")));
+    attrs.push(("ReadOnly", make_typing_alias("ReadOnly")));
+    attrs.push(("Buffer", make_typing_alias("Buffer")));
+
+    // dataclass_transform — PEP 681
+    attrs.push(("dataclass_transform", make_builtin(|args: &[PyObjectRef]| {
+        // @dataclass_transform() decorator — marks a class/function as
+        // creating dataclass-like semantics
+        if args.is_empty() {
+            // Called as @dataclass_transform() — return decorator
+            return Ok(make_builtin(|inner_args: &[PyObjectRef]| {
+                if inner_args.is_empty() { return Ok(PyObject::none()); }
+                if let PyObjectPayload::Instance(ref d) = inner_args[0].payload {
+                    d.attrs.write().insert(
+                        CompactString::from("__dataclass_transform__"),
+                        PyObject::bool_val(true),
+                    );
+                } else if let PyObjectPayload::Class(cd) = &inner_args[0].payload {
+                    cd.namespace.write().insert(
+                        CompactString::from("__dataclass_transform__"),
+                        PyObject::bool_val(true),
+                    );
+                }
+                Ok(inner_args[0].clone())
+            }));
+        }
+        // Called as @dataclass_transform (without parens) — apply directly
+        if let PyObjectPayload::Class(cd) = &args[0].payload {
+            cd.namespace.write().insert(
+                CompactString::from("__dataclass_transform__"),
+                PyObject::bool_val(true),
+            );
+        }
+        Ok(args[0].clone())
+    })));
+
+    // get_overloads / clear_overloads
+    attrs.push(("get_overloads", make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::list(vec![]))
+    })));
+    attrs.push(("clear_overloads", make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::none())
+    })));
+
+    // is_typeddict
+    attrs.push(("is_typeddict", make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+        // Check if class has __annotations__ and __total__ (TypedDict markers)
+        let obj = &args[0];
+        if let PyObjectPayload::Class(cd) = &obj.payload {
+            let ns = cd.namespace.read();
+            let has = ns.contains_key("__annotations__") && ns.contains_key("__total__");
+            return Ok(PyObject::bool_val(has));
+        }
+        if obj.get_attr("__annotations__").is_some() && obj.get_attr("__total__").is_some() {
+            return Ok(PyObject::bool_val(true));
+        }
+        Ok(PyObject::bool_val(false))
+    })));
+
     make_module("typing", attrs)
 }
 
