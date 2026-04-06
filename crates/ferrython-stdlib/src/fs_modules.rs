@@ -1,7 +1,7 @@
 //! Filesystem and process stdlib modules
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin,
@@ -1730,23 +1730,13 @@ pub fn create_subprocess_module() -> PyObjectRef {
         ("PIPE", PyObject::int(-1)),
         ("STDOUT", PyObject::int(-2)),
         ("DEVNULL", PyObject::int(-3)),
-        ("CalledProcessError", called_process_error),
+        ("CalledProcessError", PyObject::exception_type(ExceptionKind::CalledProcessError)),
         ("run", make_builtin(subprocess_run)),
         ("call", make_builtin(subprocess_call)),
         ("check_output", make_builtin(subprocess_check_output)),
-        ("check_call", make_builtin(subprocess_call)),
+        ("check_call", make_builtin(subprocess_check_call)),
         ("Popen", make_builtin(subprocess_popen)),
-        ("TimeoutExpired", make_builtin(|args: &[PyObjectRef]| {
-            let cmd = if !args.is_empty() { args[0].clone() } else { PyObject::str_val(CompactString::from("")) };
-            let timeout = if args.len() > 1 { args[1].clone() } else { PyObject::none() };
-            let mut attrs = IndexMap::new();
-            attrs.insert(CompactString::from("cmd"), cmd);
-            attrs.insert(CompactString::from("timeout"), timeout);
-            attrs.insert(CompactString::from("output"), PyObject::none());
-            attrs.insert(CompactString::from("stderr"), PyObject::none());
-            let cls = PyObject::class(CompactString::from("TimeoutExpired"), vec![], IndexMap::new());
-            Ok(PyObject::instance_with_attrs(cls, attrs))
-        })),
+        ("TimeoutExpired", PyObject::exception_type(ExceptionKind::TimeoutExpired)),
     ])
 }
 
@@ -1950,6 +1940,32 @@ fn subprocess_call(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         Ok(PyObject::int(0))
     }
+}
+
+fn subprocess_check_call(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let result = subprocess_run(args)?;
+    let rc = result.get_attr("returncode")
+        .and_then(|v| v.as_int())
+        .unwrap_or(0);
+    if rc != 0 {
+        let cmd = if !args.is_empty() { args[0].py_to_string() } else { String::new() };
+        let msg = format!("Command '{}' returned non-zero exit status {}", cmd, rc);
+        let mut ex = PyException::new(ExceptionKind::CalledProcessError, &msg);
+        // Build an ExceptionInstance with returncode attr for catching
+        let exc_attrs = indexmap::IndexMap::from([
+            (CompactString::from("returncode"), PyObject::int(rc)),
+            (CompactString::from("cmd"), if !args.is_empty() { args[0].clone() } else { PyObject::none() }),
+            (CompactString::from("output"), PyObject::none()),
+            (CompactString::from("stderr"), PyObject::none()),
+        ]);
+        ex.original = Some(PyObject::wrap(PyObjectPayload::ExceptionInstance {
+            kind: ExceptionKind::CalledProcessError,
+            message: msg.into(),            args: vec![PyObject::int(rc)],
+            attrs: std::sync::Arc::new(parking_lot::RwLock::new(exc_attrs)),
+        }));
+        return Err(ex);
+    }
+    Ok(PyObject::int(rc))
 }
 
 fn subprocess_check_output(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

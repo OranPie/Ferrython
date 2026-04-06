@@ -790,6 +790,10 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             ExceptionKind::UnboundLocalError => Some(ExceptionKind::NameError),
                             ExceptionKind::IndentationError => Some(ExceptionKind::SyntaxError),
                             ExceptionKind::TabError => Some(ExceptionKind::IndentationError),
+                            ExceptionKind::SubprocessError => Some(ExceptionKind::Exception),
+                            ExceptionKind::CalledProcessError | ExceptionKind::TimeoutExpired => {
+                                Some(ExceptionKind::SubprocessError)
+                            }
                             ExceptionKind::DeprecationWarning | ExceptionKind::RuntimeWarning |
                             ExceptionKind::UserWarning | ExceptionKind::SyntaxWarning |
                             ExceptionKind::FutureWarning | ExceptionKind::ImportWarning |
@@ -843,6 +847,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 ExceptionKind::UnboundLocalError => ExceptionKind::NameError,
                                 ExceptionKind::IndentationError => ExceptionKind::SyntaxError,
                                 ExceptionKind::TabError => ExceptionKind::IndentationError,
+                                ExceptionKind::SubprocessError => ExceptionKind::Exception,
+                                ExceptionKind::CalledProcessError | ExceptionKind::TimeoutExpired => ExceptionKind::SubprocessError,
                                 ExceptionKind::DeprecationWarning | ExceptionKind::RuntimeWarning |
                                 ExceptionKind::UserWarning | ExceptionKind::SyntaxWarning |
                                 ExceptionKind::FutureWarning | ExceptionKind::ImportWarning |

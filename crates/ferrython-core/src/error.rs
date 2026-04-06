@@ -79,6 +79,10 @@ pub enum ExceptionKind {
     TabError,
     // Module-specific subclasses
     JSONDecodeError,
+    // subprocess module
+    SubprocessError,
+    CalledProcessError,
+    TimeoutExpired,
 }
 
 impl fmt::Display for ExceptionKind {
@@ -152,6 +156,10 @@ impl ExceptionKind {
             ExceptionKind::NameError => matches!(self,
                 ExceptionKind::NameError | ExceptionKind::UnboundLocalError
             ),
+            ExceptionKind::SubprocessError => matches!(self,
+                ExceptionKind::SubprocessError | ExceptionKind::CalledProcessError |
+                ExceptionKind::TimeoutExpired
+            ),
             _ => false,
         }
     }
@@ -222,6 +230,9 @@ impl ExceptionKind {
             "IndentationError" => Some(Self::IndentationError),
             "TabError" => Some(Self::TabError),
             "JSONDecodeError" | "json.JSONDecodeError" => Some(Self::JSONDecodeError),
+            "SubprocessError" => Some(Self::SubprocessError),
+            "CalledProcessError" => Some(Self::CalledProcessError),
+            "TimeoutExpired" => Some(Self::TimeoutExpired),
             _ => None,
         }
     }

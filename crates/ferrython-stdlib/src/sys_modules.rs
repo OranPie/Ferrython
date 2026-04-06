@@ -552,6 +552,7 @@ pub fn create_os_module() -> PyObjectRef {
         ("isatty", make_builtin(os_isatty)),
         ("chdir", make_builtin(os_chdir)),
         ("system", make_builtin(os_system)),
+        ("popen", make_builtin(os_popen)),
         ("getppid", make_builtin(|_| {
             Ok(PyObject::int(std::process::id() as i64)) // Approximate with current PID
         })),
@@ -1128,6 +1129,35 @@ fn os_system(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .status()
         .map_err(|e| PyException::os_error(format!("{}", e)))?;
     Ok(PyObject::int(status.code().unwrap_or(-1) as i64))
+}
+
+/// os.popen(cmd) → file-like object with read()/close()
+fn os_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.popen", args, 1)?;
+    let cmd = args[0].py_to_string();
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .output()
+        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    let data = String::from_utf8_lossy(&output.stdout).to_string();
+    let data_arc = std::sync::Arc::new(parking_lot::RwLock::new(data));
+
+    let cls = PyObject::class(CompactString::from("_POpenFile"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+        let mut attrs = inst_data.attrs.write();
+        let d = data_arc.clone();
+        attrs.insert(CompactString::from("read"), PyObject::native_closure("popen.read", move |_: &[PyObjectRef]| {
+            Ok(PyObject::str_val(CompactString::from(d.read().as_str())))
+        }));
+        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        let d2 = data_arc;
+        attrs.insert(CompactString::from("readline"), PyObject::native_closure("popen.readline", move |_: &[PyObjectRef]| {
+            Ok(PyObject::str_val(CompactString::from(d2.read().as_str())))
+        }));
+    }
+    Ok(inst)
 }
 
 fn os_scandir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
