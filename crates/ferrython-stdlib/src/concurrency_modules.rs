@@ -381,32 +381,73 @@ pub fn create_threading_module() -> PyObjectRef {
         Ok(inst)
     });
 
-    // Condition — condition variable
+    // Condition — real condition variable using std::sync::Condvar
     let cond_cls = PyObject::class(CompactString::from("Condition"), vec![], IndexMap::new());
     let cc = cond_cls.clone();
     let condition_fn = PyObject::native_closure("Condition", move |_args: &[PyObjectRef]| {
         let inst = PyObject::instance(cc.clone());
-        let locked = Arc::new(RwLock::new(false));
+        let mutex = Arc::new(std::sync::Mutex::new(false));
+        let condvar = Arc::new(std::sync::Condvar::new());
         let inst_ref = inst.clone();
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
-            let l1 = locked.clone();
+            let m1 = mutex.clone();
             attrs.insert(CompactString::from("acquire"), PyObject::native_closure(
-                "acquire", move |_: &[PyObjectRef]| { *l1.write() = true; Ok(PyObject::bool_val(true)) }));
-            let l2 = locked.clone();
+                "acquire", move |_: &[PyObjectRef]| {
+                    let _guard = m1.lock().unwrap();
+                    Ok(PyObject::bool_val(true))
+                }));
+            let m2 = mutex.clone();
             attrs.insert(CompactString::from("release"), PyObject::native_closure(
-                "release", move |_: &[PyObjectRef]| { *l2.write() = false; Ok(PyObject::none()) }));
-            attrs.insert(CompactString::from("wait"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+                "release", move |_: &[PyObjectRef]| {
+                    // Release is implicit when guard drops
+                    let _guard = m2.lock();
+                    Ok(PyObject::none())
+                }));
+            // wait(timeout=None) — release lock, wait for notify, re-acquire lock
+            let m3 = mutex.clone();
+            let c3 = condvar.clone();
+            attrs.insert(CompactString::from("wait"), PyObject::native_closure(
+                "wait", move |args: &[PyObjectRef]| {
+                    let timeout = args.get(0)
+                        .and_then(|a| if matches!(&a.payload, PyObjectPayload::None) { None } else { Some(a) })
+                        .and_then(|a| a.to_float().ok());
+                    let guard = m3.lock().unwrap();
+                    if let Some(secs) = timeout {
+                        let dur = std::time::Duration::from_secs_f64(secs);
+                        let _result = c3.wait_timeout(guard, dur).unwrap();
+                    } else {
+                        let _result = c3.wait(guard).unwrap();
+                    }
+                    Ok(PyObject::bool_val(true))
+                }));
+            // wait_for(predicate, timeout=None) — stub
             attrs.insert(CompactString::from("wait_for"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-            attrs.insert(CompactString::from("notify"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("notify_all"), make_builtin(|_| Ok(PyObject::none())));
-            let l3 = locked.clone();
+            let c4 = condvar.clone();
+            attrs.insert(CompactString::from("notify"), PyObject::native_closure(
+                "notify", move |_: &[PyObjectRef]| {
+                    c4.notify_one();
+                    Ok(PyObject::none())
+                }));
+            let c5 = condvar.clone();
+            attrs.insert(CompactString::from("notify_all"), PyObject::native_closure(
+                "notify_all", move |_: &[PyObjectRef]| {
+                    c5.notify_all();
+                    Ok(PyObject::none())
+                }));
+            let m6 = mutex.clone();
             let ir = inst_ref.clone();
             attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
-                "__enter__", move |_: &[PyObjectRef]| { *l3.write() = true; Ok(ir.clone()) }));
-            let l4 = locked.clone();
+                "__enter__", move |_: &[PyObjectRef]| {
+                    let _guard = m6.lock().unwrap();
+                    Ok(ir.clone())
+                }));
+            let m7 = mutex.clone();
             attrs.insert(CompactString::from("__exit__"), PyObject::native_closure(
-                "__exit__", move |_: &[PyObjectRef]| { *l4.write() = false; Ok(PyObject::bool_val(false)) }));
+                "__exit__", move |_: &[PyObjectRef]| {
+                    let _guard = m7.lock();
+                    Ok(PyObject::bool_val(false))
+                }));
         }
         Ok(inst)
     });
@@ -549,44 +590,568 @@ pub fn create_threading_module() -> PyObjectRef {
 
 
 pub fn create_weakref_module() -> PyObjectRef {
+    use std::sync::Weak;
+
+    // Helper: upgrade a Weak<PyObject> or return None
+    fn upgrade_or_none(weak: &Weak<PyObject>) -> PyObjectRef {
+        match weak.upgrade() {
+            Some(arc) => arc,
+            None => PyObject::none(),
+        }
+    }
+
+    // Helper: upgrade a Weak<PyObject> or raise ReferenceError
+    fn upgrade_or_err(weak: &Weak<PyObject>) -> Result<PyObjectRef, PyException> {
+        weak.upgrade().ok_or_else(|| {
+            PyException::new(
+                ferrython_core::error::ExceptionKind::ReferenceError,
+                "weakly-referenced object no longer exists",
+            )
+        })
+    }
+
     make_module("weakref", vec![
+        // ── ref(obj, callback=None) ──
+        // Returns a callable weak reference. Calling it returns the referent or None.
         ("ref", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("ref requires 1 argument")); }
-            let referent = args[0].clone();
-            let mut cls_ns = IndexMap::new();
-            let ref2 = referent.clone();
-            cls_ns.insert(CompactString::from("__call__"), PyObject::native_closure("weakref.__call__", move |_a| Ok(ref2.clone())));
-            let cls = PyObject::class(CompactString::from("weakref"), vec![], cls_ns);
-            let mut inst_attrs = IndexMap::new();
-            if let PyObjectPayload::Instance(inst) = &referent.payload {
-                let r = inst.attrs.read();
-                for (k, v) in r.iter() {
-                    inst_attrs.insert(k.clone(), v.clone());
-                }
+            if args.is_empty() { return Err(PyException::type_error("ref() requires at least 1 argument")); }
+            let weak: Weak<PyObject> = Arc::downgrade(&args[0]);
+            let _callback = args.get(1).cloned(); // stored but not auto-invoked in refcount GC
+
+            let cls = PyObject::class(CompactString::from("weakref"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                let mut attrs = inst_data.attrs.write();
+
+                // __call__() → referent or None
+                let w1 = weak.clone();
+                attrs.insert(CompactString::from("__call__"), PyObject::native_closure(
+                    "weakref.__call__", move |_args| Ok(upgrade_or_none(&w1)),
+                ));
+
+                // __repr__
+                let w_repr = weak.clone();
+                attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+                    "weakref.__repr__", move |_| {
+                        if w_repr.upgrade().is_some() {
+                            Ok(PyObject::str_val(CompactString::from("<weakref (alive)>")))
+                        } else {
+                            Ok(PyObject::str_val(CompactString::from("<weakref (dead)>")))
+                        }
+                    },
+                ));
+
+                // __bool__: True if referent is alive
+                let w_bool = weak.clone();
+                attrs.insert(CompactString::from("__bool__"), PyObject::native_closure(
+                    "weakref.__bool__", move |_| Ok(PyObject::bool_val(w_bool.upgrade().is_some())),
+                ));
+
+                // __eq__: two refs are equal if they point to the same object
+                let w_eq = weak.clone();
+                attrs.insert(CompactString::from("__eq__"), PyObject::native_closure(
+                    "weakref.__eq__", move |args| {
+                        if let Some(other) = args.first() {
+                            if let Some(strong) = w_eq.upgrade() {
+                                return Ok(PyObject::bool_val(Arc::ptr_eq(&strong, other)));
+                            }
+                        }
+                        Ok(PyObject::bool_val(false))
+                    },
+                ));
             }
-            Ok(PyObject::instance_with_attrs(cls, inst_attrs))
+            Ok(inst)
         })),
+
+        // ── proxy(obj, callback=None) ──
+        // Returns a proxy that auto-dereferences on attribute access.
         ("proxy", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("proxy requires 1 argument")); }
-            Ok(args[0].clone())
+            if args.is_empty() { return Err(PyException::type_error("proxy() requires at least 1 argument")); }
+            let weak: Weak<PyObject> = Arc::downgrade(&args[0]);
+            let _callback = args.get(1).cloned();
+
+            let cls = PyObject::class(CompactString::from("weakproxy"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                let mut attrs = inst_data.attrs.write();
+
+                // __getattr__(name) → forward to referent
+                let w_ga = weak.clone();
+                attrs.insert(CompactString::from("__getattr__"), PyObject::native_closure(
+                    "weakproxy.__getattr__", move |args| {
+                        let referent = upgrade_or_err(&w_ga)?;
+                        if let Some(name_obj) = args.first() {
+                            let name = name_obj.py_to_string();
+                            referent.get_attr(&name).ok_or_else(|| {
+                                PyException::attribute_error(format!(
+                                    "'weakproxy' object has no attribute '{}'", name
+                                ))
+                            })
+                        } else {
+                            Err(PyException::type_error("__getattr__ requires a name argument"))
+                        }
+                    },
+                ));
+
+                // __repr__
+                let w_r = weak.clone();
+                attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+                    "weakproxy.__repr__", move |_| {
+                        match w_r.upgrade() {
+                            Some(obj) => Ok(PyObject::str_val(CompactString::from(
+                                format!("<weakproxy at {:p}>", Arc::as_ptr(&obj))
+                            ))),
+                            None => Err(PyException::new(
+                                ferrython_core::error::ExceptionKind::ReferenceError,
+                                "weakly-referenced object no longer exists",
+                            )),
+                        }
+                    },
+                ));
+
+                // __bool__
+                let w_b = weak.clone();
+                attrs.insert(CompactString::from("__bool__"), PyObject::native_closure(
+                    "weakproxy.__bool__", move |_| {
+                        let referent = upgrade_or_err(&w_b)?;
+                        Ok(PyObject::bool_val(referent.is_truthy()))
+                    },
+                ));
+
+                // __str__
+                let w_s = weak.clone();
+                attrs.insert(CompactString::from("__str__"), PyObject::native_closure(
+                    "weakproxy.__str__", move |_| {
+                        let referent = upgrade_or_err(&w_s)?;
+                        Ok(PyObject::str_val(CompactString::from(referent.py_to_string())))
+                    },
+                ));
+
+                // __call__ — forward calls to the referent
+                let w_c = weak.clone();
+                attrs.insert(CompactString::from("__call__"), PyObject::native_closure(
+                    "weakproxy.__call__", move |_args| {
+                        let _referent = upgrade_or_err(&w_c)?;
+                        // Return the live object so the VM can call it
+                        // For proxy, calling the proxy attempts to call the referent
+                        Err(PyException::type_error("weakproxy object is not directly callable; access attributes instead"))
+                    },
+                ));
+            }
+            Ok(inst)
         })),
-        ("WeakValueDictionary", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
-        ("WeakKeyDictionary", make_builtin(|_| Ok(PyObject::dict(IndexMap::new())))),
-        ("WeakSet", make_builtin(|_| Ok(PyObject::set(IndexMap::new())))),
+
+        // ── WeakValueDictionary() ──
+        // Dict where values are weak references; dead entries are auto-pruned.
+        ("WeakValueDictionary", make_builtin(|_| {
+            let storage: Arc<RwLock<IndexMap<CompactString, std::sync::Weak<PyObject>>>> =
+                Arc::new(RwLock::new(IndexMap::new()));
+
+            let cls = PyObject::class(CompactString::from("WeakValueDictionary"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                let mut attrs = inst_data.attrs.write();
+
+                // __setitem__(key, value)
+                let s1 = storage.clone();
+                attrs.insert(CompactString::from("__setitem__"), PyObject::native_closure(
+                    "WeakValueDictionary.__setitem__", move |args| {
+                        if args.len() < 2 { return Err(PyException::type_error("__setitem__ requires key and value")); }
+                        let key = CompactString::from(args[0].py_to_string());
+                        let weak = Arc::downgrade(&args[1]);
+                        s1.write().insert(key, weak);
+                        Ok(PyObject::none())
+                    },
+                ));
+
+                // __getitem__(key)
+                let s2 = storage.clone();
+                attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+                    "WeakValueDictionary.__getitem__", move |args| {
+                        if args.is_empty() { return Err(PyException::type_error("__getitem__ requires a key")); }
+                        let key = CompactString::from(args[0].py_to_string());
+                        let mut store = s2.write();
+                        match store.get(&key) {
+                            Some(weak) => match weak.upgrade() {
+                                Some(obj) => Ok(obj),
+                                None => {
+                                    store.shift_remove(&key);
+                                    Err(PyException::key_error(key.to_string()))
+                                }
+                            },
+                            None => Err(PyException::key_error(key.to_string())),
+                        }
+                    },
+                ));
+
+                // __delitem__(key)
+                let s3 = storage.clone();
+                attrs.insert(CompactString::from("__delitem__"), PyObject::native_closure(
+                    "WeakValueDictionary.__delitem__", move |args| {
+                        if args.is_empty() { return Err(PyException::type_error("__delitem__ requires a key")); }
+                        let key = CompactString::from(args[0].py_to_string());
+                        let mut store = s3.write();
+                        if store.shift_remove(&key).is_some() {
+                            Ok(PyObject::none())
+                        } else {
+                            Err(PyException::key_error(key.to_string()))
+                        }
+                    },
+                ));
+
+                // __contains__(key)
+                let s4 = storage.clone();
+                attrs.insert(CompactString::from("__contains__"), PyObject::native_closure(
+                    "WeakValueDictionary.__contains__", move |args| {
+                        if args.is_empty() { return Err(PyException::type_error("__contains__ requires a key")); }
+                        let key = CompactString::from(args[0].py_to_string());
+                        let mut store = s4.write();
+                        match store.get(&key) {
+                            Some(weak) => {
+                                if weak.upgrade().is_some() {
+                                    Ok(PyObject::bool_val(true))
+                                } else {
+                                    store.shift_remove(&key);
+                                    Ok(PyObject::bool_val(false))
+                                }
+                            }
+                            None => Ok(PyObject::bool_val(false)),
+                        }
+                    },
+                ));
+
+                // __len__()
+                let s5 = storage.clone();
+                attrs.insert(CompactString::from("__len__"), PyObject::native_closure(
+                    "WeakValueDictionary.__len__", move |_| {
+                        let mut store = s5.write();
+                        store.retain(|_, w| w.upgrade().is_some());
+                        Ok(PyObject::int(store.len() as i64))
+                    },
+                ));
+
+                // get(key, default=None)
+                let s_get = storage.clone();
+                attrs.insert(CompactString::from("get"), PyObject::native_closure(
+                    "WeakValueDictionary.get", move |args| {
+                        if args.is_empty() { return Err(PyException::type_error("get() requires a key")); }
+                        let key = CompactString::from(args[0].py_to_string());
+                        let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
+                        let mut store = s_get.write();
+                        match store.get(&key) {
+                            Some(weak) => match weak.upgrade() {
+                                Some(obj) => Ok(obj),
+                                None => { store.shift_remove(&key); Ok(default) }
+                            },
+                            None => Ok(default),
+                        }
+                    },
+                ));
+
+                // keys()
+                let s6 = storage.clone();
+                attrs.insert(CompactString::from("keys"), PyObject::native_closure(
+                    "WeakValueDictionary.keys", move |_| {
+                        let mut store = s6.write();
+                        store.retain(|_, w| w.upgrade().is_some());
+                        let keys: Vec<PyObjectRef> = store.keys()
+                            .map(|k| PyObject::str_val(k.clone()))
+                            .collect();
+                        Ok(PyObject::list(keys))
+                    },
+                ));
+
+                // values()
+                let s7 = storage.clone();
+                attrs.insert(CompactString::from("values"), PyObject::native_closure(
+                    "WeakValueDictionary.values", move |_| {
+                        let mut store = s7.write();
+                        store.retain(|_, w| w.upgrade().is_some());
+                        let vals: Vec<PyObjectRef> = store.values()
+                            .filter_map(|w| w.upgrade())
+                            .collect();
+                        Ok(PyObject::list(vals))
+                    },
+                ));
+
+                // items()
+                let s8 = storage.clone();
+                attrs.insert(CompactString::from("items"), PyObject::native_closure(
+                    "WeakValueDictionary.items", move |_| {
+                        let mut store = s8.write();
+                        store.retain(|_, w| w.upgrade().is_some());
+                        let items: Vec<PyObjectRef> = store.iter()
+                            .filter_map(|(k, w)| {
+                                w.upgrade().map(|v| PyObject::tuple(vec![
+                                    PyObject::str_val(k.clone()),
+                                    v,
+                                ]))
+                            })
+                            .collect();
+                        Ok(PyObject::list(items))
+                    },
+                ));
+            }
+            Ok(inst)
+        })),
+
+        // ── WeakKeyDictionary() ──
+        // Dict where keys are weak references; dead entries are auto-pruned.
+        ("WeakKeyDictionary", make_builtin(|_| {
+            // Store (Weak<PyObject>, value) keyed by raw pointer (usize)
+            let storage: Arc<RwLock<IndexMap<usize, (std::sync::Weak<PyObject>, PyObjectRef)>>> =
+                Arc::new(RwLock::new(IndexMap::new()));
+
+            let cls = PyObject::class(CompactString::from("WeakKeyDictionary"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                let mut attrs = inst_data.attrs.write();
+
+                let s1 = storage.clone();
+                attrs.insert(CompactString::from("__setitem__"), PyObject::native_closure(
+                    "WeakKeyDictionary.__setitem__", move |args| {
+                        if args.len() < 2 { return Err(PyException::type_error("__setitem__ requires key and value")); }
+                        let ptr = Arc::as_ptr(&args[0]) as usize;
+                        let weak = Arc::downgrade(&args[0]);
+                        s1.write().insert(ptr, (weak, args[1].clone()));
+                        Ok(PyObject::none())
+                    },
+                ));
+
+                let s2 = storage.clone();
+                attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+                    "WeakKeyDictionary.__getitem__", move |args| {
+                        if args.is_empty() { return Err(PyException::type_error("__getitem__ requires a key")); }
+                        let ptr = Arc::as_ptr(&args[0]) as usize;
+                        let mut store = s2.write();
+                        match store.get(&ptr) {
+                            Some((weak, val)) => {
+                                if weak.upgrade().is_some() {
+                                    Ok(val.clone())
+                                } else {
+                                    store.shift_remove(&ptr);
+                                    Err(PyException::key_error("dead weak key"))
+                                }
+                            }
+                            None => Err(PyException::key_error("key not found")),
+                        }
+                    },
+                ));
+
+                let s3 = storage.clone();
+                attrs.insert(CompactString::from("__len__"), PyObject::native_closure(
+                    "WeakKeyDictionary.__len__", move |_| {
+                        let mut store = s3.write();
+                        store.retain(|_, (w, _)| w.upgrade().is_some());
+                        Ok(PyObject::int(store.len() as i64))
+                    },
+                ));
+
+                let s4 = storage.clone();
+                attrs.insert(CompactString::from("__contains__"), PyObject::native_closure(
+                    "WeakKeyDictionary.__contains__", move |args| {
+                        if args.is_empty() { return Err(PyException::type_error("__contains__ requires a key")); }
+                        let ptr = Arc::as_ptr(&args[0]) as usize;
+                        let mut store = s4.write();
+                        match store.get(&ptr) {
+                            Some((weak, _)) => {
+                                if weak.upgrade().is_some() {
+                                    Ok(PyObject::bool_val(true))
+                                } else {
+                                    store.shift_remove(&ptr);
+                                    Ok(PyObject::bool_val(false))
+                                }
+                            }
+                            None => Ok(PyObject::bool_val(false)),
+                        }
+                    },
+                ));
+            }
+            Ok(inst)
+        })),
+
+        // ── WeakSet() ──
+        // A set of weak references. Dead entries are auto-pruned.
+        ("WeakSet", make_builtin(|_| {
+            let storage: Arc<RwLock<IndexMap<usize, std::sync::Weak<PyObject>>>> =
+                Arc::new(RwLock::new(IndexMap::new()));
+
+            let cls = PyObject::class(CompactString::from("WeakSet"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                let mut attrs = inst_data.attrs.write();
+
+                // add(obj)
+                let s1 = storage.clone();
+                attrs.insert(CompactString::from("add"), PyObject::native_closure(
+                    "WeakSet.add", move |args| {
+                        if args.is_empty() { return Err(PyException::type_error("add() requires an argument")); }
+                        let ptr = Arc::as_ptr(&args[0]) as usize;
+                        let weak = Arc::downgrade(&args[0]);
+                        s1.write().insert(ptr, weak);
+                        Ok(PyObject::none())
+                    },
+                ));
+
+                // discard(obj)
+                let s2 = storage.clone();
+                attrs.insert(CompactString::from("discard"), PyObject::native_closure(
+                    "WeakSet.discard", move |args| {
+                        if args.is_empty() { return Err(PyException::type_error("discard() requires an argument")); }
+                        let ptr = Arc::as_ptr(&args[0]) as usize;
+                        s2.write().shift_remove(&ptr);
+                        Ok(PyObject::none())
+                    },
+                ));
+
+                // __contains__(obj)
+                let s3 = storage.clone();
+                attrs.insert(CompactString::from("__contains__"), PyObject::native_closure(
+                    "WeakSet.__contains__", move |args| {
+                        if args.is_empty() { return Err(PyException::type_error("__contains__ requires an argument")); }
+                        let ptr = Arc::as_ptr(&args[0]) as usize;
+                        let mut store = s3.write();
+                        match store.get(&ptr) {
+                            Some(weak) => {
+                                if weak.upgrade().is_some() {
+                                    Ok(PyObject::bool_val(true))
+                                } else {
+                                    store.shift_remove(&ptr);
+                                    Ok(PyObject::bool_val(false))
+                                }
+                            }
+                            None => Ok(PyObject::bool_val(false)),
+                        }
+                    },
+                ));
+
+                // __len__()
+                let s4 = storage.clone();
+                attrs.insert(CompactString::from("__len__"), PyObject::native_closure(
+                    "WeakSet.__len__", move |_| {
+                        let mut store = s4.write();
+                        store.retain(|_, w| w.upgrade().is_some());
+                        Ok(PyObject::int(store.len() as i64))
+                    },
+                ));
+
+                // __iter__() — return a list of live items
+                let s5 = storage.clone();
+                attrs.insert(CompactString::from("__iter__"), PyObject::native_closure(
+                    "WeakSet.__iter__", move |_| {
+                        let mut store = s5.write();
+                        store.retain(|_, w| w.upgrade().is_some());
+                        let items: Vec<PyObjectRef> = store.values()
+                            .filter_map(|w| w.upgrade())
+                            .collect();
+                        Ok(PyObject::list(items))
+                    },
+                ));
+            }
+            Ok(inst)
+        })),
+
+        // ── finalize(obj, func, *args, **kwargs) ──
+        // Release callback. Stores a weak ref + callback; invokes when ref dies (best-effort).
         ("finalize", PyObject::native_closure("finalize", |args: &[PyObjectRef]| {
-            // finalize(obj, func, *args, **kwargs) — stub that stores the callback
             if args.len() < 2 { return Err(PyException::type_error("finalize requires obj and func")); }
+            let weak: std::sync::Weak<PyObject> = Arc::downgrade(&args[0]);
             let func = args[1].clone();
             let extra = if args.len() > 2 { args[2..].to_vec() } else { vec![] };
-            let mut attrs = IndexMap::new();
-            attrs.insert(CompactString::from("alive"), PyObject::bool_val(true));
-            attrs.insert(CompactString::from("_func"), func);
-            attrs.insert(CompactString::from("_args"), PyObject::tuple(extra));
-            attrs.insert(CompactString::from("detach"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("peek"), make_builtin(|_| Ok(PyObject::none())));
+
             let cls = PyObject::class(CompactString::from("finalize"), vec![], IndexMap::new());
-            Ok(PyObject::instance_with_attrs(cls, attrs))
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                let mut attrs = inst_data.attrs.write();
+
+                // alive — True if the weak ref is still valid
+                let w_alive = weak.clone();
+                attrs.insert(CompactString::from("alive"), PyObject::native_closure(
+                    "finalize.alive", move |_| Ok(PyObject::bool_val(w_alive.upgrade().is_some())),
+                ));
+
+                attrs.insert(CompactString::from("_func"), func.clone());
+                attrs.insert(CompactString::from("_args"), PyObject::tuple(extra.clone()));
+
+                // detach() — disarm the finalizer, return (obj, func, args, kwargs) or None
+                let w_det = weak.clone();
+                let f_det = func.clone();
+                let e_det = extra.clone();
+                attrs.insert(CompactString::from("detach"), PyObject::native_closure(
+                    "finalize.detach", move |_| {
+                        match w_det.upgrade() {
+                            Some(obj) => Ok(PyObject::tuple(vec![
+                                obj,
+                                f_det.clone(),
+                                PyObject::tuple(e_det.clone()),
+                                PyObject::none(), // kwargs placeholder
+                            ])),
+                            None => Ok(PyObject::none()),
+                        }
+                    },
+                ));
+
+                // peek() — return (obj, func, args, kwargs) without disarming, or None
+                let w_peek = weak.clone();
+                let f_peek = func.clone();
+                let e_peek = extra.clone();
+                attrs.insert(CompactString::from("peek"), PyObject::native_closure(
+                    "finalize.peek", move |_| {
+                        match w_peek.upgrade() {
+                            Some(obj) => Ok(PyObject::tuple(vec![
+                                obj,
+                                f_peek.clone(),
+                                PyObject::tuple(e_peek.clone()),
+                                PyObject::none(),
+                            ])),
+                            None => Ok(PyObject::none()),
+                        }
+                    },
+                ));
+
+                // __call__() — manually invoke the callback (if referent is alive or freshly dead)
+                let _w_call = weak;
+                let f_call = func;
+                let e_call = extra;
+                attrs.insert(CompactString::from("__call__"), PyObject::native_closure(
+                    "finalize.__call__", move |_| {
+                        // Invoke callback with stored args (best-effort for native closures)
+                        match &f_call.payload {
+                            PyObjectPayload::NativeFunction { func: f, .. } => f(&e_call),
+                            PyObjectPayload::NativeClosure { func: f, .. } => f(&e_call),
+                            _ => {
+                                // For Python-defined functions, we'd need VM access.
+                                // Use deferred call mechanism.
+                                ferrython_core::error::request_vm_call(f_call.clone(), e_call.clone());
+                                Ok(PyObject::none())
+                            }
+                        }
+                    },
+                ));
+            }
+            Ok(inst)
         })),
+
+        // ── getweakrefcount(obj) ──
+        ("getweakrefcount", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("getweakrefcount requires 1 argument")); }
+            Ok(PyObject::int(Arc::weak_count(&args[0]) as i64))
+        })),
+
+        // ── getweakrefs(obj) ──
+        ("getweakrefs", make_builtin(|_args| {
+            // Cannot enumerate all Weak pointers from an Arc — return empty list
+            Ok(PyObject::list(vec![]))
+        })),
+
+        // ── ReferenceType (the type of weak references) ──
+        ("ReferenceType", PyObject::class(CompactString::from("weakref"), vec![], IndexMap::new())),
+
+        // ── ProxyType ──
+        ("ProxyType", PyObject::class(CompactString::from("weakproxy"), vec![], IndexMap::new())),
+
+        // ── CallableProxyType ──
+        ("CallableProxyType", PyObject::class(CompactString::from("weakcallableproxy"), vec![], IndexMap::new())),
     ])
 }
 

@@ -114,7 +114,11 @@ class Obj:
 
 o = Obj(42)
 r = weakref.ref(o)
-test("weakref.ref", r.val == 42)
+# Calling a weakref returns the referent (or None if dead)
+obj = r()
+test("weakref.ref callable", obj is not None)
+test("weakref.ref value", obj.val == 42)
+test("weakref.ref same object", obj is o)
 
 # ── bytes operations ──
 b = b"Hello, World!"
