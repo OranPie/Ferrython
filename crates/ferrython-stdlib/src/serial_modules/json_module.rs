@@ -134,11 +134,15 @@ pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if let Some(def) = r.get(&HashableKey::Str(CompactString::from("default"))) {
                 default_fn = Some(def.clone());
             }
-            // cls=CustomEncoder: extract its `default` method as the default_fn
+            // cls=CustomEncoder: create an instance and bind its `default` method
             if default_fn.is_none() {
                 if let Some(cls) = r.get(&HashableKey::Str(CompactString::from("cls"))) {
+                    let encoder_inst = PyObject::instance(cls.clone());
                     if let Some(default_method) = cls.get_attr("default") {
-                        default_fn = Some(default_method);
+                        default_fn = Some(PyObject::wrap(PyObjectPayload::BoundMethod {
+                            receiver: encoder_inst,
+                            method: default_method,
+                        }));
                     }
                 }
             }
@@ -330,12 +334,29 @@ where
     )))
 }
 
-/// Try to call a default callable (NativeFunction or NativeClosure)
+/// Try to call a default callable (NativeFunction, NativeClosure, or BoundMethod)
 fn try_call_default(default: &PyObjectRef, obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
     match &default.payload {
         PyObjectPayload::NativeFunction { func, .. } => Ok(Some(func(&[obj.clone()])?)),
         PyObjectPayload::NativeClosure { func, .. } => Ok(Some(func(&[obj.clone()])?)),
-        _ => Ok(None), // User-defined functions need VM context; fall through
+        PyObjectPayload::BoundMethod { receiver, method } => {
+            // Call method(self, obj) — dispatch based on method type
+            match &method.payload {
+                PyObjectPayload::NativeFunction { func, .. } => Ok(Some(func(&[receiver.clone(), obj.clone()])?)),
+                PyObjectPayload::NativeClosure { func, .. } => Ok(Some(func(&[receiver.clone(), obj.clone()])?)),
+                PyObjectPayload::Function(_) => {
+                    // Python function — we need the VM. Use request_vm_call.
+                    ferrython_core::error::request_vm_call(method.clone(), vec![receiver.clone(), obj.clone()]);
+                    Ok(None) // signal that we need VM callback
+                }
+                _ => Ok(None),
+            }
+        }
+        PyObjectPayload::Function(_) => {
+            ferrython_core::error::request_vm_call(default.clone(), vec![obj.clone()]);
+            Ok(None)
+        }
+        _ => Ok(None),
     }
 }
 

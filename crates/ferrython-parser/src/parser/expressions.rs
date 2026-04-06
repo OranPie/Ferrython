@@ -857,6 +857,18 @@ impl Parser {
                     }
                     i += 1;
                 }
+                // Handle f-string debug `=` format: f"{x=}" → "x=repr(x)"
+                let debug_eq = expr_text.ends_with('=');
+                if debug_eq {
+                    expr_text.pop(); // remove trailing '='
+                    let prefix = format!("{}=", expr_text);
+                    values.push(Expression::constant(
+                        Constant::Str(CompactString::from(&prefix)), loc,
+                    ));
+                    if conversion.is_none() {
+                        conversion = Some('r');
+                    }
+                }
                 // Parse the expression text
                 let expr = parse_expression_text(&expr_text, loc)?;
                 // Parse format spec: it can itself contain {expr} (e.g. f"{x:.{n}f}")

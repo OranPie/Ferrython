@@ -476,6 +476,70 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                     }
                     Ok(PyObject::bytes(result))
                 }
+                "utf-16" | "utf16" => {
+                    let mut bytes = vec![0xFF_u8, 0xFE]; // BOM (little-endian)
+                    for unit in s.encode_utf16() {
+                        bytes.extend_from_slice(&unit.to_le_bytes());
+                    }
+                    Ok(PyObject::bytes(bytes))
+                }
+                "utf-16-le" | "utf16-le" | "utf-16le" | "utf16le" => {
+                    let bytes: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+                    Ok(PyObject::bytes(bytes))
+                }
+                "utf-16-be" | "utf16-be" | "utf-16be" | "utf16be" => {
+                    let bytes: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_be_bytes()).collect();
+                    Ok(PyObject::bytes(bytes))
+                }
+                "utf-32" | "utf32" => {
+                    let mut bytes = vec![0xFF_u8, 0xFE, 0x00, 0x00]; // BOM
+                    for ch in s.chars() {
+                        bytes.extend_from_slice(&(ch as u32).to_le_bytes());
+                    }
+                    Ok(PyObject::bytes(bytes))
+                }
+                "utf-32-le" | "utf32-le" | "utf-32le" | "utf32le" => {
+                    let bytes: Vec<u8> = s.chars().flat_map(|c| (c as u32).to_le_bytes()).collect();
+                    Ok(PyObject::bytes(bytes))
+                }
+                "utf-32-be" | "utf32-be" | "utf-32be" | "utf32be" => {
+                    let bytes: Vec<u8> = s.chars().flat_map(|c| (c as u32).to_be_bytes()).collect();
+                    Ok(PyObject::bytes(bytes))
+                }
+                "cp1252" | "windows-1252" | "windows1252" => {
+                    let mut result = Vec::new();
+                    for ch in s.chars() {
+                        let u = ch as u32;
+                        if u < 0x80 || (0xA0..=0xFF).contains(&u) {
+                            result.push(u as u8);
+                        } else {
+                            let byte = match u {
+                                0x20AC => Some(0x80u8), 0x201A => Some(0x82), 0x0192 => Some(0x83),
+                                0x201E => Some(0x84), 0x2026 => Some(0x85), 0x2020 => Some(0x86),
+                                0x2021 => Some(0x87), 0x02C6 => Some(0x88), 0x2030 => Some(0x89),
+                                0x0160 => Some(0x8A), 0x2039 => Some(0x8B), 0x0152 => Some(0x8C),
+                                0x017D => Some(0x8E), 0x2018 => Some(0x91), 0x2019 => Some(0x92),
+                                0x201C => Some(0x93), 0x201D => Some(0x94), 0x2022 => Some(0x95),
+                                0x2013 => Some(0x96), 0x2014 => Some(0x97), 0x02DC => Some(0x98),
+                                0x2122 => Some(0x99), 0x0161 => Some(0x9A), 0x203A => Some(0x9B),
+                                0x0153 => Some(0x9C), 0x017E => Some(0x9E), 0x0178 => Some(0x9F),
+                                _ => None,
+                            };
+                            match byte {
+                                Some(b) => result.push(b),
+                                None => match errors.as_str() {
+                                    "ignore" => {}
+                                    "replace" => result.push(b'?'),
+                                    _ => return Err(PyException::new(
+                                        ExceptionKind::UnicodeEncodeError,
+                                        format!("'cp1252' codec can't encode character '\\u{:04x}'", u),
+                                    )),
+                                }
+                            }
+                        }
+                    }
+                    Ok(PyObject::bytes(result))
+                }
                 _ => {
                     Err(PyException::value_error(format!("unknown encoding: {}", encoding)))
                 }

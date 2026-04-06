@@ -12,6 +12,52 @@ use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
+// ── UTF-16/32 decode helpers ──────────────────────────────────────
+
+fn decode_utf16_le_bytes(b: &[u8]) -> PyResult<PyObjectRef> {
+    if b.len() % 2 != 0 {
+        return Err(PyException::value_error("utf-16-le: truncated data"));
+    }
+    let u16s: Vec<u16> = b.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let s = String::from_utf16(&u16s).map_err(|_| PyException::value_error("invalid utf-16-le"))?;
+    Ok(PyObject::str_val(CompactString::from(s)))
+}
+
+fn decode_utf16_be_bytes(b: &[u8]) -> PyResult<PyObjectRef> {
+    if b.len() % 2 != 0 {
+        return Err(PyException::value_error("utf-16-be: truncated data"));
+    }
+    let u16s: Vec<u16> = b.chunks(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    let s = String::from_utf16(&u16s).map_err(|_| PyException::value_error("invalid utf-16-be"))?;
+    Ok(PyObject::str_val(CompactString::from(s)))
+}
+
+fn decode_utf32_le_bytes(b: &[u8]) -> PyResult<PyObjectRef> {
+    if b.len() % 4 != 0 {
+        return Err(PyException::value_error("utf-32-le: truncated data"));
+    }
+    let s: Result<String, _> = b.chunks(4)
+        .map(|c| {
+            let cp = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+            char::from_u32(cp).ok_or_else(|| PyException::value_error("invalid utf-32-le codepoint"))
+        })
+        .collect();
+    Ok(PyObject::str_val(CompactString::from(s?)))
+}
+
+fn decode_utf32_be_bytes(b: &[u8]) -> PyResult<PyObjectRef> {
+    if b.len() % 4 != 0 {
+        return Err(PyException::value_error("utf-32-be: truncated data"));
+    }
+    let s: Result<String, _> = b.chunks(4)
+        .map(|c| {
+            let cp = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+            char::from_u32(cp).ok_or_else(|| PyException::value_error("invalid utf-32-be codepoint"))
+        })
+        .collect();
+    Ok(PyObject::str_val(CompactString::from(s?)))
+}
+
 /// Extract a keyword argument from a trailing kwargs dict (if present).
 /// The generic BuiltinBoundMethod kwargs handler passes kwargs as a trailing Dict arg.
 fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
@@ -907,6 +953,47 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                 }
                 "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
                     let s: String = b.iter().map(|&x| x as char).collect();
+                    Ok(PyObject::str_val(CompactString::from(s)))
+                }
+                "utf-16" | "utf16" => {
+                    // Auto-detect BOM
+                    if b.len() >= 2 && b[0] == 0xFF && b[1] == 0xFE {
+                        decode_utf16_le_bytes(&b[2..])
+                    } else if b.len() >= 2 && b[0] == 0xFE && b[1] == 0xFF {
+                        decode_utf16_be_bytes(&b[2..])
+                    } else {
+                        decode_utf16_le_bytes(b)
+                    }
+                }
+                "utf-16-le" | "utf16-le" | "utf-16le" | "utf16le" => decode_utf16_le_bytes(b),
+                "utf-16-be" | "utf16-be" | "utf-16be" | "utf16be" => decode_utf16_be_bytes(b),
+                "utf-32" | "utf32" => {
+                    if b.len() >= 4 && b[..4] == [0xFF, 0xFE, 0x00, 0x00] {
+                        decode_utf32_le_bytes(&b[4..])
+                    } else if b.len() >= 4 && b[..4] == [0x00, 0x00, 0xFE, 0xFF] {
+                        decode_utf32_be_bytes(&b[4..])
+                    } else {
+                        decode_utf32_le_bytes(b)
+                    }
+                }
+                "utf-32-le" | "utf32-le" | "utf-32le" | "utf32le" => decode_utf32_le_bytes(b),
+                "utf-32-be" | "utf32-be" | "utf-32be" | "utf32be" => decode_utf32_be_bytes(b),
+                "cp1252" | "windows-1252" | "windows1252" => {
+                    let s: String = b.iter().map(|&byte| {
+                        if byte < 0x80 || byte >= 0xA0 { return byte as char; }
+                        match byte {
+                            0x80 => '\u{20AC}', 0x82 => '\u{201A}', 0x83 => '\u{0192}',
+                            0x84 => '\u{201E}', 0x85 => '\u{2026}', 0x86 => '\u{2020}',
+                            0x87 => '\u{2021}', 0x88 => '\u{02C6}', 0x89 => '\u{2030}',
+                            0x8A => '\u{0160}', 0x8B => '\u{2039}', 0x8C => '\u{0152}',
+                            0x8E => '\u{017D}', 0x91 => '\u{2018}', 0x92 => '\u{2019}',
+                            0x93 => '\u{201C}', 0x94 => '\u{201D}', 0x95 => '\u{2022}',
+                            0x96 => '\u{2013}', 0x97 => '\u{2014}', 0x98 => '\u{02DC}',
+                            0x99 => '\u{2122}', 0x9A => '\u{0161}', 0x9B => '\u{203A}',
+                            0x9C => '\u{0153}', 0x9E => '\u{017E}', 0x9F => '\u{0178}',
+                            _ => '\u{FFFD}',
+                        }
+                    }).collect();
                     Ok(PyObject::str_val(CompactString::from(s)))
                 }
                 _ => Err(PyException::new(

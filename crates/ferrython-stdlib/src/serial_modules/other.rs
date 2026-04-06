@@ -1196,6 +1196,122 @@ pub fn create_binascii_module() -> PyObjectRef {
     ])
 }
 
+// ── codecs helpers ─────────────────────────────────────────────────
+
+fn normalize_encoding(enc: &str) -> String {
+    enc.to_lowercase().replace('-', "_")
+}
+
+fn rot13(c: char) -> char {
+    match c {
+        'a'..='m' | 'A'..='M' => (c as u8 + 13) as char,
+        'n'..='z' | 'N'..='Z' => (c as u8 - 13) as char,
+        _ => c,
+    }
+}
+
+fn cp1252_encode(c: char) -> Result<u8, String> {
+    let u = c as u32;
+    if u < 0x80 || (0xA0..=0xFF).contains(&u) {
+        return Ok(u as u8);
+    }
+    // Windows-1252 special range 0x80-0x9F
+    match u {
+        0x20AC => Ok(0x80), 0x201A => Ok(0x82), 0x0192 => Ok(0x83),
+        0x201E => Ok(0x84), 0x2026 => Ok(0x85), 0x2020 => Ok(0x86),
+        0x2021 => Ok(0x87), 0x02C6 => Ok(0x88), 0x2030 => Ok(0x89),
+        0x0160 => Ok(0x8A), 0x2039 => Ok(0x8B), 0x0152 => Ok(0x8C),
+        0x017D => Ok(0x8E), 0x2018 => Ok(0x91), 0x2019 => Ok(0x92),
+        0x201C => Ok(0x93), 0x201D => Ok(0x94), 0x2022 => Ok(0x95),
+        0x2013 => Ok(0x96), 0x2014 => Ok(0x97), 0x02DC => Ok(0x98),
+        0x2122 => Ok(0x99), 0x0161 => Ok(0x9A), 0x203A => Ok(0x9B),
+        0x0153 => Ok(0x9C), 0x017E => Ok(0x9E), 0x0178 => Ok(0x9F),
+        _ => Err(format!("'cp1252' codec can't encode character '\\u{:04x}'", u)),
+    }
+}
+
+fn cp1252_decode(b: u8) -> char {
+    if b < 0x80 || b >= 0xA0 {
+        return b as char;
+    }
+    match b {
+        0x80 => '\u{20AC}', 0x82 => '\u{201A}', 0x83 => '\u{0192}',
+        0x84 => '\u{201E}', 0x85 => '\u{2026}', 0x86 => '\u{2020}',
+        0x87 => '\u{2021}', 0x88 => '\u{02C6}', 0x89 => '\u{2030}',
+        0x8A => '\u{0160}', 0x8B => '\u{2039}', 0x8C => '\u{0152}',
+        0x8E => '\u{017D}', 0x91 => '\u{2018}', 0x92 => '\u{2019}',
+        0x93 => '\u{201C}', 0x94 => '\u{201D}', 0x95 => '\u{2022}',
+        0x96 => '\u{2013}', 0x97 => '\u{2014}', 0x98 => '\u{02DC}',
+        0x99 => '\u{2122}', 0x9A => '\u{0161}', 0x9B => '\u{203A}',
+        0x9C => '\u{0153}', 0x9E => '\u{017E}', 0x9F => '\u{0178}',
+        _ => '\u{FFFD}', // undefined bytes → replacement char
+    }
+}
+
+fn decode_utf16_with_bom(bytes: &[u8]) -> PyResult<PyObjectRef> {
+    if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
+        decode_utf16_le(&bytes[2..])
+    } else if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+        decode_utf16_be(&bytes[2..])
+    } else {
+        decode_utf16_le(bytes) // default to LE like CPython on little-endian
+    }
+}
+
+fn decode_utf16_le(bytes: &[u8]) -> PyResult<PyObjectRef> {
+    if bytes.len() % 2 != 0 {
+        return Err(PyException::value_error("utf-16-le: truncated data"));
+    }
+    let u16s: Vec<u16> = bytes.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let s = String::from_utf16(&u16s).map_err(|_| PyException::value_error("invalid utf-16-le"))?;
+    Ok(PyObject::str_val(CompactString::from(s)))
+}
+
+fn decode_utf16_be(bytes: &[u8]) -> PyResult<PyObjectRef> {
+    if bytes.len() % 2 != 0 {
+        return Err(PyException::value_error("utf-16-be: truncated data"));
+    }
+    let u16s: Vec<u16> = bytes.chunks(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    let s = String::from_utf16(&u16s).map_err(|_| PyException::value_error("invalid utf-16-be"))?;
+    Ok(PyObject::str_val(CompactString::from(s)))
+}
+
+fn decode_utf32_with_bom(bytes: &[u8]) -> PyResult<PyObjectRef> {
+    if bytes.len() >= 4 && bytes[..4] == [0xFF, 0xFE, 0x00, 0x00] {
+        decode_utf32_le(&bytes[4..])
+    } else if bytes.len() >= 4 && bytes[..4] == [0x00, 0x00, 0xFE, 0xFF] {
+        decode_utf32_be(&bytes[4..])
+    } else {
+        decode_utf32_le(bytes)
+    }
+}
+
+fn decode_utf32_le(bytes: &[u8]) -> PyResult<PyObjectRef> {
+    if bytes.len() % 4 != 0 {
+        return Err(PyException::value_error("utf-32-le: truncated data"));
+    }
+    let s: Result<String, _> = bytes.chunks(4)
+        .map(|c| {
+            let cp = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+            char::from_u32(cp).ok_or_else(|| PyException::value_error("invalid utf-32-le codepoint"))
+        })
+        .collect();
+    Ok(PyObject::str_val(CompactString::from(s?)))
+}
+
+fn decode_utf32_be(bytes: &[u8]) -> PyResult<PyObjectRef> {
+    if bytes.len() % 4 != 0 {
+        return Err(PyException::value_error("utf-32-be: truncated data"));
+    }
+    let s: Result<String, _> = bytes.chunks(4)
+        .map(|c| {
+            let cp = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+            char::from_u32(cp).ok_or_else(|| PyException::value_error("invalid utf-32-be codepoint"))
+        })
+        .collect();
+    Ok(PyObject::str_val(CompactString::from(s?)))
+}
+
 // ── codecs module ──────────────────────────────────────────────────
 pub fn create_codecs_module() -> PyObjectRef {
     make_module("codecs", vec![
@@ -1213,15 +1329,66 @@ fn codecs_encode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("codecs.encode", args, 1)?;
     let s = args[0].py_to_string();
     let encoding = if args.len() > 1 { args[1].py_to_string() } else { "utf-8".to_string() };
-    match encoding.to_lowercase().replace('-', "_").as_str() {
+    let norm = normalize_encoding(&encoding);
+    match norm.as_str() {
         "utf_8" | "utf8" => Ok(PyObject::bytes(s.as_bytes().to_vec())),
         "ascii" => {
-            let bytes: Vec<u8> = s.chars().filter_map(|c| if c.is_ascii() { Some(c as u8) } else { None }).collect();
+            for (i, c) in s.chars().enumerate() {
+                if !c.is_ascii() {
+                    return Err(PyException::value_error(format!(
+                        "'ascii' codec can't encode character '\\u{:04x}' in position {}", c as u32, i
+                    )));
+                }
+            }
+            Ok(PyObject::bytes(s.bytes().collect()))
+        }
+        "latin_1" | "latin1" | "iso_8859_1" | "iso8859_1" => {
+            for (i, c) in s.chars().enumerate() {
+                if c as u32 > 255 {
+                    return Err(PyException::value_error(format!(
+                        "'latin-1' codec can't encode character '\\u{:04x}' in position {}", c as u32, i
+                    )));
+                }
+            }
+            Ok(PyObject::bytes(s.chars().map(|c| c as u8).collect()))
+        }
+        "utf_16" | "utf16" => {
+            let mut bytes = vec![0xFF, 0xFE]; // BOM (little-endian)
+            for c in s.encode_utf16() {
+                bytes.extend_from_slice(&c.to_le_bytes());
+            }
             Ok(PyObject::bytes(bytes))
         }
-        "latin_1" | "latin1" | "iso_8859_1" => {
-            let bytes: Vec<u8> = s.chars().map(|c| c as u8).collect();
+        "utf_16_le" | "utf16_le" => {
+            let bytes: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
             Ok(PyObject::bytes(bytes))
+        }
+        "utf_16_be" | "utf16_be" => {
+            let bytes: Vec<u8> = s.encode_utf16().flat_map(|c| c.to_be_bytes()).collect();
+            Ok(PyObject::bytes(bytes))
+        }
+        "utf_32" | "utf32" => {
+            let mut bytes = vec![0xFF, 0xFE, 0x00, 0x00]; // BOM (little-endian)
+            for c in s.chars() {
+                bytes.extend_from_slice(&(c as u32).to_le_bytes());
+            }
+            Ok(PyObject::bytes(bytes))
+        }
+        "utf_32_le" | "utf32_le" => {
+            let bytes: Vec<u8> = s.chars().flat_map(|c| (c as u32).to_le_bytes()).collect();
+            Ok(PyObject::bytes(bytes))
+        }
+        "utf_32_be" | "utf32_be" => {
+            let bytes: Vec<u8> = s.chars().flat_map(|c| (c as u32).to_be_bytes()).collect();
+            Ok(PyObject::bytes(bytes))
+        }
+        "cp1252" | "windows_1252" => {
+            let bytes: Result<Vec<u8>, _> = s.chars().map(|c| cp1252_encode(c)).collect();
+            Ok(PyObject::bytes(bytes.map_err(|e| PyException::value_error(e))?))
+        }
+        "rot_13" | "rot13" => {
+            let rotated: String = s.chars().map(|c| rot13(c)).collect();
+            Ok(PyObject::str_val(CompactString::from(rotated)))
         }
         _ => Err(PyException::value_error(format!("unknown encoding: {}", encoding))),
     }
@@ -1229,19 +1396,55 @@ fn codecs_encode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn codecs_decode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("codecs.decode", args, 1)?;
-    let bytes = extract_bytes(&args[0])?;
     let encoding = if args.len() > 1 { args[1].py_to_string() } else { "utf-8".to_string() };
-    match encoding.to_lowercase().replace('-', "_").as_str() {
+    let norm = normalize_encoding(&encoding);
+    // rot_13 decode works on strings
+    if norm == "rot_13" || norm == "rot13" {
+        let s = args[0].py_to_string();
+        let rotated: String = s.chars().map(|c| rot13(c)).collect();
+        return Ok(PyObject::str_val(CompactString::from(rotated)));
+    }
+    let bytes = extract_bytes(&args[0])?;
+    match norm.as_str() {
         "utf_8" | "utf8" => {
             let s = String::from_utf8(bytes).map_err(|_| PyException::value_error("invalid utf-8"))?;
             Ok(PyObject::str_val(CompactString::from(s)))
         }
         "ascii" => {
+            for (i, &b) in bytes.iter().enumerate() {
+                if b > 127 {
+                    return Err(PyException::value_error(format!(
+                        "'ascii' codec can't decode byte 0x{:02x} in position {}", b, i
+                    )));
+                }
+            }
             let s: String = bytes.iter().map(|&b| b as char).collect();
             Ok(PyObject::str_val(CompactString::from(s)))
         }
-        "latin_1" | "latin1" | "iso_8859_1" => {
+        "latin_1" | "latin1" | "iso_8859_1" | "iso8859_1" => {
             let s: String = bytes.iter().map(|&b| b as char).collect();
+            Ok(PyObject::str_val(CompactString::from(s)))
+        }
+        "utf_16" | "utf16" => {
+            decode_utf16_with_bom(&bytes)
+        }
+        "utf_16_le" | "utf16_le" => {
+            decode_utf16_le(&bytes)
+        }
+        "utf_16_be" | "utf16_be" => {
+            decode_utf16_be(&bytes)
+        }
+        "utf_32" | "utf32" => {
+            decode_utf32_with_bom(&bytes)
+        }
+        "utf_32_le" | "utf32_le" => {
+            decode_utf32_le(&bytes)
+        }
+        "utf_32_be" | "utf32_be" => {
+            decode_utf32_be(&bytes)
+        }
+        "cp1252" | "windows_1252" => {
+            let s: String = bytes.iter().map(|&b| cp1252_decode(b)).collect();
             Ok(PyObject::str_val(CompactString::from(s)))
         }
         _ => Err(PyException::value_error(format!("unknown encoding: {}", encoding))),
@@ -1250,17 +1453,22 @@ fn codecs_decode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn codecs_lookup(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("codecs.lookup", args, 1)?;
-    let encoding = args[0].py_to_string().to_lowercase().replace('-', "_");
-    match encoding.as_str() {
-        "utf_8" | "utf8" | "ascii" | "latin_1" | "latin1" | "iso_8859_1" => {
-            Ok(PyObject::tuple(vec![
-                PyObject::str_val(CompactString::from(&encoding)),
-                PyObject::none(), // encode
-                PyObject::none(), // decode
-                PyObject::none(), // stream reader
-            ]))
-        }
-        _ => Err(PyException::value_error(format!("unknown encoding: {}", encoding))),
+    let encoding = normalize_encoding(&args[0].py_to_string());
+    let known = matches!(encoding.as_str(),
+        "utf_8" | "utf8" | "ascii" | "latin_1" | "latin1" | "iso_8859_1" | "iso8859_1"
+        | "utf_16" | "utf16" | "utf_16_le" | "utf16_le" | "utf_16_be" | "utf16_be"
+        | "utf_32" | "utf32" | "utf_32_le" | "utf32_le" | "utf_32_be" | "utf32_be"
+        | "cp1252" | "windows_1252" | "rot_13" | "rot13"
+    );
+    if known {
+        Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from(&encoding)),
+            PyObject::none(),
+            PyObject::none(),
+            PyObject::none(),
+        ]))
+    } else {
+        Err(PyException::value_error(format!("unknown encoding: {}", encoding)))
     }
 }
 
