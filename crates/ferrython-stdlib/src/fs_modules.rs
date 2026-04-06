@@ -1804,6 +1804,8 @@ pub fn create_subprocess_module() -> PyObjectRef {
         ("check_output", make_builtin(subprocess_check_output)),
         ("check_call", make_builtin(subprocess_check_call)),
         ("Popen", make_builtin(subprocess_popen)),
+        ("getoutput", make_builtin(subprocess_getoutput)),
+        ("getstatusoutput", make_builtin(subprocess_getstatusoutput)),
         ("TimeoutExpired", PyObject::exception_type(ExceptionKind::TimeoutExpired)),
     ])
 }
@@ -1812,7 +1814,11 @@ fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("subprocess.run requires arguments"));
     }
-    let cmd_parts: Vec<String> = args[0].to_list()?.iter().map(|a| a.py_to_string()).collect();
+    // Accept either a list of strings or a single string (for shell=True)
+    let cmd_parts: Vec<String> = match &args[0].payload {
+        PyObjectPayload::Str(s) => vec![s.to_string()],
+        _ => args[0].to_list()?.iter().map(|a| a.py_to_string()).collect(),
+    };
     if cmd_parts.is_empty() {
         return Err(PyException::value_error("empty command"));
     }
@@ -1973,6 +1979,61 @@ fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
 }
 
+fn subprocess_getoutput(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("getoutput() requires a command string"));
+    }
+    let cmd = args[0].py_to_string();
+    let output = std::process::Command::new("sh")
+        .arg("-c").arg(&cmd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+    match output {
+        Ok(out) => {
+            let mut combined = String::from_utf8_lossy(&out.stdout).to_string();
+            let err = String::from_utf8_lossy(&out.stderr);
+            if !err.is_empty() {
+                if !combined.is_empty() { combined.push('\n'); }
+                combined.push_str(&err);
+            }
+            // Strip trailing newline like CPython
+            if combined.ends_with('\n') { combined.pop(); }
+            Ok(PyObject::str_val(CompactString::from(combined)))
+        }
+        Err(e) => Err(PyException::runtime_error(format!("getoutput: {}", e))),
+    }
+}
+
+fn subprocess_getstatusoutput(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("getstatusoutput() requires a command string"));
+    }
+    let cmd = args[0].py_to_string();
+    let output = std::process::Command::new("sh")
+        .arg("-c").arg(&cmd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+    match output {
+        Ok(out) => {
+            let code = out.status.code().unwrap_or(-1) as i64;
+            let mut combined = String::from_utf8_lossy(&out.stdout).to_string();
+            let err = String::from_utf8_lossy(&out.stderr);
+            if !err.is_empty() {
+                if !combined.is_empty() { combined.push('\n'); }
+                combined.push_str(&err);
+            }
+            if combined.ends_with('\n') { combined.pop(); }
+            Ok(PyObject::tuple(vec![
+                PyObject::int(code),
+                PyObject::str_val(CompactString::from(combined)),
+            ]))
+        }
+        Err(e) => Err(PyException::runtime_error(format!("getstatusoutput: {}", e))),
+    }
+}
+
 fn build_completed_process(
     returncode: i32, stdout: Vec<u8>, stderr: Vec<u8>, text_mode: bool, check: bool,
 ) -> PyResult<PyObjectRef> {
@@ -2051,12 +2112,14 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("Popen requires args"));
     }
-    let cmd_parts: Vec<String> = args[0].to_list()?.iter().map(|a| a.py_to_string()).collect();
+    // Accept either a list or a string
+    let cmd_parts: Vec<String> = match &args[0].payload {
+        PyObjectPayload::Str(s) => vec![s.to_string()],
+        _ => args[0].to_list()?.iter().map(|a| a.py_to_string()).collect(),
+    };
     if cmd_parts.is_empty() {
         return Err(PyException::value_error("empty command"));
     }
-
-    // Parse kwargs from remaining args
     let mut capture_stdout = false;
     let mut capture_stderr = false;
     let mut pipe_stdin = false;

@@ -1519,7 +1519,7 @@ pub(super) fn builtin_help(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let type_name = obj.type_name();
 
     // Get the object's name
-    let name = obj.get_attr("__name__")
+    let _name = obj.get_attr("__name__")
         .map(|n| n.py_to_string())
         .unwrap_or_else(|| type_name.to_string());
 
