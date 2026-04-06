@@ -380,8 +380,10 @@ impl VirtualMachine {
             9 => PyObject::bool_val(!a.is_same(&b)),
             10 => {
                 let match_one = |a_item: &PyObjectRef, b_item: &PyObjectRef| -> bool {
+                    // Case 1: Both are user-defined Class payloads
                     if let PyObjectPayload::Class(cls_a) = &a_item.payload {
                         if let PyObjectPayload::Class(cls_b) = &b_item.payload {
+                            // Check name match or MRO/bases membership
                             if cls_a.name == cls_b.name { return true; }
                             for base in &cls_a.mro {
                                 if let PyObjectPayload::Class(bc) = &base.payload {
@@ -395,20 +397,31 @@ impl VirtualMachine {
                             }
                             return false;
                         }
+                        // Raised is user-defined class, handler is builtin ExceptionType
                         if let PyObjectPayload::ExceptionType(kind_b) = &b_item.payload {
                             let kind_a = Self::find_exception_kind(a_item);
                             return exception_kind_matches(&kind_a, kind_b);
                         }
                         return false;
                     }
+                    // Case 2: Raised is a builtin ExceptionType
                     if let PyObjectPayload::ExceptionType(kind_a) = &a_item.payload {
                         return match &b_item.payload {
+                            // Handler is also builtin ExceptionType
                             PyObjectPayload::ExceptionType(kind_b) => {
                                 exception_kind_matches(kind_a, kind_b)
                             }
-                            PyObjectPayload::Class(_cls_b) => {
-                                let kind_b = Self::find_exception_kind(b_item);
-                                exception_kind_matches(kind_a, &kind_b)
+                            // Handler is a user-defined Class: only match if the
+                            // class name directly names this builtin exception kind
+                            // (e.g., class named "ValueError" catches ValueError).
+                            // A user-defined class like SkipTest(Exception) must NOT
+                            // catch builtin exceptions just because its base is Exception.
+                            PyObjectPayload::Class(cls_b) => {
+                                if let Some(kind_b) = ExceptionKind::from_name(&cls_b.name) {
+                                    exception_kind_matches(kind_a, &kind_b)
+                                } else {
+                                    false
+                                }
                             }
                             PyObjectPayload::BuiltinType(name) => {
                                 if let Some(kind_b) = ExceptionKind::from_name(name) {

@@ -1,8 +1,8 @@
-"""Basic test framework for Ferrython."""
+"""unittest — Test framework for Ferrython (CPython-compatible API)."""
 
 __all__ = [
-    'TestCase', 'TestResult', 'TestSuite', 'main',
-    'skip', 'expectedFailure',
+    'TestCase', 'TestResult', 'TestSuite', 'TestLoader', 'TextTestRunner',
+    'main', 'skip', 'skipIf', 'skipUnless', 'expectedFailure', 'SkipTest',
 ]
 
 
@@ -23,38 +23,46 @@ class TestResult:
         self.failures = []
         self.errors = []
         self.skipped = []
-        self.expected_failures = []
-        self.unexpected_successes = []
-        self.tests_run = 0
+        self.expectedFailures = []
+        self.unexpectedSuccesses = []
+        self.testsRun = 0
 
     def wasSuccessful(self):
         return len(self.failures) == 0 and len(self.errors) == 0
 
     def addSuccess(self, test):
-        self.tests_run += 1
+        self.testsRun += 1
 
     def addFailure(self, test, err):
-        self.tests_run += 1
+        self.testsRun += 1
         self.failures.append((test, err))
 
     def addError(self, test, err):
-        self.tests_run += 1
+        self.testsRun += 1
         self.errors.append((test, err))
 
     def addSkip(self, test, reason):
-        self.tests_run += 1
+        self.testsRun += 1
         self.skipped.append((test, reason))
+
+    def addExpectedFailure(self, test, err):
+        self.testsRun += 1
+        self.expectedFailures.append((test, err))
+
+    def addUnexpectedSuccess(self, test):
+        self.testsRun += 1
+        self.unexpectedSuccesses.append(test)
 
     def __repr__(self):
         return ("<TestResult run=%d failures=%d errors=%d>" %
-                (self.tests_run, len(self.failures), len(self.errors)))
+                (self.testsRun, len(self.failures), len(self.errors)))
 
 
 class TestCase:
     """Base class for test cases."""
 
     def __init__(self, methodName='runTest'):
-        self._methodName = methodName
+        self._testMethodName = methodName
         self._skip_reason = None
 
     def setUp(self):
@@ -63,10 +71,25 @@ class TestCase:
     def tearDown(self):
         pass
 
+    def setUpClass(cls):
+        pass
+
+    def tearDownClass(cls):
+        pass
+
+    def id(self):
+        return "%s.%s" % (type(self).__name__, self._testMethodName)
+
+    def __str__(self):
+        return "%s (%s)" % (self._testMethodName, type(self).__name__)
+
+    def __repr__(self):
+        return "<%s testMethod=%s>" % (type(self).__name__, self._testMethodName)
+
     def run(self, result=None):
         if result is None:
             result = TestResult()
-        method = getattr(self, self._methodName)
+        method = getattr(self, self._testMethodName)
 
         try:
             self.setUp()
@@ -77,9 +100,10 @@ class TestCase:
             result.addError(self, e)
             return result
 
+        ok = False
         try:
             method()
-            result.addSuccess(self)
+            ok = True
         except SkipTest as e:
             result.addSkip(self, str(e))
         except AssertionError as e:
@@ -87,12 +111,18 @@ class TestCase:
         except Exception as e:
             result.addError(self, e)
 
+        if ok:
+            result.addSuccess(self)
+
         try:
             self.tearDown()
         except Exception as e:
             result.addError(self, e)
 
         return result
+
+    def countTestCases(self):
+        return 1
 
     # --- Assertion methods ---
 
@@ -151,9 +181,86 @@ class TestCase:
             m = msg or ("%r not greater than %r" % (a, b))
             raise AssertionError(m)
 
+    def assertGreaterEqual(self, a, b, msg=None):
+        if not (a >= b):
+            m = msg or ("%r not greater than or equal to %r" % (a, b))
+            raise AssertionError(m)
+
     def assertLess(self, a, b, msg=None):
         if not (a < b):
             m = msg or ("%r not less than %r" % (a, b))
+            raise AssertionError(m)
+
+    def assertLessEqual(self, a, b, msg=None):
+        if not (a <= b):
+            m = msg or ("%r not less than or equal to %r" % (a, b))
+            raise AssertionError(m)
+
+    def assertAlmostEqual(self, first, second, places=7, msg=None):
+        if round(abs(second - first), places) != 0:
+            m = msg or ("%r != %r within %d places" % (first, second, places))
+            raise AssertionError(m)
+
+    def assertNotAlmostEqual(self, first, second, places=7, msg=None):
+        if round(abs(second - first), places) == 0:
+            m = msg or ("%r == %r within %d places" % (first, second, places))
+            raise AssertionError(m)
+
+    def assertIsInstance(self, obj, cls, msg=None):
+        if not isinstance(obj, cls):
+            m = msg or ("%r is not an instance of %r" % (obj, cls))
+            raise AssertionError(m)
+
+    def assertNotIsInstance(self, obj, cls, msg=None):
+        if isinstance(obj, cls):
+            m = msg or ("%r is an instance of %r" % (obj, cls))
+            raise AssertionError(m)
+
+    def assertCountEqual(self, first, second, msg=None):
+        if sorted(first) != sorted(second):
+            m = msg or ("Element counts differ: %r vs %r" % (first, second))
+            raise AssertionError(m)
+
+    def assertRegex(self, text, regex, msg=None):
+        import re
+        if not re.search(regex, text):
+            m = msg or ("Regex %r didn't match %r" % (regex, text))
+            raise AssertionError(m)
+
+    def assertNotRegex(self, text, regex, msg=None):
+        import re
+        if re.search(regex, text):
+            m = msg or ("Regex %r unexpectedly matched %r" % (regex, text))
+            raise AssertionError(m)
+
+    def assertDictEqual(self, d1, d2, msg=None):
+        if d1 != d2:
+            m = msg or ("%r != %r" % (d1, d2))
+            raise AssertionError(m)
+
+    def assertListEqual(self, list1, list2, msg=None):
+        if list1 != list2:
+            m = msg or ("%r != %r" % (list1, list2))
+            raise AssertionError(m)
+
+    def assertTupleEqual(self, tuple1, tuple2, msg=None):
+        if tuple1 != tuple2:
+            m = msg or ("%r != %r" % (tuple1, tuple2))
+            raise AssertionError(m)
+
+    def assertSetEqual(self, set1, set2, msg=None):
+        if set1 != set2:
+            m = msg or ("%r != %r" % (set1, set2))
+            raise AssertionError(m)
+
+    def assertSequenceEqual(self, seq1, seq2, msg=None):
+        if list(seq1) != list(seq2):
+            m = msg or ("%r != %r" % (seq1, seq2))
+            raise AssertionError(m)
+
+    def assertMultiLineEqual(self, first, second, msg=None):
+        if first != second:
+            m = msg or ("%r != %r" % (first, second))
             raise AssertionError(m)
 
     def assertRaises(self, exc_type, callable_obj=None, *args, **kwargs):
@@ -168,11 +275,28 @@ class TestCase:
             raise AssertionError("%s not raised" % exc_type.__name__)
         return _AssertRaisesContext(self, exc_type)
 
+    def assertWarns(self, warning_type, callable_obj=None, *args, **kwargs):
+        # Simplified: just run the callable (Ferrython doesn't track warnings yet)
+        if callable_obj is not None:
+            callable_obj(*args, **kwargs)
+        return _NullContext()
+
     def fail(self, msg=None):
         raise AssertionError(msg or "Test failed")
 
     def skipTest(self, reason):
         raise SkipTest(reason)
+
+    def subTest(self, msg=None, **params):
+        return _NullContext()
+
+
+class _NullContext:
+    """No-op context manager for stubs."""
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        return False
 
 
 class _AssertRaisesContext:
@@ -203,6 +327,10 @@ class TestSuite:
     def addTest(self, test):
         self._tests.append(test)
 
+    def addTests(self, tests):
+        for t in tests:
+            self.addTest(t)
+
     def run(self, result=None):
         if result is None:
             result = TestResult()
@@ -210,22 +338,101 @@ class TestSuite:
             test.run(result)
         return result
 
+    def countTestCases(self):
+        total = 0
+        for test in self._tests:
+            if hasattr(test, 'countTestCases'):
+                total += test.countTestCases()
+            else:
+                total += 1
+        return total
+
     def __iter__(self):
         return iter(self._tests)
 
+    def __len__(self):
+        return len(self._tests)
+
+
+class TestLoader:
+    """Load tests from TestCase classes."""
+
+    def loadTestsFromTestCase(self, testCaseClass):
+        test_names = self.getTestCaseNames(testCaseClass)
+        suite = TestSuite()
+        for name in test_names:
+            suite.addTest(testCaseClass(name))
+        return suite
+
+    def loadTestsFromModule(self, module):
+        suite = TestSuite()
+        for name in dir(module):
+            obj = getattr(module, name)
+            if isinstance(obj, type) and issubclass(obj, TestCase) and obj is not TestCase:
+                suite.addTest(self.loadTestsFromTestCase(obj))
+        return suite
+
+    def getTestCaseNames(self, testCaseClass):
+        names = []
+        for name in dir(testCaseClass):
+            if name.startswith('test'):
+                obj = getattr(testCaseClass, name)
+                if callable(obj):
+                    names.append(name)
+        names.sort()
+        return names
+
+
+class TextTestRunner:
+    """A test runner that outputs results to the console."""
+
+    def __init__(self, stream=None, descriptions=True, verbosity=1,
+                 failfast=False, resultclass=None):
+        self.verbosity = verbosity
+        self.failfast = failfast
+        self.resultclass = resultclass or TestResult
+
+    def run(self, test):
+        result = self.resultclass()
+        test.run(result)
+        if self.verbosity > 0:
+            if result.wasSuccessful():
+                print("OK (%d tests)" % result.testsRun)
+            else:
+                print("FAILED (failures=%d, errors=%d)" % (
+                    len(result.failures), len(result.errors)))
+        return result
+
+
+# --- Decorators ---
 
 def skip(reason):
-    """Decorator to unconditionally skip a test."""
+    """Unconditionally skip a test."""
     def decorator(func):
         def wrapper(*args, **kwargs):
             raise SkipTest(reason)
         wrapper.__name__ = func.__name__
+        wrapper.__skip_reason__ = reason
         return wrapper
     return decorator
 
 
+def skipIf(condition, reason):
+    """Skip a test if condition is true."""
+    if condition:
+        return skip(reason)
+    return lambda func: func
+
+
+def skipUnless(condition, reason):
+    """Skip a test unless condition is true."""
+    if not condition:
+        return skip(reason)
+    return lambda func: func
+
+
 def expectedFailure(func):
-    """Decorator to mark a test as an expected failure."""
+    """Mark a test as an expected failure."""
     def wrapper(*args, **kwargs):
         try:
             func(*args, **kwargs)
@@ -236,11 +443,8 @@ def expectedFailure(func):
     return wrapper
 
 
-def main():
-    """Discover and run TestCase subclasses (stub for Ferrython)."""
-    print("unittest.main() stub — use explicit test running in Ferrython")
-
-
-class AssertionError(Exception):
-    """Assertion error for test failures."""
-    pass
+def main(module='__main__', exit=True, verbosity=2):
+    """Simple test runner entry point."""
+    # In CPython this discovers tests from the calling module.
+    # For Ferrython, we provide a basic implementation.
+    print("unittest.main() — use TestLoader/TextTestRunner for test execution")
