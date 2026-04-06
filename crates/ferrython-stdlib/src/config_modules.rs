@@ -655,6 +655,7 @@ pub fn create_configparser_module() -> PyObjectRef {
     ns.insert(CompactString::from("options"), make_builtin(cp_options));
     ns.insert(CompactString::from("items"), make_builtin(cp_items));
     ns.insert(CompactString::from("set"), make_builtin(cp_set));
+    ns.insert(CompactString::from("add_section"), make_builtin(cp_add_section));
     ns.insert(CompactString::from("remove_section"), make_builtin(cp_remove_section));
     ns.insert(CompactString::from("remove_option"), make_builtin(cp_remove_option));
     ns.insert(CompactString::from("write"), make_builtin(cp_write));
@@ -734,6 +735,23 @@ pub fn create_configparser_module() -> PyObjectRef {
                 }
             }
         }
+    }
+
+    fn cp_add_section(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("add_section requires section name")); }
+        let section = CompactString::from(args[1].py_to_string());
+        if section == "DEFAULT" || section == "default" {
+            return Err(PyException::value_error("Invalid section name: 'DEFAULT'"));
+        }
+        if let Some(secs) = get_sections(&args[0]) {
+            let sec_key = HashableKey::Str(section.clone());
+            let mut w = secs.write();
+            if w.contains_key(&sec_key) {
+                return Err(PyException::runtime_error(format!("Section '{}' already exists", section)));
+            }
+            w.insert(sec_key, PyObject::dict(IndexMap::new()));
+        }
+        Ok(PyObject::none())
     }
 
     fn cp_read(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

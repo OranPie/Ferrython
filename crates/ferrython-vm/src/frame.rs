@@ -121,11 +121,13 @@ impl Frame {
         locals.clear();
         locals.resize(nl, None);
 
+        let block_stack = pool.take_block_stack();
+
         let cells: Vec<CellRef> = (0..nc).map(|_| Arc::new(RwLock::new(None))).collect();
         Self {
             code, ip: 0,
             stack,
-            block_stack: Vec::new(),
+            block_stack,
             locals,
             local_names: IndexMap::new(),
             globals,
@@ -155,8 +157,10 @@ impl Frame {
     pub fn recycle(mut self, pool: &mut FramePool) {
         self.stack.clear();
         self.locals.clear();
+        self.block_stack.clear();
         pool.return_stack(self.stack);
         pool.return_locals(self.locals);
+        pool.return_block_stack(self.block_stack);
     }
 
     #[inline] pub fn push(&mut self, v: PyObjectRef) { self.stack.push(v); }
@@ -179,11 +183,12 @@ impl Frame {
 }
 
 /// Pool of reusable vectors to reduce allocation overhead on function calls.
-const MAX_POOL_SIZE: usize = 16;
+const MAX_POOL_SIZE: usize = 32;
 
 pub struct FramePool {
     stacks: Vec<Vec<PyObjectRef>>,
     locals: Vec<Vec<Option<PyObjectRef>>>,
+    block_stacks: Vec<Vec<Block>>,
 }
 
 impl FramePool {
@@ -191,6 +196,7 @@ impl FramePool {
         Self {
             stacks: Vec::with_capacity(MAX_POOL_SIZE),
             locals: Vec::with_capacity(MAX_POOL_SIZE),
+            block_stacks: Vec::with_capacity(MAX_POOL_SIZE),
         }
     }
 
@@ -202,6 +208,15 @@ impl FramePool {
         self.locals.pop().unwrap_or_default()
     }
 
+    fn take_block_stack(&mut self) -> Vec<Block> {
+        if let Some(mut bs) = self.block_stacks.pop() {
+            bs.clear();
+            bs
+        } else {
+            Vec::with_capacity(4)
+        }
+    }
+
     fn return_stack(&mut self, v: Vec<PyObjectRef>) {
         if self.stacks.len() < MAX_POOL_SIZE {
             self.stacks.push(v);
@@ -211,6 +226,12 @@ impl FramePool {
     fn return_locals(&mut self, v: Vec<Option<PyObjectRef>>) {
         if self.locals.len() < MAX_POOL_SIZE {
             self.locals.push(v);
+        }
+    }
+
+    fn return_block_stack(&mut self, v: Vec<Block>) {
+        if self.block_stacks.len() < MAX_POOL_SIZE {
+            self.block_stacks.push(v);
         }
     }
 }
