@@ -1407,6 +1407,26 @@ pub fn create_gc_module() -> PyObjectRef {
                 PyObject::int(0),
             ]))
         })),
+        ("get_objects", make_builtin(|_| {
+            // CPython returns all tracked objects; we return empty list (Rust manages memory)
+            Ok(PyObject::list(vec![]))
+        })),
+        ("get_referrers", make_builtin(|_| {
+            Ok(PyObject::list(vec![]))
+        })),
+        ("get_referents", make_builtin(|_| {
+            Ok(PyObject::list(vec![]))
+        })),
+        ("freeze", make_builtin(|_| Ok(PyObject::none()))),
+        ("unfreeze", make_builtin(|_| Ok(PyObject::none()))),
+        ("get_freeze_count", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("callbacks", PyObject::list(vec![])),
+        ("garbage", PyObject::list(vec![])),
+        ("DEBUG_STATS", PyObject::int(1)),
+        ("DEBUG_COLLECTABLE", PyObject::int(2)),
+        ("DEBUG_UNCOLLECTABLE", PyObject::int(4)),
+        ("DEBUG_SAVEALL", PyObject::int(32)),
+        ("DEBUG_LEAK", PyObject::int(38)),
     ])
 }
 

@@ -734,6 +734,11 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 ra.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
                 ra.insert(CompactString::from("message"), PyObject::str_val(CompactString::from(msg.clone())));
                 ra.insert(CompactString::from("msg"), PyObject::str_val(CompactString::from(msg.clone())));
+                ra.insert(CompactString::from("args"), PyObject::none());
+                let msg_clone = msg.clone();
+                ra.insert(CompactString::from("getMessage"), PyObject::native_closure("LogRecord.getMessage", move |_args| {
+                    Ok(PyObject::str_val(CompactString::from(msg_clone.clone())))
+                }));
             }
 
             // Dispatch to handlers via shared list, then propagate to parents
@@ -832,12 +837,17 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     10 => "DEBUG", 20 => "INFO", 30 => "WARNING",
                     40 => "ERROR", 50 => "CRITICAL", _ => "UNKNOWN",
                 };
+                let msg_for_getmsg = msg.clone();
                 let record_attrs = IndexMap::from([
                     (CompactString::from("message"), PyObject::str_val(CompactString::from(&msg))),
                     (CompactString::from("msg"), PyObject::str_val(CompactString::from(&msg))),
                     (CompactString::from("levelname"), PyObject::str_val(CompactString::from(level_name))),
                     (CompactString::from("levelno"), PyObject::int(level)),
                     (CompactString::from("name"), PyObject::str_val(name_log.clone())),
+                    (CompactString::from("args"), PyObject::none()),
+                    (CompactString::from("getMessage"), PyObject::native_closure("LogRecord.getMessage", move |_args| {
+                        Ok(PyObject::str_val(CompactString::from(msg_for_getmsg.clone())))
+                    })),
                 ]);
                 let record_cls = PyObject::class(CompactString::from("LogRecord"), vec![], IndexMap::new());
                 let record = PyObject::instance_with_attrs(record_cls, record_attrs);
