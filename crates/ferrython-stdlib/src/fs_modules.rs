@@ -1421,17 +1421,25 @@ pub fn create_io_module() -> PyObjectRef {
                     Ok(PyObject::int(len as i64))
                 }));
                 let d4 = data.clone();
+                let inst_for_close = inst.clone();
                 a.insert(CompactString::from("close"), PyObject::native_closure("close", move |_| {
                     d4.write().2 = true;
+                    if let PyObjectPayload::Instance(ref d) = inst_for_close.payload {
+                        d.attrs.write().insert(CompactString::from("closed"), PyObject::bool_val(true));
+                    }
                     Ok(PyObject::none())
                 }));
                 a.insert(CompactString::from("__enter__"), PyObject::native_closure("__enter__", {
                     let inst2 = inst.clone();
                     move |_| Ok(inst2.clone())
                 }));
+                let inst_for_exit = inst.clone();
                 let d5 = data.clone();
                 a.insert(CompactString::from("__exit__"), PyObject::native_closure("__exit__", move |_| {
                     d5.write().2 = true;
+                    if let PyObjectPayload::Instance(ref d) = inst_for_exit.payload {
+                        d.attrs.write().insert(CompactString::from("closed"), PyObject::bool_val(true));
+                    }
                     Ok(PyObject::none())
                 }));
                 let d6 = data.clone();
@@ -1649,7 +1657,13 @@ fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }));
 
         // close()
-        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        let inst_for_close = inst.clone();
+        attrs.insert(CompactString::from("close"), PyObject::native_closure("StringIO.close", move |_| {
+            if let PyObjectPayload::Instance(ref d) = inst_for_close.payload {
+                d.attrs.write().insert(CompactString::from("closed"), PyObject::bool_val(true));
+            }
+            Ok(PyObject::none())
+        }));
         // flush()
         attrs.insert(CompactString::from("flush"), make_builtin(|_| Ok(PyObject::none())));
 
@@ -1715,6 +1729,7 @@ fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
         let buf: Arc<RwLock<Vec<u8>>> = Arc::new(RwLock::new(initial));
         let pos: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
+        let closed_flag: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
 
         // write(b) → int
         let b = buf.clone(); let p = pos.clone();
@@ -1800,7 +1815,16 @@ fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }));
 
         // close()
-        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        let cf = closed_flag.clone();
+        let inst_for_close = inst.clone();
+        attrs.insert(CompactString::from("close"), PyObject::native_closure("BytesIO.close", move |_args: &[PyObjectRef]| {
+            *cf.write() = true;
+            if let PyObjectPayload::Instance(ref d) = inst_for_close.payload {
+                d.attrs.write().insert(CompactString::from("closed"), PyObject::bool_val(true));
+                d.attrs.write().insert(CompactString::from("_closed"), PyObject::bool_val(true));
+            }
+            Ok(PyObject::none())
+        }));
         // flush()
         attrs.insert(CompactString::from("flush"), make_builtin(|_| Ok(PyObject::none())));
         attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
@@ -1867,13 +1891,11 @@ fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(PyObject::none())
         }));
 
-        // readable/writable/seekable/closed
+        // readable/writable/seekable
         attrs.insert(CompactString::from("readable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
         attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
         attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-        attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
-        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
-        attrs.insert(CompactString::from("flush"), make_builtin(|_| Ok(PyObject::none())));
+        attrs.insert(CompactString::from("isatty"), make_builtin(|_| Ok(PyObject::bool_val(false))));
 
         // __enter__ / __exit__
         let inst_ref = inst.clone();
@@ -2041,13 +2063,33 @@ fn io_text_io_wrapper(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
         attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
 
-        // close
-        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        // close — delegate to buffer and mark closed
+        let buf = buffer.clone();
+        let inst_for_close = inst.clone();
+        attrs.insert(CompactString::from("close"), PyObject::native_closure("TextIOWrapper.close", move |_| {
+            if let Some(close_fn) = buf.get_attr("close") {
+                let _ = call_native(&close_fn, &[]);
+            }
+            if let PyObjectPayload::Instance(ref d) = inst_for_close.payload {
+                d.attrs.write().insert(CompactString::from("closed"), PyObject::bool_val(true));
+            }
+            Ok(PyObject::none())
+        }));
 
         // __enter__ / __exit__
         let inst_ref = inst.clone();
         attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("TextIOWrapper.__enter__", move |_| Ok(inst_ref.clone())));
-        attrs.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+        let inst_for_exit = inst.clone();
+        let buf = buffer.clone();
+        attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("TextIOWrapper.__exit__", move |_| {
+            if let Some(close_fn) = buf.get_attr("close") {
+                let _ = call_native(&close_fn, &[]);
+            }
+            if let PyObjectPayload::Instance(ref d) = inst_for_exit.payload {
+                d.attrs.write().insert(CompactString::from("closed"), PyObject::bool_val(true));
+            }
+            Ok(PyObject::bool_val(false))
+        }));
     }
     Ok(inst)
 }
@@ -2115,7 +2157,15 @@ fn io_buffered_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
         attrs.insert(CompactString::from("readable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
         attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(false))));
-        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        let inst_for_close = inst.clone();
+        let r = raw.clone();
+        attrs.insert(CompactString::from("close"), PyObject::native_closure("BufferedReader.close", move |_| {
+            if let Some(close_fn) = r.get_attr("close") { let _ = call_native(&close_fn, &[]); }
+            if let PyObjectPayload::Instance(ref d) = inst_for_close.payload {
+                d.attrs.write().insert(CompactString::from("closed"), PyObject::bool_val(true));
+            }
+            Ok(PyObject::none())
+        }));
 
         let inst_ref = inst.clone();
         attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("BufferedReader.__enter__", move |_| Ok(inst_ref.clone())));
@@ -2161,7 +2211,7 @@ fn io_buffered_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             } else { Ok(PyObject::int(0)) }
         }));
 
-        let r = raw;
+        let r = raw.clone();
         attrs.insert(CompactString::from("tell"), PyObject::native_closure("BufferedWriter.tell", move |_: &[PyObjectRef]| {
             if let Some(tell_fn) = r.get_attr("tell") {
                 call_native(&tell_fn, &[])
@@ -2170,7 +2220,16 @@ fn io_buffered_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
         attrs.insert(CompactString::from("readable"), make_builtin(|_| Ok(PyObject::bool_val(false))));
         attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-        attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+        let inst_for_close = inst.clone();
+        let r = raw;
+        attrs.insert(CompactString::from("close"), PyObject::native_closure("BufferedWriter.close", move |_| {
+            if let Some(flush_fn) = r.get_attr("flush") { let _ = call_native(&flush_fn, &[]); }
+            if let Some(close_fn) = r.get_attr("close") { let _ = call_native(&close_fn, &[]); }
+            if let PyObjectPayload::Instance(ref d) = inst_for_close.payload {
+                d.attrs.write().insert(CompactString::from("closed"), PyObject::bool_val(true));
+            }
+            Ok(PyObject::none())
+        }));
 
         let inst_ref = inst.clone();
         attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("BufferedWriter.__enter__", move |_| Ok(inst_ref.clone())));

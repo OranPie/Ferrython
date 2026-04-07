@@ -130,21 +130,17 @@ fn parse_dependency(dep: &str) -> Option<(String, Option<String>)> {
     }
 
     // Handle inline specifiers: "requests>=2.20"
-    let (name, spec) = pypi::parse_requirement(dep);
-    if let Some(v) = spec {
-        Some((name, Some(format!("=={}", v))))
-    } else {
-        // Check if there are operators in the name (parse_requirement strips them)
-        for op in &[">=", "<=", "!=", "~=", "==", ">", "<"] {
-            if dep.contains(op) {
-                let pos = dep.find(op).unwrap();
-                let n = dep[..pos].trim().to_string();
-                let s = dep[pos..].trim().to_string();
-                return Some((n, Some(s)));
-            }
+    // Try to find version operators directly first (more reliable)
+    for op in &[">=", "<=", "!=", "~=", "==", ">", "<"] {
+        if let Some(pos) = dep.find(op) {
+            let name = dep[..pos].trim().to_lowercase().replace('-', "_").replace('.', "_");
+            let spec = dep[pos..].trim().to_string();
+            return Some((name, Some(spec)));
         }
-        Some((name, None))
     }
+    // No version constraint — just a bare name
+    let name = dep.trim().to_lowercase().replace('-', "_").replace('.', "_");
+    Some((name, None))
 }
 
 /// Evaluate a PEP 508 environment marker expression.
@@ -270,8 +266,8 @@ fn resolve_marker_var(s: &str) -> String {
             else { "unknown".to_string() }
         }
         "platform_release" | "platform_version" => "".to_string(),
-        "python_version" => "3.11".to_string(),
-        "python_full_version" => "3.11.0".to_string(),
+        "python_version" => "3.12".to_string(),
+        "python_full_version" => "3.12.0".to_string(),
         "implementation_name" => "ferrython".to_string(),
         "implementation_version" => "0.1.0".to_string(),
         "extra" => "".to_string(),

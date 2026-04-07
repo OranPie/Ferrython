@@ -13,6 +13,10 @@ use std::net::{TcpStream, TcpListener, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+// ── Global default timeout ──────────────────────────────────────────────
+
+static DEFAULT_TIMEOUT: Mutex<Option<f64>> = Mutex::new(None);
+
 // ── Internal socket state ──────────────────────────────────────────────
 
 struct SocketInner {
@@ -30,6 +34,9 @@ struct SocketInner {
 
 impl SocketInner {
     fn new(family: i64, sock_type: i64, proto: i64) -> Self {
+        let timeout = DEFAULT_TIMEOUT.lock().ok()
+            .and_then(|g| *g)
+            .map(Duration::from_secs_f64);
         Self {
             family,
             sock_type,
@@ -38,7 +45,7 @@ impl SocketInner {
             tcp_listener: None,
             udp_socket: None,
             bound_addr: None,
-            timeout: None,
+            timeout,
             closed: false,
             options: Vec::new(),
         }
@@ -170,8 +177,37 @@ pub fn create_socket_module() -> PyObjectRef {
                 let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u32;
                 Ok(PyObject::int(u32::from_be(v) as i64))
             })),
-            ("getdefaulttimeout", make_builtin(|_| Ok(PyObject::none()))),
-            ("setdefaulttimeout", make_builtin(|_| Ok(PyObject::none()))),
+            ("getdefaulttimeout", make_builtin(|_| {
+                let guard = DEFAULT_TIMEOUT.lock().unwrap();
+                match *guard {
+                    Some(t) => Ok(PyObject::float(t)),
+                    None => Ok(PyObject::none()),
+                }
+            })),
+            ("setdefaulttimeout", make_builtin(|args| {
+                let val = args.first().ok_or_else(|| PyException::type_error("setdefaulttimeout requires 1 argument"))?;
+                let mut guard = DEFAULT_TIMEOUT.lock().unwrap();
+                match &val.payload {
+                    PyObjectPayload::None => { *guard = None; }
+                    PyObjectPayload::Float(f) => {
+                        if *f < 0.0 {
+                            return Err(PyException::value_error("Timeout value out of range"));
+                        }
+                        *guard = Some(*f);
+                    }
+                    _ => {
+                        if let Some(i) = val.as_int() {
+                            if i < 0 {
+                                return Err(PyException::value_error("Timeout value out of range"));
+                            }
+                            *guard = Some(i as f64);
+                        } else {
+                            return Err(PyException::type_error("a float is required"));
+                        }
+                    }
+                }
+                Ok(PyObject::none())
+            })),
             ("has_ipv6", PyObject::bool_val(true)),
             ("SOMAXCONN", PyObject::int(128)),
             ("AI_PASSIVE", PyObject::int(1)),

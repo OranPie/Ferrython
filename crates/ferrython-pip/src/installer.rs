@@ -72,6 +72,25 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
             site.join(&entry_name)
         };
 
+        // Security: reject paths that escape site-packages via traversal
+        let canonical_site = site.canonicalize().unwrap_or_else(|_| site.to_path_buf());
+        let canonical_dest = if dest_path.exists() {
+            dest_path.canonicalize().unwrap_or_else(|_| dest_path.to_path_buf())
+        } else {
+            // For new files, canonicalize the existing parent and append the rest
+            let mut base = dest_path.clone();
+            while !base.exists() {
+                if !base.pop() { break; }
+            }
+            let base_canon = base.canonicalize().unwrap_or(base);
+            base_canon.join(dest_path.strip_prefix(&base_canon).unwrap_or(&dest_path))
+        };
+        if !canonical_dest.starts_with(&canonical_site) && !canonical_dest.starts_with(&bin_dir) && !canonical_dest.starts_with(&include_dir) {
+            return Err(format!(
+                "Wheel contains path traversal: {} escapes {}", entry_name, site.display()
+            ));
+        }
+
         if entry.is_dir() {
             fs::create_dir_all(&dest_path)
                 .map_err(|e| format!("mkdir {}: {}", dest_path.display(), e))?;

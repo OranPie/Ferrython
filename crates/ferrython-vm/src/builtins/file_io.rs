@@ -250,6 +250,12 @@ pub(super) fn file_close(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         s.closed = true;
     }
+    // Update the Python-visible `closed` attribute on the file object
+    if let Some(self_obj) = args.first() {
+        if let PyObjectPayload::Module(ref md) = self_obj.payload {
+            md.attrs.write().insert(CompactString::from("closed"), PyObject::bool_val(true));
+        }
+    }
     Ok(PyObject::none())
 }
 

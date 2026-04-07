@@ -93,9 +93,7 @@ pub fn fetch_package_info(name: &str, version: Option<&str>) -> Result<ReleaseIn
     };
 
     let client = make_client()?;
-
-    let resp = client.get(&url).send()
-        .map_err(|e| format!("Network error: {}", e))?;
+    let resp = get_with_retry(&client, &url)?;
 
     if !resp.status().is_success() {
         return Err(format!("Package '{}' not found on PyPI (HTTP {})", name, resp.status()));
@@ -128,9 +126,7 @@ pub fn fetch_package_info(name: &str, version: Option<&str>) -> Result<ReleaseIn
 pub fn fetch_best_version(name: &str, specs: &str) -> Result<ReleaseInfo, String> {
     let url = format!("https://pypi.org/pypi/{}/json", name);
     let client = make_client()?;
-
-    let resp = client.get(&url).send()
-        .map_err(|e| format!("Network error: {}", e))?;
+    let resp = get_with_retry(&client, &url)?;
 
     if !resp.status().is_success() {
         return Err(format!("Package '{}' not found on PyPI (HTTP {})", name, resp.status()));
@@ -182,6 +178,27 @@ fn make_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|e| format!("HTTP client error: {}", e))
 }
 
+/// GET request with retry logic (exponential backoff, 3 attempts).
+fn get_with_retry(client: &reqwest::blocking::Client, url: &str) -> Result<reqwest::blocking::Response, String> {
+    let mut last_err = String::new();
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1)));
+        }
+        match client.get(url).send() {
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                last_err = format!("{}", e);
+                if e.is_timeout() || e.is_connect() {
+                    continue; // transient — retry
+                }
+                return Err(format!("Network error: {}", e));
+            }
+        }
+    }
+    Err(format!("Network error after 3 attempts: {}", last_err))
+}
+
 // ---------------------------------------------------------------------------
 // PEP 425 wheel tag matching
 // ---------------------------------------------------------------------------
@@ -220,12 +237,19 @@ fn parse_wheel_tags(filename: &str) -> Option<WheelTags> {
 fn compatible_tags() -> (Vec<String>, Vec<String>, Vec<String>) {
     let python_tags = vec![
         "py3".to_string(),
-        "cp38".to_string(),
-        "py38".to_string(),
+        "cp312".to_string(), "py312".to_string(),
+        "cp311".to_string(), "py311".to_string(),
+        "cp310".to_string(), "py310".to_string(),
+        "cp39".to_string(), "py39".to_string(),
+        "cp38".to_string(), "py38".to_string(),
+        "py2.py3".to_string(),
     ];
     let abi_tags = vec![
         "none".to_string(),
         "abi3".to_string(),
+        "cp312".to_string(),
+        "cp311".to_string(),
+        "cp310".to_string(),
     ];
 
     let mut platform_tags = vec!["any".to_string()];
@@ -343,7 +367,7 @@ pub fn download_wheel(release: &ReleaseInfo) -> Result<PathBuf, String> {
     let client = make_client()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
-    let resp = client.get(&release.url).send()
+    let resp = get_with_retry(&client, &release.url)
         .map_err(|e| format!("Download error: {}", e))?;
 
     if !resp.status().is_success() {
