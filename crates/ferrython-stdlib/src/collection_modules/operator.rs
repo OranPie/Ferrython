@@ -211,16 +211,22 @@ pub fn create_operator_module() -> PyObjectRef {
                     return Err(PyException::type_error("attrgetter expected 1 argument, got 0"));
                 }
                 let obj = &call_args[0];
+                // Helper: resolve dotted attribute path (e.g. "a.b.c")
+                let resolve = |name: &str, obj: &PyObjectRef| -> PyResult<PyObjectRef> {
+                    let parts: Vec<&str> = name.split('.').collect();
+                    let mut cur = obj.clone();
+                    for part in &parts {
+                        cur = cur.get_attr(part).ok_or_else(|| PyException::attribute_error(
+                            format!("'{}' object has no attribute '{}'", cur.type_name(), part)
+                        ))?;
+                    }
+                    Ok(cur)
+                };
                 if attr_names.len() == 1 {
-                    obj.get_attr(&attr_names[0])
-                        .ok_or_else(|| PyException::attribute_error(format!(
-                            "'{}' object has no attribute '{}'", obj.type_name(), attr_names[0]
-                        )))
+                    resolve(&attr_names[0], obj)
                 } else {
                     let items: Vec<PyObjectRef> = attr_names.iter()
-                        .map(|name| obj.get_attr(name).ok_or_else(|| PyException::attribute_error(
-                            format!("'{}' object has no attribute '{}'", obj.type_name(), name)
-                        )))
+                        .map(|name| resolve(name, obj))
                         .collect::<PyResult<Vec<_>>>()?;
                     Ok(PyObject::tuple(items))
                 }

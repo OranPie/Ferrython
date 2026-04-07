@@ -625,28 +625,26 @@ pub fn create_dataclasses_module() -> PyObjectRef {
             if args.is_empty() { return Err(PyException::type_error("make_dataclass requires cls_name")); }
             let cls_name = args[0].py_to_string();
             let field_list = if args.len() > 1 { args[1].to_list()? } else { vec![] };
-            let mut field_names = Vec::new();
-            for f in &field_list {
-                field_names.push(f.py_to_string());
-            }
-            // Create a class with __annotations__ and __dataclass_fields__
             let mut ns = IndexMap::new();
             let mut annotations = IndexMap::new();
-            let mut dc_fields = Vec::new();
-            for name in &field_names {
+            // Parse field specs: can be "name", ("name", type), or ("name", type, field(...))
+            for f in &field_list {
+                let items = f.to_list().unwrap_or_else(|_| vec![f.clone()]);
+                let name = items.first().map(|v| v.py_to_string()).unwrap_or_default();
+                if name.is_empty() { continue; }
                 annotations.insert(
                     HashableKey::Str(CompactString::from(name.as_str())),
-                    PyObject::none(),
+                    if items.len() > 1 { items[1].clone() } else { PyObject::none() },
                 );
-                dc_fields.push(PyObject::tuple(vec![
-                    PyObject::str_val(CompactString::from(name.as_str())),
-                    PyObject::none(), // type annotation
-                ]));
+                // If a field(...) default is provided as 3rd element, set as class attr
+                if items.len() > 2 {
+                    ns.insert(CompactString::from(name.as_str()), items[2].clone());
+                }
             }
             ns.insert(CompactString::from("__annotations__"), PyObject::dict(annotations));
-            ns.insert(CompactString::from("__dataclass_fields__"), PyObject::tuple(dc_fields));
             let cls = PyObject::class(CompactString::from(cls_name.as_str()), vec![], ns);
-            Ok(cls)
+            // Apply the dataclass transform to generate __init__, __repr__, __eq__
+            dataclass_apply(&cls, true, false, false, true, false)
         })),
         ("FrozenInstanceError", PyObject::exception_type(ferrython_core::error::ExceptionKind::AttributeError)),
         ("InitVar", make_builtin(|_| Ok(PyObject::none()))),
