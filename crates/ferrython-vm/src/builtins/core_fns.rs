@@ -432,15 +432,19 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             h as i64
         }
         HashableKey::FrozenSet(items) => {
-            // CPython frozenset hash: XOR of element hashes (order-independent)
-            let mut h: u64 = 0;
+            // CPython frozenset hash algorithm (order-independent, collision-resistant)
+            let mask: u64 = u64::MAX;
+            let n = items.len() as u64;
+            let mut h: u64 = 1927868237u64.wrapping_mul(n.wrapping_add(1)) & mask;
             for item in items {
-                let item_hash = builtin_hash(&[item.to_object()])
+                let hx = builtin_hash(&[item.to_object()])
                     .map(|v| v.as_int().unwrap_or(0) as u64)
                     .unwrap_or(0);
-                h ^= item_hash;
+                h ^= (hx ^ (hx << 16) ^ 89869747).wrapping_mul(3644798167) & mask;
             }
-            h as i64
+            h = h.wrapping_mul(69069).wrapping_add(907133923) & mask;
+            let result = h as i64;
+            if result == -1 { 590923713 } else { result }
         }
         HashableKey::Bytes(b) => { let mut h: u64 = 5381; for x in b { h = h.wrapping_mul(33).wrapping_add(x as u64); } h as i64 }
         HashableKey::Identity(ptr, _) => ptr as i64,
