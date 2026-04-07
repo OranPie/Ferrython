@@ -308,6 +308,21 @@ pub fn create_sys_module() -> PyObjectRef {
             names
         })),
         ("getfilesystemencodeerrors", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("surrogateescape"))))),
+        ("hexversion", PyObject::int(0x030800f0)),
+        ("warnoptions", PyObject::list(vec![])),
+        ("path_importer_cache", PyObject::dict_from_pairs(vec![])),
+        ("displayhook", make_builtin(|args| {
+            check_args("sys.displayhook", args, 1)?;
+            if !matches!(args[0].payload, PyObjectPayload::None) {
+                println!("{}", args[0].py_to_string());
+            }
+            Ok(PyObject::none())
+        })),
+        ("breakpointhook", make_builtin(|_args| {
+            // Default breakpointhook just prints a message (no real debugger)
+            eprintln!("--Return--");
+            Ok(PyObject::none())
+        })),
     ])
 }
 
@@ -963,6 +978,54 @@ pub fn create_os_module() -> PyObjectRef {
         })),
         ("stat_result", make_builtin(|_| {
             Ok(PyObject::class(CompactString::from("stat_result"), vec![], IndexMap::new()))
+        })),
+        // waitpid and W* macros
+        ("waitpid", make_builtin(|args| {
+            if args.len() < 2 { return Err(PyException::type_error("os.waitpid requires pid and options")); }
+            let pid = args[0].as_int().ok_or_else(|| PyException::type_error("pid must be int"))? as i32;
+            let options = args[1].as_int().ok_or_else(|| PyException::type_error("options must be int"))? as i32;
+            #[cfg(unix)] {
+                let mut status: i32 = 0;
+                let ret = unsafe { libc::waitpid(pid, &mut status, options) };
+                if ret < 0 { return Err(PyException::os_error("waitpid failed".to_string())); }
+                Ok(PyObject::tuple(vec![PyObject::int(ret as i64), PyObject::int(status as i64)]))
+            }
+            #[cfg(not(unix))] {
+                let _ = (pid, options);
+                Err(PyException::not_implemented_error("os.waitpid not available"))
+            }
+        })),
+        ("WNOHANG", PyObject::int(1)),
+        ("WUNTRACED", PyObject::int(2)),
+        ("WIFEXITED", make_builtin(|args| {
+            check_args("os.WIFEXITED", args, 1)?;
+            let status = args[0].as_int().unwrap_or(0) as i32;
+            Ok(PyObject::bool_val(libc::WIFEXITED(status)))
+        })),
+        ("WEXITSTATUS", make_builtin(|args| {
+            check_args("os.WEXITSTATUS", args, 1)?;
+            let status = args[0].as_int().unwrap_or(0) as i32;
+            Ok(PyObject::int(libc::WEXITSTATUS(status) as i64))
+        })),
+        ("WIFSIGNALED", make_builtin(|args| {
+            check_args("os.WIFSIGNALED", args, 1)?;
+            let status = args[0].as_int().unwrap_or(0) as i32;
+            Ok(PyObject::bool_val(libc::WIFSIGNALED(status)))
+        })),
+        ("WTERMSIG", make_builtin(|args| {
+            check_args("os.WTERMSIG", args, 1)?;
+            let status = args[0].as_int().unwrap_or(0) as i32;
+            Ok(PyObject::int(libc::WTERMSIG(status) as i64))
+        })),
+        ("WIFSTOPPED", make_builtin(|args| {
+            check_args("os.WIFSTOPPED", args, 1)?;
+            let status = args[0].as_int().unwrap_or(0) as i32;
+            Ok(PyObject::bool_val(libc::WIFSTOPPED(status)))
+        })),
+        ("WSTOPSIG", make_builtin(|args| {
+            check_args("os.WSTOPSIG", args, 1)?;
+            let status = args[0].as_int().unwrap_or(0) as i32;
+            Ok(PyObject::int(libc::WSTOPSIG(status) as i64))
         })),
     ])
 }

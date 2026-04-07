@@ -570,18 +570,56 @@ fn make_timezone_utc() -> PyObjectRef {
     inst
 }
 
-fn datetime_now(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn datetime_now(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Extract optional tz argument (positional or kwarg)
+    let mut tz_val: Option<PyObjectRef> = None;
+    for arg in args {
+        match &arg.payload {
+            PyObjectPayload::Dict(ref map) => {
+                let map_r = map.read();
+                if let Some(v) = map_r.get(&HashableKey::Str(CompactString::from("tz"))) {
+                    if !matches!(v.payload, PyObjectPayload::None) {
+                        tz_val = Some(v.clone());
+                    }
+                }
+            }
+            PyObjectPayload::Instance(_) => {
+                // Positional tz argument
+                if arg.get_attr("__timezone__").is_some() {
+                    tz_val = Some(arg.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let secs = now.as_secs();
     let micros = now.subsec_micros();
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
+
+    // Apply timezone offset if provided
+    let offset_secs: i64 = tz_val.as_ref().and_then(|tz| {
+        tz.get_attr("_offset_secs").and_then(|v| v.as_int())
+    }).unwrap_or(0);
+
+    let adjusted = secs as i64 + offset_secs;
+    let adjusted_u = adjusted.unsigned_abs();
+    let days = adjusted_u / 86400;
+    let time_of_day = adjusted_u % 86400;
     let hour = (time_of_day / 3600) as i64;
     let minute = ((time_of_day % 3600) / 60) as i64;
     let second = (time_of_day % 60) as i64;
     let (year, month, day) = days_to_ymd(days as i64 + 719468);
-    Ok(make_datetime_instance(year, month, day, hour, minute, second, micros as i64))
+    let inst = make_datetime_instance(year, month, day, hour, minute, second, micros as i64);
+
+    // Set tzinfo on the result
+    if let Some(tz) = tz_val {
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            d.attrs.write().insert(CompactString::from("tzinfo"), tz);
+        }
+    }
+    Ok(inst)
 }
 
 fn date_today(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -894,6 +932,7 @@ fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64,
         w.insert(CompactString::from("minute"), PyObject::int(minute));
         w.insert(CompactString::from("second"), PyObject::int(second));
         w.insert(CompactString::from("microsecond"), PyObject::int(microsecond));
+        w.insert(CompactString::from("tzinfo"), PyObject::none());
 
         // isoformat(sep='T') -> str
         let (y, mo, da, h, mi, s, us) = (year, month, day, hour, minute, second, microsecond);

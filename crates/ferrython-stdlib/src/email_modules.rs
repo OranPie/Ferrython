@@ -11,6 +11,21 @@ use std::sync::{Arc, Mutex};
 
 // ── Helper: build a Message instance ───────────────────────────────────
 
+/// Serialize a message part by calling its _serialize closure (which captures headers/payload Arcs)
+fn serialize_message_part(part: &PyObjectRef) -> String {
+    if let PyObjectPayload::Instance(ref inst) = part.payload {
+        let attrs = inst.attrs.read();
+        if let Some(ser_fn) = attrs.get("_serialize") {
+            if let PyObjectPayload::NativeClosure { func, .. } = &ser_fn.payload {
+                if let Ok(result) = func(&[]) {
+                    return result.py_to_string();
+                }
+            }
+        }
+    }
+    part.py_to_string()
+}
+
 fn build_message_instance(
     content_type: Option<&str>,
     payload: Option<PyObjectRef>,
@@ -281,16 +296,45 @@ fn build_message_instance(
         attrs.insert(CompactString::from("__str__"),
             PyObject::native_closure("__str__", move |_args| {
                 let guard = h.lock().unwrap();
+                let payload = p.lock().unwrap();
+                let is_multipart = matches!(payload.payload, PyObjectPayload::List(_));
+                let boundary = if is_multipart {
+                    format!("==============={}==", std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos())
+                } else { String::new() };
+
                 let mut s = String::new();
                 for (k, v) in guard.iter() {
-                    s.push_str(k.as_str());
-                    s.push_str(": ");
-                    s.push_str(&v.py_to_string());
-                    s.push('\n');
+                    if is_multipart && k == "Content-Type" {
+                        s.push_str("Content-Type: ");
+                        let ct = v.py_to_string();
+                        if ct.contains("boundary=") {
+                            s.push_str(&ct);
+                        } else {
+                            s.push_str(&ct);
+                            s.push_str(&format!("; boundary=\"{}\"", boundary));
+                        }
+                        s.push('\n');
+                    } else {
+                        s.push_str(k.as_str());
+                        s.push_str(": ");
+                        s.push_str(&v.py_to_string());
+                        s.push('\n');
+                    }
                 }
                 s.push('\n');
-                let payload = p.lock().unwrap();
-                if !matches!(payload.payload, PyObjectPayload::None) {
+
+                if is_multipart {
+                    if let PyObjectPayload::List(items) = &payload.payload {
+                        for part in items.read().iter() {
+                            s.push_str(&format!("--{}\n", boundary));
+                            // Serialize each part by extracting its headers and payload
+                            s.push_str(&serialize_message_part(part));
+                            s.push('\n');
+                        }
+                        s.push_str(&format!("--{}--\n", boundary));
+                    }
+                } else if !matches!(payload.payload, PyObjectPayload::None) {
                     let ps = payload.py_to_string();
                     if ps != "None" {
                         s.push_str(&ps);
@@ -321,6 +365,32 @@ fn build_message_instance(
                     }
                 }
                 Ok(PyObject::none())
+            }));
+    }
+
+    // _serialize() — internal method for parent __str__ to call on parts
+    {
+        let h = headers.clone();
+        let p = payload_cell.clone();
+        attrs.insert(CompactString::from("_serialize"),
+            PyObject::native_closure("_serialize", move |_args| {
+                let guard = h.lock().unwrap();
+                let payload = p.lock().unwrap();
+                let mut s = String::new();
+                for (k, v) in guard.iter() {
+                    s.push_str(k.as_str());
+                    s.push_str(": ");
+                    s.push_str(&v.py_to_string());
+                    s.push('\n');
+                }
+                s.push('\n');
+                if !matches!(payload.payload, PyObjectPayload::None) {
+                    let ps = payload.py_to_string();
+                    if ps != "None" {
+                        s.push_str(&ps);
+                    }
+                }
+                Ok(PyObject::str_val(CompactString::from(s)))
             }));
     }
 
