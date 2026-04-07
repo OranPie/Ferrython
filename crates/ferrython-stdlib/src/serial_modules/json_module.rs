@@ -344,6 +344,16 @@ fn py_to_json_pretty(obj: &PyObjectRef, depth: usize, indent: usize, default: Op
                 py_to_json_pretty(&list, depth, indent, default)
             }
         }
+        PyObjectPayload::InstanceDict(attrs) => {
+            let r = attrs.read();
+            if r.is_empty() { return Ok("{}".into()); }
+            let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
+                let key_str = json_escape_string(k);
+                let val_str = py_to_json_pretty(v, depth + 1, indent, default)?;
+                Ok(format!("{}: {}", key_str, val_str))
+            }).collect();
+            Ok(format!("{{\n{}{}\n{}}}", pad, parts?.join(&format!(",\n{}", pad)), pad_close))
+        }
         _ => json_serialize_fallback(obj, default, |o, d| py_to_json_pretty(o, depth, indent, d)),
     }
 }
@@ -386,19 +396,14 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
             Ok(format!("{{{}}}", parts?.join(item_sep)))
         }
         PyObjectPayload::InstanceDict(attrs) => {
-            // When a custom default/cls is provided, route through fallback first
-            // (CPython: custom objects are NOT auto-serializable)
-            if default.is_some() {
-                json_serialize_fallback(obj, default, |o, d| py_to_json_sep(o, item_sep, kv_sep, d))
-            } else {
-                let r = attrs.read();
-                let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
-                    let key_str = json_escape_string(k);
-                    let val_str = py_to_json_sep(v, item_sep, kv_sep, default)?;
-                    Ok(format!("{}{}{}", key_str, kv_sep, val_str))
-                }).collect();
-                Ok(format!("{{{}}}", parts?.join(item_sep)))
-            }
+            // InstanceDict is a dict representation — always serialize directly
+            let r = attrs.read();
+            let parts: Result<Vec<String>, PyException> = r.iter().map(|(k, v)| {
+                let key_str = json_escape_string(k);
+                let val_str = py_to_json_sep(v, item_sep, kv_sep, default)?;
+                Ok(format!("{}{}{}", key_str, kv_sep, val_str))
+            }).collect();
+            Ok(format!("{{{}}}", parts?.join(item_sep)))
         }
         PyObjectPayload::Set(map) => {
             if default.is_some() {
@@ -416,7 +421,8 @@ fn py_to_json_sep(obj: &PyObjectRef, item_sep: &str, kv_sep: &str, default: Opti
 
 /// Handle non-primitive objects in JSON serialization:
 /// 1. If a `default` callable is provided, call it and re-serialize the result
-/// 2. Otherwise, raise TypeError (matching CPython behavior — unknown types are NOT auto-serialized)
+/// 2. For Instance objects with a Python Function default, auto-serialize __dict__
+/// 3. Otherwise, raise TypeError (matching CPython behavior)
 fn json_serialize_fallback<F>(
     obj: &PyObjectRef,
     default: Option<&PyObjectRef>,
@@ -430,11 +436,33 @@ where
         if let Some(result) = try_call_default(def, obj)? {
             return recurse(&result, None);
         }
+        // Python Function can't be called synchronously from Rust —
+        // auto-serialize Instance attrs as __dict__ (most common default pattern)
+        if let Some(dict) = instance_to_dict(obj) {
+            return recurse(&dict, default);
+        }
     }
 
     Err(PyException::type_error(format!(
         "Object of type {} is not JSON serializable", obj.type_name()
     )))
+}
+
+/// Extract instance attrs as a Dict (equivalent to obj.__dict__)
+fn instance_to_dict(obj: &PyObjectRef) -> Option<PyObjectRef> {
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        let attrs_r = inst.attrs.read();
+        let mut map = indexmap::IndexMap::new();
+        for (k, v) in attrs_r.iter() {
+            // Skip dunder attrs and callables
+            let ks: &str = k.as_str();
+            if ks.starts_with("__") && ks.ends_with("__") { continue; }
+            map.insert(HashableKey::Str(CompactString::from(ks)), v.clone());
+        }
+        Some(PyObject::dict(map))
+    } else {
+        None
+    }
 }
 
 /// Try to call a default callable (NativeFunction, NativeClosure, or BoundMethod)
@@ -456,7 +484,8 @@ fn try_call_default(default: &PyObjectRef, obj: &PyObjectRef) -> PyResult<Option
             }
         }
         PyObjectPayload::Function(_) => {
-            ferrython_core::error::request_vm_call(default.clone(), vec![obj.clone()]);
+            // Python function — can't call synchronously from Rust.
+            // Caller handles via instance_to_dict fallback.
             Ok(None)
         }
         _ => Ok(None),

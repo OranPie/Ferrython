@@ -781,27 +781,46 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
         // Generate __setattr__ and __delattr__ for frozen=True
         if frozen {
             ns.insert(CompactString::from("__dataclass_frozen__"), PyObject::bool_val(true));
-            // Raise FrozenInstanceError on attribute assignment (after __init__)
-            ns.insert(CompactString::from("__setattr__"), PyObject::native_closure("__setattr__", move |args: &[PyObjectRef]| {
-                if args.len() < 3 {
-                    return Err(PyException::type_error("__setattr__ requires 3 arguments"));
+
+            // Generate a Rust __init__ that bypasses __setattr__ (like CPython uses object.__setattr__)
+            let init_field_names = init_fields.clone();
+            let init_field_defaults = field_defaults.clone();
+            ns.insert(CompactString::from("__init__"), PyObject::native_closure("__init__", move |args: &[PyObjectRef]| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("__init__ requires self"));
                 }
-                // Check if we're in __init__ (allow setting during construction)
-                // We use a marker __dataclass_initializing__ to allow __init__ to set fields
-                if let PyObjectPayload::Instance(inst) = &args[0].payload {
-                    let attrs = inst.attrs.read();
-                    if attrs.get("__dataclass_initializing__").map_or(false, |v| v.is_truthy()) {
-                        drop(attrs);
-                        let mut attrs = inst.attrs.write();
-                        let name = args[1].py_to_string();
-                        attrs.insert(CompactString::from(name), args[2].clone());
-                        return Ok(PyObject::none());
+                let self_obj = &args[0];
+                if let PyObjectPayload::Instance(inst) = &self_obj.payload {
+                    let mut attrs = inst.attrs.write();
+                    let mut pos = 1; // skip self
+                    for fname in &init_field_names {
+                        let value = if pos < args.len() {
+                            args[pos].clone()
+                        } else if let Some(default) = init_field_defaults.get(fname.as_str()) {
+                            // Check if it's a factory (callable)
+                            match &default.payload {
+                                PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
+                                PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+                                _ => default.clone(),
+                            }
+                        } else {
+                            return Err(PyException::type_error(format!(
+                                "__init__() missing required argument: '{}'", fname
+                            )));
+                        };
+                        attrs.insert(fname.clone(), value);
+                        pos += 1;
                     }
                 }
-                Err(PyException::runtime_error("cannot assign to field of frozen dataclass"))
+                Ok(PyObject::none())
+            }));
+
+            // Raise FrozenInstanceError on attribute assignment
+            ns.insert(CompactString::from("__setattr__"), make_builtin(|_| {
+                Err(PyException::attribute_error("cannot assign to field of frozen dataclass".to_string()))
             }));
             ns.insert(CompactString::from("__delattr__"), make_builtin(|_| {
-                Err(PyException::runtime_error("cannot delete field of frozen dataclass"))
+                Err(PyException::attribute_error("cannot delete field of frozen dataclass".to_string()))
             }));
         }
 

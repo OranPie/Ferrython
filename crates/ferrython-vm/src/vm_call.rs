@@ -2828,6 +2828,18 @@ impl VirtualMachine {
                 }
                 Ok(PyObject::dict(new_map))
             }
+            PyObjectPayload::InstanceDict(map) => {
+                // Instance __dict__ uses CompactString keys, convert to HashableKey
+                let entries: Vec<_> = map.read().iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let mut new_map = IndexMap::new();
+                for (k, v) in entries {
+                    let prepared = self.json_prepare_with_default(&v, default_fn)?;
+                    new_map.insert(HashableKey::Str(k), prepared);
+                }
+                Ok(PyObject::dict(new_map))
+            }
             PyObjectPayload::List(items) => {
                 let items: Vec<_> = items.read().clone();
                 let mut prepared = Vec::with_capacity(items.len());
