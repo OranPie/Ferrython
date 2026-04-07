@@ -255,3 +255,4 @@ fixture_test!(test_phase150, "test_phase150.py");
 fixture_test!(test_phase151, "test_phase151.py");
 fixture_test!(test_phase152, "test_phase152.py");
 fixture_test!(test_phase153, "test_phase153.py");
+fixture_test!(test_phase154, "test_phase154.py");
