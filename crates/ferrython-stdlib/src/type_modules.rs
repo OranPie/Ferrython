@@ -779,20 +779,299 @@ pub fn create_enum_module() -> PyObjectRef {
         int_enum_ns,
     );
 
-    // Flag — class with bitwise support marker
+    // Helper: extract int value from a Flag member or plain int
+    fn flag_int_val(obj: &PyObjectRef) -> Option<i64> {
+        if let Some(v) = obj.get_attr("value") {
+            if let PyObjectPayload::Int(ref i) = v.payload {
+                return i.to_i64();
+            }
+        }
+        if let PyObjectPayload::Int(ref i) = obj.payload {
+            return i.to_i64();
+        }
+        if let Some(v) = obj.get_attr("_value_") {
+            if let PyObjectPayload::Int(ref i) = v.payload {
+                return i.to_i64();
+            }
+        }
+        None
+    }
+
+    // Flag — class with bitwise support
     let mut flag_ns = IndexMap::new();
     flag_ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
     flag_ns.insert(CompactString::from("__flag__"), PyObject::bool_val(true));
+
+    // __or__ — combine flags with | operator
+    flag_ns.insert(CompactString::from("__or__"), PyObject::native_function(
+        "Flag.__or__", |args: &[PyObjectRef]| {
+            check_args("Flag.__or__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a | b))
+        }
+    ));
+
+    // __and__ — bitwise AND of flags
+    flag_ns.insert(CompactString::from("__and__"), PyObject::native_function(
+        "Flag.__and__", |args: &[PyObjectRef]| {
+            check_args("Flag.__and__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a & b))
+        }
+    ));
+
+    // __xor__ — bitwise XOR of flags
+    flag_ns.insert(CompactString::from("__xor__"), PyObject::native_function(
+        "Flag.__xor__", |args: &[PyObjectRef]| {
+            check_args("Flag.__xor__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a ^ b))
+        }
+    ));
+
+    // __invert__ — bitwise complement
+    flag_ns.insert(CompactString::from("__invert__"), PyObject::native_function(
+        "Flag.__invert__", |args: &[PyObjectRef]| {
+            check_args("Flag.__invert__", args, 1)?;
+            let v = flag_int_val(&args[0]).unwrap_or(0);
+            Ok(PyObject::int(!v))
+        }
+    ));
+
+    // __contains__ — check if one flag contains another (a & b == b)
+    flag_ns.insert(CompactString::from("__contains__"), PyObject::native_function(
+        "Flag.__contains__", |args: &[PyObjectRef]| {
+            check_args("Flag.__contains__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::bool_val(a & b == b))
+        }
+    ));
+
+    // __bool__ — Flag(0) is falsy
+    flag_ns.insert(CompactString::from("__bool__"), PyObject::native_function(
+        "Flag.__bool__", |args: &[PyObjectRef]| {
+            check_args("Flag.__bool__", args, 1)?;
+            let v = flag_int_val(&args[0]).unwrap_or(0);
+            Ok(PyObject::bool_val(v != 0))
+        }
+    ));
+
+    // __repr__ — show combined flags in "Flag1|Flag2" format
+    flag_ns.insert(CompactString::from("__repr__"), PyObject::native_function(
+        "Flag.__repr__", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("<Flag>"))); }
+            let self_obj = &args[0];
+            let val = flag_int_val(self_obj).unwrap_or(0);
+            // Try to get the name directly (single member)
+            if let Some(name) = self_obj.get_attr("name") {
+                let name_s = name.py_to_string();
+                if name_s != "None" && !name_s.is_empty() {
+                    // Get class name if available
+                    let cls_name = self_obj.get_attr("__class__")
+                        .and_then(|c| c.get_attr("__name__"))
+                        .map(|n| n.py_to_string())
+                        .unwrap_or_else(|| "Flag".to_string());
+                    return Ok(PyObject::str_val(CompactString::from(
+                        format!("<{}.{}: {}>", cls_name, name_s, val)
+                    )));
+                }
+            }
+            // Combined flags — try to decompose by iterating class members
+            if val == 0 {
+                let cls_name = self_obj.get_attr("__class__")
+                    .and_then(|c| c.get_attr("__name__"))
+                    .map(|n| n.py_to_string())
+                    .unwrap_or_else(|| "Flag".to_string());
+                return Ok(PyObject::str_val(CompactString::from(
+                    format!("<{}: 0>", cls_name)
+                )));
+            }
+            Ok(PyObject::str_val(CompactString::from(format!("<Flag: {}>", val))))
+        }
+    ));
+
     let flag_class = PyObject::class(
         CompactString::from("Flag"),
         vec![enum_class.clone(), PyObject::builtin_type(CompactString::from("int"))],
         flag_ns,
     );
 
-    // IntFlag — Flag subclass
+    // IntFlag — Flag subclass with int arithmetic support
     let mut int_flag_ns = IndexMap::new();
     int_flag_ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
     int_flag_ns.insert(CompactString::from("__flag__"), PyObject::bool_val(true));
+    int_flag_ns.insert(CompactString::from("__int_enum__"), PyObject::bool_val(true));
+
+    // Bitwise ops (duplicated from Flag since Ferrython doesn't do full MRO for class namespaces)
+    int_flag_ns.insert(CompactString::from("__or__"), PyObject::native_function(
+        "IntFlag.__or__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__or__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a | b))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__and__"), PyObject::native_function(
+        "IntFlag.__and__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__and__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a & b))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__xor__"), PyObject::native_function(
+        "IntFlag.__xor__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__xor__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a ^ b))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__invert__"), PyObject::native_function(
+        "IntFlag.__invert__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__invert__", args, 1)?;
+            let v = flag_int_val(&args[0]).unwrap_or(0);
+            Ok(PyObject::int(!v))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__contains__"), PyObject::native_function(
+        "IntFlag.__contains__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__contains__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::bool_val(a & b == b))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__bool__"), PyObject::native_function(
+        "IntFlag.__bool__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__bool__", args, 1)?;
+            let v = flag_int_val(&args[0]).unwrap_or(0);
+            Ok(PyObject::bool_val(v != 0))
+        }
+    ));
+
+    // Int conversion
+    int_flag_ns.insert(CompactString::from("__int__"), PyObject::native_function(
+        "IntFlag.__int__", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::int(0)); }
+            Ok(PyObject::int(flag_int_val(&args[0]).unwrap_or(0)))
+        }
+    ));
+
+    // Comparison ops (same as IntEnum)
+    int_flag_ns.insert(CompactString::from("__eq__"), PyObject::native_function(
+        "IntFlag.__eq__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__eq__", args, 2)?;
+            let a = flag_int_val(&args[0]);
+            let b = flag_int_val(&args[1]);
+            Ok(PyObject::bool_val(a == b))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__lt__"), PyObject::native_function(
+        "IntFlag.__lt__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__lt__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::bool_val(a < b))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__le__"), PyObject::native_function(
+        "IntFlag.__le__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__le__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::bool_val(a <= b))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__gt__"), PyObject::native_function(
+        "IntFlag.__gt__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__gt__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::bool_val(a > b))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__ge__"), PyObject::native_function(
+        "IntFlag.__ge__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__ge__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::bool_val(a >= b))
+        }
+    ));
+
+    // Arithmetic ops (IntFlag acts as int)
+    int_flag_ns.insert(CompactString::from("__add__"), PyObject::native_function(
+        "IntFlag.__add__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__add__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a + b))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__sub__"), PyObject::native_function(
+        "IntFlag.__sub__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__sub__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a - b))
+        }
+    ));
+
+    int_flag_ns.insert(CompactString::from("__mul__"), PyObject::native_function(
+        "IntFlag.__mul__", |args: &[PyObjectRef]| {
+            check_args("IntFlag.__mul__", args, 2)?;
+            let a = flag_int_val(&args[0]).unwrap_or(0);
+            let b = flag_int_val(&args[1]).unwrap_or(0);
+            Ok(PyObject::int(a * b))
+        }
+    ));
+
+    // __repr__ for IntFlag
+    int_flag_ns.insert(CompactString::from("__repr__"), PyObject::native_function(
+        "IntFlag.__repr__", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("<IntFlag>"))); }
+            let self_obj = &args[0];
+            let val = flag_int_val(self_obj).unwrap_or(0);
+            if let Some(name) = self_obj.get_attr("name") {
+                let name_s = name.py_to_string();
+                if name_s != "None" && !name_s.is_empty() {
+                    let cls_name = self_obj.get_attr("__class__")
+                        .and_then(|c| c.get_attr("__name__"))
+                        .map(|n| n.py_to_string())
+                        .unwrap_or_else(|| "IntFlag".to_string());
+                    return Ok(PyObject::str_val(CompactString::from(
+                        format!("<{}.{}: {}>", cls_name, name_s, val)
+                    )));
+                }
+            }
+            if val == 0 {
+                let cls_name = self_obj.get_attr("__class__")
+                    .and_then(|c| c.get_attr("__name__"))
+                    .map(|n| n.py_to_string())
+                    .unwrap_or_else(|| "IntFlag".to_string());
+                return Ok(PyObject::str_val(CompactString::from(
+                    format!("<{}: 0>", cls_name)
+                )));
+            }
+            Ok(PyObject::str_val(CompactString::from(format!("<IntFlag: {}>", val))))
+        }
+    ));
+
     let int_flag_class = PyObject::class(
         CompactString::from("IntFlag"),
         vec![flag_class.clone()],
