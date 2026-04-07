@@ -508,6 +508,16 @@ impl VirtualMachine {
                                     }
                                 }
                                 "str" => {
+                                    // str(bytes, encoding) → decode
+                                    if pos_args.len() >= 2 {
+                                        match &pos_args[0].payload {
+                                            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                                                let s = String::from_utf8_lossy(b);
+                                                return Ok(PyObject::str_val(CompactString::from(s.as_ref())));
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                     // Use vm_str for VM-aware conversion (calls __str__/__repr__)
                                     match self.vm_str(&pos_args[0]) {
                                         Ok(s) => Some(PyObject::str_val(CompactString::from(s))),
@@ -1512,6 +1522,16 @@ impl VirtualMachine {
                     "str" => {
                         if args.is_empty() {
                             return Ok(PyObject::str_val(CompactString::from("")));
+                        }
+                        // str(bytes, encoding[, errors]) — decode bytes
+                        if args.len() >= 2 {
+                            match &args[0].payload {
+                                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                                    let s = String::from_utf8_lossy(b);
+                                    return Ok(PyObject::str_val(CompactString::from(s.as_ref())));
+                                }
+                                _ => {}
+                            }
                         }
                         return self.vm_str(&args[0]).map(|s| PyObject::str_val(CompactString::from(s)));
                     }

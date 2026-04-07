@@ -42,6 +42,17 @@ pub(super) fn builtin_str(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::str_val(CompactString::from("")));
     }
+    // str(bytes_or_bytearray, encoding[, errors])
+    if args.len() >= 2 {
+        match &args[0].payload {
+            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                // encoding arg is present (ignore it for now, treat as utf-8)
+                let s = String::from_utf8_lossy(b);
+                return Ok(PyObject::str_val(CompactString::from(s.as_ref())));
+            }
+            _ => {}
+        }
+    }
     Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
 }
 
