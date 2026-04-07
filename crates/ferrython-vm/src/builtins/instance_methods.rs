@@ -738,6 +738,10 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
             name: CompactString::from("bytes.fromhex"),
             func: builtin_bytes_fromhex,
         })),
+        ("bytes", "maketrans") | ("bytearray", "maketrans") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("bytes.maketrans"),
+            func: builtin_bytes_maketrans,
+        })),
         ("object", "__getattribute__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
             name: CompactString::from("object.__getattribute__"),
             func: builtin_object_getattribute,
@@ -863,6 +867,28 @@ pub(super) fn builtin_bytes_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRe
         }
     }
     Ok(PyObject::bytes(bytes))
+}
+
+pub(super) fn builtin_bytes_maketrans(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 {
+        return Err(PyException::type_error("maketrans requires 2 arguments"));
+    }
+    let from_bytes = match &args[0].payload {
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+        _ => return Err(PyException::type_error("a bytes-like object is required")),
+    };
+    let to_bytes = match &args[1].payload {
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+        _ => return Err(PyException::type_error("a bytes-like object is required")),
+    };
+    if from_bytes.len() != to_bytes.len() {
+        return Err(PyException::value_error("maketrans arguments must have same length"));
+    }
+    let mut table: Vec<u8> = (0..=255u8).collect();
+    for (f, t) in from_bytes.iter().zip(to_bytes.iter()) {
+        table[*f as usize] = *t;
+    }
+    Ok(PyObject::bytes(table))
 }
 
 pub(super) fn builtin_float_fromhex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

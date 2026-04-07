@@ -838,6 +838,20 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
         "imag" => Ok(PyObject::int(0)),
         "numerator" => Ok(_receiver.clone()),
         "denominator" => Ok(PyObject::int(1)),
+        "__index__" | "__int__" | "__trunc__" | "__ceil__" | "__floor__" => Ok(_receiver.clone()),
+        "__abs__" => {
+            let n = _receiver.to_int()?;
+            Ok(PyObject::int(n.abs()))
+        }
+        "__neg__" => {
+            let n = _receiver.to_int()?;
+            Ok(PyObject::int(-n))
+        }
+        "__pos__" => Ok(_receiver.clone()),
+        "__invert__" => {
+            let n = _receiver.to_int()?;
+            Ok(PyObject::int(!n))
+        }
         _ => Err(PyException::attribute_error(format!(
             "'int' object has no attribute '{}'", method
         ))),
@@ -1397,6 +1411,30 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                 s.lines().map(|l| PyObject::bytes(l.as_bytes().to_vec())).collect()
             };
             Ok(PyObject::list(parts))
+        }
+        "translate" => {
+            if args.is_empty() { return Err(PyException::type_error("translate requires a table argument")); }
+            let table = match &args[0].payload {
+                PyObjectPayload::Bytes(t) | PyObjectPayload::ByteArray(t) => t.clone(),
+                PyObjectPayload::None => vec![],
+                _ => return Err(PyException::type_error("a bytes-like object or None is required")),
+            };
+            let delete: Vec<u8> = if args.len() > 1 {
+                match &args[1].payload {
+                    PyObjectPayload::Bytes(d) | PyObjectPayload::ByteArray(d) => d.clone(),
+                    _ => vec![],
+                }
+            } else { vec![] };
+            let mut result = Vec::with_capacity(b.len());
+            for &byte in b.iter() {
+                if delete.contains(&byte) { continue; }
+                if table.len() == 256 {
+                    result.push(table[byte as usize]);
+                } else {
+                    result.push(byte);
+                }
+            }
+            Ok(PyObject::bytes(result))
         }
         _ => Err(PyException::attribute_error(format!(
             "'bytes' object has no attribute '{}'", method

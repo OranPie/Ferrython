@@ -354,9 +354,15 @@ pub(super) fn py_dir(obj: &PyObjectRef) -> Vec<CompactString> {
             }
             PyObjectPayload::Bytes(_) | PyObjectPayload::ByteArray(_) => {
                 let mut v: Vec<&str> = vec![
-                    "count", "decode", "endswith", "find", "hex",
-                    "index", "join", "lower", "replace", "split", "startswith", "strip",
-                    "upper", "fromhex",
+                    "capitalize", "center", "count", "decode", "endswith", "expandtabs",
+                    "find", "fromhex", "hex", "index",
+                    "isalnum", "isalpha", "isdigit", "islower", "isspace", "istitle", "isupper",
+                    "join", "ljust", "lower", "lstrip",
+                    "partition", "removeprefix", "removesuffix", "replace",
+                    "rfind", "rindex", "rjust", "rpartition", "rsplit", "rstrip",
+                    "split", "splitlines", "startswith", "strip", "swapcase", "title", "upper",
+                    "zfill",
+                    "append", "extend", "insert", "pop", "clear", "copy", "reverse",
                     "__add__", "__contains__", "__getitem__", "__iter__",
                     "__len__", "__mul__", "__bool__",
                 ];

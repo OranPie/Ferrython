@@ -1028,6 +1028,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("int"))),
                 "bit_length" | "bit_count" | "to_bytes" | "conjugate" | "__abs__" |
                 "__int__" | "__float__" | "__index__" | "__bool__" |
+                "__neg__" | "__pos__" | "__invert__" |
                 "__repr__" | "__str__" | "__hash__" | "__format__" |
                 "__ceil__" | "__floor__" | "__round__" | "__trunc__" |
                 "as_integer_ratio" => Some(Arc::new(PyObject {
@@ -1044,7 +1045,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "imag" => Some(PyObject::float(0.0)),
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("float"))),
                 "is_integer" | "conjugate" | "hex" | "__abs__" |
-                "__int__" | "__float__" | "__bool__" |
+                "__int__" | "__float__" | "__bool__" | "__index__" |
+                "__neg__" | "__pos__" |
                 "__repr__" | "__str__" | "__hash__" | "__format__" |
                 "__ceil__" | "__floor__" | "__round__" | "__trunc__" |
                 "as_integer_ratio" | "fromhex" => Some(Arc::new(PyObject {
@@ -1214,7 +1216,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "split" | "join" | "replace" | "isdigit" | "isalpha" | "isalnum" | "isspace"
                     | "islower" | "isupper" | "istitle" | "swapcase" | "title" | "capitalize"
                     | "center" | "ljust" | "rjust" | "zfill" | "expandtabs"
-                    | "partition" | "rpartition"
+                    | "partition" | "rpartition" | "removeprefix" | "removesuffix"
+                    | "rsplit" | "splitlines" | "translate"
                     | "append" | "extend" | "pop" | "insert" | "clear" | "reverse" | "copy"
                     | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__setitem__"
                     | "__eq__" | "__ne__" | "__repr__" | "__str__" | "__add__" | "__mul__"
