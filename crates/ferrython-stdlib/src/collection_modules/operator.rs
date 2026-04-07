@@ -398,8 +398,26 @@ pub fn create_operator_module() -> PyObjectRef {
                                 bound_args.extend(extra_args.iter().cloned());
                                 func(&bound_args)
                             }
-                            _ => Ok(method),
+                            PyObjectPayload::NativeClosure { func, .. } => {
+                                let mut bound_args = vec![receiver.clone()];
+                                bound_args.extend(extra_args.iter().cloned());
+                                func(&bound_args)
+                            }
+                            _ => {
+                                // Python function — use deferred call
+                                let mut bound_args = vec![receiver.clone()];
+                                bound_args.extend(extra_args.iter().cloned());
+                                crate::concurrency_modules::push_deferred_call(meth.clone(), bound_args);
+                                Ok(PyObject::none())
+                            }
                         }
+                    }
+                    PyObjectPayload::Function(_) => {
+                        // Direct Python function call via deferred mechanism
+                        let mut call_args_full = vec![obj.clone()];
+                        call_args_full.extend(extra_args.iter().cloned());
+                        crate::concurrency_modules::push_deferred_call(method.clone(), call_args_full);
+                        Ok(PyObject::none())
                     }
                     _ => Ok(method),
                 }
