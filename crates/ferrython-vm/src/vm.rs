@@ -56,10 +56,18 @@ impl VirtualMachine {
         self.install_hash_eq_dispatch();
         let globals = Arc::new(RwLock::new(IndexMap::new()));
         // Set __name__ = "__main__" for top-level scripts
-        globals.write().insert(
-            CompactString::from("__name__"),
-            PyObject::str_val(CompactString::from("__main__")),
-        );
+        {
+            let mut g = globals.write();
+            g.insert(
+                CompactString::from("__name__"),
+                PyObject::str_val(CompactString::from("__main__")),
+            );
+            // In CPython, __builtins__ is available in every module's globals.
+            // In __main__, it is the builtins module itself.
+            if let Some(builtins_mod) = ferrython_stdlib::load_module("builtins") {
+                g.insert(CompactString::from("__builtins__"), builtins_mod);
+            }
+        }
         self.execute_with_globals(Arc::new(code), globals)
     }
 

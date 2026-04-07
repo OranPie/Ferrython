@@ -1598,6 +1598,24 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
             Ok(PyObject::none())
         }
         "copy" => Ok(PyObject::bytearray(b.to_vec())),
+        "__setitem__" => {
+            if args.len() < 2 { return Err(PyException::type_error("__setitem__() takes exactly 2 arguments")); }
+            let idx = args[0].to_int()?;
+            let byte_val = args[1].to_int()? as u8;
+            let len = b.len() as i64;
+            let actual = if idx < 0 { len + idx } else { idx };
+            if actual < 0 || actual >= len {
+                return Err(PyException::index_error("bytearray index out of range"));
+            }
+            unsafe {
+                let vec_ptr = &receiver.payload as *const PyObjectPayload;
+                if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
+                    let data_ptr = v.as_ptr() as *mut u8;
+                    *data_ptr.add(actual as usize) = byte_val;
+                }
+            }
+            Ok(PyObject::none())
+        }
         // Delegate immutable methods to bytes
         _ => call_bytes_method(b, method, args),
     }
