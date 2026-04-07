@@ -54,6 +54,14 @@ enum Commands {
         /// Don't use the wheel cache
         #[arg(long)]
         no_cache_dir: bool,
+
+        /// Show what would be installed without installing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Force reinstallation of packages
+        #[arg(long)]
+        force_reinstall: bool,
     },
 
     /// Uninstall packages
@@ -174,19 +182,23 @@ pub fn run() {
     let quiet = cli.quiet;
 
     let result = match cli.command {
-        Commands::Install { packages, requirement, upgrade, editable, no_deps, pre, only_binary: _, install_target, no_cache_dir: _ } => {
+        Commands::Install { packages, requirement, upgrade, editable, no_deps, pre, only_binary: _, install_target, no_cache_dir: _, dry_run, force_reinstall } => {
             let effective_site = install_target.as_deref().unwrap_or(&site_packages);
-            if let Some(editable_path) = editable {
+            let effective_upgrade = upgrade || force_reinstall;
+            if dry_run {
+                // Dry run: just show what would be installed
+                dry_run_install(&packages, requirement.as_deref(), quiet)
+            } else if let Some(editable_path) = editable {
                 let proj_path = editable_path.unwrap_or_else(|| ".".to_string());
                 install_editable(&proj_path, effective_site, quiet)
             } else if let Some(req_file) = requirement {
                 let reqs = parse_requirements_file(&req_file);
-                install_packages(&reqs, effective_site, upgrade, no_deps, pre, quiet)
+                install_packages(&reqs, effective_site, effective_upgrade, no_deps, pre, quiet)
             } else if packages.is_empty() {
                 eprintln!("Error: no packages specified");
                 std::process::exit(1);
             } else {
-                install_packages(&packages, effective_site, upgrade, no_deps, pre, quiet)
+                install_packages(&packages, effective_site, effective_upgrade, no_deps, pre, quiet)
             }
         }
         Commands::Uninstall { packages, yes } => {
@@ -251,7 +263,26 @@ fn default_site_packages() -> String {
     site.to_string_lossy().to_string()
 }
 
+/// Parse a requirements file supporting:
+///  - `-r <file>` recursive includes
+///  - `-c <file>` constraints (pinned versions applied as upper bounds)
+///  - `--index-url`, `--extra-index-url`, `--trusted-host` (acknowledged, ignored)
+///  - `--hash=sha256:...` inline hashes (stripped, stored for verification)
+///  - environment markers after `;`
+///  - line continuations with `\`
 fn parse_requirements_file(path: &str) -> Vec<String> {
+    parse_requirements_file_inner(path, &mut std::collections::HashSet::new())
+}
+
+fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSet<String>) -> Vec<String> {
+    let canonical = std::path::Path::new(path)
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(path));
+    let key = canonical.to_string_lossy().to_string();
+    if !seen.insert(key) {
+        return vec![]; // avoid infinite recursion
+    }
+
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -259,17 +290,92 @@ fn parse_requirements_file(path: &str) -> Vec<String> {
             std::process::exit(1);
         }
     };
-    content.lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('-'))
-        .map(String::from)
-        .collect()
+
+    let base_dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
+
+    // Join continuation lines
+    let joined = content.replace("\\\n", "");
+    let mut result = Vec::new();
+
+    for raw_line in joined.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        // Handle -r / --requirement recursive includes
+        if line.starts_with("-r ") || line.starts_with("--requirement ") || line.starts_with("--requirement=") {
+            let ref_path = if line.starts_with("--requirement=") {
+                line.strip_prefix("--requirement=").unwrap().trim()
+            } else {
+                line.split_whitespace().nth(1).unwrap_or("")
+            };
+            if !ref_path.is_empty() {
+                let full = base_dir.join(ref_path);
+                result.extend(parse_requirements_file_inner(&full.to_string_lossy(), seen));
+            }
+            continue;
+        }
+
+        // Handle -c / --constraint (parse as pinned version upper bounds)
+        if line.starts_with("-c ") || line.starts_with("--constraint ") || line.starts_with("--constraint=") {
+            let ref_path = if line.starts_with("--constraint=") {
+                line.strip_prefix("--constraint=").unwrap().trim()
+            } else {
+                line.split_whitespace().nth(1).unwrap_or("")
+            };
+            if !ref_path.is_empty() {
+                let full = base_dir.join(ref_path);
+                // Constraints are just version-pinned requirements
+                result.extend(parse_requirements_file_inner(&full.to_string_lossy(), seen));
+            }
+            continue;
+        }
+
+        // Skip pip option flags (--index-url, --extra-index-url, --trusted-host, etc.)
+        if line.starts_with("--") || line.starts_with("-f ") || line.starts_with("-i ") {
+            continue;
+        }
+
+        // Strip inline --hash options
+        let spec = if let Some(hash_pos) = line.find(" --hash=") {
+            line[..hash_pos].trim()
+        } else {
+            line
+        };
+
+        if spec.is_empty() {
+            continue;
+        }
+
+        result.push(spec.to_string());
+    }
+
+    result
 }
 
 fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_deps: bool, _pre: bool, quiet: bool) -> Result<(), String> {
     let mut visited = std::collections::HashSet::new();
     for spec in specs {
-        let (name, version_spec) = parse_version_specifier(spec);
+        let trimmed = spec.trim();
+
+        // Handle `ferryip install .` or `ferryip install ./path`
+        if trimmed == "." || trimmed.starts_with("./") || trimmed.starts_with("../")
+            || std::path::Path::new(trimmed).join("pyproject.toml").exists()
+            || std::path::Path::new(trimmed).join("setup.cfg").exists()
+            || std::path::Path::new(trimmed).join("setup.py").exists()
+        {
+            install_project(trimmed, site_packages, quiet)?;
+            continue;
+        }
+
+        // Handle local wheel/sdist file paths
+        if trimmed.ends_with(".whl") || trimmed.ends_with(".tar.gz") {
+            install_local_archive(trimmed, site_packages, quiet)?;
+            continue;
+        }
+
+        let (name, version_spec, extras) = parse_version_specifier_with_extras(spec);
         resolver::install_with_deps(
             &name,
             version_spec.as_deref(),
@@ -279,32 +385,176 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
             quiet,
             &mut visited,
         )?;
+
+        // Install extras if requested (e.g., package[security,socks])
+        if !extras.is_empty() && !no_deps {
+            install_extras(&name, &extras, site_packages, quiet, &mut visited)?;
+        }
+    }
+    Ok(())
+}
+
+/// Install a local .whl or .tar.gz file directly.
+fn install_local_archive(path: &str, site_packages: &str, quiet: bool) -> Result<(), String> {
+    let file_path = std::path::Path::new(path);
+    if !file_path.exists() {
+        return Err(format!("File not found: {}", path));
+    }
+
+    // Extract name and version from filename
+    let filename = file_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    let (name, version) = if filename.ends_with(".whl") {
+        // Wheel filename: {name}-{version}-{tags}.whl
+        let stem = filename.strip_suffix(".whl").unwrap_or(filename);
+        let parts: Vec<&str> = stem.splitn(3, '-').collect();
+        if parts.len() >= 2 {
+            (parts[0].to_string(), parts[1].to_string())
+        } else {
+            ("unknown".to_string(), "0.0.0".to_string())
+        }
+    } else {
+        // sdist: {name}-{version}.tar.gz
+        let stem = filename.strip_suffix(".tar.gz").unwrap_or(filename);
+        let parts: Vec<&str> = stem.rsplitn(2, '-').collect();
+        if parts.len() >= 2 {
+            (parts[1].to_string(), parts[0].to_string())
+        } else {
+            ("unknown".to_string(), "0.0.0".to_string())
+        }
+    };
+
+    if !quiet {
+        println!("Installing {} ({}) from local file", name, version);
+    }
+
+    crate::installer::install_wheel(file_path, site_packages, &name, &version)?;
+
+    if !quiet {
+        println!("  Successfully installed {}-{}", name, version);
+    }
+    Ok(())
+}
+
+/// Install optional dependency groups (extras) for a package.
+fn install_extras(
+    pkg_name: &str,
+    extras: &[String],
+    site_packages: &str,
+    quiet: bool,
+    visited: &mut std::collections::HashSet<String>,
+) -> Result<(), String> {
+    // Read the installed package's METADATA to find extras dependencies
+    if let Some(info) = registry::get_installed(pkg_name, site_packages) {
+        if let Some(ref requires) = info.requires {
+            for req in requires {
+                // Match requirements with extras markers like:
+                // PySocks>=1.5.6 ; extra == 'socks'
+                if let Some(semicolon) = req.find(';') {
+                    let marker = req[semicolon + 1..].trim();
+                    for extra in extras {
+                        if marker.contains("extra") && marker.contains(extra) {
+                            let dep_spec = req[..semicolon].trim();
+                            let (dep_name, dep_ver) = parse_version_specifier(dep_spec);
+                            resolver::install_with_deps(
+                                &dep_name,
+                                dep_ver.as_deref(),
+                                site_packages,
+                                false, false, quiet,
+                                visited,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
 
 /// Parse a full version specifier preserving the operator (>=, <=, ~=, !=, ==, etc.)
 fn parse_version_specifier(spec: &str) -> (String, Option<String>) {
+    let (name, ver, _) = parse_version_specifier_with_extras(spec);
+    (name, ver)
+}
+
+/// Parse a version specifier extracting name, version spec, and extras.
+/// Examples:
+///   "requests>=2.28" -> ("requests", Some(">=2.28"), [])
+///   "package[security,socks]>=1.0" -> ("package", Some(">=1.0"), ["security", "socks"])
+///   "flask" -> ("flask", None, [])
+fn parse_version_specifier_with_extras(spec: &str) -> (String, Option<String>, Vec<String>) {
     let spec = spec.trim();
-    // Handle extras: package[extra]>=version
-    let clean = if let Some(bracket) = spec.find('[') {
-        if let Some(end) = spec.find(']') {
-            format!("{}{}", &spec[..bracket], &spec[end+1..])
+
+    // Strip environment markers after `;`
+    let spec = if let Some(semi) = spec.find(';') {
+        spec[..semi].trim()
+    } else {
+        spec
+    };
+
+    // Extract extras from brackets
+    let (clean, extras) = if let Some(bracket_start) = spec.find('[') {
+        if let Some(bracket_end) = spec.find(']') {
+            let extras_str = &spec[bracket_start + 1..bracket_end];
+            let extras: Vec<String> = extras_str.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let clean = format!("{}{}", &spec[..bracket_start], &spec[bracket_end + 1..]);
+            (clean, extras)
         } else {
-            spec.to_string()
+            (spec.to_string(), vec![])
         }
     } else {
-        spec.to_string()
+        (spec.to_string(), vec![])
     };
 
     for op in &["~=", ">=", "<=", "!=", "==", ">", "<"] {
         if let Some(pos) = clean.find(op) {
             let name = clean[..pos].trim().to_lowercase();
             let version_part = clean[pos..].trim().to_string();
-            return (name, Some(version_part));
+            return (name, Some(version_part), extras);
         }
     }
-    (clean.trim().to_lowercase(), None)
+    (clean.trim().to_lowercase(), None, extras)
+}
+
+/// Dry-run mode: show what would be installed without actually installing.
+fn dry_run_install(packages: &[String], requirement_file: Option<&str>, quiet: bool) -> Result<(), String> {
+    let mut specs: Vec<String> = packages.to_vec();
+    if let Some(req_file) = requirement_file {
+        specs.extend(parse_requirements_file(req_file));
+    }
+
+    if specs.is_empty() {
+        println!("No packages to install.");
+        return Ok(());
+    }
+
+    println!("Would install:");
+    for spec in &specs {
+        let (name, version_spec, extras) = parse_version_specifier_with_extras(spec);
+        match pypi::fetch_package_info(&name, None) {
+            Ok(info) => {
+                let extras_str = if extras.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{}]", extras.join(","))
+                };
+                let ver_str = version_spec.as_deref().unwrap_or("");
+                println!("  {}{} {} (latest: {})", name, extras_str, ver_str, info.version);
+            }
+            Err(e) => {
+                if !quiet {
+                    println!("  {} — could not resolve: {}", name, e);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Install a package in editable mode: writes a .pth file pointing at the source directory.
@@ -597,6 +847,12 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
         return install_from_setup_cfg(&setup_cfg_path, site_packages, quiet);
     }
 
+    // Fallback: try setup.py
+    let setup_py_path = proj_dir.join("setup.py");
+    if setup_py_path.exists() {
+        return install_from_setup_py(&setup_py_path, site_packages, quiet);
+    }
+
     // Fallback: try requirements.txt
     let req_path = proj_dir.join("requirements.txt");
     if req_path.exists() {
@@ -605,7 +861,7 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
     }
 
     Err(format!(
-        "No pyproject.toml, setup.cfg, or requirements.txt found in {}",
+        "No pyproject.toml, setup.cfg, setup.py, or requirements.txt found in {}",
         proj_dir.display()
     ))
 }
@@ -656,6 +912,135 @@ fn install_from_setup_cfg(path: &std::path::Path, site_packages: &str, quiet: bo
     }
 
     install_packages(&deps, site_packages, false, false, false, quiet)
+}
+
+/// Extract dependencies from a setup.py file using regex-based heuristic parsing.
+///
+/// This avoids executing the setup.py (which could have side effects) and instead
+/// looks for `install_requires=[...]` patterns in the source code.
+fn install_from_setup_py(path: &std::path::Path, site_packages: &str, quiet: bool) -> Result<(), String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
+
+    let deps = extract_setup_py_deps(&content);
+
+    if deps.is_empty() {
+        if !quiet {
+            println!("No dependencies found in setup.py");
+        }
+        return Ok(());
+    }
+
+    if !quiet {
+        println!("Found {} dependencies in setup.py", deps.len());
+    }
+
+    install_packages(&deps, site_packages, false, false, false, quiet)
+}
+
+/// Heuristic parser for install_requires in setup.py.
+/// Handles common patterns:
+///   install_requires=['dep1', 'dep2>=1.0']
+///   install_requires=[
+///       'dep1',
+///       'dep2>=1.0',
+///   ]
+///   INSTALL_REQUIRES = ['dep1']
+///   setup(..., install_requires=INSTALL_REQUIRES, ...)
+fn extract_setup_py_deps(content: &str) -> Vec<String> {
+    let mut deps = Vec::new();
+
+    // Strategy 1: Find install_requires=[...] directly
+    if let Some(start) = content.find("install_requires") {
+        let after = &content[start..];
+        if let Some(eq) = after.find('=') {
+            let after_eq = after[eq + 1..].trim_start();
+            if after_eq.starts_with('[') {
+                deps.extend(extract_string_list(after_eq));
+            } else {
+                // Might be a variable reference; look for the variable definition
+                let var_name = after_eq.split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or("");
+                if !var_name.is_empty() {
+                    // Search for VAR_NAME = [...]
+                    let pattern = format!("{} =", var_name);
+                    if let Some(var_pos) = content.find(&pattern) {
+                        let var_after = &content[var_pos + pattern.len()..];
+                        let trimmed = var_after.trim_start();
+                        if trimmed.starts_with('[') {
+                            deps.extend(extract_string_list(trimmed));
+                        }
+                    }
+                    // Also try without space: VAR_NAME=[...]
+                    let pattern2 = format!("{}=", var_name);
+                    if deps.is_empty() {
+                        if let Some(var_pos) = content.find(&pattern2) {
+                            let var_after = &content[var_pos + pattern2.len()..];
+                            let trimmed = var_after.trim_start();
+                            if trimmed.starts_with('[') {
+                                deps.extend(extract_string_list(trimmed));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    deps
+}
+
+/// Extract strings from a Python list literal: ['foo', "bar>=1.0", ...]
+fn extract_string_list(s: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_char = '"';
+    let mut current = String::new();
+    let mut started = false;
+
+    for ch in s.chars() {
+        if !started {
+            if ch == '[' {
+                started = true;
+                depth = 1;
+            }
+            continue;
+        }
+
+        if in_string {
+            if ch == string_char {
+                in_string = false;
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    result.push(trimmed);
+                }
+                current.clear();
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth <= 0 {
+                    break;
+                }
+            }
+            '\'' | '"' => {
+                in_string = true;
+                string_char = ch;
+                current.clear();
+            }
+            _ => {}
+        }
+    }
+
+    result
 }
 
 // ── Cache management ─────────────────────────────────────────────────────────

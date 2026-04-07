@@ -30,6 +30,7 @@ pub fn install_with_deps(
                     }
                     return Ok(());
                 }
+                // Installed version doesn't match — need to upgrade
             } else {
                 if !quiet {
                     println!("Requirement already satisfied: {} ({})", name, installed.version);
@@ -39,25 +40,14 @@ pub fn install_with_deps(
         }
     }
 
-    // Fetch from PyPI
-    let exact_version = version_req.and_then(|s| {
-        // If it's a simple ==X.Y.Z, pass the exact version
-        let s = s.trim();
-        if s.starts_with("==") && !s.contains(',') && !s.contains('*') {
-            Some(s[2..].trim())
-        } else {
-            None
-        }
-    });
+    // Resolve the best version from PyPI
+    let release = resolve_version(name, version_req)?;
 
-    let release = pypi::fetch_package_info(name, exact_version)
-        .map_err(|e| format!("Could not find {}: {}", name, e))?;
-
-    // If we have version specifiers, check if this release satisfies them
+    // Double-check that the resolved version satisfies the specs
     if let Some(spec) = version_req {
         if !version::version_matches(&release.version, spec) {
             return Err(format!(
-                "No compatible version found for {} (need {}, found {})",
+                "No compatible version found for {} (need {}, best available is {})",
                 name, spec, release.version
             ));
         }
@@ -88,6 +78,33 @@ pub fn install_with_deps(
     }
 
     Ok(())
+}
+
+/// Resolve the best version of a package from PyPI.
+///
+/// If an exact version is specified (==X.Y.Z), fetch it directly.
+/// For range specifiers (>=, <, ~=, etc.), use fetch_best_version to scan all releases.
+fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::ReleaseInfo, String> {
+    match version_req {
+        Some(spec) => {
+            let trimmed = spec.trim();
+            // Exact version pin: ==X.Y.Z (no wildcard, no comma)
+            if trimmed.starts_with("==") && !trimmed.contains(',') && !trimmed.contains('*') {
+                let exact = trimmed[2..].trim();
+                pypi::fetch_package_info(name, Some(exact))
+                    .map_err(|e| format!("Could not find {}=={}: {}", name, exact, e))
+            } else {
+                // Range specifier — try latest first (fast path), then scan all releases
+                pypi::fetch_best_version(name, trimmed)
+                    .map_err(|e| format!("Could not resolve {} {}: {}", name, trimmed, e))
+            }
+        }
+        None => {
+            // No version constraint — fetch latest
+            pypi::fetch_package_info(name, None)
+                .map_err(|e| format!("Could not find {}: {}", name, e))
+        }
+    }
 }
 
 /// Parse a Requires-Dist entry like "requests (>=2.20)" or "typing-extensions; python_version < '3.8'".

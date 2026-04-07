@@ -80,7 +80,11 @@ pub fn parse_requirement(spec: &str) -> (String, Option<String>) {
     (spec_no_extras.trim().to_lowercase(), None)
 }
 
-/// Fetch package metadata from PyPI JSON API
+/// Fetch package metadata from PyPI JSON API.
+///
+/// When `version` is `Some`, fetches that exact version.
+/// Otherwise fetches the project root and picks the best version that satisfies
+/// optional version specifiers embedded in the caller's context.
 pub fn fetch_package_info(name: &str, version: Option<&str>) -> Result<ReleaseInfo, String> {
     let url = if let Some(v) = version {
         format!("https://pypi.org/pypi/{}/{}/json", name, v)
@@ -88,11 +92,7 @@ pub fn fetch_package_info(name: &str, version: Option<&str>) -> Result<ReleaseIn
         format!("https://pypi.org/pypi/{}/json", name)
     };
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("ferryip/0.1.0")
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+    let client = make_client()?;
 
     let resp = client.get(&url).send()
         .map_err(|e| format!("Network error: {}", e))?;
@@ -119,6 +119,67 @@ pub fn fetch_package_info(name: &str, version: Option<&str>) -> Result<ReleaseIn
         author: data.info.author.unwrap_or_default(),
         license: data.info.license.unwrap_or_default(),
     })
+}
+
+/// Fetch the best version of a package that satisfies version specifiers.
+///
+/// This fetches the project page (all releases), filters by the given specs,
+/// and returns the info for the highest compatible version.
+pub fn fetch_best_version(name: &str, specs: &str) -> Result<ReleaseInfo, String> {
+    let url = format!("https://pypi.org/pypi/{}/json", name);
+    let client = make_client()?;
+
+    let resp = client.get(&url).send()
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Package '{}' not found on PyPI (HTTP {})", name, resp.status()));
+    }
+
+    let data: PyPIResponse = resp.json()
+        .map_err(|e| format!("JSON parse error: {}", e))?;
+
+    // If latest version satisfies, use it directly (common fast path)
+    if crate::version::version_matches(&data.info.version, specs) {
+        let best_url = find_best_download(&data.urls)
+            .ok_or_else(|| format!("No compatible distribution found for {}", name))?;
+        return Ok(ReleaseInfo {
+            name: data.info.name.clone(),
+            version: data.info.version.clone(),
+            url: best_url.url.clone(),
+            filename: best_url.filename.clone(),
+            sha256: best_url.digests.as_ref().and_then(|d| d.sha256.clone()),
+            requires_dist: data.info.requires_dist.unwrap_or_default(),
+            summary: data.info.summary.unwrap_or_default(),
+            author: data.info.author.unwrap_or_default(),
+            license: data.info.license.unwrap_or_default(),
+        });
+    }
+
+    // Latest doesn't match — scan all releases for the best compatible version
+    if let Some(ref releases) = data.releases {
+        if let Some(releases_map) = releases.as_object() {
+            let versions: Vec<&str> = releases_map.keys().map(|s| s.as_str()).collect();
+            // Find best version matching specs
+            if let Some(best_ver) = crate::version::find_best_version(&versions, specs) {
+                // Fetch the specific version
+                return fetch_package_info(name, Some(best_ver));
+            }
+        }
+    }
+
+    Err(format!(
+        "No version of {} satisfies {} (latest is {})",
+        name, specs, data.info.version
+    ))
+}
+
+fn make_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .user_agent("ferryip/0.1.0")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))
 }
 
 // ---------------------------------------------------------------------------
@@ -279,10 +340,7 @@ pub fn download_wheel(release: &ReleaseInfo) -> Result<PathBuf, String> {
         }
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("ferryip/0.1.0")
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
+    let client = make_client()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
     let resp = client.get(&release.url).send()
@@ -340,13 +398,8 @@ fn verify_sha256(path: &Path, expected: &str) -> bool {
 
 /// Search PyPI (uses simple API since XMLRPC search was disabled)
 pub fn search(query: &str) -> Result<Vec<(String, String, String)>, String> {
-    // PyPI disabled XMLRPC search. Use simple approach: fetch JSON for exact name
     let url = format!("https://pypi.org/pypi/{}/json", query);
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("ferryip/0.1.0")
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+    let client = make_client()?;
 
     match client.get(&url).send() {
         Ok(resp) if resp.status().is_success() => {

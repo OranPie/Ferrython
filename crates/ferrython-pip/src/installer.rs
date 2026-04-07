@@ -168,7 +168,7 @@ fn install_from_sdist(sdist_path: &Path, site: &Path, name: &str, version: &str)
     Ok(())
 }
 
-/// Write dist-info METADATA and RECORD for pip compatibility
+/// Write dist-info METADATA, WHEEL, INSTALLER, RECORD, and top_level.txt for pip compatibility
 fn write_record(site: &Path, dist_info_dir: &str, name: &str, version: &str, files: &[String]) -> Result<(), String> {
     let dist_info_path = site.join(dist_info_dir);
     fs::create_dir_all(&dist_info_path)
@@ -182,19 +182,64 @@ fn write_record(site: &Path, dist_info_dir: &str, name: &str, version: &str, fil
     fs::write(dist_info_path.join("METADATA"), metadata)
         .map_err(|e| format!("Write METADATA: {}", e))?;
 
+    // WHEEL (PEP 427)
+    let wheel_meta = "Wheel-Version: 1.0\nGenerator: ferryip 0.1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
+    fs::write(dist_info_path.join("WHEEL"), wheel_meta)
+        .map_err(|e| format!("Write WHEEL: {}", e))?;
+
     // INSTALLER
     fs::write(dist_info_path.join("INSTALLER"), "ferryip\n")
         .map_err(|e| format!("Write INSTALLER: {}", e))?;
 
-    // RECORD
-    let mut record_lines: Vec<String> = files.iter()
-        .map(|f| format!("{},", f))
-        .collect();
+    // top_level.txt — infer top-level package names from installed files
+    let mut top_level = std::collections::BTreeSet::new();
+    for f in files {
+        // A top-level module is either `foo/__init__.py` → "foo" or `bar.py` → "bar"
+        let components: Vec<&str> = f.split('/').collect();
+        if components.len() >= 2 && !components[0].contains('.') && !components[0].ends_with(".dist-info") && !components[0].ends_with(".data") {
+            top_level.insert(components[0].to_string());
+        } else if components.len() == 1 && f.ends_with(".py") {
+            if let Some(stem) = f.strip_suffix(".py") {
+                if stem != "__init__" {
+                    top_level.insert(stem.to_string());
+                }
+            }
+        }
+    }
+    if !top_level.is_empty() {
+        let content = top_level.into_iter().collect::<Vec<_>>().join("\n") + "\n";
+        fs::write(dist_info_path.join("top_level.txt"), content)
+            .map_err(|e| format!("Write top_level.txt: {}", e))?;
+    }
+
+    // RECORD (with SHA256 hashes)
+    let mut record_lines: Vec<String> = Vec::new();
+    for f in files {
+        let file_path = site.join(f);
+        let hash_entry = if file_path.exists() {
+            if let Ok(data) = fs::read(&file_path) {
+                use sha2::{Sha256, Digest};
+                let mut hasher = Sha256::new();
+                hasher.update(&data);
+                let hash = format!("{:x}", hasher.finalize());
+                format!("{},sha256={},{}", f, hash, data.len())
+            } else {
+                format!("{},", f)
+            }
+        } else {
+            format!("{},", f)
+        };
+        record_lines.push(hash_entry);
+    }
     record_lines.push(format!("{}/METADATA,", dist_info_dir));
+    record_lines.push(format!("{}/WHEEL,", dist_info_dir));
     record_lines.push(format!("{}/INSTALLER,", dist_info_dir));
+    if site.join(dist_info_dir).join("top_level.txt").exists() {
+        record_lines.push(format!("{}/top_level.txt,", dist_info_dir));
+    }
     record_lines.push(format!("{}/RECORD,,", dist_info_dir));
 
-    fs::write(dist_info_path.join("RECORD"), record_lines.join("\n"))
+    fs::write(dist_info_path.join("RECORD"), record_lines.join("\n") + "\n")
         .map_err(|e| format!("Write RECORD: {}", e))?;
 
     Ok(())
