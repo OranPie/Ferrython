@@ -1171,6 +1171,9 @@ pub(super) fn builtin_delattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Instance(inst) => {
             inst.attrs.write().shift_remove(name.as_str());
         }
+        PyObjectPayload::Module(md) => {
+            md.attrs.write().shift_remove(name.as_str());
+        }
         _ => return Err(PyException::attribute_error(format!(
             "'{}' object does not support attribute deletion", args[0].type_name()
         ))),

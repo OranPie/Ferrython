@@ -333,7 +333,80 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             .collect();
         rows.push(PyObject::list(fields));
     }
-    Ok(PyObject::list(rows))
+    // Build a csv_reader instance that supports both iteration (next()) and
+    // list-like access (len(), []) for backward compatibility.
+    let line_count = rows.len() as i64;
+    let shared_rows = Arc::new(rows);
+    let iter_index = Arc::new(Mutex::new(0usize));
+
+    let mut attrs = indexmap::IndexMap::new();
+    attrs.insert(CompactString::from("line_num"), PyObject::int(line_count));
+
+    // __len__ for len(reader)
+    let rows_ref = shared_rows.clone();
+    attrs.insert(CompactString::from("__len__"), PyObject::wrap(PyObjectPayload::NativeClosure {
+        name: CompactString::from("__len__"),
+        func: Arc::new(move |_args| Ok(PyObject::int(rows_ref.len() as i64))),
+    }));
+
+    // __getitem__ for reader[i]
+    let rows_ref = shared_rows.clone();
+    attrs.insert(CompactString::from("__getitem__"), PyObject::wrap(PyObjectPayload::NativeClosure {
+        name: CompactString::from("__getitem__"),
+        func: Arc::new(move |args| {
+            let idx = if args.is_empty() {
+                return Err(PyException::type_error("__getitem__ requires an index"));
+            } else {
+                args[0].to_int().unwrap_or(0)
+            };
+            let len = rows_ref.len() as i64;
+            let real_idx = if idx < 0 { (len + idx) as usize } else { idx as usize };
+            if real_idx < rows_ref.len() {
+                Ok(rows_ref[real_idx].clone())
+            } else {
+                Err(PyException::index_error("list index out of range"))
+            }
+        }),
+    }));
+
+    // __iter__ returns self (the iterator facade)
+    let idx_ref = iter_index.clone();
+    let rows_ref = shared_rows.clone();
+    // We create a closure-based iterator that the VM can iterate
+    attrs.insert(CompactString::from("__iter__"), {
+        // Build a proper Iterator payload for the VM's for-loop
+        let rows_vec = shared_rows.to_vec();
+        let iter_obj = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            IteratorData::List { items: rows_vec, index: 0 },
+        ))));
+        let it = iter_obj.clone();
+        PyObject::wrap(PyObjectPayload::NativeClosure {
+            name: CompactString::from("__iter__"),
+            func: Arc::new(move |_args| Ok(it.clone())),
+        })
+    });
+
+    // __next__ for next(reader)
+    let rows_ref = shared_rows.clone();
+    let idx_ref = iter_index.clone();
+    attrs.insert(CompactString::from("__next__"), PyObject::wrap(PyObjectPayload::NativeClosure {
+        name: CompactString::from("__next__"),
+        func: Arc::new(move |_args| {
+            let mut idx = idx_ref.lock().unwrap();
+            if *idx < rows_ref.len() {
+                let val = rows_ref[*idx].clone();
+                *idx += 1;
+                Ok(val)
+            } else {
+                Err(PyException::stop_iteration())
+            }
+        }),
+    }));
+
+    Ok(PyObject::instance_with_attrs(
+        PyObject::class(CompactString::from("csv_reader"), vec![], indexmap::IndexMap::new()),
+        attrs,
+    ))
 }
 
 /// Quote a CSV field according to quoting mode.

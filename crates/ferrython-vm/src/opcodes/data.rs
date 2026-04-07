@@ -580,6 +580,9 @@ impl VirtualMachine {
                 }
                 cd.invalidate_cache();
             }
+            PyObjectPayload::Module(md) => {
+                md.attrs.write().shift_remove(name.as_str());
+            }
             _ => return Err(PyException::attribute_error(format!(
                 "'{}' object does not support attribute deletion", obj.type_name()))),
         }
