@@ -1110,8 +1110,20 @@ fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64,
         ));
 
         // utcoffset() -> timedelta or None
+        let inst_for_utcoff = inst.clone();
         w.insert(CompactString::from("utcoffset"), PyObject::native_closure(
             "datetime.utcoffset", move |_: &[PyObjectRef]| {
+                if let Some(tz) = inst_for_utcoff.get_attr("tzinfo") {
+                    if !matches!(tz.payload, PyObjectPayload::None) {
+                        if let Some(utcoff_fn) = tz.get_attr("utcoffset") {
+                            match &utcoff_fn.payload {
+                                PyObjectPayload::NativeFunction { func, .. } => return func(&[inst_for_utcoff.clone()]),
+                                PyObjectPayload::NativeClosure { func, .. } => return func(&[inst_for_utcoff.clone()]),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
                 Ok(PyObject::none())
             }
         ));

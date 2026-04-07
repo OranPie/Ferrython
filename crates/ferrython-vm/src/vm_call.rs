@@ -2835,15 +2835,22 @@ impl VirtualMachine {
                             let key_str = args.iter().map(|a| a.repr()).collect::<Vec<_>>().join(",");
                             let cache_key = HashableKey::Str(CompactString::from(&key_str));
                             // Check cache
-                            if let Some(cached) = cache_map.read().get(&cache_key) {
-                                // Cache hit: increment _hits counter
+                            let cached_val = cache_map.read().get(&cache_key).cloned();
+                            if let Some(cached) = cached_val {
+                                // Cache hit: move to MRU position (re-insert at end) for LRU eviction
+                                {
+                                    let mut cw = cache_map.write();
+                                    cw.shift_remove(&cache_key);
+                                    cw.insert(cache_key, cached.clone());
+                                }
+                                // Increment _hits counter
                                 if let PyObjectPayload::Instance(ref d) = func.payload {
                                     let mut w = d.attrs.write();
                                     let hits = w.get(&intern_or_new("_hits"))
                                         .and_then(|v| v.as_int()).unwrap_or(0);
                                     w.insert(intern_or_new("_hits"), PyObject::int(hits + 1));
                                 }
-                                return Ok(cached.clone());
+                                return Ok(cached);
                             }
                             // Cache miss: call the wrapped function, increment _misses
                             if let PyObjectPayload::Instance(ref d) = func.payload {
@@ -2853,7 +2860,7 @@ impl VirtualMachine {
                                 w.insert(intern_or_new("_misses"), PyObject::int(misses + 1));
                             }
                             let result = self.call_object(wrapped, args)?;
-                            // Enforce maxsize: evict oldest entry (FIFO) when cache is full
+                            // Enforce maxsize: evict LRU entry (first in insertion order) when cache is full
                             {
                                 let mut cache_w = cache_map.write();
                                 if let PyObjectPayload::Instance(ref d) = func.payload {

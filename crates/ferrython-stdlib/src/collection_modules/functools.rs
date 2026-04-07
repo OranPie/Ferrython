@@ -17,6 +17,27 @@ pub fn create_functools_module() -> PyObjectRef {
         ("cmp_to_key", make_builtin(functools_cmp_to_key)),
         ("lru_cache", make_builtin(|args| {
             // lru_cache(func) or lru_cache(maxsize=N)(func) — returns a cached wrapper
+            // Check for kwargs dict (trailing dict with 'maxsize' key)
+            let mut extracted_maxsize: Option<Option<i64>> = None;
+            if let Some(last) = args.last() {
+                if let PyObjectPayload::Dict(d) = &last.payload {
+                    let r = d.read();
+                    if let Some(ms) = r.get(&HashableKey::Str(CompactString::from("maxsize"))) {
+                        extracted_maxsize = Some(if matches!(ms.payload, PyObjectPayload::None) {
+                            None
+                        } else {
+                            Some(ms.as_int().unwrap_or(128))
+                        });
+                    }
+                }
+            }
+            if let Some(maxsize) = extracted_maxsize {
+                // Called as lru_cache(maxsize=N) — return decorator
+                return Ok(PyObject::native_closure("lru_cache", move |inner_args| {
+                    if inner_args.is_empty() { return Ok(PyObject::none()); }
+                    Ok(create_cached_function(inner_args[0].clone(), maxsize))
+                }));
+            }
             if args.is_empty() { 
                 // @lru_cache() with no args — return decorator with default maxsize=128
                 return Ok(PyObject::native_closure("lru_cache", move |inner_args| {
