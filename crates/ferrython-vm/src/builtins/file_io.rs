@@ -46,6 +46,8 @@ pub(super) fn builtin_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     all_attrs.insert(CompactString::from("seekable"), PyObject::native_function("seekable", file_seekable));
     all_attrs.insert(CompactString::from("__iter__"), PyObject::native_function("__iter__", file_iter));
     all_attrs.insert(CompactString::from("__next__"), PyObject::native_function("__next__", file_next));
+    all_attrs.insert(CompactString::from("isatty"), PyObject::native_function("isatty", file_isatty));
+    all_attrs.insert(CompactString::from("fileno"), PyObject::native_function("fileno", file_fileno));
     all_attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
     
     Ok(PyObject::module_with_attrs(CompactString::from("_file"), all_attrs))
@@ -347,4 +349,28 @@ pub(super) fn file_next(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::stop_iteration());
     }
     Ok(PyObject::str_val(CompactString::from(line)))
+}
+
+/// isatty: always returns False for file objects
+pub(super) fn file_isatty(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::bool_val(false))
+}
+
+/// fileno: open real OS file descriptor for the file path
+pub(super) fn file_fileno(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let state = get_file_state(args)?;
+    let s = state.read();
+    if s.closed {
+        return Err(PyException::value_error("I/O operation on closed file"));
+    }
+    use std::os::unix::io::IntoRawFd;
+    let f = if s.mode.contains('w') || s.mode.contains('a') || s.mode.contains('+') {
+        std::fs::OpenOptions::new().read(true).write(true).open(&s.path)
+    } else {
+        std::fs::File::open(&s.path)
+    };
+    match f {
+        Ok(file) => Ok(PyObject::int(file.into_raw_fd() as i64)),
+        Err(e) => Err(PyException::os_error(format!("{}: '{}'", e, s.path))),
+    }
 }

@@ -2691,9 +2691,18 @@ pub fn create_mmap_module() -> PyObjectRef {
             let d8 = data.clone();
             w.insert(CompactString::from("__getitem__"), PyObject::native_closure("__getitem__", move |args| {
                 if args.is_empty() { return Err(PyException::index_error("mmap index out of range")); }
-                let idx = args[0].to_int().unwrap_or(0);
                 let d = d8.read();
                 let len = d.len() as i64;
+                // Check for slice (Tuple with start/stop/step from VM slice dispatch)
+                if let PyObjectPayload::Slice { start, stop, step: _ } = &args[0].payload {
+                    let s = start.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
+                    let e = stop.as_ref().and_then(|v| v.as_int()).unwrap_or(len);
+                    let s = if s < 0 { (len + s).max(0) } else { s.min(len) } as usize;
+                    let e = if e < 0 { (len + e).max(0) } else { e.min(len) } as usize;
+                    let result = if s < e { d[s..e].to_vec() } else { vec![] };
+                    return Ok(PyObject::bytes(result));
+                }
+                let idx = args[0].to_int().unwrap_or(0);
                 let resolved = if idx < 0 { len + idx } else { idx };
                 if resolved < 0 || resolved >= len {
                     return Err(PyException::index_error("mmap index out of range"));

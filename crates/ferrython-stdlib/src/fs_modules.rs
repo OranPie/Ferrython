@@ -1328,6 +1328,23 @@ pub fn create_io_module() -> PyObjectRef {
                     let m = mode.clone();
                     move |_| Ok(PyObject::bool_val(is_write || m.contains('+')))
                 }));
+                a.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+                a.insert(CompactString::from("isatty"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+                // fileno() — open a real OS fd for the path so mmap etc. can work
+                let fpath = path.clone();
+                let fmode = mode.clone();
+                a.insert(CompactString::from("fileno"), PyObject::native_closure("fileno", move |_: &[PyObjectRef]| {
+                    use std::os::unix::io::IntoRawFd;
+                    let f = if fmode.contains('w') || fmode.contains('a') {
+                        std::fs::OpenOptions::new().read(true).write(true).open(&fpath)
+                    } else {
+                        std::fs::File::open(&fpath)
+                    };
+                    match f {
+                        Ok(file) => Ok(PyObject::int(file.into_raw_fd() as i64)),
+                        Err(e) => Err(PyException::os_error(format!("{}: '{}'", e, fpath))),
+                    }
+                }));
             }
             Ok(inst)
         })),

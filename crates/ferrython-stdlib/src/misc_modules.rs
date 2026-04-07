@@ -2225,29 +2225,48 @@ pub fn create_curses_module() -> PyObjectRef {
 
 // ── ctypes module (stub) ──
 
-pub fn create_ctypes_module() -> PyObjectRef {
-    // ctypes stub — provides type definitions and a no-op CDLL loader
-    // so that programs that import ctypes don't crash.
+fn make_ctype(name: &str) -> PyObjectRef {
+    // Create a callable ctypes type: c_int(42) → instance with .value attribute
+    let type_name = CompactString::from(name);
+    let cls = PyObject::class(type_name.clone(), vec![], IndexMap::new());
+    let cls_clone = cls.clone();
+    PyObject::native_closure(name, move |args: &[PyObjectRef]| {
+        let value = if args.is_empty() {
+            PyObject::int(0)
+        } else {
+            args[0].clone()
+        };
+        let inst = PyObject::instance(cls_clone.clone());
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            d.attrs.write().insert(CompactString::from("value"), value);
+        }
+        Ok(inst)
+    })
+}
 
-    let c_int = PyObject::class(CompactString::from("c_int"), vec![], IndexMap::new());
-    let c_long = PyObject::class(CompactString::from("c_long"), vec![], IndexMap::new());
-    let c_char = PyObject::class(CompactString::from("c_char"), vec![], IndexMap::new());
-    let c_char_p = PyObject::class(CompactString::from("c_char_p"), vec![], IndexMap::new());
-    let c_wchar_p = PyObject::class(CompactString::from("c_wchar_p"), vec![], IndexMap::new());
-    let c_void_p = PyObject::class(CompactString::from("c_void_p"), vec![], IndexMap::new());
-    let c_double = PyObject::class(CompactString::from("c_double"), vec![], IndexMap::new());
-    let c_float = PyObject::class(CompactString::from("c_float"), vec![], IndexMap::new());
-    let c_uint = PyObject::class(CompactString::from("c_uint"), vec![], IndexMap::new());
-    let c_ulong = PyObject::class(CompactString::from("c_ulong"), vec![], IndexMap::new());
-    let c_short = PyObject::class(CompactString::from("c_short"), vec![], IndexMap::new());
-    let c_ushort = PyObject::class(CompactString::from("c_ushort"), vec![], IndexMap::new());
-    let c_byte = PyObject::class(CompactString::from("c_byte"), vec![], IndexMap::new());
-    let c_ubyte = PyObject::class(CompactString::from("c_ubyte"), vec![], IndexMap::new());
-    let c_bool = PyObject::class(CompactString::from("c_bool"), vec![], IndexMap::new());
-    let c_longlong = PyObject::class(CompactString::from("c_longlong"), vec![], IndexMap::new());
-    let c_ulonglong = PyObject::class(CompactString::from("c_ulonglong"), vec![], IndexMap::new());
-    let c_size_t = PyObject::class(CompactString::from("c_size_t"), vec![], IndexMap::new());
-    let c_ssize_t = PyObject::class(CompactString::from("c_ssize_t"), vec![], IndexMap::new());
+pub fn create_ctypes_module() -> PyObjectRef {
+    // ctypes stub — provides type definitions with .value support
+    // so that programs that import ctypes get basic functionality.
+
+    let c_int = make_ctype("c_int");
+    let c_long = make_ctype("c_long");
+    let c_char = make_ctype("c_char");
+    let c_char_p = make_ctype("c_char_p");
+    let c_wchar_p = make_ctype("c_wchar_p");
+    let c_void_p = make_ctype("c_void_p");
+    let c_double = make_ctype("c_double");
+    let c_float = make_ctype("c_float");
+    let c_uint = make_ctype("c_uint");
+    let c_ulong = make_ctype("c_ulong");
+    let c_short = make_ctype("c_short");
+    let c_ushort = make_ctype("c_ushort");
+    let c_byte = make_ctype("c_byte");
+    let c_ubyte = make_ctype("c_ubyte");
+    let c_bool = make_ctype("c_bool");
+    let c_longlong = make_ctype("c_longlong");
+    let c_ulonglong = make_ctype("c_ulonglong");
+    let c_size_t = make_ctype("c_size_t");
+    let c_ssize_t = make_ctype("c_ssize_t");
 
     let structure_cls = PyObject::class(CompactString::from("Structure"), vec![], IndexMap::new());
     let union_cls = PyObject::class(CompactString::from("Union"), vec![], IndexMap::new());
@@ -2290,14 +2309,14 @@ pub fn create_ctypes_module() -> PyObjectRef {
         ("c_ulonglong", c_ulonglong),
         ("c_size_t", c_size_t),
         ("c_ssize_t", c_ssize_t),
-        ("c_int8", PyObject::class(CompactString::from("c_int8"), vec![], IndexMap::new())),
-        ("c_int16", PyObject::class(CompactString::from("c_int16"), vec![], IndexMap::new())),
-        ("c_int32", PyObject::class(CompactString::from("c_int32"), vec![], IndexMap::new())),
-        ("c_int64", PyObject::class(CompactString::from("c_int64"), vec![], IndexMap::new())),
-        ("c_uint8", PyObject::class(CompactString::from("c_uint8"), vec![], IndexMap::new())),
-        ("c_uint16", PyObject::class(CompactString::from("c_uint16"), vec![], IndexMap::new())),
-        ("c_uint32", PyObject::class(CompactString::from("c_uint32"), vec![], IndexMap::new())),
-        ("c_uint64", PyObject::class(CompactString::from("c_uint64"), vec![], IndexMap::new())),
+        ("c_int8", make_ctype("c_int8")),
+        ("c_int16", make_ctype("c_int16")),
+        ("c_int32", make_ctype("c_int32")),
+        ("c_int64", make_ctype("c_int64")),
+        ("c_uint8", make_ctype("c_uint8")),
+        ("c_uint16", make_ctype("c_uint16")),
+        ("c_uint32", make_ctype("c_uint32")),
+        ("c_uint64", make_ctype("c_uint64")),
         ("Structure", structure_cls),
         ("Union", union_cls),
         ("Array", array_cls),
