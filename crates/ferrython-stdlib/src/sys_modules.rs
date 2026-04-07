@@ -232,29 +232,90 @@ pub fn create_sys_module() -> PyObjectRef {
             PyObject::bool_val(false), // dev_mode
             PyObject::int(0), // utf8_mode
         ])),
-        ("float_info", PyObject::tuple(vec![
-            PyObject::float(f64::MAX),       // max
-            PyObject::int(308),               // max_exp
-            PyObject::float(f64::MIN_POSITIVE), // min
-            PyObject::int(-307),              // min_exp
-            PyObject::int(15),                // dig
-            PyObject::int(53),                // mant_dig
-            PyObject::float(f64::EPSILON),    // epsilon
-            PyObject::int(2),                 // radix
-            PyObject::int(1024),              // max_10_exp
-            PyObject::int(-1021),             // min_10_exp
-        ])),
-        ("int_info", PyObject::tuple(vec![
-            PyObject::int(30),  // bits_per_digit
-            PyObject::int(4),   // sizeof_digit
-        ])),
-        ("hash_info", PyObject::tuple(vec![
-            PyObject::int(64),  // width
-            PyObject::int(0),   // modulus
-            PyObject::int(0),   // inf
-            PyObject::int(0),   // nan
-            PyObject::int(0),   // imag
-        ])),
+        ("float_info", {
+            // CPython sys.float_info is a named structseq — we use a namedtuple-style class
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("__namedtuple__"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("_fields"), PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from("max")),
+                PyObject::str_val(CompactString::from("max_exp")),
+                PyObject::str_val(CompactString::from("min")),
+                PyObject::str_val(CompactString::from("min_exp")),
+                PyObject::str_val(CompactString::from("dig")),
+                PyObject::str_val(CompactString::from("mant_dig")),
+                PyObject::str_val(CompactString::from("epsilon")),
+                PyObject::str_val(CompactString::from("radix")),
+                PyObject::str_val(CompactString::from("max_10_exp")),
+                PyObject::str_val(CompactString::from("min_10_exp")),
+            ]));
+            ns.insert(CompactString::from("_field_defaults"), PyObject::dict(IndexMap::new()));
+            let cls = PyObject::class(CompactString::from("sys.float_info"), vec![], ns);
+            let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+            attrs.insert(CompactString::from("max"), PyObject::float(f64::MAX));
+            attrs.insert(CompactString::from("max_exp"), PyObject::int(308));
+            attrs.insert(CompactString::from("min"), PyObject::float(f64::MIN_POSITIVE));
+            attrs.insert(CompactString::from("min_exp"), PyObject::int(-307));
+            attrs.insert(CompactString::from("dig"), PyObject::int(15));
+            attrs.insert(CompactString::from("mant_dig"), PyObject::int(53));
+            attrs.insert(CompactString::from("epsilon"), PyObject::float(f64::EPSILON));
+            attrs.insert(CompactString::from("radix"), PyObject::int(2));
+            attrs.insert(CompactString::from("max_10_exp"), PyObject::int(1024));
+            attrs.insert(CompactString::from("min_10_exp"), PyObject::int(-1021));
+            // Store tuple data for index access
+            attrs.insert(CompactString::from("__tuple_data__"), PyObject::tuple(vec![
+                PyObject::float(f64::MAX),
+                PyObject::int(308),
+                PyObject::float(f64::MIN_POSITIVE),
+                PyObject::int(-307),
+                PyObject::int(15),
+                PyObject::int(53),
+                PyObject::float(f64::EPSILON),
+                PyObject::int(2),
+                PyObject::int(1024),
+                PyObject::int(-1021),
+            ]));
+            PyObject::instance_with_attrs(cls, attrs)
+        }),
+        ("int_info", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("__namedtuple__"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("_fields"), PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from("bits_per_digit")),
+                PyObject::str_val(CompactString::from("sizeof_digit")),
+            ]));
+            ns.insert(CompactString::from("_field_defaults"), PyObject::dict(IndexMap::new()));
+            let cls = PyObject::class(CompactString::from("sys.int_info"), vec![], ns);
+            let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+            attrs.insert(CompactString::from("bits_per_digit"), PyObject::int(30));
+            attrs.insert(CompactString::from("sizeof_digit"), PyObject::int(4));
+            attrs.insert(CompactString::from("__tuple_data__"), PyObject::tuple(vec![
+                PyObject::int(30), PyObject::int(4),
+            ]));
+            PyObject::instance_with_attrs(cls, attrs)
+        }),
+        ("hash_info", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("__namedtuple__"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("_fields"), PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from("width")),
+                PyObject::str_val(CompactString::from("modulus")),
+                PyObject::str_val(CompactString::from("inf")),
+                PyObject::str_val(CompactString::from("nan")),
+                PyObject::str_val(CompactString::from("imag")),
+            ]));
+            ns.insert(CompactString::from("_field_defaults"), PyObject::dict(IndexMap::new()));
+            let cls = PyObject::class(CompactString::from("sys.hash_info"), vec![], ns);
+            let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+            attrs.insert(CompactString::from("width"), PyObject::int(64));
+            attrs.insert(CompactString::from("modulus"), PyObject::int(0));
+            attrs.insert(CompactString::from("inf"), PyObject::int(0));
+            attrs.insert(CompactString::from("nan"), PyObject::int(0));
+            attrs.insert(CompactString::from("imag"), PyObject::int(0));
+            attrs.insert(CompactString::from("__tuple_data__"), PyObject::tuple(vec![
+                PyObject::int(64), PyObject::int(0), PyObject::int(0), PyObject::int(0), PyObject::int(0),
+            ]));
+            PyObject::instance_with_attrs(cls, attrs)
+        }),
         ("__debug__", PyObject::bool_val(true)),
         ("dont_write_bytecode", PyObject::bool_val(true)),
         ("meta_path", PyObject::list(vec![])),
