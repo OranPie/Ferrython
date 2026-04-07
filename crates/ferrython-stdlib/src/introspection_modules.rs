@@ -3050,6 +3050,7 @@ pub fn create_tokenize_module() -> PyObjectRef {
 
     make_module("tokenize", vec![
         ("generate_tokens", make_builtin(tokenize_string)),
+        ("tokenize", make_builtin(tokenize_string)),  // bytes readline variant (same impl)
         ("open", make_builtin(tokenize_open)),
         ("detect_encoding", make_builtin(detect_encoding)),
         ("ENDMARKER", PyObject::int(0)),

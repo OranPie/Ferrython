@@ -607,6 +607,13 @@ fn populate_path_instance(inst: &PyObjectRef, path_str: &str) -> PyResult<()> {
         }
         attrs.insert(CompactString::from("parents"), PyObject::list(parents_list));
         attrs.insert(CompactString::from("parts"), PyObject::tuple(parts));
+        // root: "/" for absolute paths, "" for relative
+        let root_str = if path_str.starts_with('/') { "/" } else { "" };
+        attrs.insert(CompactString::from("root"), PyObject::str_val(CompactString::from(root_str)));
+        // anchor: same as root on POSIX (drive + root on Windows)
+        attrs.insert(CompactString::from("anchor"), PyObject::str_val(CompactString::from(root_str)));
+        // drive: always empty on POSIX
+        attrs.insert(CompactString::from("drive"), PyObject::str_val(CompactString::from("")));
         attrs.insert(CompactString::from("__pathlib_path__"), PyObject::bool_val(true));
     }
     Ok(())

@@ -1909,12 +1909,27 @@ fn pickle_dump(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let data = pickle_dumps(&[args[0].clone(), PyObject::int(protocol)])?;
     let data_bytes = extract_bytes(&data)?;
 
+    // Try file path first (via .name attribute)
     if let Some(name) = args[1].get_attr("name") {
         let path = name.py_to_string();
         if !path.is_empty() {
             std::fs::write(&path, &data_bytes)
                 .map_err(|e| PyException::runtime_error(format!("pickle.dump: {}", e)))?;
             return Ok(PyObject::none());
+        }
+    }
+    // Try file-like object with write method (BytesIO, etc.)
+    if let Some(write_method) = args[1].get_attr("write") {
+        match &write_method.payload {
+            PyObjectPayload::NativeFunction { func, .. } => {
+                let _ = func(&[PyObject::bytes(data_bytes.clone())]);
+                return Ok(PyObject::none());
+            }
+            PyObjectPayload::NativeClosure { func, .. } => {
+                let _ = func(&[PyObject::bytes(data_bytes.clone())]);
+                return Ok(PyObject::none());
+            }
+            _ => {}
         }
     }
     if let PyObjectPayload::Str(path) = &args[1].payload {
@@ -1930,12 +1945,27 @@ fn pickle_load(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "pickle.load() missing 1 required positional argument: 'file'",
         ));
     }
+    // Try file path first (via .name attribute)
     if let Some(name) = args[0].get_attr("name") {
         let path = name.py_to_string();
         if !path.is_empty() && std::path::Path::new(&path).exists() {
             let data = std::fs::read(&path)
                 .map_err(|e| PyException::runtime_error(format!("pickle.load: {}", e)))?;
             return pickle_loads_stack(&data);
+        }
+    }
+    // Try file-like object with read method (BytesIO, etc.)
+    if let Some(read_method) = args[0].get_attr("read") {
+        let read_result = match &read_method.payload {
+            PyObjectPayload::NativeFunction { func, .. } => func(&[]).ok(),
+            PyObjectPayload::NativeClosure { func, .. } => func(&[]).ok(),
+            _ => None,
+        };
+        if let Some(data_obj) = read_result {
+            let data = extract_bytes(&data_obj)?;
+            if !data.is_empty() {
+                return pickle_loads_stack(&data);
+            }
         }
     }
     if let PyObjectPayload::Str(path) = &args[0].payload {

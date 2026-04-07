@@ -285,23 +285,28 @@ impl VirtualMachine {
             attrs.insert(CompactString::from("_value_"), resolved_value.clone());
 
             // Enum __repr__: "<ClassName.MemberName: value>" (CPython format)
-            let val_repr = resolved_value.repr();
-            let full_repr = CompactString::from(format!("<{}.{}: {}>", class_name, name, val_repr));
-            let repr_copy = full_repr;
-            attrs.insert(intern_or_new("__repr__"), PyObject::native_closure(
-                "__repr__",
-                move |_args| {
-                    Ok(PyObject::str_val(repr_copy.clone()))
-                }
-            ));
-            // __str__: "ClassName.MemberName"
-            let str_val = CompactString::from(format!("{}.{}", class_name, name));
-            attrs.insert(intern_or_new("__str__"), PyObject::native_closure(
-                "__str__",
-                move |_args| {
-                    Ok(PyObject::str_val(str_val.clone()))
-                }
-            ));
+            // Only set default if user didn't define custom __repr__ in the class body
+            if ns.get("__repr__").is_none() {
+                let val_repr = resolved_value.repr();
+                let full_repr = CompactString::from(format!("<{}.{}: {}>", class_name, name, val_repr));
+                let repr_copy = full_repr;
+                attrs.insert(intern_or_new("__repr__"), PyObject::native_closure(
+                    "__repr__",
+                    move |_args| {
+                        Ok(PyObject::str_val(repr_copy.clone()))
+                    }
+                ));
+            }
+            // __str__: use custom __str__ from class body if defined, else "ClassName.MemberName"
+            if ns.get("__str__").is_none() {
+                let str_val = CompactString::from(format!("{}.{}", class_name, name));
+                attrs.insert(intern_or_new("__str__"), PyObject::native_closure(
+                    "__str__",
+                    move |_args| {
+                        Ok(PyObject::str_val(str_val.clone()))
+                    }
+                ));
+            }
 
             // If custom __init__ exists and value is a tuple, unpack it and call __init__
             if has_custom_init {

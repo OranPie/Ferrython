@@ -2428,6 +2428,8 @@ pub fn create_fractions_module() -> PyObjectRef {
                                 let d: i64 = d_str.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
                                 if d == 0 { return Err(PyException::new(ferrython_core::error::ExceptionKind::ZeroDivisionError, "Fraction(_, 0)")); }
                                 return Ok(make_frac_instance(n, d));
+                            } else if s.contains('.') || s.contains('e') || s.contains('E') {
+                                return decimal_str_to_fraction(s.trim());
                             } else {
                                 let n: i64 = s.trim().parse().map_err(|_| PyException::value_error("Invalid fraction string"))?;
                                 return Ok(make_frac_instance(n, 1));

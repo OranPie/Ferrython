@@ -1169,7 +1169,17 @@ pub fn create_types_module() -> PyObjectRef {
         ("BuiltinFunctionType", PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
         ("BuiltinMethodType", PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
         ("MethodType", PyObject::builtin_type(CompactString::from("method"))),
-        ("ModuleType", PyObject::builtin_type(CompactString::from("module"))),
+        ("ModuleType", make_builtin(|args| {
+            check_args_min("ModuleType", args, 1)?;
+            let name = args[0].py_to_string();
+            let mut module_attrs = IndexMap::new();
+            if args.len() > 1 {
+                module_attrs.insert(CompactString::from("__doc__"), args[1].clone());
+            } else {
+                module_attrs.insert(CompactString::from("__doc__"), PyObject::none());
+            }
+            Ok(PyObject::module_with_attrs(CompactString::from(name.as_str()), module_attrs))
+        })),
         ("GeneratorType", PyObject::builtin_type(CompactString::from("generator"))),
         ("CodeType", PyObject::builtin_type(CompactString::from("code"))),
         ("FrameType", PyObject::builtin_type(CompactString::from("frame"))),

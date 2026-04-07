@@ -415,8 +415,24 @@ impl VirtualMachine {
                 let step = if argc == 3 { Some(frame.pop()) } else { None };
                 let stop = frame.pop();
                 let start = frame.pop();
+                // Drop frame borrow so we can call __index__ via self
+                drop(frame);
+                // Resolve __index__ for non-int, non-None slice components
+                let start = if !matches!(start.payload, PyObjectPayload::None | PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)) {
+                    self.try_call_dunder(&start, "__index__", vec![])?.unwrap_or(start)
+                } else { start };
+                let stop = if !matches!(stop.payload, PyObjectPayload::None | PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)) {
+                    self.try_call_dunder(&stop, "__index__", vec![])?.unwrap_or(stop)
+                } else { stop };
+                let step = match step {
+                    Some(s) if !matches!(s.payload, PyObjectPayload::None | PyObjectPayload::Int(_) | PyObjectPayload::Bool(_)) =>
+                        Some(self.try_call_dunder(&s, "__index__", vec![])?.unwrap_or(s)),
+                    other => other,
+                };
                 let s_start = if matches!(start.payload, PyObjectPayload::None) { None } else { Some(start) };
                 let s_stop = if matches!(stop.payload, PyObjectPayload::None) { None } else { Some(stop) };
+                // Re-borrow frame to push result
+                let frame = self.vm_frame();
                 frame.push(PyObject::slice(s_start, s_stop, step));
             }
             Opcode::UnpackSequence => {

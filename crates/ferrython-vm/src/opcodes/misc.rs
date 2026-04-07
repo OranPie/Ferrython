@@ -181,12 +181,21 @@ impl VirtualMachine {
                     // drive each one and collect results.
                     let result = if let PyObjectPayload::List(items) = &inner_val.payload {
                         let items = items.read().clone();
-                        let has_coro = items.iter().any(|item| matches!(&item.payload, PyObjectPayload::Coroutine(_)));
-                        if has_coro {
-                            // asyncio.gather pattern: drive each coroutine
+                        let has_awaitable = items.iter().any(|item| {
+                            matches!(&item.payload, PyObjectPayload::Coroutine(_))
+                            || item.get_attr("_coro").is_some()  // Task objects
+                        });
+                        if has_awaitable {
+                            // asyncio.gather pattern: drive each coroutine/task
                             let mut results = Vec::with_capacity(items.len());
                             for item in &items {
-                                let r = self.maybe_await_result(item.clone())?;
+                                // Unwrap Task → coroutine
+                                let coro = if let Some(c) = item.get_attr("_coro") {
+                                    c
+                                } else {
+                                    item.clone()
+                                };
+                                let r = self.maybe_await_result(coro)?;
                                 results.push(r);
                             }
                             PyObject::list(results)

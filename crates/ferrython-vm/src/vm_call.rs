@@ -1318,7 +1318,88 @@ impl VirtualMachine {
                                         PyObjectPayload::Tuple(items) => PyObject::list(items.clone()),
                                         _ => PyObject::list(vec![pos_args[1].clone()]),
                                     };
-                                    a.insert(CompactString::from("exceptions"), exc_list);
+                                    a.insert(CompactString::from("exceptions"), exc_list.clone());
+
+                                    // Add subgroup method
+                                    let msg_clone = if !pos_args.is_empty() { pos_args[0].clone() } else { PyObject::str_val(CompactString::from("")) };
+                                    let exc_list_clone = exc_list.clone();
+                                    a.insert(CompactString::from("subgroup"), PyObject::native_closure(
+                                        "ExceptionGroup.subgroup",
+                                        move |sg_args| {
+                                            let filter_type = if sg_args.len() > 1 { &sg_args[1] } else if !sg_args.is_empty() { &sg_args[0] } else {
+                                                return Ok(PyObject::none());
+                                            };
+                                            // Resolve filter to ExceptionKind
+                                            let filter_kind = match &filter_type.payload {
+                                                PyObjectPayload::ExceptionType(k) => Some(k.clone()),
+                                                _ => {
+                                                    // Try looking up by class name
+                                                    let name = filter_type.py_to_string();
+                                                    ExceptionKind::from_name(&name)
+                                                }
+                                            };
+                                            let items = exc_list_clone.to_list().unwrap_or_default();
+                                            let matched: Vec<PyObjectRef> = items.into_iter().filter(|exc| {
+                                                if let Some(ref fk) = filter_kind {
+                                                    if let PyObjectPayload::ExceptionInstance { kind: ek, .. } = &exc.payload {
+                                                        return ek.is_subclass_of(fk);
+                                                    }
+                                                }
+                                                false
+                                            }).collect();
+                                            if matched.is_empty() {
+                                                return Ok(PyObject::none());
+                                            }
+                                            let new_eg = PyObject::exception_instance(ExceptionKind::ExceptionGroup, msg_clone.py_to_string());
+                                            if let PyObjectPayload::ExceptionInstance { attrs: ea, .. } = &new_eg.payload {
+                                                let mut ew = ea.write();
+                                                ew.insert(CompactString::from("message"), msg_clone.clone());
+                                                ew.insert(CompactString::from("exceptions"), PyObject::list(matched));
+                                            }
+                                            Ok(new_eg)
+                                        }
+                                    ));
+
+                                    // Add split method
+                                    let msg_clone2 = if !pos_args.is_empty() { pos_args[0].clone() } else { PyObject::str_val(CompactString::from("")) };
+                                    let exc_list_clone2 = exc_list;
+                                    a.insert(CompactString::from("split"), PyObject::native_closure(
+                                        "ExceptionGroup.split",
+                                        move |sp_args| {
+                                            let filter_type = if sp_args.len() > 1 { &sp_args[1] } else if !sp_args.is_empty() { &sp_args[0] } else {
+                                                return Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none()]));
+                                            };
+                                            let filter_kind = match &filter_type.payload {
+                                                PyObjectPayload::ExceptionType(k) => Some(k.clone()),
+                                                _ => {
+                                                    let name = filter_type.py_to_string();
+                                                    ExceptionKind::from_name(&name)
+                                                }
+                                            };
+                                            let items = exc_list_clone2.to_list().unwrap_or_default();
+                                            let mut matched = Vec::new();
+                                            let mut rest = Vec::new();
+                                            for exc in items {
+                                                let matches = if let Some(ref fk) = filter_kind {
+                                                    if let PyObjectPayload::ExceptionInstance { kind: ek, .. } = &exc.payload {
+                                                        ek.is_subclass_of(fk)
+                                                    } else { false }
+                                                } else { false };
+                                                if matches { matched.push(exc); } else { rest.push(exc); }
+                                            }
+                                            let make_eg = |msg: &PyObjectRef, items: Vec<PyObjectRef>| {
+                                                if items.is_empty() { return PyObject::none(); }
+                                                let eg = PyObject::exception_instance(ExceptionKind::ExceptionGroup, msg.py_to_string());
+                                                if let PyObjectPayload::ExceptionInstance { attrs: ea, .. } = &eg.payload {
+                                                    let mut ew = ea.write();
+                                                    ew.insert(CompactString::from("message"), msg.clone());
+                                                    ew.insert(CompactString::from("exceptions"), PyObject::list(items));
+                                                }
+                                                eg
+                                            };
+                                            Ok(PyObject::tuple(vec![make_eg(&msg_clone2, matched), make_eg(&msg_clone2, rest)]))
+                                        }
+                                    ));
                                 }
                             }
                         }
@@ -2508,7 +2589,71 @@ impl VirtualMachine {
                                 PyObjectPayload::Tuple(items) => PyObject::list(items.clone()),
                                 _ => PyObject::list(vec![args[1].clone()]),
                             };
-                            a.insert(CompactString::from("exceptions"), exc_list);
+                            a.insert(CompactString::from("exceptions"), exc_list.clone());
+
+                            let msg_c = if !args.is_empty() { args[0].clone() } else { PyObject::str_val(CompactString::from("")) };
+                            let elc = exc_list.clone();
+                            a.insert(CompactString::from("subgroup"), PyObject::native_closure(
+                                "ExceptionGroup.subgroup",
+                                move |sg_args| {
+                                    let ft = if sg_args.len() > 1 { &sg_args[1] } else if !sg_args.is_empty() { &sg_args[0] } else {
+                                        return Ok(PyObject::none());
+                                    };
+                                    let fk = match &ft.payload {
+                                        PyObjectPayload::ExceptionType(k) => Some(k.clone()),
+                                        _ => ExceptionKind::from_name(&ft.py_to_string()),
+                                    };
+                                    let items = elc.to_list().unwrap_or_default();
+                                    let matched: Vec<PyObjectRef> = items.into_iter().filter(|exc| {
+                                        if let Some(ref fk) = fk {
+                                            if let PyObjectPayload::ExceptionInstance { kind: ek, .. } = &exc.payload { return ek.is_subclass_of(fk); }
+                                        }
+                                        false
+                                    }).collect();
+                                    if matched.is_empty() { return Ok(PyObject::none()); }
+                                    let eg = PyObject::exception_instance(ExceptionKind::ExceptionGroup, msg_c.py_to_string());
+                                    if let PyObjectPayload::ExceptionInstance { attrs: ea, .. } = &eg.payload {
+                                        let mut ew = ea.write();
+                                        ew.insert(CompactString::from("message"), msg_c.clone());
+                                        ew.insert(CompactString::from("exceptions"), PyObject::list(matched));
+                                    }
+                                    Ok(eg)
+                                }
+                            ));
+
+                            let msg_c2 = if !args.is_empty() { args[0].clone() } else { PyObject::str_val(CompactString::from("")) };
+                            let elc2 = exc_list;
+                            a.insert(CompactString::from("split"), PyObject::native_closure(
+                                "ExceptionGroup.split",
+                                move |sp_args| {
+                                    let ft = if sp_args.len() > 1 { &sp_args[1] } else if !sp_args.is_empty() { &sp_args[0] } else {
+                                        return Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none()]));
+                                    };
+                                    let fk = match &ft.payload {
+                                        PyObjectPayload::ExceptionType(k) => Some(k.clone()),
+                                        _ => ExceptionKind::from_name(&ft.py_to_string()),
+                                    };
+                                    let items = elc2.to_list().unwrap_or_default();
+                                    let (mut matched, mut rest) = (Vec::new(), Vec::new());
+                                    for exc in items {
+                                        let m = if let Some(ref fk) = fk {
+                                            if let PyObjectPayload::ExceptionInstance { kind: ek, .. } = &exc.payload { ek.is_subclass_of(fk) } else { false }
+                                        } else { false };
+                                        if m { matched.push(exc); } else { rest.push(exc); }
+                                    }
+                                    let mk = |msg: &PyObjectRef, v: Vec<PyObjectRef>| {
+                                        if v.is_empty() { return PyObject::none(); }
+                                        let eg = PyObject::exception_instance(ExceptionKind::ExceptionGroup, msg.py_to_string());
+                                        if let PyObjectPayload::ExceptionInstance { attrs: ea, .. } = &eg.payload {
+                                            let mut ew = ea.write();
+                                            ew.insert(CompactString::from("message"), msg.clone());
+                                            ew.insert(CompactString::from("exceptions"), PyObject::list(v));
+                                        }
+                                        eg
+                                    };
+                                    Ok(PyObject::tuple(vec![mk(&msg_c2, matched), mk(&msg_c2, rest)]))
+                                }
+                            ));
                         }
                     }
                 }
