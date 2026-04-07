@@ -646,6 +646,12 @@ impl VirtualMachine {
                             return Err(PyException::key_error(key.repr()));
                         }
                     }
+                    PyObjectPayload::InstanceDict(attrs) => {
+                        let key_str = CompactString::from(key.py_to_string());
+                        if attrs.write().shift_remove(&key_str).is_none() {
+                            return Err(PyException::key_error(key.repr()));
+                        }
+                    }
                     PyObjectPayload::Instance(inst) => {
                         if let Some(method) = obj.get_attr("__delitem__") {
                             self.call_object(method, vec![key])?;
