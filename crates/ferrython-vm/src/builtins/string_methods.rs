@@ -862,6 +862,89 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             }
             Ok(PyObject::str_val(CompactString::from(result)))
         }
+        // Dunder methods accessible as attributes (CPython compatibility)
+        "__format__" => {
+            let spec = if args.is_empty() { "" } else { args[0].as_str().unwrap_or("") };
+            if spec.is_empty() {
+                Ok(PyObject::str_val(CompactString::from(s)))
+            } else {
+                Ok(PyObject::str_val(CompactString::from(apply_format_spec_str(s, spec))))
+            }
+        }
+        "__str__" => Ok(PyObject::str_val(CompactString::from(s))),
+        "__repr__" => Ok(PyObject::str_val(CompactString::from(format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))))),
+        "__hash__" => {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            s.hash(&mut hasher);
+            Ok(PyObject::int(hasher.finish() as i64))
+        }
+        "__len__" => Ok(PyObject::int(s.chars().count() as i64)),
+        "__contains__" => {
+            check_args_min("str.__contains__", &args, 1)?;
+            let sub = args[0].as_str().unwrap_or("");
+            Ok(PyObject::bool_val(s.contains(sub)))
+        }
+        "__eq__" => {
+            check_args_min("str.__eq__", &args, 1)?;
+            Ok(if let Some(other) = args[0].as_str() { PyObject::bool_val(s == other) } else { PyObject::bool_val(false) })
+        }
+        "__ne__" => {
+            check_args_min("str.__ne__", &args, 1)?;
+            Ok(if let Some(other) = args[0].as_str() { PyObject::bool_val(s != other) } else { PyObject::bool_val(true) })
+        }
+        "__lt__" => {
+            check_args_min("str.__lt__", &args, 1)?;
+            Ok(if let Some(other) = args[0].as_str() { PyObject::bool_val(s < other) } else { PyObject::not_implemented() })
+        }
+        "__le__" => {
+            check_args_min("str.__le__", &args, 1)?;
+            Ok(if let Some(other) = args[0].as_str() { PyObject::bool_val(s <= other) } else { PyObject::not_implemented() })
+        }
+        "__gt__" => {
+            check_args_min("str.__gt__", &args, 1)?;
+            Ok(if let Some(other) = args[0].as_str() { PyObject::bool_val(s > other) } else { PyObject::not_implemented() })
+        }
+        "__ge__" => {
+            check_args_min("str.__ge__", &args, 1)?;
+            Ok(if let Some(other) = args[0].as_str() { PyObject::bool_val(s >= other) } else { PyObject::not_implemented() })
+        }
+        "__add__" => {
+            check_args_min("str.__add__", &args, 1)?;
+            let other = args[0].py_to_string();
+            Ok(PyObject::str_val(CompactString::from(format!("{}{}", s, other))))
+        }
+        "__mul__" | "__rmul__" => {
+            check_args_min("str.__mul__", &args, 1)?;
+            let n = args[0].as_int().unwrap_or(0);
+            Ok(PyObject::str_val(CompactString::from(s.repeat(n.max(0) as usize))))
+        }
+        "__getitem__" => {
+            check_args_min("str.__getitem__", &args, 1)?;
+            let idx = args[0].as_int().unwrap_or(0);
+            let chars: Vec<char> = s.chars().collect();
+            let real_idx = if idx < 0 { (chars.len() as i64 + idx) as usize } else { idx as usize };
+            if real_idx < chars.len() {
+                Ok(PyObject::str_val(CompactString::from(chars[real_idx].to_string())))
+            } else {
+                Err(PyException::index_error("string index out of range"))
+            }
+        }
+        "__iter__" => {
+            let chars: Vec<PyObjectRef> = s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect();
+            Ok(PyObject::list(chars))
+        }
+        "__mod__" => {
+            // Basic %-formatting: "hello %s" % "world"
+            check_args_min("str.__mod__", &args, 1)?;
+            let val = &args[0];
+            // Simplified: replace first %s, %d, %r, etc.
+            let result = s.replacen("%s", &val.py_to_string(), 1)
+                          .replacen("%d", &val.py_to_string(), 1)
+                          .replacen("%r", &val.repr(), 1);
+            Ok(PyObject::str_val(CompactString::from(result)))
+        }
         _ => Err(PyException::attribute_error(format!(
             "'str' object has no attribute '{}'", method
         ))),

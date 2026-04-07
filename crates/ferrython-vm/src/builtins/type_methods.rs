@@ -427,6 +427,54 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
                 Err(PyException::key_error(args[0].repr()))
             }
         }
+        "__contains__" => {
+            check_args_min("dict.__contains__", args, 1)?;
+            let key = args[0].to_hashable_key().unwrap_or(HashableKey::Str(CompactString::from(args[0].py_to_string())));
+            Ok(PyObject::bool_val(map.read().contains_key(&key)))
+        }
+        "__len__" => Ok(PyObject::int(map.read().len() as i64)),
+        "__iter__" => {
+            let keys: Vec<PyObjectRef> = map.read().keys().map(|k| k.to_object()).collect();
+            Ok(PyObject::list(keys))
+        }
+        "__getitem__" => {
+            check_args_min("dict.__getitem__", args, 1)?;
+            let key = args[0].to_hashable_key().unwrap_or(HashableKey::Str(CompactString::from(args[0].py_to_string())));
+            match map.read().get(&key) {
+                Some(v) => Ok(v.clone()),
+                None => Err(PyException::key_error(args[0].repr())),
+            }
+        }
+        "__eq__" => {
+            check_args_min("dict.__eq__", args, 1)?;
+            if let PyObjectPayload::Dict(other) = &args[0].payload {
+                let a = map.read();
+                let b = other.read();
+                if a.len() != b.len() { return Ok(PyObject::bool_val(false)); }
+                let eq = a.iter().all(|(k, v)| b.get(k).map_or(false, |v2| v.py_to_string() == v2.py_to_string()));
+                Ok(PyObject::bool_val(eq))
+            } else {
+                Ok(PyObject::bool_val(false))
+            }
+        }
+        "__ne__" => {
+            check_args_min("dict.__ne__", args, 1)?;
+            if let PyObjectPayload::Dict(other) = &args[0].payload {
+                let a = map.read();
+                let b = other.read();
+                if a.len() != b.len() { return Ok(PyObject::bool_val(true)); }
+                let eq = a.iter().all(|(k, v)| b.get(k).map_or(false, |v2| v.py_to_string() == v2.py_to_string()));
+                Ok(PyObject::bool_val(!eq))
+            } else {
+                Ok(PyObject::bool_val(true))
+            }
+        }
+        "__repr__" | "__str__" => {
+            let r = map.read();
+            let inner: Vec<String> = r.iter().map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr())).collect();
+            Ok(PyObject::str_val(CompactString::from(format!("{{{}}}", inner.join(", ")))))
+        }
+        "__bool__" => Ok(PyObject::bool_val(!map.read().is_empty())),
         _ => Err(PyException::attribute_error(format!(
             "'dict' object has no attribute '{}'", method
         ))),
@@ -666,6 +714,17 @@ pub(super) fn call_set_method(m: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>
             }
             Ok(PyObject::none())
         }
+        "__contains__" => {
+            check_args_min("set.__contains__", args, 1)?;
+            let key = args[0].to_hashable_key().unwrap_or(HashableKey::Str(CompactString::from(args[0].py_to_string())));
+            Ok(PyObject::bool_val(m.read().contains_key(&key)))
+        }
+        "__len__" => Ok(PyObject::int(m.read().len() as i64)),
+        "__bool__" => Ok(PyObject::bool_val(!m.read().is_empty())),
+        "__iter__" => {
+            let items: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
+            Ok(PyObject::list(items))
+        }
         _ => Err(PyException::attribute_error(format!(
             "'set' object has no attribute '{}'", method
         ))),
@@ -852,6 +911,109 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
             let n = _receiver.to_int()?;
             Ok(PyObject::int(!n))
         }
+        "__format__" => {
+            let n = _receiver.to_int()?;
+            let spec = if !args.is_empty() { args[0].as_str().unwrap_or("").to_string() } else { String::new() };
+            if spec.is_empty() { return Ok(PyObject::str_val(CompactString::from(n.to_string()))); }
+            Ok(PyObject::str_val(CompactString::from(super::apply_format_spec_int(n, &spec))))
+        }
+        "__str__" => { let n = _receiver.to_int()?; Ok(PyObject::str_val(CompactString::from(n.to_string()))) }
+        "__repr__" => { let n = _receiver.to_int()?; Ok(PyObject::str_val(CompactString::from(n.to_string()))) }
+        "__hash__" => Ok(_receiver.clone()),
+        "__bool__" => { let n = _receiver.to_int()?; Ok(PyObject::bool_val(n != 0)) }
+        "__eq__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n == m)); }
+                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val(n as f64 == f)); }
+            }
+            Ok(PyObject::bool_val(false))
+        }
+        "__ne__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n != m)); }
+                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val(n as f64 != f)); }
+            }
+            Ok(PyObject::bool_val(true))
+        }
+        "__lt__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n < m)); }
+                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val((n as f64) < f)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__le__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n <= m)); }
+                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val(n as f64 <= f)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__gt__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n > m)); }
+                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val(n as f64 > f)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__ge__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { return Ok(PyObject::bool_val(n >= m)); }
+                if let Ok(f) = args[0].to_float() { return Ok(PyObject::bool_val(n as f64 >= f)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__add__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n.wrapping_add(m))); }
+                if let Ok(f) = args[0].to_float() { return Ok(PyObject::float(n as f64 + f)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__sub__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n.wrapping_sub(m))); }
+                if let Ok(f) = args[0].to_float() { return Ok(PyObject::float(n as f64 - f)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__mul__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n.wrapping_mul(m))); }
+                if let Ok(f) = args[0].to_float() { return Ok(PyObject::float(n as f64 * f)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__floordiv__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { if m != 0 { return Ok(PyObject::int(n.div_euclid(m))); } else { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "integer division or modulo by zero".to_string())); } }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__mod__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { if m != 0 { return Ok(PyObject::int(n.rem_euclid(m))); } else { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "integer division or modulo by zero".to_string())); } }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__pow__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() { return Ok(if m >= 0 { PyObject::int(n.wrapping_pow(m as u32)) } else { PyObject::float((n as f64).powi(m as i32)) }); }
+            }
+            Ok(PyObject::not_implemented())
+        }
         _ => Err(PyException::attribute_error(format!(
             "'int' object has no attribute '{}'", method
         ))),
@@ -910,6 +1072,95 @@ pub(super) fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> 
         "conjugate" => Ok(PyObject::float(f)),
         "real" => Ok(PyObject::float(f)),
         "imag" => Ok(PyObject::float(0.0)),
+        "__format__" => {
+            let spec = if !_args.is_empty() { _args[0].as_str().unwrap_or("").to_string() } else { String::new() };
+            if spec.is_empty() { return Ok(PyObject::str_val(CompactString::from(super::format_float_repr(f)))); }
+            Ok(PyObject::str_val(CompactString::from(super::apply_format_spec_float(f, &spec))))
+        }
+        "__str__" | "__repr__" => Ok(PyObject::str_val(CompactString::from(super::format_float_repr(f)))),
+        "__hash__" => Ok(PyObject::int(f.to_bits() as i64)),
+        "__bool__" => Ok(PyObject::bool_val(f != 0.0)),
+        "__int__" | "__trunc__" => Ok(PyObject::int(f as i64)),
+        "__float__" => Ok(PyObject::float(f)),
+        "__abs__" => Ok(PyObject::float(f.abs())),
+        "__neg__" => Ok(PyObject::float(-f)),
+        "__pos__" => Ok(PyObject::float(f)),
+        "__round__" => {
+            let ndigits = if !_args.is_empty() { _args[0].as_int().unwrap_or(0) } else { 0 };
+            let factor = 10f64.powi(ndigits as i32);
+            Ok(PyObject::float((f * factor).round() / factor))
+        }
+        "__eq__" => {
+            if !_args.is_empty() {
+                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f == g)); }
+                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f == n as f64)); }
+            }
+            Ok(PyObject::bool_val(false))
+        }
+        "__ne__" => {
+            if !_args.is_empty() {
+                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f != g)); }
+                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f != n as f64)); }
+            }
+            Ok(PyObject::bool_val(true))
+        }
+        "__lt__" => {
+            if !_args.is_empty() {
+                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f < g)); }
+                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f < n as f64)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__le__" => {
+            if !_args.is_empty() {
+                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f <= g)); }
+                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f <= n as f64)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__gt__" => {
+            if !_args.is_empty() {
+                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f > g)); }
+                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f > n as f64)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__ge__" => {
+            if !_args.is_empty() {
+                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::bool_val(f >= g)); }
+                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::bool_val(f >= n as f64)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__add__" => {
+            if !_args.is_empty() {
+                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::float(f + g)); }
+                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::float(f + n as f64)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__sub__" => {
+            if !_args.is_empty() {
+                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::float(f - g)); }
+                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::float(f - n as f64)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__mul__" => {
+            if !_args.is_empty() {
+                if let Ok(g) = _args[0].to_float() { return Ok(PyObject::float(f * g)); }
+                if let Ok(n) = _args[0].to_int() { return Ok(PyObject::float(f * n as f64)); }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__truediv__" => {
+            if !_args.is_empty() {
+                let g = if let Ok(g) = _args[0].to_float() { g } else if let Ok(n) = _args[0].to_int() { n as f64 } else { return Ok(PyObject::not_implemented()); };
+                if g == 0.0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "float division by zero".to_string())); }
+                return Ok(PyObject::float(f / g));
+            }
+            Ok(PyObject::not_implemented())
+        }
         _ => Err(PyException::attribute_error(format!(
             "'float' object has no attribute '{}'", method
         ))),

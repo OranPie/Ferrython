@@ -1131,6 +1131,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__int__" | "__float__" | "__index__" | "__bool__" |
                 "__neg__" | "__pos__" | "__invert__" |
                 "__repr__" | "__str__" | "__hash__" | "__format__" |
+                "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__" |
+                "__add__" | "__sub__" | "__mul__" | "__floordiv__" | "__mod__" | "__pow__" |
                 "__ceil__" | "__floor__" | "__round__" | "__trunc__" |
                 "__sizeof__" | "as_integer_ratio" => Some(Arc::new(PyObject {
                     payload: PyObjectPayload::BuiltinBoundMethod {
@@ -1149,7 +1151,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__int__" | "__float__" | "__bool__" | "__index__" |
                 "__neg__" | "__pos__" |
                 "__repr__" | "__str__" | "__hash__" | "__format__" |
-                "__ceil__" | "__floor__" | "__round__" | "__trunc__" |
+                "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__" |
+                "__add__" | "__sub__" | "__mul__" | "__truediv__" | "__round__" |
+                "__ceil__" | "__floor__" | "__trunc__" |
                 "__sizeof__" | "as_integer_ratio" | "fromhex" => Some(Arc::new(PyObject {
                     payload: PyObjectPayload::BuiltinBoundMethod {
                         receiver: obj.clone(),
