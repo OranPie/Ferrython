@@ -179,6 +179,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "asyncio.queues" => Some(ferrython_async::create_asyncio_module()),
         "asyncio.locks" => Some(ferrython_async::create_asyncio_module()),
         "asyncio.runners" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.streams" => Some(ferrython_async::create_asyncio_module()),
         // Import system
         "importlib" => Some(import_modules::create_importlib_module()),
         "importlib.metadata" => Some(import_modules::create_importlib_metadata_module()),
@@ -257,6 +258,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "symtable" => Some(introspection_modules::create_symtable_module()),
         // Persistence
         "shelve" => Some(serial_modules::create_shelve_module()),
+        "marshal" => Some(serial_modules::create_marshal_module()),
         // Context variables
         "contextvars" => Some(misc_modules::create_contextvars_module()),
         // MIME types
@@ -307,6 +309,14 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "importlib.resources" => Some(import_modules::create_importlib_resources_module()),
         // Misc sub-module aliases
         "html.entities" => None, // uses pure-python fallback in stdlib/Lib/html/entities.py
+        "tabnanny" => Some(ferrython_core::object::make_module("tabnanny", vec![
+            ("check", ferrython_core::object::make_builtin(|_| Ok(ferrython_core::object::PyObject::none()))),
+            ("verbose", ferrython_core::object::PyObject::int(0)),
+        ])),
+        "pyclbr" => Some(ferrython_core::object::make_module("pyclbr", vec![
+            ("readmodule", ferrython_core::object::make_builtin(|_| Ok(ferrython_core::object::PyObject::dict_from_pairs(vec![])))),
+            ("readmodule_ex", ferrython_core::object::make_builtin(|_| Ok(ferrython_core::object::PyObject::dict_from_pairs(vec![])))),
+        ])),
         "email.parser" => None,  // uses pure-python fallback
         "email.header" => None,  // uses pure-python fallback
         _ => None,
