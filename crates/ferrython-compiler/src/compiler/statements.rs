@@ -1642,13 +1642,34 @@ impl Compiler {
 
         let fail_label = self.emit_jump(Opcode::PopJumpIfFalse);
 
-        // Check keyword attribute patterns
         let mut attr_fails = Vec::new();
+
+        // Positional patterns: for builtin types (int, str, float, bytes, bool),
+        // the single positional arg captures the subject value itself.
+        // For user classes, positional args map via __match_args__.
+        for (i, pat) in patterns.iter().enumerate() {
+            if matches!(pat, Pattern::MatchWildcard) {
+                continue;
+            }
+            let pos_temp = CompactString::from(format!("$match_pos_{}$", i));
+            let pos_temp_idx = self.varname_index(&pos_temp);
+            // For single positional arg on builtin types, bind to subject directly
+            self.emit_arg(Opcode::LoadFast, subject_idx);
+            self.emit_arg(Opcode::StoreFast, pos_temp_idx);
+
+            let is_wc = self.compile_pattern_test(pat, pos_temp_idx)?;
+            if !is_wc {
+                attr_fails.push(self.emit_jump(Opcode::PopJumpIfFalse));
+            } else {
+                self.emit_op(Opcode::PopTop);
+            }
+        }
+
+        // Keyword attribute patterns
         for (attr, pat) in kwd_attrs.iter().zip(kwd_patterns.iter()) {
             let attr_temp = CompactString::from(format!("$match_attr_{}$", attr));
             let attr_temp_idx = self.varname_index(&attr_temp);
 
-            // Try getattr
             self.emit_arg(Opcode::LoadFast, subject_idx);
             let attr_name = self.add_name(attr);
             self.emit_arg(Opcode::LoadAttr, attr_name);
@@ -1727,7 +1748,14 @@ impl Compiler {
                     self.store_name(rest_name);
                 }
             }
-            Pattern::MatchClass { kwd_attrs, kwd_patterns, .. } => {
+            Pattern::MatchClass { kwd_attrs, kwd_patterns, patterns, .. } => {
+                // Positional pattern bindings: bind subject to captured names
+                for (i, pat) in patterns.iter().enumerate() {
+                    let pos_temp = CompactString::from(format!("$match_pos_{}$", i));
+                    let pos_temp_idx = self.varname_index(&pos_temp);
+                    self.compile_pattern_bindings(pat, pos_temp_idx)?;
+                }
+                // Keyword attribute bindings
                 for (attr, pat) in kwd_attrs.iter().zip(kwd_patterns.iter()) {
                     let attr_temp = CompactString::from(format!("$match_attr_{}$", attr));
                     let attr_temp_idx = self.varname_index(&attr_temp);
