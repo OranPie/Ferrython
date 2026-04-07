@@ -94,6 +94,23 @@ fn percent_encode(s: &str) -> String {
     result
 }
 
+/// Like percent_encode but encodes spaces as '+' (application/x-www-form-urlencoded).
+fn quote_plus_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(b as char);
+            }
+            b' ' => result.push('+'),
+            _ => {
+                result.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    result
+}
+
 fn percent_decode(s: &str) -> String {
     let mut result = Vec::new();
     let bytes = s.as_bytes();
@@ -504,8 +521,8 @@ fn urllib_parse_urlencode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 };
                 pairs.push(format!(
                     "{}={}",
-                    percent_encode(&ks),
-                    percent_encode(&v.py_to_string())
+                    quote_plus_encode(&ks),
+                    quote_plus_encode(&v.py_to_string())
                 ));
             }
         }
@@ -516,8 +533,8 @@ fn urllib_parse_urlencode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     if pair.len() >= 2 {
                         pairs.push(format!(
                             "{}={}",
-                            percent_encode(&pair[0].py_to_string()),
-                            percent_encode(&pair[1].py_to_string())
+                            quote_plus_encode(&pair[0].py_to_string()),
+                            quote_plus_encode(&pair[1].py_to_string())
                         ));
                     }
                 }

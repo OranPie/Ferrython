@@ -298,19 +298,16 @@ impl VirtualMachine {
             }
             Opcode::BinaryOr => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__or__", Some("__ror__"))? { r }
-                else if let (PyObjectPayload::Dict(left), PyObjectPayload::Dict(right)) = (&a.payload, &b.payload) {
-                    let mut merged = left.read().clone();
-                    for (k, v) in right.read().iter() { merged.insert(k.clone(), v.clone()); }
-                    PyObject::dict(merged)
+                else if let (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_)) = (&a.payload, &b.payload) {
+                    // Delegate to py_bit_or which handles Counter union (max) vs regular dict merge
+                    a.bit_or(&b)?
                 }
                 else { with_enum_fallback!(a, b, bit_or) }
             }
             Opcode::InplaceOr => {
                 if let Some(r) = self.try_inplace_dunder(&a, &b, "__ior__", "__or__")? { r }
-                else if let (PyObjectPayload::Dict(left), PyObjectPayload::Dict(right)) = (&a.payload, &b.payload) {
-                    let items: Vec<_> = right.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                    for (k, v) in items { left.write().insert(k, v); }
-                    a.clone()
+                else if let (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_)) = (&a.payload, &b.payload) {
+                    a.bit_or(&b)?
                 }
                 else if let (PyObjectPayload::Set(set), PyObjectPayload::Set(other)) = (&a.payload, &b.payload) {
                     let items: Vec<_> = other.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect();

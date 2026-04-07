@@ -119,7 +119,7 @@ pub fn create_typing_module() -> PyObjectRef {
                         PyObjectPayload::BuiltinType(n) => n.to_string(),
                         _ => params.py_to_string(),
                     };
-                    let repr = format!("{}[{}]", origin_display, params_str);
+                    let repr = format!("typing.{}[{}]", origin_display, params_str);
 
                     let cls = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
                     let mut attrs = IndexMap::new();

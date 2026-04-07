@@ -242,7 +242,11 @@ fn math_modf(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn math_fmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.fmod", args, 2)?;
-    Ok(PyObject::float(args[0].to_float()? % args[1].to_float()?))
+    let y = args[1].to_float()?;
+    if y == 0.0 {
+        return Err(PyException::value_error("math domain error"));
+    }
+    Ok(PyObject::float(args[0].to_float()? % y))
 }
 fn math_frexp(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("math.frexp", args, 1)?;
@@ -2283,22 +2287,35 @@ pub fn create_fractions_module() -> PyObjectRef {
         let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
         let max_den = if args.len() > 1 { args[1].to_int().unwrap_or(1_000_000) } else { 1_000_000 };
         if d <= max_den { return Ok(make_frac_instance(n, d)); }
-        // Stern-Brocot tree convergent search
-        let f = n as f64 / d as f64;
+        // CPython algorithm: continued fraction convergents
+        // p(-1)=1, p(0)=a0; q(-1)=0, q(0)=1
         let mut p0: i64 = 0; let mut q0: i64 = 1;
         let mut p1: i64 = 1; let mut q1: i64 = 0;
+        let mut nn = n.abs(); let mut dd = d;
         loop {
-            let a = ((f * q0 as f64 - p0 as f64) / (p1 as f64 - f * q1 as f64)) as i64;
-            let p2 = p0 + a * p1;
-            let q2 = q0 + a * q1;
+            let a = nn / dd;
+            let (p2, q2) = (a * p1 + p0, a * q1 + q0);
             if q2 > max_den { break; }
-            p0 = p1; q0 = q1; p1 = p2; q1 = q2;
+            p0 = p1; q0 = q1;
+            p1 = p2; q1 = q2;
+            let tmp = nn - a * dd;
+            nn = dd; dd = tmp;
+            if dd == 0 { break; }
         }
-        // Choose closest between p0/q0 and p1/q1
-        let err0 = (f - p0 as f64 / q0 as f64).abs();
-        let err1 = (f - p1 as f64 / q1 as f64).abs();
-        if err0 <= err1 { Ok(make_frac_instance(p0, q0)) }
-        else { Ok(make_frac_instance(p1, q1)) }
+        // Semi-convergent: k = (max_den - q0) / q1
+        let k = if q1 != 0 { (max_den - q0) / q1 } else { 0 };
+        let (bound_n, bound_d) = (k * p1 + p0, k * q1 + q0);
+        // Pick whichever of p1/q1 or bound_n/bound_d is closer
+        // Compare |n*q1 - d*p1| * bound_d  vs  |n*bound_d - d*bound_n| * q1
+        let err1 = (n as i128 * q1 as i128 - d as i128 * p1 as i128).abs();
+        let err2 = (n as i128 * bound_d as i128 - d as i128 * bound_n as i128).abs();
+        let (rn, rd) = if err2 * q1 as i128 <= err1 * bound_d as i128 {
+            (bound_n, bound_d)
+        } else {
+            (p1, q1)
+        };
+        let sign = if n < 0 { -1 } else { 1 };
+        Ok(make_frac_instance(sign * rn, rd))
     }
 
     fn frac_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

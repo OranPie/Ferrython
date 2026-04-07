@@ -136,6 +136,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "operator" => Some(collection_modules::create_operator_module()),
         "hashlib" => Some(crypto_modules::create_hashlib_module()),
         "logging" => Some(testing_modules::create_logging_module()),
+        "logging.handlers" => Some(testing_modules::create_logging_handlers_module()),
+        "logging.config" => Some(testing_modules::create_logging_config_module()),
         // unittest: pure Python module (stdlib/Lib/unittest/__init__.py)
         "pprint" => Some(text_modules::create_pprint_module()),
         "argparse" => Some(config_modules::create_argparse_module()),
