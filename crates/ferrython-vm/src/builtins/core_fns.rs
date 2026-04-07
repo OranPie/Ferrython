@@ -522,24 +522,37 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
                 return true;
             }
             // Check _abc_registry for ABCMeta.register() virtual subclasses
-            if let Some(registry) = target_cd.namespace.read().get("_abc_registry") {
-                if let PyObjectPayload::Dict(map) = &registry.payload {
-                    // Check if obj's class (or obj itself if it's a class) is registered
-                    let obj_class = match &obj.payload {
-                        PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
-                        PyObjectPayload::Class(_) => Some(obj.clone()),
-                        _ => None,
-                    };
-                    if let Some(oc) = obj_class {
-                        for (k, _) in map.read().iter() {
-                            if let HashableKey::Identity(_, registered) = k {
-                                if Arc::ptr_eq(registered, &oc) {
-                                    return true;
-                                }
-                                // Also match by class name
-                                if let (PyObjectPayload::Class(rc), PyObjectPayload::Class(occ)) = (&registered.payload, &oc.payload) {
-                                    if rc.name == occ.name {
-                                        return true;
+            // Walk the class and its bases (MRO) to find registries
+            {
+                let mut classes_to_check: Vec<PyObjectRef> = vec![cls.clone()];
+                classes_to_check.extend(target_cd.bases.iter().cloned());
+                for check_cls in &classes_to_check {
+                    if let PyObjectPayload::Class(ref check_cd) = check_cls.payload {
+                        if let Some(registry) = check_cd.namespace.read().get("_abc_registry").cloned() {
+                            if let PyObjectPayload::Dict(map) = &registry.payload {
+                                let obj_class = match &obj.payload {
+                                    PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
+                                    PyObjectPayload::Class(_) => Some(obj.clone()),
+                                    _ => None,
+                                };
+                                if let Some(oc) = obj_class {
+                                    let obj_class_name = match &oc.payload {
+                                        PyObjectPayload::Class(cd) => Some(cd.name.clone()),
+                                        _ => None,
+                                    };
+                                    for (k, _) in map.read().iter() {
+                                        if let HashableKey::Identity(_, registered) = k {
+                                            if Arc::ptr_eq(registered, &oc) {
+                                                return true;
+                                            }
+                                            if let Some(ref ocn) = obj_class_name {
+                                                if let PyObjectPayload::Class(rc) = &registered.payload {
+                                                    if rc.name == *ocn {
+                                                        return true;
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1378,6 +1391,31 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
             for base in &sub_cd.bases {
                 if let PyObjectPayload::Class(bc) = &base.payload {
                     if bc.name == sup_cd.name { return true; }
+                }
+            }
+            // Check _abc_registry for virtual subclass registration
+            {
+                let mut classes_to_check: Vec<PyObjectRef> = vec![sup.clone()];
+                classes_to_check.extend(sup_cd.bases.iter().cloned());
+                for check_cls in &classes_to_check {
+                    if let PyObjectPayload::Class(ref check_cd) = check_cls.payload {
+                        if let Some(registry) = check_cd.namespace.read().get("_abc_registry").cloned() {
+                            if let PyObjectPayload::Dict(map) = &registry.payload {
+                                for (k, _) in map.read().iter() {
+                                    if let HashableKey::Identity(_, registered) = k {
+                                        if Arc::ptr_eq(registered, sub) {
+                                            return true;
+                                        }
+                                        if let PyObjectPayload::Class(rc) = &registered.payload {
+                                            if rc.name == sub_cd.name {
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             false

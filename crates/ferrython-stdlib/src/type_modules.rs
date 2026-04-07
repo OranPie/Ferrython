@@ -1308,10 +1308,15 @@ pub fn create_collections_abc_module() -> PyObjectRef {
                     };
                     if let PyObjectPayload::Class(ref cd) = cls_ref.payload {
                         let mut ns = cd.namespace.write();
-                        let registry = ns.entry(CompactString::from("__abc_registry__"))
-                            .or_insert_with(|| PyObject::list(vec![]));
-                        if let PyObjectPayload::List(ref list) = registry.payload {
-                            list.write().push(subclass.clone());
+                        let registry = ns.entry(CompactString::from("_abc_registry"))
+                            .or_insert_with(|| PyObject::dict(IndexMap::new()))
+                            .clone();
+                        if let PyObjectPayload::Dict(ref map) = registry.payload {
+                            let ptr = std::sync::Arc::as_ptr(&subclass) as usize;
+                            map.write().insert(
+                                HashableKey::Identity(ptr, subclass.clone()),
+                                PyObject::bool_val(true),
+                            );
                         }
                     }
                     if let PyObjectPayload::Class(ref cd) = subclass.payload {
@@ -1384,13 +1389,18 @@ pub fn create_abc_module() -> PyObjectRef {
             } else {
                 return Err(PyException::type_error("register() requires a subclass argument"));
             };
-            // Store virtual subclass in __abc_registry__ on the ABC class
+            // Store virtual subclass in _abc_registry on the ABC class (Dict with Identity keys)
             if let PyObjectPayload::Class(ref cd) = cls.payload {
                 let mut ns = cd.namespace.write();
-                let registry = ns.entry(CompactString::from("__abc_registry__"))
-                    .or_insert_with(|| PyObject::list(vec![]));
-                if let PyObjectPayload::List(ref list) = registry.payload {
-                    list.write().push(subclass.clone());
+                let registry = ns.entry(CompactString::from("_abc_registry"))
+                    .or_insert_with(|| PyObject::dict(IndexMap::new()))
+                    .clone();
+                if let PyObjectPayload::Dict(ref map) = registry.payload {
+                    let ptr = std::sync::Arc::as_ptr(&subclass) as usize;
+                    map.write().insert(
+                        HashableKey::Identity(ptr, subclass.clone()),
+                        PyObject::bool_val(true),
+                    );
                 }
             }
             // Also mark the subclass with __abc_registered__ pointing to the ABC
