@@ -1463,6 +1463,19 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             }
             Ok(PyObject::bytes(result))
         }
+        "tobytes" => {
+            // memoryview.tobytes() / bytes.tobytes() — return a copy
+            Ok(PyObject::bytes(b.to_vec()))
+        }
+        "tolist" => {
+            // memoryview.tolist() — return list of ints
+            let items: Vec<PyObjectRef> = b.iter().map(|&byte| PyObject::int(byte as i64)).collect();
+            Ok(PyObject::list(items))
+        }
+        "release" => {
+            // memoryview.release() — no-op for our impl
+            Ok(PyObject::none())
+        }
         _ => Err(PyException::attribute_error(format!(
             "'bytes' object has no attribute '{}'", method
         ))),

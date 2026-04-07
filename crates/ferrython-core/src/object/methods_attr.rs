@@ -500,6 +500,59 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "start" => Some(start.clone().unwrap_or_else(PyObject::none)),
                     "stop" => Some(stop.clone().unwrap_or_else(PyObject::none)),
                     "step" => Some(step.clone().unwrap_or_else(PyObject::none)),
+                    "__class__" => Some(PyObject::builtin_type(CompactString::from("slice"))),
+                    "indices" => {
+                        let s_start = start.clone();
+                        let s_stop = stop.clone();
+                        let s_step = step.clone();
+                        Some(PyObject::native_closure("slice.indices", move |args| {
+                            if args.is_empty() {
+                                return Err(crate::error::PyException::type_error(
+                                    "slice.indices() requires a length argument"));
+                            }
+                            let length = args[0].to_int().map_err(|_|
+                                crate::error::PyException::type_error("length must be an integer"))? as i64;
+                            if length < 0 {
+                                return Err(crate::error::PyException::value_error(
+                                    "length should not be negative"));
+                            }
+                            let step_val = match &s_step {
+                                Some(s) => s.to_int().unwrap_or(1) as i64,
+                                None => 1,
+                            };
+                            if step_val == 0 {
+                                return Err(crate::error::PyException::value_error(
+                                    "slice step cannot be zero"));
+                            }
+                            let start_val = match &s_start {
+                                Some(s) => {
+                                    let v = s.to_int().unwrap_or(0) as i64;
+                                    if v < 0 {
+                                        (v + length).max(if step_val < 0 { -1 } else { 0 })
+                                    } else {
+                                        v.min(length)
+                                    }
+                                }
+                                None => if step_val < 0 { length - 1 } else { 0 },
+                            };
+                            let stop_val = match &s_stop {
+                                Some(s) => {
+                                    let v = s.to_int().unwrap_or(0) as i64;
+                                    if v < 0 {
+                                        (v + length).max(if step_val < 0 { -1 } else { 0 })
+                                    } else {
+                                        v.min(length)
+                                    }
+                                }
+                                None => if step_val < 0 { -1 } else { length },
+                            };
+                            Ok(PyObject::tuple(vec![
+                                PyObject::int(start_val),
+                                PyObject::int(stop_val),
+                                PyObject::int(step_val),
+                            ]))
+                        }))
+                    }
                     _ => None,
                 }
             }
@@ -933,6 +986,40 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "__traceback__" => {
                         attrs.read().get("__traceback__").cloned().or_else(|| Some(PyObject::none()))
                     }
+                    "__notes__" => {
+                        attrs.read().get("__notes__").cloned()
+                    }
+                    "add_note" => {
+                        let obj_ref = obj.clone();
+                        Some(PyObject::native_closure("add_note", move |args| {
+                            if args.is_empty() {
+                                return Err(crate::error::PyException::type_error(
+                                    "add_note() missing required argument: 'note'"));
+                            }
+                            let note = &args[0];
+                            if let PyObjectPayload::ExceptionInstance { ref attrs, .. } = obj_ref.payload {
+                                let mut w = attrs.write();
+                                let notes = w.entry(CompactString::from("__notes__"))
+                                    .or_insert_with(|| PyObject::list(vec![]));
+                                if let PyObjectPayload::List(list) = &notes.payload {
+                                    list.write().push(note.clone());
+                                }
+                            }
+                            Ok(PyObject::none())
+                        }))
+                    }
+                    "with_traceback" => {
+                        let obj_ref = obj.clone();
+                        Some(PyObject::native_closure("with_traceback", move |args| {
+                            if !args.is_empty() {
+                                if let PyObjectPayload::ExceptionInstance { ref attrs, .. } = obj_ref.payload {
+                                    attrs.write().insert(
+                                        CompactString::from("__traceback__"), args[0].clone());
+                                }
+                            }
+                            Ok(obj_ref.clone())
+                        }))
+                    }
                     // OSError attributes: .errno, .strerror, .filename
                     "errno" | "strerror" | "filename" if kind.is_subclass_of(&ExceptionKind::OSError) => {
                         attrs.read().get(name).cloned().or_else(|| Some(PyObject::none()))
@@ -1224,6 +1311,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "center" | "ljust" | "rjust" | "zfill" | "expandtabs"
                     | "partition" | "rpartition" | "removeprefix" | "removesuffix"
                     | "rsplit" | "splitlines" | "translate"
+                    | "tobytes" | "tolist" | "release"
                     | "append" | "extend" | "pop" | "insert" | "clear" | "reverse" | "copy"
                     | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__setitem__"
                     | "__eq__" | "__ne__" | "__repr__" | "__str__" | "__add__" | "__mul__"
@@ -1742,6 +1830,47 @@ fn resolve_exception_type_method(name: &str, _instance: &PyObjectRef) -> Option<
                 } else {
                     Ok(PyObject::str_val(CompactString::from(format!("{}()", cls_name))))
                 }
+            }))
+        }
+        "add_note" => {
+            Some(PyObject::native_function("add_note", |args| {
+                if args.len() < 2 {
+                    return Err(crate::error::PyException::type_error(
+                        "add_note() missing required argument: 'note'"));
+                }
+                let target = &args[0];
+                let note = &args[1];
+                if let PyObjectPayload::Instance(idata) = &target.payload {
+                    let mut w = idata.attrs.write();
+                    let notes = w.entry(CompactString::from("__notes__"))
+                        .or_insert_with(|| PyObject::list(vec![]));
+                    if let PyObjectPayload::List(list) = &notes.payload {
+                        list.write().push(note.clone());
+                    }
+                } else if let PyObjectPayload::ExceptionInstance { ref attrs, .. } = target.payload {
+                    let mut w = attrs.write();
+                    let notes = w.entry(CompactString::from("__notes__"))
+                        .or_insert_with(|| PyObject::list(vec![]));
+                    if let PyObjectPayload::List(list) = &notes.payload {
+                        list.write().push(note.clone());
+                    }
+                }
+                Ok(PyObject::none())
+            }))
+        }
+        "with_traceback" => {
+            let inst = _instance.clone();
+            Some(PyObject::native_closure("with_traceback", move |args| {
+                if !args.is_empty() {
+                    if let PyObjectPayload::Instance(idata) = &inst.payload {
+                        idata.attrs.write().insert(
+                            CompactString::from("__traceback__"), args[0].clone());
+                    } else if let PyObjectPayload::ExceptionInstance { ref attrs, .. } = inst.payload {
+                        attrs.write().insert(
+                            CompactString::from("__traceback__"), args[0].clone());
+                    }
+                }
+                Ok(inst.clone())
             }))
         }
         _ => None,

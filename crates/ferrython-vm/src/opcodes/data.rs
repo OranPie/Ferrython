@@ -312,7 +312,11 @@ impl VirtualMachine {
         match obj.get_attr(name) {
             Some(v) => {
                 if let PyObjectPayload::Property { fget, .. } = &v.payload {
-                    if let Some(getter) = fget {
+                    // On class-level access (e.g. MyClass.prop), return the property
+                    // object itself — don't invoke fget.
+                    if matches!(&obj.payload, PyObjectPayload::Class(_)) {
+                        self.vm_push(v);
+                    } else if let Some(getter) = fget {
                         let getter = getter.clone();
                         let result = self.call_object(getter, vec![obj])?;
                         self.vm_push(result);

@@ -46,54 +46,62 @@ fn json_escape_string(s: &str) -> String {
 }
 
 pub fn create_json_module() -> PyObjectRef {
+    // Build JSONEncoder as a proper class with methods in the namespace
+    let mut enc_ns = indexmap::IndexMap::new();
+    enc_ns.insert(CompactString::from("encode"), PyObject::native_closure("encode", |args| {
+        if args.is_empty() {
+            return Err(PyException::type_error("JSONEncoder.encode() missing argument"));
+        }
+        let s = py_to_json(&args[0])?;
+        Ok(PyObject::str_val(CompactString::from(s)))
+    }));
+    enc_ns.insert(CompactString::from("default"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        Err(PyException::type_error(format!(
+            "Object of type {} is not JSON serializable", args[0].type_name()
+        )))
+    }));
+    let json_encoder_cls = PyObject::class(CompactString::from("JSONEncoder"), vec![], enc_ns);
+
+    // Build JSONDecoder as a proper class with methods in the namespace
+    let mut dec_ns = indexmap::IndexMap::new();
+    dec_ns.insert(CompactString::from("decode"), PyObject::native_closure("decode", |args| {
+        if args.is_empty() {
+            return Err(PyException::type_error("JSONDecoder.decode() missing argument"));
+        }
+        let s = match &args[0].payload {
+            PyObjectPayload::Str(s) => s.to_string(),
+            _ => return Err(PyException::type_error("JSONDecoder.decode requires a string")),
+        };
+        parse_json_value(&s, &mut 0)
+    }));
+    dec_ns.insert(CompactString::from("raw_decode"), PyObject::native_closure("raw_decode", |args| {
+        if args.is_empty() {
+            return Err(PyException::type_error("raw_decode() missing argument"));
+        }
+        let s = match &args[0].payload {
+            PyObjectPayload::Str(s) => s.to_string(),
+            _ => return Err(PyException::type_error("raw_decode requires a string")),
+        };
+        let mut pos = 0;
+        let val = parse_json_value(&s, &mut pos)?;
+        Ok(PyObject::tuple(vec![val, PyObject::int(pos as i64)]))
+    }));
+    let json_decoder_cls = PyObject::class(CompactString::from("JSONDecoder"), vec![], dec_ns);
+
     make_module("json", vec![
         ("dumps", PyObject::native_function("json.dumps", json_dumps)),
         ("loads", PyObject::native_function("json.loads", json_loads)),
         ("dump", PyObject::native_function("json.dump", json_dump)),
         ("load", PyObject::native_function("json.load", json_load)),
-        ("JSONEncoder", make_builtin(json_encoder_ctor)),
-        ("JSONDecoder", make_builtin(json_decoder_ctor)),
+        ("JSONEncoder", json_encoder_cls),
+        ("JSONDecoder", json_decoder_cls),
         ("JSONDecodeError", PyObject::class(
             CompactString::from("JSONDecodeError"),
             vec![],
             indexmap::IndexMap::new(),
         )),
     ])
-}
-
-fn json_encoder_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let cls = PyObject::class(CompactString::from("JSONEncoder"), vec![], indexmap::IndexMap::new());
-    let inst = PyObject::instance(cls);
-    if let PyObjectPayload::Instance(ref d) = inst.payload {
-        let mut w = d.attrs.write();
-        w.insert(CompactString::from("encode"), PyObject::native_closure("encode", |args| {
-            if args.is_empty() {
-                return Err(PyException::type_error("JSONEncoder.encode() missing argument"));
-            }
-            let s = py_to_json(&args[0])?;
-            Ok(PyObject::str_val(CompactString::from(s)))
-        }));
-    }
-    Ok(inst)
-}
-
-fn json_decoder_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let cls = PyObject::class(CompactString::from("JSONDecoder"), vec![], indexmap::IndexMap::new());
-    let inst = PyObject::instance(cls);
-    if let PyObjectPayload::Instance(ref d) = inst.payload {
-        let mut w = d.attrs.write();
-        w.insert(CompactString::from("decode"), PyObject::native_closure("decode", |args| {
-            if args.is_empty() {
-                return Err(PyException::type_error("JSONDecoder.decode() missing argument"));
-            }
-            let s = match &args[0].payload {
-                PyObjectPayload::Str(s) => s.to_string(),
-                _ => return Err(PyException::type_error("JSONDecoder.decode requires a string")),
-            };
-            parse_json_value(&s, &mut 0)
-        }));
-    }
-    Ok(inst)
 }
 
 pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
