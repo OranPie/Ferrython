@@ -378,6 +378,32 @@ fn build_element_object(
     attrs.insert(CompactString::from("find"), PyObject::native_closure("find", move |args| {
         if args.is_empty() { return Err(PyException::type_error("find() requires at least 1 argument")); }
         let tag_match = args[0].py_to_string();
+        if tag_match.starts_with(".//") {
+            let real_tag = &tag_match[3..];
+            fn find_desc(children: &[PyObjectRef], tag: &str) -> Option<PyObjectRef> {
+                for c in children {
+                    let matched = c.get_attr("tag").map(|t| { let s = t.py_to_string(); s == tag || tag == "*" }).unwrap_or(false);
+                    if matched { return Some(c.clone()); }
+                    if let PyObjectPayload::Instance(ref d) = c.payload {
+                        if let Some(fa_fn) = d.attrs.read().get(&CompactString::from("findall")).cloned() {
+                            if let PyObjectPayload::NativeClosure { func, .. } = &fa_fn.payload {
+                                if let Ok(list_obj) = func(&[PyObject::str_val(CompactString::from("*"))]) {
+                                    if let PyObjectPayload::List(items) = &list_obj.payload {
+                                        if let Some(found) = find_desc(&items.read(), tag) {
+                                            return Some(found);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            let guard = ch.read().unwrap();
+            if let Some(found) = find_desc(&guard, real_tag) { return Ok(found); }
+            return Ok(PyObject::none());
+        }
         let guard = ch.read().unwrap();
         for child in guard.iter() {
             if let Some(t) = child.get_attr("tag") {
@@ -391,6 +417,30 @@ fn build_element_object(
     attrs.insert(CompactString::from("findall"), PyObject::native_closure("findall", move |args| {
         if args.is_empty() { return Err(PyException::type_error("findall() requires at least 1 argument")); }
         let tag_match = args[0].py_to_string();
+        if tag_match.starts_with(".//") {
+            let real_tag = &tag_match[3..];
+            fn findall_desc(children: &[PyObjectRef], tag: &str, results: &mut Vec<PyObjectRef>) {
+                for c in children {
+                    let matched = c.get_attr("tag").map(|t| { let s = t.py_to_string(); s == tag || tag == "*" }).unwrap_or(false);
+                    if matched { results.push(c.clone()); }
+                    if let PyObjectPayload::Instance(ref d) = c.payload {
+                        if let Some(fa_fn) = d.attrs.read().get(&CompactString::from("findall")).cloned() {
+                            if let PyObjectPayload::NativeClosure { func, .. } = &fa_fn.payload {
+                                if let Ok(list_obj) = func(&[PyObject::str_val(CompactString::from("*"))]) {
+                                    if let PyObjectPayload::List(items) = &list_obj.payload {
+                                        findall_desc(&items.read(), tag, results);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let mut results = Vec::new();
+            let guard = ch.read().unwrap();
+            findall_desc(&guard, real_tag, &mut results);
+            return Ok(PyObject::list(results));
+        }
         let guard = ch.read().unwrap();
         let results: Vec<PyObjectRef> = guard.iter()
             .filter(|c| {

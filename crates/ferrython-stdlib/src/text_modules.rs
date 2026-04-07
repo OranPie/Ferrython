@@ -635,6 +635,14 @@ fn match_span(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::tuple(vec![start, end]))
 }
 
+// Public wrappers for match object methods (used by VM re_sub_with_callable)
+pub fn match_group_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { match_group(args) }
+pub fn match_groups_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { match_groups(args) }
+pub fn match_groupdict_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { match_groupdict(args) }
+pub fn match_start_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { match_start(args) }
+pub fn match_end_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { match_end(args) }
+pub fn match_span_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { match_span(args) }
+
 fn re_match(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("re.match() requires pattern and string")); }
     let pattern = args[0].py_to_string();
@@ -779,7 +787,7 @@ fn re_finditer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 3 { return Err(PyException::type_error("re.sub() requires pattern, repl, and string")); }
     let pattern = args[0].py_to_string();
-    let repl = args[1].py_to_string();
+    let repl_obj = &args[1];
     let text = args[2].py_to_string();
     // count and flags can be positional or in trailing kwargs dict
     let mut count = if args.len() > 3 && !matches!(&args[3].payload, PyObjectPayload::Dict(_)) {
@@ -803,6 +811,14 @@ fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }
     }
+    // Check if repl is callable
+    let repl_is_callable = matches!(&repl_obj.payload,
+        PyObjectPayload::Function { .. } | PyObjectPayload::NativeFunction { .. }
+        | PyObjectPayload::NativeClosure { .. } | PyObjectPayload::BoundMethod { .. });
+    if repl_is_callable {
+        return re_sub_callable(&pattern, repl_obj, &text, count, flags);
+    }
+    let repl = repl_obj.py_to_string();
     let rust_repl = python_repl_to_rust(&repl);
     if needs_fancy_regex(&pattern) {
         let re = build_fancy_regex(&pattern, flags)?;
@@ -837,6 +853,36 @@ fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         };
         Ok(PyObject::str_val(CompactString::from(result)))
     }
+}
+
+/// re.sub with a callable replacement function
+fn re_sub_callable(pattern: &str, repl_fn: &PyObjectRef, text: &str, count: usize, flags: i64) -> PyResult<PyObjectRef> {
+    let re = build_regex(pattern, flags)?;
+    let mut result = String::new();
+    let mut last = 0;
+    let mut n = 0;
+    for caps in re.captures_iter(text) {
+        if count > 0 && n >= count { break; }
+        let whole = caps.get(0).unwrap();
+        result.push_str(&text[last..whole.start()]);
+        let match_obj = make_match_object(whole, text, &re);
+        // Call the replacement function with the match object
+        let replacement = match &repl_fn.payload {
+            PyObjectPayload::NativeFunction { func, .. } => func(&[match_obj])?,
+            PyObjectPayload::NativeClosure { func, .. } => func(&[match_obj])?,
+            _ => {
+                // For Python functions, we can't call them directly from here;
+                // fall back to using group(0)
+                let full_match = whole.as_str();
+                PyObject::str_val(CompactString::from(full_match))
+            }
+        };
+        result.push_str(&replacement.py_to_string());
+        last = whole.end();
+        n += 1;
+    }
+    result.push_str(&text[last..]);
+    Ok(PyObject::str_val(CompactString::from(result)))
 }
 
 fn re_subn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

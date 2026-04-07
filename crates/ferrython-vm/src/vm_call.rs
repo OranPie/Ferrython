@@ -1102,7 +1102,16 @@ impl VirtualMachine {
                                 | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. }
                                 | PyObjectPayload::Partial { .. });
                             if is_callable {
-                                return self.re_sub_with_callable(&pos_args, name.as_str() == "re.subn");
+                                // Merge kwargs into args as a trailing dict
+                                let mut merged = pos_args.clone();
+                                if !kwargs.is_empty() {
+                                    let mut kw_map = IndexMap::new();
+                                    for (k, v) in &kwargs {
+                                        kw_map.insert(HashableKey::Str(k.clone()), v.clone());
+                                    }
+                                    merged.push(PyObject::dict(kw_map));
+                                }
+                                return self.re_sub_with_callable(&merged, name.as_str() == "re.subn");
                             }
                         }
                         // itertools.groupby with key function

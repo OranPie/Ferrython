@@ -351,6 +351,25 @@ fn build_zipfile_object(inner: Arc<Mutex<ZipInner>>) -> PyObjectRef {
             }));
     }
 
+    // getinfo(name)
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("getinfo"),
+            PyObject::native_closure("getinfo", move |args| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("getinfo() requires a name argument"));
+                }
+                let name = args[0].py_to_string();
+                let guard = st.lock().unwrap();
+                match guard.entries.get(&name) {
+                    Some(data) => Ok(build_zipinfo(&name, data.len())),
+                    None => Err(PyException::key_error(&format!(
+                        "There is no item named '{}' in the archive", name
+                    ))),
+                }
+            }));
+    }
+
     // extractall(path='.')
     {
         let st = inner.clone();

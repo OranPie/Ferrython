@@ -5,7 +5,7 @@
 
 mod math_modules;
 mod sys_modules;
-mod text_modules;
+pub mod text_modules;
 mod collection_modules;
 mod serial_modules;
 mod fs_modules;
