@@ -90,6 +90,16 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
                 }
             }
         }
+        // BoundMethod equality: equal if __func__ and __self__ are the same
+        if matches!(op, CompareOp::Eq | CompareOp::Ne) {
+            if let (PyObjectPayload::BoundMethod { method: m1, receiver: r1 },
+                    PyObjectPayload::BoundMethod { method: m2, receiver: r2 }) = (&a.payload, &b.payload)
+            {
+                let eq = Arc::ptr_eq(r1, r2) && Arc::ptr_eq(m1, m2);
+                let result = if matches!(op, CompareOp::Eq) { eq } else { !eq };
+                return Ok(PyObject::bool_val(result));
+            }
+        }
         // NaN is never equal to anything, including itself
         let has_nan = match (&a.payload, &b.payload) {
             (PyObjectPayload::Float(f), _) if f.is_nan() => true,

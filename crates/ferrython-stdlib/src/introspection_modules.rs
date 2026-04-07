@@ -938,6 +938,21 @@ pub fn create_dis_module() -> PyObjectRef {
         let code: std::sync::Arc<ferrython_bytecode::CodeObject> = match &obj.payload {
             PyObjectPayload::Function(pf) => std::sync::Arc::clone(&pf.code),
             PyObjectPayload::Code(c) => std::sync::Arc::clone(c),
+            PyObjectPayload::Str(s) => {
+                // Auto-compile string source code, like CPython
+                let source = s.as_str();
+                match ferrython_parser::parse(source, "<dis>") {
+                    Ok(module) => match ferrython_compiler::compile(&module, "<dis>") {
+                        Ok(c) => std::sync::Arc::new(c),
+                        Err(e) => return Err(PyException::type_error(
+                            format!("could not compile source: {}", e)
+                        )),
+                    },
+                    Err(e) => return Err(PyException::type_error(
+                        format!("could not parse source: {:?}", e)
+                    )),
+                }
+            }
             _ => return Err(PyException::type_error(
                 format!("don't know how to disassemble {} objects", obj.type_name())
             )),
