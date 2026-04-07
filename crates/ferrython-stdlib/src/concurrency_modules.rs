@@ -201,7 +201,14 @@ pub fn create_threading_module() -> PyObjectRef {
     }));
 
     // setDaemon(self, val)
-    thread_ns.insert(CompactString::from("setDaemon"), make_builtin(|_| Ok(PyObject::none())));
+    thread_ns.insert(CompactString::from("setDaemon"), make_builtin(|args: &[PyObjectRef]| {
+        if args.len() >= 2 {
+            if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                inst.attrs.write().insert(CompactString::from("daemon"), args[1].clone());
+            }
+        }
+        Ok(PyObject::none())
+    }));
 
     // run(self) — default implementation calls target
     thread_ns.insert(CompactString::from("run"), make_builtin(|args: &[PyObjectRef]| {
@@ -431,6 +438,7 @@ pub fn create_threading_module() -> PyObjectRef {
         } else { 1 };
         let inst = PyObject::instance(bc.clone());
         let waiting = Arc::new(RwLock::new(0i64));
+        let broken = Arc::new(RwLock::new(false));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
             attrs.insert(CompactString::from("parties"), PyObject::int(parties));
@@ -438,17 +446,35 @@ pub fn create_threading_module() -> PyObjectRef {
             attrs.insert(CompactString::from("n_waiting"), PyObject::native_closure(
                 "n_waiting", move |_: &[PyObjectRef]| { Ok(PyObject::int(*w1.read())) }));
             let w2 = waiting.clone();
+            let b2 = broken.clone();
             let p = parties;
             attrs.insert(CompactString::from("wait"), PyObject::native_closure(
                 "wait", move |_: &[PyObjectRef]| {
+                    if *b2.read() {
+                        return Err(PyException::runtime_error("BrokenBarrierError"));
+                    }
                     let mut w = w2.write();
                     *w += 1;
                     if *w >= p { *w = 0; }
                     Ok(PyObject::int(0))
                 }));
-            attrs.insert(CompactString::from("reset"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("abort"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("broken"), PyObject::bool_val(false));
+            let w3 = waiting.clone();
+            attrs.insert(CompactString::from("reset"), PyObject::native_closure(
+                "reset", move |_: &[PyObjectRef]| {
+                    *w3.write() = 0;
+                    Ok(PyObject::none())
+                }));
+            let w4 = waiting.clone();
+            let b4 = broken.clone();
+            attrs.insert(CompactString::from("abort"), PyObject::native_closure(
+                "abort", move |_: &[PyObjectRef]| {
+                    *b4.write() = true;
+                    *w4.write() = 0;
+                    Ok(PyObject::none())
+                }));
+            let b5 = broken.clone();
+            attrs.insert(CompactString::from("broken"), PyObject::native_closure(
+                "broken", move |_: &[PyObjectRef]| { Ok(PyObject::bool_val(*b5.read())) }));
         }
         Ok(inst)
     });
@@ -548,6 +574,7 @@ pub fn create_threading_module() -> PyObjectRef {
     let timer_fn = PyObject::native_closure("Timer", move |args: &[PyObjectRef]| {
         let inst = PyObject::instance(tmc.clone());
         let cancelled = Arc::new(RwLock::new(false));
+        let alive = Arc::new(RwLock::new(false));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
             // interval
@@ -586,11 +613,13 @@ pub fn create_threading_module() -> PyObjectRef {
                 "cancel", move |_: &[PyObjectRef]| { *c1.write() = true; Ok(PyObject::none()) }));
 
             let c2 = cancelled.clone();
+            let a1 = alive.clone();
             let tgt = target.clone();
             let targs = fn_args.clone();
             attrs.insert(CompactString::from("start"), PyObject::native_closure(
                 "start", move |_: &[PyObjectRef]| {
                     if *c2.read() { return Ok(PyObject::none()); }
+                    *a1.write() = true;
                     if !matches!(&tgt.payload, PyObjectPayload::None) {
                         let call_args: Vec<PyObjectRef> = match &targs.payload {
                             PyObjectPayload::Tuple(items) => items.clone(),
@@ -603,10 +632,28 @@ pub fn create_threading_module() -> PyObjectRef {
                             _ => { push_deferred_call(tgt.clone(), call_args); }
                         }
                     }
+                    *a1.write() = false;
                     Ok(PyObject::none())
                 }));
-            attrs.insert(CompactString::from("join"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("is_alive"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+            let a2 = alive.clone();
+            attrs.insert(CompactString::from("join"), PyObject::native_closure(
+                "join", move |args: &[PyObjectRef]| {
+                    // Timer runs synchronously, so if alive, spin-wait with optional timeout
+                    let timeout = args.first()
+                        .and_then(|a| if matches!(&a.payload, PyObjectPayload::None) { None } else { a.to_float().ok() });
+                    if *a2.read() {
+                        if let Some(t) = timeout {
+                            std::thread::sleep(std::time::Duration::from_secs_f64(t));
+                        }
+                    }
+                    Ok(PyObject::none())
+                }));
+            let a3 = alive.clone();
+            let c3 = cancelled.clone();
+            attrs.insert(CompactString::from("is_alive"), PyObject::native_closure(
+                "is_alive", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::bool_val(*a3.read() && !*c3.read()))
+                }));
             attrs.insert(CompactString::from("ident"), PyObject::none());
         }
         Ok(inst)
@@ -1559,27 +1606,62 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                     *a1.write() = false;
                     Ok(PyObject::none())
                 }));
-            attrs.insert(CompactString::from("join"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("join"), {
+                let a_join = alive.clone();
+                PyObject::native_closure("join", move |args: &[PyObjectRef]| {
+                    // Wait for process to complete; since start() runs synchronously,
+                    // process is typically already done. Support optional timeout.
+                    let timeout = args.first()
+                        .and_then(|a| if matches!(&a.payload, PyObjectPayload::None) { None } else { a.to_float().ok() });
+                    if *a_join.read() {
+                        if let Some(t) = timeout {
+                            let start = std::time::Instant::now();
+                            let dur = std::time::Duration::from_secs_f64(t);
+                            while *a_join.read() && start.elapsed() < dur {
+                                std::thread::sleep(std::time::Duration::from_millis(5));
+                            }
+                        }
+                    }
+                    Ok(PyObject::none())
+                })
+            });
             let a2 = alive.clone();
             attrs.insert(CompactString::from("is_alive"), PyObject::native_closure(
                 "is_alive", move |_: &[PyObjectRef]| { Ok(PyObject::bool_val(*a2.read())) }));
-            attrs.insert(CompactString::from("terminate"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("kill"), make_builtin(|_| Ok(PyObject::none())));
+            let a3 = alive.clone();
+            attrs.insert(CompactString::from("terminate"), PyObject::native_closure(
+                "terminate", move |_: &[PyObjectRef]| {
+                    *a3.write() = false;
+                    Ok(PyObject::none())
+                }));
+            let a4 = alive.clone();
+            attrs.insert(CompactString::from("kill"), PyObject::native_closure(
+                "kill", move |_: &[PyObjectRef]| {
+                    *a4.write() = false;
+                    Ok(PyObject::none())
+                }));
         }
         Ok(inst)
     });
 
-    // Pool(processes=) — stub
+    // Pool(processes=) — thread pool with state tracking
     let pool_cls = PyObject::class(CompactString::from("Pool"), vec![], IndexMap::new());
     let plc = pool_cls.clone();
     let pool_fn = PyObject::native_closure("Pool", move |args: &[PyObjectRef]| {
         let processes = if !args.is_empty() { args[0].as_int().unwrap_or(1) } else { 1 };
         let inst = PyObject::instance(plc.clone());
+        let closed = Arc::new(RwLock::new(false));
+        let terminated = Arc::new(RwLock::new(false));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
             attrs.insert(CompactString::from("_processes"), PyObject::int(processes));
-            attrs.insert(CompactString::from("map"), make_builtin(|args| {
+            let cl1 = closed.clone();
+            let tm1 = terminated.clone();
+            attrs.insert(CompactString::from("map"), PyObject::native_closure("map", move |args: &[PyObjectRef]| {
                 // Pool.map(func, iterable) — execute func(item) for each item sequentially
+                if *cl1.read() || *tm1.read() {
+                    return Err(PyException::value_error("Pool not running"));
+                }
                 if args.len() < 2 { return Err(PyException::type_error("map() requires func and iterable")); }
                 let func = &args[0];
                 let iterable = args[1].to_list()?;
@@ -1605,8 +1687,13 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                 }
                 Ok(PyObject::list(results))
             }));
-            attrs.insert(CompactString::from("apply"), make_builtin(|args| {
+            let cl2 = closed.clone();
+            let tm2 = terminated.clone();
+            attrs.insert(CompactString::from("apply"), PyObject::native_closure("apply", move |args: &[PyObjectRef]| {
                 // Pool.apply(func, args=()) — call func with args
+                if *cl2.read() || *tm2.read() {
+                    return Err(PyException::value_error("Pool not running"));
+                }
                 if args.is_empty() { return Err(PyException::type_error("apply() requires func")); }
                 let func = &args[0];
                 let call_args: Vec<PyObjectRef> = if args.len() > 1 {
@@ -1621,8 +1708,13 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                     }
                 }
             }));
-            attrs.insert(CompactString::from("apply_async"), make_builtin(|args| {
+            let cl3 = closed.clone();
+            let tm3 = terminated.clone();
+            attrs.insert(CompactString::from("apply_async"), PyObject::native_closure("apply_async", move |args: &[PyObjectRef]| {
                 // apply_async returns an AsyncResult; in our model, execute immediately
+                if *cl3.read() || *tm3.read() {
+                    return Err(PyException::value_error("Pool not running"));
+                }
                 if args.is_empty() { return Err(PyException::type_error("apply_async() requires func")); }
                 let func = &args[0];
                 let call_args: Vec<PyObjectRef> = if args.len() > 1 {
@@ -1642,12 +1734,33 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                         "get", move |_: &[PyObjectRef]| Ok(r.clone())));
                     d.attrs.write().insert(CompactString::from("ready"), make_builtin(|_| Ok(PyObject::bool_val(true))));
                     d.attrs.write().insert(CompactString::from("successful"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+                    d.attrs.write().insert(CompactString::from("wait"), make_builtin(|_| Ok(PyObject::none())));
                 }
                 Ok(async_inst)
             }));
-            attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("join"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("terminate"), make_builtin(|_| Ok(PyObject::none())));
+            let cl4 = closed.clone();
+            attrs.insert(CompactString::from("close"), PyObject::native_closure(
+                "close", move |_: &[PyObjectRef]| {
+                    *cl4.write() = true;
+                    Ok(PyObject::none())
+                }));
+            let cl5 = closed.clone();
+            attrs.insert(CompactString::from("join"), PyObject::native_closure(
+                "join", move |_: &[PyObjectRef]| {
+                    if !*cl5.read() {
+                        return Err(PyException::value_error("Pool is still running"));
+                    }
+                    // All work is synchronous, so join is immediate
+                    Ok(PyObject::none())
+                }));
+            let tm4 = terminated.clone();
+            let cl6 = closed.clone();
+            attrs.insert(CompactString::from("terminate"), PyObject::native_closure(
+                "terminate", move |_: &[PyObjectRef]| {
+                    *tm4.write() = true;
+                    *cl6.write() = true;
+                    Ok(PyObject::none())
+                }));
             attrs.insert(CompactString::from("__enter__"), {
                 let ir = inst.clone();
                 PyObject::native_closure("__enter__", move |_: &[PyObjectRef]| Ok(ir.clone()))
@@ -1732,7 +1845,13 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                         })
                     })
                 });
-                attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("close"), {
+                    let q = items.clone();
+                    PyObject::native_closure("close", move |_: &[PyObjectRef]| {
+                        q.lock().unwrap().clear();
+                        Ok(PyObject::none())
+                    })
+                });
             }
             Ok(inst)
         })),
@@ -1776,7 +1895,85 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
             if args.len() < 2 { return Err(PyException::type_error("Array() requires 2 arguments")); }
             Ok(args[1].clone())
         })),
-        ("Manager", make_builtin(|_| Ok(PyObject::none()))),
+        ("Manager", make_builtin(|_| {
+            let cls = PyObject::class(CompactString::from("SyncManager"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut attrs = d.attrs.write();
+                // Manager.dict() -> shared dict
+                attrs.insert(CompactString::from("dict"), make_builtin(|_| {
+                    Ok(PyObject::dict(IndexMap::new()))
+                }));
+                // Manager.list() -> shared list
+                attrs.insert(CompactString::from("list"), make_builtin(|_| {
+                    Ok(PyObject::list(vec![]))
+                }));
+                // Manager.Value(typecode, value) -> value wrapper
+                attrs.insert(CompactString::from("Value"), make_builtin(|args: &[PyObjectRef]| {
+                    if args.len() < 2 { return Err(PyException::type_error("Value() requires 2 arguments")); }
+                    Ok(args[1].clone())
+                }));
+                // Manager.Lock() -> Lock
+                attrs.insert(CompactString::from("Lock"), make_builtin(|_| {
+                    let lock_cls = PyObject::class(CompactString::from("Lock"), vec![], IndexMap::new());
+                    let lock_inst = PyObject::instance(lock_cls);
+                    if let PyObjectPayload::Instance(ref ld) = lock_inst.payload {
+                        let locked = Arc::new(std::sync::Mutex::new(false));
+                        let mut la = ld.attrs.write();
+                        let l1 = locked.clone();
+                        la.insert(CompactString::from("acquire"), PyObject::native_closure("acquire", move |_: &[PyObjectRef]| {
+                            *l1.lock().unwrap() = true;
+                            Ok(PyObject::bool_val(true))
+                        }));
+                        let l2 = locked.clone();
+                        la.insert(CompactString::from("release"), PyObject::native_closure("release", move |_: &[PyObjectRef]| {
+                            *l2.lock().unwrap() = false;
+                            Ok(PyObject::none())
+                        }));
+                    }
+                    Ok(lock_inst)
+                }));
+                // Manager.Namespace() -> namespace object
+                attrs.insert(CompactString::from("Namespace"), make_builtin(|_| {
+                    let ns_cls = PyObject::class(CompactString::from("Namespace"), vec![], IndexMap::new());
+                    Ok(PyObject::instance(ns_cls))
+                }));
+                // Manager.Event() -> Event
+                attrs.insert(CompactString::from("Event"), make_builtin(|_| {
+                    let ev_cls = PyObject::class(CompactString::from("Event"), vec![], IndexMap::new());
+                    let ev_inst = PyObject::instance(ev_cls);
+                    if let PyObjectPayload::Instance(ref ed) = ev_inst.payload {
+                        let flag = Arc::new(std::sync::Mutex::new(false));
+                        let mut ea = ed.attrs.write();
+                        let f1 = flag.clone();
+                        ea.insert(CompactString::from("set"), PyObject::native_closure("set", move |_: &[PyObjectRef]| {
+                            *f1.lock().unwrap() = true;
+                            Ok(PyObject::none())
+                        }));
+                        let f2 = flag.clone();
+                        ea.insert(CompactString::from("clear"), PyObject::native_closure("clear", move |_: &[PyObjectRef]| {
+                            *f2.lock().unwrap() = false;
+                            Ok(PyObject::none())
+                        }));
+                        let f3 = flag.clone();
+                        ea.insert(CompactString::from("is_set"), PyObject::native_closure("is_set", move |_: &[PyObjectRef]| {
+                            Ok(PyObject::bool_val(*f3.lock().unwrap()))
+                        }));
+                        let f4 = flag.clone();
+                        ea.insert(CompactString::from("wait"), PyObject::native_closure("wait", move |_: &[PyObjectRef]| {
+                            Ok(PyObject::bool_val(*f4.lock().unwrap()))
+                        }));
+                    }
+                    Ok(ev_inst)
+                }));
+                // Context manager support
+                let ir = inst.clone();
+                attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("__enter__", move |_: &[PyObjectRef]| Ok(ir.clone())));
+                attrs.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+                attrs.insert(CompactString::from("shutdown"), make_builtin(|_| Ok(PyObject::none())));
+            }
+            Ok(inst)
+        })),
         ("Pipe", make_builtin(|_| Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none()])))),
         ("Event", make_builtin(|_| {
             let cls = PyObject::class(CompactString::from("Event"), vec![], IndexMap::new());
