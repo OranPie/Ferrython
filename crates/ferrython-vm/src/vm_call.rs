@@ -2178,6 +2178,44 @@ impl VirtualMachine {
                         "__next__" if kind != "async_generator" => {
                             return self.resume_generator(gen_arc, PyObject::none());
                         }
+                        // Context manager protocol for generators (@contextmanager)
+                        "__enter__" if kind == "generator" => {
+                            // __enter__ = next(gen) — advance to first yield
+                            return self.resume_generator(gen_arc, PyObject::none());
+                        }
+                        "__exit__" if kind == "generator" => {
+                            // args: exc_type, exc_val, exc_tb
+                            let has_exc = !args.is_empty()
+                                && !matches!(&args[0].payload, PyObjectPayload::None);
+                            if has_exc {
+                                // Exception in with block — throw into generator
+                                let (exc_kind, msg) = Self::parse_throw_args(&args);
+                                match self.gen_throw(gen_arc, exc_kind, msg) {
+                                    Ok(_) => {
+                                        // Generator caught the exception and yielded or returned
+                                        return Ok(PyObject::bool_val(true)); // suppress exception
+                                    }
+                                    Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                        return Ok(PyObject::bool_val(true));
+                                    }
+                                    Err(e) => return Err(e),
+                                }
+                            } else {
+                                // Normal exit — advance generator past yield
+                                match self.resume_generator(gen_arc, PyObject::none()) {
+                                    Ok(_) => {
+                                        // Generator yielded again — it should have stopped
+                                        return Err(PyException::runtime_error(
+                                            "generator didn't stop"
+                                        ));
+                                    }
+                                    Err(e) if e.kind == ExceptionKind::StopIteration => {
+                                        return Ok(PyObject::bool_val(false));
+                                    }
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                        }
                         // ── Async generator protocol methods ──
                         // __aiter__ returns self (async generator is its own async iterator)
                         "__aiter__" if kind == "async_generator" => {

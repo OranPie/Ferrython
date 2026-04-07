@@ -1337,6 +1337,16 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             }
                         }))
                     }
+                    // Context manager protocol: generators from @contextmanager
+                    // __enter__ calls next(gen), __exit__ calls gen.close()/gen.throw()
+                    "__enter__" | "__exit__" => {
+                        Some(Arc::new(PyObject {
+                            payload: PyObjectPayload::BuiltinBoundMethod {
+                                receiver: obj.clone(),
+                                method_name: CompactString::from(name),
+                            }
+                        }))
+                    }
                     "__iter__" => Some(obj.clone()),
                     "gi_frame" | "gi_code" => Some(PyObject::none()),
                     "gi_running" => Some(PyObject::bool_val(false)),

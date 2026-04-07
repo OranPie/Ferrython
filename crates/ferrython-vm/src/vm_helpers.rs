@@ -1591,6 +1591,19 @@ impl VirtualMachine {
                     new_globals.insert(key_str, v.clone());
                 }
                 drop(m);
+                // Merge locals dict (args[2]) — locals override globals for name resolution
+                if args.len() >= 3 {
+                    if let PyObjectPayload::Dict(ref locals_map) = args[2].payload {
+                        let lm = locals_map.read();
+                        for (k, v) in lm.iter() {
+                            let key_str = match k {
+                                HashableKey::Str(s) => s.clone(),
+                                _ => CompactString::from(format!("{:?}", k)),
+                            };
+                            new_globals.insert(key_str, v.clone());
+                        }
+                    }
+                }
                 let shared = Arc::new(RwLock::new(new_globals));
                 let exec_result = self.execute_with_globals(code, shared.clone())?;
                 // Check for __eval_result__ in globals (set by compile(mode='eval'))
@@ -1638,15 +1651,30 @@ impl VirtualMachine {
         if args.len() < 3 {
             return Err(PyException::type_error("compile() requires at least 3 arguments"));
         }
-        let source = args[0].as_str().ok_or_else(||
-            PyException::type_error("compile() arg 1 must be a string"))?;
         let filename = args[1].py_to_string();
         let mode = args[2].py_to_string();
+
+        // Accept AST objects: extract stored __source__ from ast.parse()
+        let source = if let Some(s) = args[0].as_str() {
+            s.to_string()
+        } else if let PyObjectPayload::Instance(inst) = &args[0].payload {
+            let attrs = inst.attrs.read();
+            if let Some(src) = attrs.get("__source__") {
+                src.py_to_string()
+            } else {
+                return Err(PyException::type_error(
+                    "compile() arg 1 must be a string, bytes, or AST object"));
+            }
+        } else {
+            return Err(PyException::type_error(
+                "compile() arg 1 must be a string, bytes, or AST object"));
+        };
+
         // In "eval" mode, wrap as assignment so eval() can extract the result
         let effective_source = if mode == "eval" {
             format!("__eval_result__ = ({})", source)
         } else {
-            source.to_string()
+            source
         };
         let module = ferrython_parser::parse(&effective_source, &filename)
             .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;

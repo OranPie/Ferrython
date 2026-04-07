@@ -1214,6 +1214,13 @@ pub fn create_ast_module() -> PyObjectRef {
                         let inst = PyObject::instance(cls);
                         set_node_attr(&inst, "body", body);
                         set_node_fields(&inst, &["body"]);
+                        // Store source for compile() support
+                        if let PyObjectPayload::Instance(ref data) = inst.payload {
+                            let mut a = data.attrs.write();
+                            a.insert(CompactString::from("__source__"), PyObject::str_val(CompactString::from(&source)));
+                            a.insert(CompactString::from("__filename__"), PyObject::str_val(CompactString::from(&filename)));
+                            a.insert(CompactString::from("__mode__"), PyObject::str_val(CompactString::from("eval")));
+                        }
                         Ok(inst)
                     }
                     Err(e) => Err(PyException::syntax_error(format!("{}", e))),
@@ -1221,7 +1228,17 @@ pub fn create_ast_module() -> PyObjectRef {
             }
             _ => {
                 match ferrython_parser::parse(&source, &filename) {
-                    Ok(module) => Ok(module_to_pyobject(&module)),
+                    Ok(module) => {
+                        let obj = module_to_pyobject(&module);
+                        // Store source for compile() support
+                        if let PyObjectPayload::Instance(inst) = &obj.payload {
+                            let mut a = inst.attrs.write();
+                            a.insert(CompactString::from("__source__"), PyObject::str_val(CompactString::from(&source)));
+                            a.insert(CompactString::from("__filename__"), PyObject::str_val(CompactString::from(&filename)));
+                            a.insert(CompactString::from("__mode__"), PyObject::str_val(CompactString::from(&mode)));
+                        }
+                        Ok(obj)
+                    }
                     Err(e) => Err(PyException::syntax_error(format!("{}", e))),
                 }
             }

@@ -129,8 +129,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "enum" => Some(type_modules::create_enum_module()),
         "types" => Some(type_modules::create_types_module()),
         "collections.abc" => Some(type_modules::create_collections_abc_module()),
-        // Misc
-        "contextlib" => Some(misc_modules::create_contextlib_module()),
+        // Misc — contextlib provided by stdlib/Lib/contextlib.py (pure Python)
         "dataclasses" => Some(misc_modules::create_dataclasses_module()),
         "copy" => Some(misc_modules::create_copy_module()),
         "operator" => Some(collection_modules::create_operator_module()),

@@ -288,6 +288,15 @@ impl PyException {
     pub fn with_original(kind: ExceptionKind, message: impl Into<String>, obj: PyObjectRef) -> Self {
         Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
     }
+    /// Ensure this exception has an `original` ExceptionInstance object.
+    /// Creates one from `kind`/`message` if absent.
+    pub fn ensure_original(&mut self) {
+        if self.original.is_none() {
+            self.original = Some(crate::object::PyObject::exception_instance(
+                self.kind.clone(), self.message.clone(),
+            ));
+        }
+    }
     pub fn type_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::TypeError, msg) }
     pub fn value_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::ValueError, msg) }
     pub fn name_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::NameError, msg) }

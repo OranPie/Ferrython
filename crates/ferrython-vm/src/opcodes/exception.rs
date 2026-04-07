@@ -357,7 +357,8 @@ impl VirtualMachine {
                 let mut py_exc = raise_exc(&exc);
                 // `raise X from None` suppresses the cause
                 if matches!(cause.payload, PyObjectPayload::None) {
-                    // raise X from None: suppress context display
+                    // Ensure we have an original ExceptionInstance to store attrs on
+                    py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
                         if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
                             let mut w = attrs.write();
@@ -367,7 +368,7 @@ impl VirtualMachine {
                     }
                 } else {
                     let cause_exc = raise_exc(&cause);
-                    // Store __cause__ on the exception instance's attrs
+                    py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
                         if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
                             let mut w = attrs.write();

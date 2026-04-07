@@ -192,7 +192,11 @@ pub fn create_contextlib_module() -> PyObjectRef {
                             match &enter.payload {
                                 PyObjectPayload::NativeFunction { func, .. } => func(&[cm.clone()])?,
                                 PyObjectPayload::NativeClosure { func, .. } => func(&[cm.clone()])?,
-                                PyObjectPayload::BuiltinBoundMethod { .. } => cm.clone(),
+                                PyObjectPayload::BuiltinBoundMethod { .. } => {
+                                    // Generator __enter__/__exit__ — needs VM dispatch
+                                    ferrython_core::error::request_vm_call(enter, vec![cm.clone()]);
+                                    PyObject::none() // placeholder; VM will execute
+                                },
                                 _ => cm.clone()
                             }
                         } else {

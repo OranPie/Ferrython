@@ -1154,8 +1154,8 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             cd.namespace.write().insert(CompactString::from(name), args[2].clone());
             cd.invalidate_cache();
         }
-        PyObjectPayload::Module(_m) => {
-            // Modules are immutable in our current design; skip for now
+        PyObjectPayload::Module(m) => {
+            m.attrs.write().insert(CompactString::from(name), args[2].clone());
         }
         _ => return Err(PyException::attribute_error(format!(
             "'{}' object does not support attribute assignment", args[0].type_name()
@@ -1484,11 +1484,7 @@ pub(crate) fn is_exception_subclass(child: &ExceptionKind, parent: &ExceptionKin
 }
 
 pub(super) fn builtin_object(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    Ok(PyObject::instance(PyObject::class(
-        CompactString::from("object"),
-        vec![],
-        IndexMap::new(),
-    )))
+    Ok(PyObject::instance(PyObject::builtin_type(CompactString::from("object"))))
 }
 
 pub(super) fn builtin_super(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
