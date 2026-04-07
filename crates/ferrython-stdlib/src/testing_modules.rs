@@ -655,8 +655,12 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let mut ns = IndexMap::new();
     ns.insert(CompactString::from("name"), PyObject::str_val(logger_name.clone()));
     let root_level = ROOT_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
-    let initial_level = if root_level > 0 { root_level } else { 30 };
-    let effective_level: Arc<RwLock<i64>> = Arc::new(RwLock::new(initial_level));
+    let is_root = logger_name.as_str() == "root";
+    // CPython: named loggers start at level=0 (NOTSET); root logger defaults to WARNING(30)
+    let initial_level: i64 = if is_root { if root_level > 0 { root_level } else { 30 } } else { 0 };
+    // Effective level: for filtering, use own level if set, else inherit root
+    let effective = if initial_level > 0 { initial_level } else { if root_level > 0 { root_level } else { 30 } };
+    let effective_level: Arc<RwLock<i64>> = Arc::new(RwLock::new(effective));
     ns.insert(CompactString::from("level"), PyObject::int(initial_level));
     let handlers_list = PyObject::list(vec![]);
     ns.insert(CompactString::from("handlers"), handlers_list.clone());
@@ -2726,7 +2730,7 @@ pub fn create_logging_handlers_module() -> PyObjectRef {
         let class_name = CompactString::from(name);
         let cn = class_name.clone();
         let cls = PyObject::class(class_name, vec![], IndexMap::new());
-        let cls_ret = cls.clone();
+        let _cls_ret = cls.clone();
         let factory = PyObject::native_closure(name, move |args: &[PyObjectRef]| {
             let inst = PyObject::instance(cls.clone());
             if let PyObjectPayload::Instance(ref d) = inst.payload {

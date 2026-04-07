@@ -884,7 +884,11 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
             }
         }
-        _ => Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name()))),
+        // Delegate all other payload types to the core get_iter (handles DictKeys, DictValues,
+        // DictItems, Bytes, ByteArray, FrozenSet, MappingProxy, etc.)
+        _ => obj.get_iter().map_err(|_| {
+            PyException::type_error(format!("'{}' object is not iterable", obj.type_name()))
+        }),
     }
 }
 

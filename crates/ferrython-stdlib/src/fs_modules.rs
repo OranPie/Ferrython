@@ -1153,9 +1153,17 @@ pub fn create_tempfile_module() -> PyObjectRef {
                 }
             }
             let path = temp_name(&prefix, &suffix);
-            std::fs::File::create(&path)
+            let file = std::fs::File::create(&path)
                 .map_err(|e| PyException::runtime_error(format!("mkstemp: {}", e)))?;
-            Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::str_val(CompactString::from(path))]))
+            #[cfg(unix)] {
+                use std::os::unix::io::IntoRawFd;
+                let fd = file.into_raw_fd();
+                Ok(PyObject::tuple(vec![PyObject::int(fd as i64), PyObject::str_val(CompactString::from(path))]))
+            }
+            #[cfg(not(unix))] {
+                drop(file);
+                Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::str_val(CompactString::from(path))]))
+            }
         })),
         ("mktemp", make_builtin(|args| {
             let mut suffix = String::new();

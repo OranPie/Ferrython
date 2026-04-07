@@ -2603,7 +2603,7 @@ pub fn create_tokenize_module() -> PyObjectRef {
                     // Inline comment — consume rest of line
                     let comment: String = chars[col..].iter().collect();
                     tokens.push(make_token_info(60, &comment, (lineno, col), (lineno, chars.len()), line));
-                    col = chars.len();
+                    let _ = chars.len(); // col unused
                     break;
                 }
                 let start_col = col;

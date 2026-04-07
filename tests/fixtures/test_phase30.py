@@ -44,7 +44,7 @@ test("logging CRITICAL level", logging.CRITICAL == 50)
 
 logger = logging.getLogger("test_logger")
 test("logger has name", logger.name == "test_logger")
-test("logger has level", logger.level == 30)
+test("logger has level", logger.level == 0)  # NOTSET by default (CPython behavior)
 
 # basicConfig should not error
 logging.basicConfig()

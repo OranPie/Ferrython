@@ -79,6 +79,7 @@ fn parse_url_string(url: &str) -> ParsedUrl {
     }
 }
 
+#[allow(dead_code)]
 fn percent_encode(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for b in s.bytes() {
