@@ -106,6 +106,15 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             (_, PyObjectPayload::Float(f)) if f.is_nan() => true,
             _ => false,
         };
+        // Ordering comparisons on complex numbers must raise TypeError (CPython behavior)
+        if matches!(op, CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge) {
+            if matches!((&a.payload, &b.payload),
+                (PyObjectPayload::Complex { .. }, _) | (_, PyObjectPayload::Complex { .. })) {
+                return Err(crate::error::PyException::type_error(
+                    "'<' not supported between instances of 'complex' and 'complex'".to_string()
+                ));
+            }
+        }
         let ord = partial_cmp_objects(a, b);
         let result = match op {
             CompareOp::Eq => if has_nan { false } else {
