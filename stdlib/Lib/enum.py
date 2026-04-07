@@ -28,6 +28,15 @@ class EnumMeta(type):
             cls._member_map_[name] = member
             cls._value2member_map_[value] = member
 
+        # Inject iteration support directly into class namespace so the VM can
+        # find __iter__/__len__/__contains__ on the class object itself.
+        # (VM currently doesn't do full metaclass attribute lookup for dunder dispatch.)
+        _mmap = cls._member_map_
+        _v2m = cls._value2member_map_
+        cls.__iter__ = staticmethod(lambda: iter(_mmap.values()))
+        cls.__len__ = staticmethod(lambda: len(_mmap))
+        cls.__members__ = _mmap
+
         return cls
 
     def __iter__(cls):

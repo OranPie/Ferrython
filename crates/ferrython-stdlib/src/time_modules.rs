@@ -1175,19 +1175,52 @@ fn datetime_timedelta(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     make_timedelta(days, seconds, microseconds, total_secs)
 }
 fn ymd_to_ordinal(y: i64, m: i64, d: i64) -> i64 {
-    // Convert Y-M-D to a day ordinal (proleptic Gregorian)
-    let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
-    365 * y + y / 4 - y / 100 + y / 400 + (m * 153 + 2) / 5 + d - 1
+    // CPython-compatible: date(1, 1, 1).toordinal() == 1
+    let dbm = [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let y1 = y - 1;
+    let days_before_year = y1 * 365 + y1 / 4 - y1 / 100 + y1 / 400;
+    let is_leap = (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0);
+    let mut days_before_month = dbm[m as usize];
+    if m > 2 && is_leap { days_before_month += 1; }
+    days_before_year + days_before_month + d
 }
 
-fn ordinal_to_ymd(ord: i64) -> (i64, i64, i64) {
-    let y0 = (10000 * ord + 14780) / 3652425;
-    let mut doy = ord - (365 * y0 + y0 / 4 - y0 / 100 + y0 / 400);
-    let y0 = if doy < 0 { let y1 = y0 - 1; doy = ord - (365 * y1 + y1 / 4 - y1 / 100 + y1 / 400); y1 } else { y0 };
-    let mi = (100 * doy + 52) / 3060;
-    let month = if mi < 10 { mi + 3 } else { mi - 9 };
-    let year = y0 + if month <= 2 { 1 } else { 0 };
-    let day = doy - (mi * 306 + 5) / 10 + 1;
+fn ordinal_to_ymd(mut ord: i64) -> (i64, i64, i64) {
+    // CPython-compatible inverse of ymd_to_ordinal
+    // Based on the algorithm from Lib/datetime.py _ord2ymd
+    let n400 = (ord - 1) / 146097;
+    ord -= n400 * 146097;
+    let n100 = (ord - 1) / 36524;
+    ord -= n100 * 36524;
+    let n4 = (ord - 1) / 1461;
+    ord -= n4 * 1461;
+    let n1 = (ord - 1) / 365;
+    ord -= n1 * 365;
+
+    let year = n400 * 400 + n100 * 100 + n4 * 4 + n1 + 1;
+    // ord is now the day-of-year (1-based) — but may need adjustment
+    let day_of_year = if n1 == 4 || n100 == 4 {
+        // Dec 31 of a leap year
+        366
+    } else {
+        ord
+    };
+    let year = if n1 == 4 || n100 == 4 { year - 1 } else { year };
+
+    let is_leap = (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0);
+    let dbm = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365];
+    let mut month = 1i64;
+    for m in (1..=12).rev() {
+        let mut db = dbm[m as usize - 1];
+        if m > 2 && is_leap { db += 1; }
+        if day_of_year > db {
+            month = m;
+            break;
+        }
+    }
+    let mut db = dbm[month as usize - 1];
+    if month > 2 && is_leap { db += 1; }
+    let day = day_of_year - db;
     (year, month, day)
 }
 

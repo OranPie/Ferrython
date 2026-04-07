@@ -59,11 +59,15 @@ impl VirtualMachine {
                         return Ok(None);
                     }
                 }
-                // Class with __iter__ (e.g. Enum classes): call __iter__(cls)
+                // Class with __iter__ (e.g. Enum classes): call __iter__()
                 if let PyObjectPayload::Class(_) = &obj.payload {
                     // Use get_attr which handles MRO/base class lookup
                     if let Some(iter_method) = obj.get_attr("__iter__") {
-                        let result = self.call_object(iter_method, vec![obj.clone()])?;
+                        // Try no-arg call first (staticmethod / stored closure), fall back to cls arg
+                        let result = match self.call_object(iter_method.clone(), vec![]) {
+                            Ok(r) => r,
+                            Err(_) => self.call_object(iter_method, vec![obj.clone()])?,
+                        };
                         // If the result is a list, convert it to an iterator
                         if let PyObjectPayload::List(_) = &result.payload {
                             self.vm_push(result.get_iter()?);

@@ -474,14 +474,25 @@ pub fn create_pathlib_module() -> PyObjectRef {
     let path_cls = PyObject::class(CompactString::from("Path"), vec![], path_ns);
     // Store global ref so make_path_instance() can create proper Path objects
     let _ = PATH_CLASS.set(path_cls.clone());
-    // Add __init__ for constructor dispatch: Path("/some/path")
+    // Add __init__ for constructor dispatch: Path("/some/path", "subpath", ...)
     if let PyObjectPayload::Class(ref cd) = path_cls.payload {
         cd.namespace.write().insert(
             CompactString::from("__init__"),
             make_builtin(|args| {
                 // args[0] = self (instance), args[1..] = path components
                 if args.is_empty() { return Ok(PyObject::none()); }
-                let path_str = if args.len() < 2 { ".".to_string() } else { args[1].py_to_string() };
+                let path_str = if args.len() < 2 {
+                    ".".to_string()
+                } else if args.len() == 2 {
+                    args[1].py_to_string()
+                } else {
+                    // Join all path components like CPython: Path(a, b, c) -> a/b/c
+                    let mut buf = std::path::PathBuf::from(args[1].py_to_string());
+                    for arg in &args[2..] {
+                        buf.push(arg.py_to_string());
+                    }
+                    buf.to_string_lossy().to_string()
+                };
                 populate_path_instance(&args[0], &path_str)?;
                 Ok(PyObject::none())
             }),

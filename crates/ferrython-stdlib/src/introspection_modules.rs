@@ -2555,8 +2555,22 @@ fn make_ns(cls_name: &str, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObj
 pub fn create_tokenize_module() -> PyObjectRef {
     fn tokenize_string(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         check_args("generate_tokens", args, 1)?;
-        let source = args[0].py_to_string();
+        // args[0] should be a readline callable; collect all lines first
+        let source = if let PyObjectPayload::NativeClosure { func, .. } = &args[0].payload {
+            let mut lines = String::new();
+            loop {
+                let line = func(&[])?;
+                let s = line.py_to_string();
+                if s.is_empty() { break; }
+                lines.push_str(&s);
+            }
+            lines
+        } else {
+            // Fallback: treat as string source
+            args[0].py_to_string()
+        };
         let mut tokens = Vec::new();
+        let mut indent_stack: Vec<usize> = vec![0];
 
         for (lineno, line) in source.lines().enumerate() {
             let lineno = lineno + 1;
@@ -2569,10 +2583,29 @@ pub fn create_tokenize_module() -> PyObjectRef {
                 tokens.push(make_token_info(60, trimmed, (lineno, 0), (lineno, line.len()), line));
                 continue;
             }
+            // Count leading indent
+            let indent = line.len() - line.trim_start().len();
+            let prev = *indent_stack.last().unwrap_or(&0);
+            if indent > prev {
+                indent_stack.push(indent);
+                tokens.push(make_token_info(5, "", (lineno, 0), (lineno, indent), line)); // INDENT
+            } else {
+                while indent < *indent_stack.last().unwrap_or(&0) {
+                    indent_stack.pop();
+                    tokens.push(make_token_info(6, "", (lineno, 0), (lineno, 0), line)); // DEDENT
+                }
+            }
             let mut col = 0;
             let chars: Vec<char> = line.chars().collect();
             while col < chars.len() {
                 if chars[col].is_whitespace() { col += 1; continue; }
+                if chars[col] == '#' {
+                    // Inline comment — consume rest of line
+                    let comment: String = chars[col..].iter().collect();
+                    tokens.push(make_token_info(60, &comment, (lineno, col), (lineno, chars.len()), line));
+                    col = chars.len();
+                    break;
+                }
                 let start_col = col;
                 if chars[col].is_alphabetic() || chars[col] == '_' {
                     while col < chars.len() && (chars[col].is_alphanumeric() || chars[col] == '_') { col += 1; }
@@ -2590,12 +2623,32 @@ pub fn create_tokenize_module() -> PyObjectRef {
                     let s: String = chars[start_col..col].iter().collect();
                     tokens.push(make_token_info(3, &s, (lineno, start_col), (lineno, col), line));
                 } else {
-                    let op: String = chars[start_col..start_col+1].iter().collect();
-                    col += 1;
+                    // Multi-character operators
+                    let mut end = col + 1;
+                    if end < chars.len() {
+                        let two: String = chars[col..end+1].iter().collect();
+                        if matches!(two.as_str(), "==" | "!=" | "<=" | ">=" | "**" | "//" | "<<" | ">>" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "->" | ":=") {
+                            end += 1;
+                            // Check for 3-char ops
+                            if end < chars.len() {
+                                let three: String = chars[col..end+1].iter().collect();
+                                if matches!(three.as_str(), "**=" | "//=" | "<<=" | ">>=") {
+                                    end += 1;
+                                }
+                            }
+                        }
+                    }
+                    let op: String = chars[col..end].iter().collect();
+                    col = end;
                     tokens.push(make_token_info(54, &op, (lineno, start_col), (lineno, col), line));
                 }
             }
             tokens.push(make_token_info(4, "\n", (lineno, line.len()), (lineno, line.len()+1), line));
+        }
+        // Emit remaining DEDENT tokens
+        while indent_stack.len() > 1 {
+            indent_stack.pop();
+            tokens.push(make_token_info(6, "", (0, 0), (0, 0), ""));
         }
         tokens.push(make_token_info(0, "", (0, 0), (0, 0), ""));
         Ok(PyObject::list(tokens))

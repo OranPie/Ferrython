@@ -474,7 +474,8 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if args.is_empty() { return Err(PyException::type_error("extendleft requires argument")); }
             let items = args[0].to_list()?;
             let mut w = d.write();
-            for item in items.into_iter().rev() {
+            // CPython: appendleft each item in order — insert(0) naturally reverses
+            for item in items.into_iter() {
                 w.insert(0, item);
             }
             if let Some(m) = ml { while w.len() > m { w.pop(); } }

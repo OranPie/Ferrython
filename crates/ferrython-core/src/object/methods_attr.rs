@@ -461,6 +461,12 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 _ => return Some(v),
                             }
                         }
+                        // If base has its own bases/MRO, recurse (for Rust-created classes with empty MRO)
+                        if bcd.mro.is_empty() && !bcd.bases.is_empty() {
+                            if let Some(v) = py_get_attr(base, name) {
+                                return Some(v);
+                            }
+                        }
                     } else if let Some(v) = base.get_attr(name) {
                         return Some(v);
                     }

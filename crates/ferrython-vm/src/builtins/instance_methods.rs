@@ -271,6 +271,7 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
             let data = get_data();
             if let PyObjectPayload::List(list) = &data.payload {
                 let mut v = list.write();
+                // CPython: appendleft each item in order — insert(0) naturally reverses
                 for item in items.into_iter() {
                     v.insert(0, item);
                 }

@@ -193,6 +193,7 @@ pub fn create_struct_module() -> PyObjectRef {
     make_module("struct", vec![
         ("pack", make_builtin(struct_pack)),
         ("unpack", make_builtin(struct_unpack)),
+        ("pack_into", make_builtin(struct_pack_into)),
         ("unpack_from", make_builtin(struct_unpack_from)),
         ("iter_unpack", make_builtin(struct_iter_unpack)),
         ("calcsize", make_builtin(struct_calcsize)),
@@ -226,6 +227,15 @@ fn struct_struct_ctor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 return Err(PyException::type_error("Struct.unpack() requires a buffer"));
             }
             struct_unpack(&[PyObject::str_val(CompactString::from(&fmt_for_unpack)), args[0].clone()])
+        }));
+        let fmt_for_pi = fmt_str.clone();
+        w.insert(CompactString::from("pack_into"), PyObject::native_closure("pack_into", move |args| {
+            if args.len() < 2 {
+                return Err(PyException::type_error("Struct.pack_into() requires buffer, offset, and values"));
+            }
+            let mut full_args = vec![PyObject::str_val(CompactString::from(&fmt_for_pi))];
+            full_args.extend_from_slice(args);
+            struct_pack_into(&full_args)
         }));
         let fmt_for_uf = fmt_str.clone();
         w.insert(CompactString::from("unpack_from"), PyObject::native_closure("unpack_from", move |args| {
@@ -448,11 +458,50 @@ fn struct_unpack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::tuple(result))
 }
 
+/// struct.pack_into(fmt, buffer, offset, v1, v2, ...)
+fn struct_pack_into(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 3 { return Err(PyException::type_error("pack_into requires format, buffer, offset, and values")); }
+    let offset = args[2].as_int().unwrap_or(0) as usize;
+    // Pack using the same format and values
+    let mut pack_args = vec![args[0].clone()];
+    pack_args.extend_from_slice(&args[3..]);
+    let packed = struct_pack(&pack_args)?;
+    let packed_bytes = match &packed.payload {
+        PyObjectPayload::Bytes(b) => b.clone(),
+        _ => return Err(PyException::runtime_error("pack returned non-bytes")),
+    };
+    // Write into the buffer
+    match &args[1].payload {
+        PyObjectPayload::ByteArray(buf) => {
+            if offset + packed_bytes.len() > buf.len() {
+                return Err(PyException::runtime_error("pack_into: offset + size exceeds buffer"));
+            }
+            let ptr = buf.as_ptr() as *mut u8;
+            unsafe {
+                std::ptr::copy_nonoverlapping(packed_bytes.as_ptr(), ptr.add(offset), packed_bytes.len());
+            }
+            Ok(PyObject::none())
+        }
+        PyObjectPayload::Bytes(buf) => {
+            if offset + packed_bytes.len() > buf.len() {
+                return Err(PyException::runtime_error("pack_into: offset + size exceeds buffer"));
+            }
+            let ptr = buf.as_ptr() as *mut u8;
+            unsafe {
+                std::ptr::copy_nonoverlapping(packed_bytes.as_ptr(), ptr.add(offset), packed_bytes.len());
+            }
+            Ok(PyObject::none())
+        }
+        _ => Err(PyException::type_error("pack_into requires a writable buffer (bytearray)"))
+    }
+}
+
 /// struct.unpack_from(fmt, buffer, offset=0)
 fn struct_unpack_from(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("unpack_from requires format and buffer")); }
     let data = match &args[1].payload {
         PyObjectPayload::Bytes(b) => b.clone(),
+        PyObjectPayload::ByteArray(b) => b.clone(),
         _ => return Err(PyException::type_error("unpack_from requires bytes buffer")),
     };
     let start_offset = if args.len() > 2 { args[2].as_int().unwrap_or(0) as usize } else { 0 };
