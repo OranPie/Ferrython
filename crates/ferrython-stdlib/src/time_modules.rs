@@ -537,6 +537,22 @@ pub fn create_datetime_module() -> PyObjectRef {
                     let abs_mins = total_mins.abs();
                     let name = format!("UTC{}{:02}:{:02}", sign, abs_mins / 60, abs_mins % 60);
                     w.insert(CompactString::from("_name"), PyObject::str_val(CompactString::from(&name)));
+                    let name_clone = name.clone();
+                    w.insert(CompactString::from("__str__"), PyObject::native_closure(
+                        "timezone.__str__", move |_| Ok(PyObject::str_val(CompactString::from(&name_clone)))
+                    ));
+                    let repr_offset = offset_secs;
+                    w.insert(CompactString::from("__repr__"), PyObject::native_closure(
+                        "timezone.__repr__", move |_| Ok(PyObject::str_val(CompactString::from(format!("datetime.timezone(datetime.timedelta(seconds={}))", repr_offset))))
+                    ));
+                    w.insert(CompactString::from("tzname"), PyObject::native_closure(
+                        "timezone.tzname", move |_| Ok(PyObject::str_val(CompactString::from(&name)))
+                    ));
+                    let off_s = offset_secs;
+                    w.insert(CompactString::from("utcoffset"), PyObject::native_closure(
+                        "timezone.utcoffset", move |_| make_timedelta(0, off_s as i64, 0, off_s)
+                    ));
+                    w.insert(CompactString::from("dst"), make_builtin(|_| Ok(PyObject::none())));
                 }
                 Ok(PyObject::none())
             }),
@@ -566,6 +582,21 @@ fn make_timezone_utc() -> PyObjectRef {
         w.insert(CompactString::from("__timezone__"), PyObject::bool_val(true));
         w.insert(CompactString::from("_offset_seconds"), PyObject::float(0.0));
         w.insert(CompactString::from("_name"), PyObject::str_val(CompactString::from("UTC")));
+        w.insert(CompactString::from("__str__"), make_builtin(|_| {
+            Ok(PyObject::str_val(CompactString::from("UTC")))
+        }));
+        w.insert(CompactString::from("__repr__"), make_builtin(|_| {
+            Ok(PyObject::str_val(CompactString::from("datetime.timezone.utc")))
+        }));
+        w.insert(CompactString::from("utcoffset"), make_builtin(|_| {
+            make_timedelta(0, 0, 0, 0.0)
+        }));
+        w.insert(CompactString::from("tzname"), make_builtin(|_| {
+            Ok(PyObject::str_val(CompactString::from("UTC")))
+        }));
+        w.insert(CompactString::from("dst"), make_builtin(|_| {
+            Ok(PyObject::none())
+        }));
     }
     inst
 }

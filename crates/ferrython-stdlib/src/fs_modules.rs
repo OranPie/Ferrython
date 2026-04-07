@@ -920,19 +920,63 @@ fn glob_glob(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn glob_simple(pattern: &str, results: &mut Vec<PyObjectRef>) -> PyResult<()> {
-    let path = std::path::Path::new(pattern);
-    let dir = path.parent().unwrap_or(std::path::Path::new("."));
-    let file_pattern = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if glob_match(&file_pattern, &name) {
-                let full = entry.path().to_string_lossy().to_string();
-                results.push(PyObject::str_val(CompactString::from(full)));
+    glob_expand(pattern, results);
+    Ok(())
+}
+
+/// Recursively expand glob pattern by handling wildcards in any path component.
+fn glob_expand(pattern: &str, results: &mut Vec<PyObjectRef>) {
+    // Split pattern into components
+    let parts: Vec<&str> = pattern.split('/').collect();
+
+    // Find first component with a wildcard
+    let wild_idx = parts.iter().position(|p| p.contains('*') || p.contains('?') || p.contains('['));
+
+    match wild_idx {
+        None => {
+            // No wildcards: check if the literal path exists
+            let p = std::path::Path::new(pattern);
+            if p.exists() {
+                results.push(PyObject::str_val(CompactString::from(pattern)));
+            }
+        }
+        Some(idx) => {
+            let dir_prefix: String = if idx == 0 {
+                ".".to_string()
+            } else {
+                parts[..idx].join("/")
+            };
+            let wild_part = parts[idx];
+            let rest: Option<String> = if idx + 1 < parts.len() {
+                Some(parts[idx + 1..].join("/"))
+            } else {
+                None
+            };
+
+            if let Ok(entries) = std::fs::read_dir(&dir_prefix) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !glob_match(wild_part, &name) { continue; }
+
+                    let matched_path = if idx == 0 {
+                        name
+                    } else {
+                        format!("{}/{}", parts[..idx].join("/"), name)
+                    };
+
+                    match &rest {
+                        None => {
+                            results.push(PyObject::str_val(CompactString::from(matched_path)));
+                        }
+                        Some(remainder) => {
+                            let sub = format!("{}/{}", matched_path, remainder);
+                            glob_expand(&sub, results);
+                        }
+                    }
+                }
             }
         }
     }
-    Ok(())
 }
 
 fn glob_recursive(pattern: &str, results: &mut Vec<PyObjectRef>) -> PyResult<()> {
@@ -977,30 +1021,58 @@ fn walk_dir_recursive(dir: &std::path::Path, file_pattern: &str, results: &mut V
 
 pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     if pattern == "*" { return true; }
-    if !pattern.contains('*') && !pattern.contains('?') {
+    if !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[') {
         return pattern == text;
     }
-    // Simple wildcard matching
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 1 {
-        // No *, just ? wildcards
-        if pattern.len() != text.len() { return false; }
-        return pattern.chars().zip(text.chars()).all(|(p, t)| p == '?' || p == t);
-    }
-    let mut pos = 0;
-    for (i, part) in parts.iter().enumerate() {
-        if part.is_empty() { continue; }
-        if let Some(idx) = text[pos..].find(part) {
-            if i == 0 && idx != 0 { return false; }
-            pos += idx + part.len();
-        } else {
-            return false;
+    let pat: Vec<char> = pattern.chars().collect();
+    let txt: Vec<char> = text.chars().collect();
+    glob_match_at(&pat, 0, &txt, 0)
+}
+
+fn glob_match_at(pat: &[char], mut pi: usize, txt: &[char], mut ti: usize) -> bool {
+    while pi < pat.len() {
+        match pat[pi] {
+            '*' => {
+                pi += 1;
+                // Match zero or more characters
+                for k in ti..=txt.len() {
+                    if glob_match_at(pat, pi, txt, k) { return true; }
+                }
+                return false;
+            }
+            '?' => {
+                if ti >= txt.len() { return false; }
+                pi += 1;
+                ti += 1;
+            }
+            '[' => {
+                if ti >= txt.len() { return false; }
+                let c = txt[ti];
+                pi += 1;
+                let negate = pi < pat.len() && (pat[pi] == '!' || pat[pi] == '^');
+                if negate { pi += 1; }
+                let mut matched = false;
+                while pi < pat.len() && pat[pi] != ']' {
+                    if pi + 2 < pat.len() && pat[pi + 1] == '-' {
+                        if c >= pat[pi] && c <= pat[pi + 2] { matched = true; }
+                        pi += 3;
+                    } else {
+                        if c == pat[pi] { matched = true; }
+                        pi += 1;
+                    }
+                }
+                if pi < pat.len() { pi += 1; } // skip ']'
+                if matched == negate { return false; }
+                ti += 1;
+            }
+            c => {
+                if ti >= txt.len() || txt[ti] != c { return false; }
+                pi += 1;
+                ti += 1;
+            }
         }
     }
-    if !parts.last().unwrap_or(&"").is_empty() {
-        return pos == text.len();
-    }
-    true
+    ti == txt.len()
 }
 
 // ── tempfile module (basic) ──
