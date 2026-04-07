@@ -3,11 +3,19 @@
 import pathlib
 import os
 import tempfile
+import shutil
 
 # --- pathlib.rglob ---
 tmpdir = tempfile.mkdtemp()
+# Clean stale content from previous runs
+for item in os.listdir(tmpdir):
+    full = os.path.join(tmpdir, item)
+    if os.path.isdir(full):
+        shutil.rmtree(full)
+    else:
+        os.remove(full)
 subdir = os.path.join(tmpdir, "sub")
-os.mkdir(subdir)
+os.makedirs(subdir, exist_ok=True)
 
 # Create files at various levels
 with open(os.path.join(tmpdir, "a.txt"), "w") as f:

@@ -1193,15 +1193,43 @@ pub fn create_contextvars_module() -> PyObjectRef {
                     if a.is_empty() { return Err(PyException::type_error("set() requires a value")); }
                     let old = v.read().clone();
                     *v.write() = Some(a[0].clone());
-                    // Return a Token
+                    // Return a Token with old_value and a restore closure
+                    let v_restore = v.clone();
                     let token_cls = PyObject::class(CompactString::from("Token"), vec![], IndexMap::new());
                     let token = PyObject::instance(token_cls);
                     if let PyObjectPayload::Instance(ref td) = token.payload {
                         let mut ta = td.attrs.write();
-                        ta.insert(CompactString::from("old_value"), old.unwrap_or_else(PyObject::none));
+                        ta.insert(CompactString::from("old_value"), old.clone().unwrap_or_else(PyObject::none));
                         ta.insert(CompactString::from("var"), PyObject::str_val(CompactString::from(&name)));
+                        let old_clone = old;
+                        ta.insert(CompactString::from("_restore"), PyObject::native_closure("Token._restore", move |_| {
+                            *v_restore.write() = old_clone.clone();
+                            Ok(PyObject::none())
+                        }));
                     }
                     Ok(token)
+                }));
+
+                let v = value.clone();
+                let default_clone = default_val.clone();
+                attrs.insert(CompactString::from("reset"), PyObject::native_closure("ContextVar.reset", move |a: &[PyObjectRef]| {
+                    if a.is_empty() { return Err(PyException::type_error("reset() requires a token")); }
+                    let token = &a[0];
+                    // Try the token's _restore closure first
+                    if let Some(restore_fn) = token.get_attr("_restore") {
+                        if let PyObjectPayload::NativeClosure { func, .. } = &restore_fn.payload {
+                            return func(&[]);
+                        }
+                    }
+                    // Fallback: restore from old_value
+                    if let Some(old) = token.get_attr("old_value") {
+                        if matches!(&old.payload, PyObjectPayload::None) {
+                            *v.write() = default_clone.clone();
+                        } else {
+                            *v.write() = Some(old);
+                        }
+                    }
+                    Ok(PyObject::none())
                 }));
             }
             Ok(inst)
@@ -1218,7 +1246,15 @@ pub fn create_contextvars_module() -> PyObjectRef {
         })),
         ("copy_context", make_builtin(|_| {
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
-            Ok(PyObject::instance(cls))
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                attrs.insert(CompactString::from("run"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("copy"), make_builtin(|_| Ok(PyObject::none())));
+                // __len__ returns 0 since we don't actually track context vars globally
+                attrs.insert(CompactString::from("__len__"), make_builtin(|_| Ok(PyObject::int(0))));
+            }
+            Ok(inst)
         })),
         ("Token", PyObject::class(CompactString::from("Token"), vec![], IndexMap::new())),
     ])

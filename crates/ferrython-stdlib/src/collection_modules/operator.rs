@@ -441,5 +441,51 @@ pub fn create_operator_module() -> PyObjectRef {
                 Err(_) => Ok(PyObject::int(default)),
             }
         })),
+        ("indexOf", make_builtin(|args| {
+            check_args_min("indexOf", args, 2)?;
+            let target = &args[1];
+            match &args[0].payload {
+                PyObjectPayload::List(items) => {
+                    for (i, item) in items.read().iter().enumerate() {
+                        if item.compare(target, CompareOp::Eq).map(|v| v.is_truthy()).unwrap_or(false) {
+                            return Ok(PyObject::int(i as i64));
+                        }
+                    }
+                    Err(PyException::value_error("sequence.index(x): x not in sequence"))
+                }
+                PyObjectPayload::Tuple(items) => {
+                    for (i, item) in items.iter().enumerate() {
+                        if item.compare(target, CompareOp::Eq).map(|v| v.is_truthy()).unwrap_or(false) {
+                            return Ok(PyObject::int(i as i64));
+                        }
+                    }
+                    Err(PyException::value_error("sequence.index(x): x not in sequence"))
+                }
+                _ => Err(PyException::type_error("indexOf requires a sequence")),
+            }
+        })),
+        ("countOf", make_builtin(|args| {
+            check_args_min("countOf", args, 2)?;
+            let target = &args[1];
+            let mut count = 0i64;
+            match &args[0].payload {
+                PyObjectPayload::List(items) => {
+                    for item in items.read().iter() {
+                        if item.compare(target, CompareOp::Eq).map(|v| v.is_truthy()).unwrap_or(false) { count += 1; }
+                    }
+                }
+                PyObjectPayload::Tuple(items) => {
+                    for item in items.iter() {
+                        if item.compare(target, CompareOp::Eq).map(|v| v.is_truthy()).unwrap_or(false) { count += 1; }
+                    }
+                }
+                PyObjectPayload::Str(s) => {
+                    let t = target.py_to_string();
+                    count = s.matches(&*t).count() as i64;
+                }
+                _ => {}
+            }
+            Ok(PyObject::int(count))
+        })),
     ])
 }

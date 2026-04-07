@@ -152,11 +152,50 @@ fn create_importlib_util_module() -> PyObjectRef {
         }
     });
 
+    // ModuleSpec class constructor
+    let module_spec_cls = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+        check_args_min("ModuleSpec", args, 2)?;
+        let name = CompactString::from(args[0].py_to_string());
+        let loader = args[1].clone();
+        // Extract origin from positional arg[2] or kwargs dict (last arg if Dict)
+        let mut origin = CompactString::from("");
+        let mut is_package = false;
+        if args.len() > 2 {
+            if let PyObjectPayload::Dict(kw) = &args[args.len() - 1].payload {
+                let kw_r = kw.read();
+                if let Some(v) = kw_r.get(&HashableKey::Str(CompactString::from("origin"))) {
+                    origin = CompactString::from(v.py_to_string());
+                }
+                if let Some(v) = kw_r.get(&HashableKey::Str(CompactString::from("is_package"))) {
+                    is_package = v.is_truthy();
+                }
+            } else {
+                origin = CompactString::from(args[2].py_to_string());
+            }
+        }
+        let cls = PyObject::class(CompactString::from("ModuleSpec"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
+        attrs.insert(CompactString::from("loader"), loader);
+        attrs.insert(CompactString::from("origin"), if origin.is_empty() { PyObject::none() } else { PyObject::str_val(origin) });
+        attrs.insert(CompactString::from("submodule_search_locations"), if is_package { PyObject::list(vec![]) } else { PyObject::none() });
+        attrs.insert(CompactString::from("cached"), PyObject::none());
+        attrs.insert(CompactString::from("parent"), {
+            if let Some(dot) = name.rfind('.') {
+                PyObject::str_val(CompactString::from(&name[..dot]))
+            } else {
+                PyObject::str_val(CompactString::from(""))
+            }
+        });
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
     make_module("importlib.util", vec![
         ("spec_from_file_location", spec_from_file),
         ("find_spec", find_spec),
         ("module_from_spec", module_from_spec),
         ("resolve_name", resolve_name),
+        ("ModuleSpec", module_spec_cls),
         ("MAGIC_NUMBER", PyObject::bytes(vec![0x42, 0x0d, 0x0d, 0x0a])),
     ])
 }
@@ -164,10 +203,15 @@ fn create_importlib_util_module() -> PyObjectRef {
 // ── importlib.abc ───────────────────────────────────────────────────────
 
 fn create_importlib_abc_module() -> PyObjectRef {
+    let finder = PyObject::class(CompactString::from("Finder"), vec![], IndexMap::new());
     make_module("importlib.abc", vec![
+        ("Finder", finder.clone()),
         ("Loader", PyObject::class(CompactString::from("Loader"), vec![], IndexMap::new())),
-        ("MetaPathFinder", PyObject::class(CompactString::from("MetaPathFinder"), vec![], IndexMap::new())),
-        ("PathEntryFinder", PyObject::class(CompactString::from("PathEntryFinder"), vec![], IndexMap::new())),
+        ("MetaPathFinder", PyObject::class(CompactString::from("MetaPathFinder"), vec![finder.clone()], IndexMap::new())),
+        ("PathEntryFinder", PyObject::class(CompactString::from("PathEntryFinder"), vec![finder], IndexMap::new())),
+        ("ResourceLoader", PyObject::class(CompactString::from("ResourceLoader"), vec![], IndexMap::new())),
+        ("InspectLoader", PyObject::class(CompactString::from("InspectLoader"), vec![], IndexMap::new())),
+        ("ExecutionLoader", PyObject::class(CompactString::from("ExecutionLoader"), vec![], IndexMap::new())),
         ("SourceLoader", PyObject::class(CompactString::from("SourceLoader"), vec![], IndexMap::new())),
         ("FileLoader", PyObject::class(CompactString::from("FileLoader"), vec![], IndexMap::new())),
     ])

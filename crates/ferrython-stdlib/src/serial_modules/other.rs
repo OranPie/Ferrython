@@ -1149,9 +1149,15 @@ fn pickle_dump(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let data = pickle_dumps(&args[0..1])?;
     let data_bytes = extract_bytes(&data)?;
-    // Write to file — expects a file-like object with a write() method
-    if let Some(write_fn) = args[1].get_attr("write") {
-        let _ = write_fn; // stub: actual call dispatch not available without VM
+
+    // Try to get the file path from the file object's .name attr
+    if let Some(name) = args[1].get_attr("name") {
+        let path = name.py_to_string();
+        if !path.is_empty() {
+            std::fs::write(&path, &data_bytes)
+                .map_err(|e| PyException::runtime_error(format!("pickle.dump: {}", e)))?;
+            return Ok(PyObject::none());
+        }
     }
     // Fallback: if the file arg is a string path, write directly
     if let PyObjectPayload::Str(path) = &args[1].payload {
@@ -1166,6 +1172,15 @@ fn pickle_load(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::type_error(
             "pickle.load() missing 1 required positional argument: 'file'",
         ));
+    }
+    // Try to get the file path from the file object's .name attr
+    if let Some(name) = args[0].get_attr("name") {
+        let path = name.py_to_string();
+        if !path.is_empty() && std::path::Path::new(&path).exists() {
+            let data = std::fs::read(&path)
+                .map_err(|e| PyException::runtime_error(format!("pickle.load: {}", e)))?;
+            return pickle_loads_stack(&data);
+        }
     }
     // If file arg is a string path, read directly
     if let PyObjectPayload::Str(path) = &args[0].payload {

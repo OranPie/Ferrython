@@ -304,46 +304,108 @@ fn secrets_compare_digest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 // ── hmac module ──────────────────────────────────────────────────────
 pub fn create_hmac_module() -> PyObjectRef {
 
-    fn hmac_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-        if args.len() < 2 { return Err(PyException::type_error("hmac.new requires key and msg")); }
-        let key = match &args[0].payload {
-            PyObjectPayload::Bytes(b) => b.clone(),
-            PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-            _ => return Err(PyException::type_error("key must be bytes")),
-        };
-        let msg = match &args[1].payload {
-            PyObjectPayload::Bytes(b) => b.clone(),
-            PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
-            _ => vec![],
-        };
-        let digestmod = if args.len() > 2 { args[2].py_to_string() } else { "sha256".to_string() };
-
-        // HMAC computation: H((K ^ opad) || H((K ^ ipad) || message))
+    /// Compute HMAC from key, message, and digestmod strings
+    fn compute_hmac(key: &[u8], msg: &[u8], digestmod: &str) -> Vec<u8> {
         let block_size = 64usize;
-        let mut k = key;
+        let mut k = key.to_vec();
         if k.len() > block_size {
-            k = simple_hash(&k, &digestmod);
+            k = simple_hash(&k, digestmod);
         }
         while k.len() < block_size { k.push(0); }
         let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
         let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
         let mut inner = ipad;
-        inner.extend_from_slice(&msg);
-        let inner_hash = simple_hash(&inner, &digestmod);
+        inner.extend_from_slice(msg);
+        let inner_hash = simple_hash(&inner, digestmod);
         let mut outer = opad;
         outer.extend_from_slice(&inner_hash);
-        let result = simple_hash(&outer, &digestmod);
+        simple_hash(&outer, digestmod)
+    }
 
-        let hex_str = result.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-        let mut attrs = IndexMap::new();
-        attrs.insert(CompactString::from("_digest"), PyObject::bytes(result.clone()));
-        attrs.insert(CompactString::from("_hexdigest"), PyObject::str_val(CompactString::from(&hex_str)));
+    /// Recompute digest from stored key + accumulated message
+    fn recompute_digest(inst: &InstanceData) {
+        let attrs = inst.attrs.read();
+        let key = match attrs.get("_key").map(|k| &k.payload) {
+            Some(PyObjectPayload::Bytes(b)) => b.clone(),
+            _ => return,
+        };
+        let msg = match attrs.get("_msg").map(|m| &m.payload) {
+            Some(PyObjectPayload::Bytes(b)) => b.clone(),
+            _ => vec![],
+        };
+        let digestmod = attrs.get("_digestmod").map(|d| d.py_to_string()).unwrap_or_else(|| "sha256".to_string());
+        drop(attrs);
+
+        let result = compute_hmac(&key, &msg, &digestmod);
+        let hex_str: String = result.iter().map(|b| format!("{:02x}", b)).collect();
+
+        let mut attrs = inst.attrs.write();
         attrs.insert(CompactString::from("digest_size"), PyObject::int(result.len() as i64));
+        attrs.insert(CompactString::from("_digest_bytes"), PyObject::bytes(result));
+        attrs.insert(CompactString::from("_hex_str"), PyObject::str_val(CompactString::from(&hex_str)));
+    }
+
+    fn hmac_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() { return Err(PyException::type_error("hmac.new() requires key argument")); }
+        let key = match &args[0].payload {
+            PyObjectPayload::Bytes(b) => b.clone(),
+            PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+            _ => return Err(PyException::type_error("key must be bytes")),
+        };
+        // msg is optional (default empty)
+        let msg = if args.len() > 1 {
+            match &args[1].payload {
+                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                PyObjectPayload::None => vec![],
+                _ => vec![],
+            }
+        } else { vec![] };
+        // digestmod: 3rd positional OR keyword "digestmod"
+        let digestmod = if args.len() > 2 {
+            args[2].py_to_string()
+        } else { "sha256".to_string() };
+
+        let result = compute_hmac(&key, &msg, &digestmod);
+        let hex_str: String = result.iter().map(|b| format!("{:02x}", b)).collect();
+
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("_key"), PyObject::bytes(key));
+        attrs.insert(CompactString::from("_msg"), PyObject::bytes(msg));
+        attrs.insert(CompactString::from("_digestmod"), PyObject::str_val(CompactString::from(&digestmod)));
+        attrs.insert(CompactString::from("digest_size"), PyObject::int(result.len() as i64));
+        attrs.insert(CompactString::from("block_size"), PyObject::int(64));
         attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(format!("hmac-{}", digestmod))));
         attrs.insert(CompactString::from("_digest_bytes"), PyObject::bytes(result));
         attrs.insert(CompactString::from("_hex_str"), PyObject::str_val(CompactString::from(&hex_str)));
 
         let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("update"), make_builtin(|args| {
+            let (inst_ref, data_arg) = if args.len() >= 2 {
+                (&args[0], &args[1])
+            } else {
+                return Err(PyException::type_error("update() takes exactly 1 argument"));
+            };
+            if let PyObjectPayload::Instance(inst) = &inst_ref.payload {
+                let new_data = match &data_arg.payload {
+                    PyObjectPayload::Bytes(b) => b.clone(),
+                    PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                    _ => return Err(PyException::type_error("update() argument must be bytes")),
+                };
+                {
+                    let mut attrs = inst.attrs.write();
+                    let cur_msg = match attrs.get("_msg").map(|m| &m.payload) {
+                        Some(PyObjectPayload::Bytes(b)) => b.clone(),
+                        _ => vec![],
+                    };
+                    let mut combined = cur_msg;
+                    combined.extend_from_slice(&new_data);
+                    attrs.insert(CompactString::from("_msg"), PyObject::bytes(combined));
+                }
+                recompute_digest(inst);
+            }
+            Ok(PyObject::none())
+        }));
         ns.insert(CompactString::from("digest"), make_builtin(|args| {
             if args.is_empty() { return Ok(PyObject::bytes(vec![])); }
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
@@ -358,6 +420,20 @@ pub fn create_hmac_module() -> PyObjectRef {
             }
             Ok(PyObject::str_val(CompactString::from("")))
         }));
+        ns.insert(CompactString::from("copy"), make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("copy() requires self")); }
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                let attrs_copy = inst.attrs.read().clone();
+                let new_inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+                    class: inst.class.clone(),
+                    attrs: Arc::new(RwLock::new(attrs_copy)),
+                    is_special: true, dict_storage: None,
+                }));
+                return Ok(new_inst);
+            }
+            Err(PyException::type_error("copy() requires HMAC instance"))
+        }));
+
         let class = PyObject::class(CompactString::from("HMAC"), vec![], ns);
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
@@ -369,7 +445,6 @@ pub fn create_hmac_module() -> PyObjectRef {
 
     fn simple_hash(data: &[u8], algo: &str) -> Vec<u8> {
         compute_digest(algo, data).map(|(_, bytes)| bytes).unwrap_or_else(|_| {
-            // Fallback: use sha256 if unknown algorithm
             compute_digest("sha256", data).map(|(_, b)| b).unwrap_or_default()
         })
     }
@@ -390,7 +465,7 @@ pub fn create_hmac_module() -> PyObjectRef {
         ("new", make_builtin(hmac_new)),
         ("compare_digest", make_builtin(hmac_compare_digest)),
         ("digest", make_builtin(|args| hmac_new(args).and_then(|h| {
-            h.get_attr("_digest").ok_or_else(|| PyException::runtime_error("no digest"))
+            h.get_attr("_digest_bytes").ok_or_else(|| PyException::runtime_error("no digest"))
         }))),
         ("HMAC", make_builtin(hmac_new)),
     ])
