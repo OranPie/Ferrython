@@ -2117,3 +2117,143 @@ pub fn create_curses_module() -> PyObjectRef {
         ("error", PyObject::class(CompactString::from("error"), vec![], IndexMap::new())),
     ])
 }
+
+// ── ctypes module (stub) ──
+
+pub fn create_ctypes_module() -> PyObjectRef {
+    // ctypes stub — provides type definitions and a no-op CDLL loader
+    // so that programs that import ctypes don't crash.
+
+    let c_int = PyObject::class(CompactString::from("c_int"), vec![], IndexMap::new());
+    let c_long = PyObject::class(CompactString::from("c_long"), vec![], IndexMap::new());
+    let c_char = PyObject::class(CompactString::from("c_char"), vec![], IndexMap::new());
+    let c_char_p = PyObject::class(CompactString::from("c_char_p"), vec![], IndexMap::new());
+    let c_wchar_p = PyObject::class(CompactString::from("c_wchar_p"), vec![], IndexMap::new());
+    let c_void_p = PyObject::class(CompactString::from("c_void_p"), vec![], IndexMap::new());
+    let c_double = PyObject::class(CompactString::from("c_double"), vec![], IndexMap::new());
+    let c_float = PyObject::class(CompactString::from("c_float"), vec![], IndexMap::new());
+    let c_uint = PyObject::class(CompactString::from("c_uint"), vec![], IndexMap::new());
+    let c_ulong = PyObject::class(CompactString::from("c_ulong"), vec![], IndexMap::new());
+    let c_short = PyObject::class(CompactString::from("c_short"), vec![], IndexMap::new());
+    let c_ushort = PyObject::class(CompactString::from("c_ushort"), vec![], IndexMap::new());
+    let c_byte = PyObject::class(CompactString::from("c_byte"), vec![], IndexMap::new());
+    let c_ubyte = PyObject::class(CompactString::from("c_ubyte"), vec![], IndexMap::new());
+    let c_bool = PyObject::class(CompactString::from("c_bool"), vec![], IndexMap::new());
+    let c_longlong = PyObject::class(CompactString::from("c_longlong"), vec![], IndexMap::new());
+    let c_ulonglong = PyObject::class(CompactString::from("c_ulonglong"), vec![], IndexMap::new());
+    let c_size_t = PyObject::class(CompactString::from("c_size_t"), vec![], IndexMap::new());
+    let c_ssize_t = PyObject::class(CompactString::from("c_ssize_t"), vec![], IndexMap::new());
+
+    let structure_cls = PyObject::class(CompactString::from("Structure"), vec![], IndexMap::new());
+    let union_cls = PyObject::class(CompactString::from("Union"), vec![], IndexMap::new());
+    let array_cls = PyObject::class(CompactString::from("Array"), vec![], IndexMap::new());
+
+    // CDLL stub
+    let cdll_fn = make_builtin(|args: &[PyObjectRef]| {
+        let name = args.first().map(|a| a.py_to_string()).unwrap_or_default();
+        let cls = PyObject::class(CompactString::from("CDLL"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            d.attrs.write().insert(CompactString::from("_name"), PyObject::str_val(CompactString::from(name)));
+        }
+        Ok(inst)
+    });
+
+    // cast, POINTER, pointer, byref, addressof, sizeof
+    let pointer_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Err(PyException::type_error("POINTER requires a type")); }
+        Ok(args[0].clone())
+    });
+
+    make_module("ctypes", vec![
+        ("c_int", c_int),
+        ("c_long", c_long),
+        ("c_char", c_char),
+        ("c_char_p", c_char_p),
+        ("c_wchar_p", c_wchar_p),
+        ("c_void_p", c_void_p),
+        ("c_double", c_double),
+        ("c_float", c_float),
+        ("c_uint", c_uint),
+        ("c_ulong", c_ulong),
+        ("c_short", c_short),
+        ("c_ushort", c_ushort),
+        ("c_byte", c_byte),
+        ("c_ubyte", c_ubyte),
+        ("c_bool", c_bool),
+        ("c_longlong", c_longlong),
+        ("c_ulonglong", c_ulonglong),
+        ("c_size_t", c_size_t),
+        ("c_ssize_t", c_ssize_t),
+        ("c_int8", PyObject::class(CompactString::from("c_int8"), vec![], IndexMap::new())),
+        ("c_int16", PyObject::class(CompactString::from("c_int16"), vec![], IndexMap::new())),
+        ("c_int32", PyObject::class(CompactString::from("c_int32"), vec![], IndexMap::new())),
+        ("c_int64", PyObject::class(CompactString::from("c_int64"), vec![], IndexMap::new())),
+        ("c_uint8", PyObject::class(CompactString::from("c_uint8"), vec![], IndexMap::new())),
+        ("c_uint16", PyObject::class(CompactString::from("c_uint16"), vec![], IndexMap::new())),
+        ("c_uint32", PyObject::class(CompactString::from("c_uint32"), vec![], IndexMap::new())),
+        ("c_uint64", PyObject::class(CompactString::from("c_uint64"), vec![], IndexMap::new())),
+        ("Structure", structure_cls),
+        ("Union", union_cls),
+        ("Array", array_cls),
+        ("CDLL", cdll_fn.clone()),
+        ("cdll", cdll_fn.clone()),
+        ("windll", cdll_fn.clone()),
+        ("oledll", cdll_fn),
+        ("POINTER", pointer_fn.clone()),
+        ("pointer", pointer_fn),
+        ("cast", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("cast requires arguments")); }
+            Ok(args[0].clone())
+        })),
+        ("byref", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("byref requires an argument")); }
+            Ok(args[0].clone())
+        })),
+        ("addressof", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("sizeof", make_builtin(|args| {
+            // Return reasonable sizes for common types
+            Ok(PyObject::int(args.first().map(|_| 8i64).unwrap_or(0)))
+        })),
+        ("create_string_buffer", make_builtin(|args| {
+            let size = args.first().and_then(|a| a.as_int()).unwrap_or(256) as usize;
+            Ok(PyObject::bytes(vec![0u8; size]))
+        })),
+        ("create_unicode_buffer", make_builtin(|args| {
+            let size = args.first().and_then(|a| a.as_int()).unwrap_or(256) as usize;
+            Ok(PyObject::str_val(CompactString::from("\0".repeat(size))))
+        })),
+        ("get_errno", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("set_errno", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("get_last_error", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("set_last_error", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("util", {
+            // ctypes.util.find_library
+            let mut util_attrs = IndexMap::new();
+            util_attrs.insert(CompactString::from("find_library"), make_builtin(|args| {
+                let name = args.first().map(|a| a.py_to_string()).unwrap_or_default();
+                // Try common library paths
+                let candidates = vec![
+                    format!("lib{}.so", name),
+                    format!("lib{}.dylib", name),
+                    format!("{}.dll", name),
+                ];
+                for candidate in &candidates {
+                    if std::path::Path::new(candidate).exists() {
+                        return Ok(PyObject::str_val(CompactString::from(candidate.as_str())));
+                    }
+                    let path = format!("/usr/lib/{}", candidate);
+                    if std::path::Path::new(&path).exists() {
+                        return Ok(PyObject::str_val(CompactString::from(path)));
+                    }
+                    let path2 = format!("/usr/lib/x86_64-linux-gnu/{}", candidate);
+                    if std::path::Path::new(&path2).exists() {
+                        return Ok(PyObject::str_val(CompactString::from(path2)));
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+            PyObject::module_with_attrs(CompactString::from("ctypes.util"), util_attrs)
+        }),
+    ])
+}

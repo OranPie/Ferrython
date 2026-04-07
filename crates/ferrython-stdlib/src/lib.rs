@@ -24,7 +24,7 @@ pub mod db_modules;
 mod email_modules;
 mod compression_modules;
 
-use ferrython_core::object::PyObjectRef;
+use ferrython_core::object::{PyObjectRef, PyObjectMethods};
 use parking_lot::RwLock;
 
 pub use sys_modules::get_recursion_limit;
@@ -293,6 +293,13 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // Terminal / curses
         "curses" => Some(misc_modules::create_curses_module()),
         "_curses" => Some(misc_modules::create_curses_module()),
+        // FFI / ctypes
+        "ctypes" => Some(misc_modules::create_ctypes_module()),
+        "_ctypes" => Some(misc_modules::create_ctypes_module()),
+        "ctypes.util" => {
+            let m = misc_modules::create_ctypes_module();
+            m.get_attr("util")
+        },
         // Import resources
         "importlib.resources" => Some(import_modules::create_importlib_resources_module()),
         // Misc sub-module aliases
