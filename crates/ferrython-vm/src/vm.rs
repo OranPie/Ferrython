@@ -97,6 +97,9 @@ impl VirtualMachine {
 
         // Fire "call" event at frame entry
         if has_trace {
+            // Update the thread-local current frame for sys._getframe()
+            let frame_obj = self.make_trace_frame();
+            ferrython_stdlib::set_current_frame(Some(frame_obj));
             self.fire_trace_event("call", PyObject::none());
         }
         if has_profile {
@@ -1007,10 +1010,10 @@ impl VirtualMachine {
 
     /// Build a minimal frame object for trace/profile callbacks.
     fn make_trace_frame(&self) -> PyObjectRef {
-        self.make_trace_frame_at(self.call_stack.len() - 1)
+        self.make_trace_frame_at(self.call_stack.len() - 1, 0)
     }
 
-    fn make_trace_frame_at(&self, depth: usize) -> PyObjectRef {
+    fn make_trace_frame_at(&self, depth: usize, recurse_depth: usize) -> PyObjectRef {
         let frame = &self.call_stack[depth];
         let ip = if frame.ip > 0 { frame.ip - 1 } else { 0 };
         let lineno = Self::ip_to_line(&frame.code, ip);
@@ -1048,7 +1051,6 @@ impl VirtualMachine {
                 ));
             }
         }
-        // Also include named locals from local_names map
         for (name, val) in &frame.local_names {
             local_pairs.push((
                 PyObject::str_val(name.clone()),
@@ -1063,9 +1065,9 @@ impl VirtualMachine {
             .collect();
         attrs.insert(CompactString::from("f_globals"), PyObject::dict_from_pairs(global_pairs));
 
-        // f_back: parent frame (if exists)
-        let f_back = if depth > 0 {
-            self.make_trace_frame_at(depth - 1)
+        // f_back: parent frame (limit recursion to 10 levels to avoid stack overflow)
+        let f_back = if depth > 0 && recurse_depth < 10 {
+            self.make_trace_frame_at(depth - 1, recurse_depth + 1)
         } else {
             PyObject::none()
         };

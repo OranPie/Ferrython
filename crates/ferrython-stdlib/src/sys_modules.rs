@@ -25,6 +25,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static EXCEPT_HOOK: std::cell::RefCell<Option<PyObjectRef>> =
         const { std::cell::RefCell::new(None) };
+    static CURRENT_FRAME: std::cell::RefCell<Option<PyObjectRef>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Called by VM when entering an except handler.
@@ -72,6 +74,16 @@ pub fn get_excepthook() -> Option<PyObjectRef> {
 /// Set the custom excepthook.
 pub fn set_excepthook(func: Option<PyObjectRef>) {
     EXCEPT_HOOK.with(|c| *c.borrow_mut() = func);
+}
+
+/// Set the current frame (called by VM before native function dispatch).
+pub fn set_current_frame(frame: Option<PyObjectRef>) {
+    CURRENT_FRAME.with(|c| *c.borrow_mut() = frame);
+}
+
+/// Get the current frame (for sys._getframe).
+pub fn get_current_frame() -> Option<PyObjectRef> {
+    CURRENT_FRAME.with(|c| c.borrow().clone())
 }
 
 /// Get the current recursion limit (for VM stack depth checking).
@@ -339,8 +351,25 @@ pub fn create_sys_module() -> PyObjectRef {
                 }
             })
         })),
-        ("_getframe", make_builtin(|_| {
-            // Return a minimal frame-like object with common attributes
+        ("_getframe", make_builtin(|args| {
+            // sys._getframe([depth]) — return frame at given depth
+            let depth = if !args.is_empty() {
+                if let PyObjectPayload::Int(i) = &args[0].payload {
+                    i.to_i64().unwrap_or(0) as usize
+                } else { 0 }
+            } else { 0 };
+            // Try to get the current frame from the VM-provided thread-local
+            if let Some(frame) = get_current_frame() {
+                let mut current = frame;
+                for _ in 0..depth {
+                    if let Some(back) = current.get_attr("f_back") {
+                        if matches!(&back.payload, PyObjectPayload::None) { break; }
+                        current = back;
+                    } else { break; }
+                }
+                return Ok(current);
+            }
+            // Fallback: return a minimal frame
             let mut attrs = indexmap::IndexMap::new();
             attrs.insert(CompactString::from("f_locals"), PyObject::dict_from_pairs(vec![]));
             attrs.insert(CompactString::from("f_globals"), PyObject::dict_from_pairs(vec![]));

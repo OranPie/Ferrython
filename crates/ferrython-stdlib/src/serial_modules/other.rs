@@ -642,23 +642,7 @@ fn unpack_one_format(c: char, count: usize, data: &[u8], offset: &mut usize, res
     }
 }
 
-// ── pickle module ──
-
-// Marker bytes for our simplified pickle format
-const PICKLE_NONE: u8 = b'N';
-const PICKLE_TRUE: u8 = b'T';
-const PICKLE_FALSE: u8 = b'F';
-const PICKLE_INT: u8 = b'I';
-const PICKLE_FLOAT: u8 = b'D';
-const PICKLE_STR: u8 = b'S';
-const PICKLE_BYTES: u8 = b'B';
-const PICKLE_LIST: u8 = b'L';
-const PICKLE_TUPLE: u8 = b'U';
-const PICKLE_DICT: u8 = b'd';
-const PICKLE_INSTANCE: u8 = b'O';
-const PICKLE_SET: u8 = b's';
-const PICKLE_FROZENSET: u8 = b'f';
-const PICKLE_STOP: u8 = b'.';
+// ── pickle module (CPython-compatible protocol 0 & 2) ──
 
 pub fn create_pickle_module() -> PyObjectRef {
     let pickler_cls = {
