@@ -842,10 +842,24 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                         // Look up field in mapping (dict subscript, not attribute)
                         if let PyObjectPayload::Dict(m) = &mapping.payload {
                             let key = HashableKey::Str(CompactString::from(&field));
-                            if let Some(val) = m.read().get(&key) {
+                            let guard = m.read();
+                            if let Some(val) = guard.get(&key) {
                                 result.push_str(&val.py_to_string());
                             } else {
-                                return Err(PyException::key_error(field));
+                                // Support defaultdict: check for __defaultdict_factory__
+                                let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+                                if let Some(factory) = guard.get(&factory_key).cloned() {
+                                    drop(guard);
+                                    let val = match &factory.payload {
+                                        PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
+                                        PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+                                        _ => return Err(PyException::key_error(field)),
+                                    };
+                                    m.write().insert(key, val.clone());
+                                    result.push_str(&val.py_to_string());
+                                } else {
+                                    return Err(PyException::key_error(field));
+                                }
                             }
                         } else if let Some(val) = mapping.get_attr(&field) {
                             result.push_str(&val.py_to_string());

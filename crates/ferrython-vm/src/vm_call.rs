@@ -95,6 +95,50 @@ impl VirtualMachine {
         Ok(PyObject::str_val(CompactString::from(result)))
     }
 
+    /// str.format_map() for defaultdict (Dict payload with __defaultdict_factory__).
+    fn vm_format_map_dict(
+        &mut self,
+        template: &str,
+        _mapping: &PyObjectRef,
+        dict: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>,
+    ) -> PyResult<PyObjectRef> {
+        let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+        let mut result = String::new();
+        let mut chars = template.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '{' {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    result.push('{');
+                } else {
+                    let mut field = String::new();
+                    for c in chars.by_ref() {
+                        if c == '}' { break; }
+                        field.push(c);
+                    }
+                    let key = HashableKey::Str(CompactString::from(&field));
+                    let guard = dict.read();
+                    if let Some(val) = guard.get(&key) {
+                        result.push_str(&val.py_to_string());
+                    } else if let Some(factory) = guard.get(&factory_key).cloned() {
+                        drop(guard);
+                        let val = self.call_object(factory, vec![])?;
+                        dict.write().insert(key, val.clone());
+                        result.push_str(&val.py_to_string());
+                    } else {
+                        return Err(PyException::key_error(field));
+                    }
+                }
+            } else if c == '}' && chars.peek() == Some(&'}') {
+                chars.next();
+                result.push('}');
+            } else {
+                result.push(c);
+            }
+        }
+        Ok(PyObject::str_val(CompactString::from(result)))
+    }
+
     /// Collect the current frame's local variables into a dict.
     /// At module scope, locals() == globals().
     fn collect_locals_dict(&self) -> PyResult<PyObjectRef> {
@@ -2562,6 +2606,13 @@ impl VirtualMachine {
                         if let PyObjectPayload::Instance(inst) = &args[0].payload {
                             if let Some(ref ds) = inst.dict_storage {
                                 return self.vm_format_map(s, &args[0], ds, &inst.class);
+                            }
+                        }
+                        // Handle defaultdict (Dict payload with __defaultdict_factory__)
+                        if let PyObjectPayload::Dict(m) = &args[0].payload {
+                            let factory_key = ferrython_core::types::HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+                            if m.read().contains_key(&factory_key) {
+                                return self.vm_format_map_dict(s, &args[0], m);
                             }
                         }
                     }

@@ -813,6 +813,38 @@ pub(super) fn call_frozenset_method(m: &IndexMap<HashableKey, PyObjectRef>, meth
             Ok(PyObject::bool_val(none_in))
         }
         "__len__" => Ok(PyObject::int(m.len() as i64)),
+        "__lt__" => {
+            check_args_min("__lt__", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let is_subset = m.values().all(|v| other_keys.contains(&v.py_to_string()));
+            Ok(PyObject::bool_val(is_subset && m.len() < other_keys.len()))
+        }
+        "__le__" => {
+            check_args_min("__le__", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            Ok(PyObject::bool_val(m.values().all(|v| other_keys.contains(&v.py_to_string()))))
+        }
+        "__gt__" => {
+            check_args_min("__gt__", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let other_keys: std::collections::HashSet<String> = other_items.iter()
+                .map(|x| x.py_to_string()).collect();
+            let self_keys: std::collections::HashSet<String> = m.values()
+                .map(|x| x.py_to_string()).collect();
+            let is_superset = other_keys.iter().all(|v| self_keys.contains(v));
+            Ok(PyObject::bool_val(is_superset && m.len() > other_keys.len()))
+        }
+        "__ge__" => {
+            check_args_min("__ge__", args, 1)?;
+            let other_items = args[0].to_list()?;
+            let self_keys: std::collections::HashSet<String> = m.values()
+                .map(|x| x.py_to_string()).collect();
+            Ok(PyObject::bool_val(other_items.iter().all(|v| self_keys.contains(&v.py_to_string()))))
+        }
         _ => Err(PyException::attribute_error(format!(
             "'frozenset' object has no attribute '{}'", method
         ))),

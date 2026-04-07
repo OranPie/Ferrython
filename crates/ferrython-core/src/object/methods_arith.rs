@@ -312,6 +312,12 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 for _ in 0..count { result.extend(b); }
                 Ok(PyObject::bytes(result))
             }
+            (PyObjectPayload::ByteArray(b), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::ByteArray(b)) => {
+                let count = n.to_i64().unwrap_or(0).max(0) as usize;
+                let mut result = Vec::with_capacity(b.len() * count);
+                for _ in 0..count { result.extend(b.iter()); }
+                Ok(PyObject::bytearray(result))
+            }
             _ => Err(PyException::type_error(format!("unsupported operand type(s) for *: '{}' and '{}'", a.type_name(), b.type_name()))),
         }
 }
