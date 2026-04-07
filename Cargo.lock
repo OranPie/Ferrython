@@ -549,6 +549,7 @@ dependencies = [
  "ferrython-ast",
  "ferrython-async",
  "ferrython-bytecode",
+ "ferrython-compiler",
  "ferrython-core",
  "ferrython-gc",
  "ferrython-parser",

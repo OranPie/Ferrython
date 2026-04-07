@@ -2345,7 +2345,9 @@ pub fn create_html_parser_module() -> PyObjectRef {
                                 }
                             }
                             if tag_content.ends_with('/') {
-                                pending.push(("handle_startendtag", tag_name, attrs));
+                                // Self-closing: check if subclass overrides handle_startendtag
+                                // If not, fall back to handle_starttag + handle_endtag (CPython behavior)
+                                pending.push(("handle_startendtag_or_split", tag_name, attrs));
                             } else {
                                 pending.push(("handle_starttag", tag_name, attrs));
                             }
@@ -2354,10 +2356,27 @@ pub fn create_html_parser_module() -> PyObjectRef {
                     } else {
                         i += 1;
                     }
+                } else if chars[i] == '&' {
+                    // Entity or character reference
+                    if let Some(semi) = chars[i..].iter().position(|&c| c == ';') {
+                        let ref_content: String = chars[i+1..i+semi].iter().collect();
+                        if ref_content.starts_with('#') {
+                            // Character reference: &#65; or &#x41;
+                            pending.push(("handle_charref", ref_content[1..].to_string(), Vec::new()));
+                        } else {
+                            // Named entity: &amp; etc.
+                            pending.push(("handle_entityref", ref_content.clone(), Vec::new()));
+                        }
+                        i += semi + 1;
+                    } else {
+                        // No semicolon found, treat as text
+                        pending.push(("handle_data", "&".to_string(), Vec::new()));
+                        i += 1;
+                    }
                 } else {
                     // Text data
                     let start = i;
-                    while i < chars.len() && chars[i] != '<' {
+                    while i < chars.len() && chars[i] != '<' && chars[i] != '&' {
                         i += 1;
                     }
                     let text: String = chars[start..i].iter().collect();
@@ -2371,37 +2390,72 @@ pub fn create_html_parser_module() -> PyObjectRef {
             // Since we can't call Python methods from a NativeClosure, store them for the VM
             if let PyObjectPayload::Instance(ref inst) = _self_obj.payload {
                 let mut callback_list = Vec::new();
-                for (method_name, arg, attrs) in &pending {
-                    let method = inst.attrs.read().get(&CompactString::from(*method_name)).cloned();
-                    if method.is_none() {
-                        // Try class namespace (inherited methods)
-                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                            if let Some(m) = cd.namespace.read().get(&CompactString::from(*method_name)).cloned() {
-                                let mut call_args = vec![_self_obj.clone(), PyObject::str_val(CompactString::from(arg.as_str()))];
-                                if *method_name == "handle_starttag" || *method_name == "handle_startendtag" {
-                                    let attr_list: Vec<PyObjectRef> = attrs.iter().map(|(k, v)| {
-                                        PyObject::tuple(vec![
-                                            PyObject::str_val(CompactString::from(k.as_str())),
-                                            PyObject::str_val(CompactString::from(v.as_str())),
-                                        ])
-                                    }).collect();
-                                    call_args.push(PyObject::list(attr_list));
-                                }
-                                callback_list.push((m, call_args));
-                                continue;
-                            }
+
+                // Helper: find method in instance attrs first, then class (MRO)
+                let find_method = |name: &str| -> Option<(PyObjectRef, bool)> {
+                    // Instance attrs (user-bound methods)
+                    if let Some(m) = inst.attrs.read().get(&CompactString::from(name)).cloned() {
+                        return Some((m, false)); // false = no self prepend
+                    }
+                    // Class namespace (inherited)
+                    if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                        if let Some(m) = cd.namespace.read().get(&CompactString::from(name)).cloned() {
+                            return Some((m, true)); // true = needs self prepend
                         }
                     }
-                    if let Some(m) = method {
-                        let mut call_args = vec![PyObject::str_val(CompactString::from(arg.as_str()))];
-                        if *method_name == "handle_starttag" || *method_name == "handle_startendtag" {
-                            let attr_list: Vec<PyObjectRef> = attrs.iter().map(|(k, v)| {
-                                PyObject::tuple(vec![
-                                    PyObject::str_val(CompactString::from(k.as_str())),
-                                    PyObject::str_val(CompactString::from(v.as_str())),
-                                ])
-                            }).collect();
-                            call_args.push(PyObject::list(attr_list));
+                    None
+                };
+
+                let make_attr_list = |attrs: &[(String, String)]| -> PyObjectRef {
+                    let items: Vec<PyObjectRef> = attrs.iter().map(|(k, v)| {
+                        PyObject::tuple(vec![
+                            PyObject::str_val(CompactString::from(k.as_str())),
+                            PyObject::str_val(CompactString::from(v.as_str())),
+                        ])
+                    }).collect();
+                    PyObject::list(items)
+                };
+
+                for (method_name, arg, attrs) in &pending {
+                    if *method_name == "handle_startendtag_or_split" {
+                        // Check if subclass overrides handle_startendtag
+                        let has_override = if let Some(m) = inst.attrs.read().get(&CompactString::from("handle_startendtag")).cloned() {
+                            true
+                        } else {
+                            // Check if class override differs from HTMLParser base
+                            false
+                        };
+                        if has_override {
+                            if let Some((m, needs_self)) = find_method("handle_startendtag") {
+                                let mut call_args = if needs_self { vec![_self_obj.clone()] } else { vec![] };
+                                call_args.push(PyObject::str_val(CompactString::from(arg.as_str())));
+                                call_args.push(make_attr_list(attrs));
+                                callback_list.push((m, call_args));
+                            }
+                        } else {
+                            // Split into handle_starttag + handle_endtag
+                            if let Some((m, needs_self)) = find_method("handle_starttag") {
+                                let mut call_args = if needs_self { vec![_self_obj.clone()] } else { vec![] };
+                                call_args.push(PyObject::str_val(CompactString::from(arg.as_str())));
+                                call_args.push(make_attr_list(attrs));
+                                callback_list.push((m, call_args));
+                            }
+                            if let Some((m, needs_self)) = find_method("handle_endtag") {
+                                let mut call_args = if needs_self { vec![_self_obj.clone()] } else { vec![] };
+                                call_args.push(PyObject::str_val(CompactString::from(arg.as_str())));
+                                callback_list.push((m, call_args));
+                            }
+                        }
+                        continue;
+                    }
+
+                    let is_tag_method = *method_name == "handle_starttag" || *method_name == "handle_startendtag";
+
+                    if let Some((m, needs_self)) = find_method(method_name) {
+                        let mut call_args = if needs_self { vec![_self_obj.clone()] } else { vec![] };
+                        call_args.push(PyObject::str_val(CompactString::from(arg.as_str())));
+                        if is_tag_method {
+                            call_args.push(make_attr_list(attrs));
                         }
                         callback_list.push((m, call_args));
                     }
@@ -2457,11 +2511,19 @@ pub fn create_html_parser_module() -> PyObjectRef {
     // Callback stubs (no-ops by default, subclasses override)
     for name in &["handle_starttag", "handle_endtag", "handle_data",
                   "handle_comment", "handle_decl", "handle_pi",
-                  "handle_startendtag", "handle_entityref", "handle_charref"] {
+                  "handle_entityref", "handle_charref"] {
         ns.insert(CompactString::from(*name), make_builtin(|_args: &[PyObjectRef]| {
             Ok(PyObject::none())
         }));
     }
+
+    // handle_startendtag default: calls handle_starttag + handle_endtag (CPython behavior)
+    ns.insert(CompactString::from("handle_startendtag"), make_builtin(|args: &[PyObjectRef]| {
+        // Default: just no-op. The real delegation happens in the feed loop
+        // where we check for user-override of handle_startendtag and fall back
+        // to handle_starttag + handle_endtag if not overridden.
+        Ok(PyObject::none())
+    }));
 
     let html_parser_class = PyObject::class(CompactString::from("HTMLParser"), vec![], ns);
 

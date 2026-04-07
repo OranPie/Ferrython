@@ -942,11 +942,32 @@ pub fn create_dis_module() -> PyObjectRef {
                 format!("don't know how to disassemble {} objects", obj.type_name())
             )),
         };
-        disassemble_code(&code, 0);
+        let output = disassemble_code_to_string(&code, 0);
+        // Check for file= keyword argument (last arg if it's a StringIO or similar)
+        let mut written = false;
+        if args.len() >= 2 {
+            // Keyword handling: check if there's a "file" kwarg passed positionally
+            let file_obj = &args[args.len() - 1];
+            if let PyObjectPayload::Instance(ref inst) = file_obj.payload {
+                if let Some(write_fn) = inst.attrs.read().get("write").cloned() {
+                    if let Some(write_call) = match &write_fn.payload {
+                        PyObjectPayload::NativeFunction { func, .. } => Some(func),
+                        _ => None,
+                    } {
+                        write_call(&[PyObject::str_val(CompactString::from(output.as_str()))])?;
+                        written = true;
+                    }
+                }
+            }
+        }
+        if !written {
+            print!("{}", output);
+        }
         Ok(PyObject::none())
     }
 
-    fn disassemble_code(code: &ferrython_bytecode::CodeObject, indent: usize) {
+    fn disassemble_code_to_string(code: &ferrython_bytecode::CodeObject, indent: usize) -> String {
+        let mut output = String::new();
         let pad = " ".repeat(indent);
         // Find line number for each instruction using lnotab
         let last_lineno = code.first_line_number;
@@ -979,17 +1000,20 @@ pub fn create_dis_module() -> PyObjectRef {
             };
 
             let arg_desc = format_dis_arg(code, instr.op, instr.arg);
-            println!("{}{} {:>6} {:<24} {}", pad, line_str, i * 2, format!("{:?}", instr.op), arg_desc);
+            use std::fmt::Write;
+            let _ = writeln!(output, "{}{} {:>6} {:<24} {}", pad, line_str, i * 2, format!("{:?}", instr.op), arg_desc);
         }
 
         // Recurse into nested code objects
         for c in &code.constants {
             if let ConstantValue::Code(nested) = c {
-                println!();
-                println!("{}Disassembly of <code object {} at ...>:", pad, nested.name);
-                disassemble_code(nested, indent + 2);
+                output.push('\n');
+                use std::fmt::Write;
+                let _ = writeln!(output, "{}Disassembly of <code object {} at ...>:", pad, nested.name);
+                output.push_str(&disassemble_code_to_string(nested, indent + 2));
             }
         }
+        output
     }
 
     fn format_dis_arg(code: &ferrython_bytecode::CodeObject, op: Opcode, arg: u32) -> String {
