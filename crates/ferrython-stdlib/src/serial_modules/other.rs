@@ -430,6 +430,13 @@ fn struct_unpack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Bytes(b) => b.clone(),
         _ => return Err(PyException::type_error("unpack requires bytes argument")),
     };
+    // Validate buffer length
+    let expected_size = struct_calcsize(&[args[0].clone()])?.as_int().unwrap_or(0) as usize;
+    if data.len() < expected_size {
+        return Err(PyException::runtime_error(format!(
+            "unpack requires a buffer of at least {} bytes (got {})", expected_size, data.len()
+        )));
+    }
     let mut result = Vec::new();
     let mut offset = 0;
     let mut chars = fmt.chars().peekable();

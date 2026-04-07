@@ -481,9 +481,23 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                     } else { "Enum".to_string() };
                     return format!("<{}.{}: {}>", class_name, name, value);
                 }
-                // Check for __repr__ first
-                if let Some(_) = obj.get_attr("__repr__") {
-                    // Can't call from here (no VM), but py_to_string should handle
+                // Check for __repr__: if it's a native closure, call it directly
+                if let Some(repr_fn) = obj.get_attr("__repr__") {
+                    match &repr_fn.payload {
+                        PyObjectPayload::NativeClosure { func, .. } => {
+                            if let Ok(result) = func(&[obj.clone()]) {
+                                return result.py_to_string();
+                            }
+                        }
+                        PyObjectPayload::BoundMethod { method, receiver } => {
+                            if let PyObjectPayload::NativeClosure { func, .. } = &method.payload {
+                                if let Ok(result) = func(&[receiver.clone()]) {
+                                    return result.py_to_string();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 // For exception-like instances, show ClassName(message)
                 if let Some(args) = inst.attrs.read().get("args") {

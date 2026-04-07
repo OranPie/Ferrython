@@ -18,6 +18,15 @@ static ROOT_CONFIGURED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 static ROOT_LEVEL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(30); // WARNING
 static ROOT_FORMAT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+use std::collections::HashMap;
+
+/// Global logger registry: maps logger names to their PyObjectRef.
+/// Thread-local so each test / interpreter session gets its own registry.
+thread_local! {
+    static LOGGER_REGISTRY: std::cell::RefCell<HashMap<String, PyObjectRef>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
 fn root_format() -> &'static str {
     ROOT_FORMAT.get().map(|s| s.as_str()).unwrap_or("%(levelname)s:%(name)s:%(message)s")
 }
@@ -652,14 +661,26 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         CompactString::from(args[0].py_to_string())
     };
+
+    // Return cached logger if it already exists
+    {
+        let found = LOGGER_REGISTRY.with(|reg| {
+            reg.borrow().get(logger_name.as_str()).cloned()
+        });
+        if let Some(existing) = found {
+            return Ok(existing);
+        }
+    }
+
     let mut ns = IndexMap::new();
     ns.insert(CompactString::from("name"), PyObject::str_val(logger_name.clone()));
+    ns.insert(CompactString::from("propagate"), PyObject::bool_val(true));
     let root_level = ROOT_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
     let is_root = logger_name.as_str() == "root";
     // CPython: named loggers start at level=0 (NOTSET); root logger defaults to WARNING(30)
     let initial_level: i64 = if is_root { if root_level > 0 { root_level } else { 30 } } else { 0 };
-    // Effective level: for filtering, use own level if set, else inherit root
-    let effective = if initial_level > 0 { initial_level } else { if root_level > 0 { root_level } else { 30 } };
+    // Effective level: non-root loggers use 0 (NOTSET) to trigger parent chain walk at log time
+    let effective = initial_level;
     let effective_level: Arc<RwLock<i64>> = Arc::new(RwLock::new(effective));
     ns.insert(CompactString::from("level"), PyObject::int(initial_level));
     let handlers_list = PyObject::list(vec![]);
@@ -670,7 +691,29 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObject::native_closure(level_name, move |args: &[PyObjectRef]| {
             if args.is_empty() { return Ok(PyObject::none()); }
             // Filter: only emit if message level >= logger's effective level
-            let current_level = *eff_level.read();
+            // If own level is NOTSET (0), walk parent chain to find effective level
+            let mut current_level = *eff_level.read();
+            if current_level == 0 {
+                LOGGER_REGISTRY.with(|reg| {
+                    let reg = reg.borrow();
+                    let mut cur = name.to_string();
+                    while let Some(dot) = cur.rfind('.') {
+                        cur.truncate(dot);
+                        if let Some(parent) = reg.get(&cur) {
+                            if let Some(plvl) = parent.get_attr("level") {
+                                if let Some(n) = plvl.as_int() {
+                                    if n > 0 { current_level = n; return; }
+                                }
+                            }
+                        }
+                    }
+                });
+                if current_level == 0 {
+                    // Fall back to root level
+                    current_level = ROOT_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
+                    if current_level == 0 { current_level = 30; }
+                }
+            }
             if current_level > 0 && level < current_level {
                 return Ok(PyObject::none());
             }
@@ -693,40 +736,73 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 ra.insert(CompactString::from("msg"), PyObject::str_val(CompactString::from(msg.clone())));
             }
 
-            // Dispatch to handlers via shared list
-            let has_handlers;
-            if let PyObjectPayload::List(items) = &handlers.payload {
-                let items_r = items.read();
-                has_handlers = !items_r.is_empty();
-                for handler in items_r.iter() {
-                    // Check handler level before emitting (CPython behavior)
-                    if let Some(handler_level) = handler.get_attr("level") {
-                        if let Some(hl) = handler_level.as_int() {
-                            if hl > 0 && level < hl { continue; }
+            // Dispatch to handlers via shared list, then propagate to parents
+            let mut any_handler_found = false;
+
+            // Helper: emit record to a handler list
+            fn emit_to_handlers(handlers_obj: &PyObjectRef, record: &PyObjectRef, level: i64) -> bool {
+                if let PyObjectPayload::List(items) = &handlers_obj.payload {
+                    let items_r = items.read();
+                    if items_r.is_empty() { return false; }
+                    for handler in items_r.iter() {
+                        if let Some(handler_level) = handler.get_attr("level") {
+                            if let Some(hl) = handler_level.as_int() {
+                                if hl > 0 && level < hl { continue; }
+                            }
+                        }
+                        if let Some(emit_fn) = handler.get_attr("emit") {
+                            match &emit_fn.payload {
+                                PyObjectPayload::NativeFunction { func, .. } => {
+                                    let _ = func(&[handler.clone(), record.clone()]);
+                                }
+                                PyObjectPayload::NativeClosure { func, .. } => {
+                                    let _ = func(&[handler.clone(), record.clone()]);
+                                }
+                                _ => {
+                                    ferrython_core::error::request_vm_call(
+                                        emit_fn.clone(),
+                                        vec![record.clone()],
+                                    );
+                                }
+                            }
                         }
                     }
-                    if let Some(emit_fn) = handler.get_attr("emit") {
-                        match &emit_fn.payload {
-                            PyObjectPayload::NativeFunction { func, .. } => {
-                                let _ = func(&[handler.clone(), record.clone()]);
-                            }
-                            PyObjectPayload::NativeClosure { func, .. } => {
-                                let _ = func(&[handler.clone(), record.clone()]);
-                            }
-                            _ => {
-                                ferrython_core::error::request_vm_call(
-                                    emit_fn.clone(),
-                                    vec![record.clone()],
-                                );
+                    true
+                } else {
+                    false
+                }
+            }
+
+            // Emit to own handlers
+            if emit_to_handlers(&handlers, &record, level) {
+                any_handler_found = true;
+            }
+
+            // Propagate to parent loggers by walking the name hierarchy
+            LOGGER_REGISTRY.with(|reg| {
+                let reg = reg.borrow();
+                let mut current_name = name.to_string();
+                while let Some(dot_pos) = current_name.rfind('.') {
+                    current_name.truncate(dot_pos);
+                    if let Some(parent) = reg.get(&current_name) {
+                        if let Some(parent_handlers) = parent.get_attr("handlers") {
+                            if emit_to_handlers(&parent_handlers, &record, level) {
+                                any_handler_found = true;
                             }
                         }
                     }
                 }
-            } else {
-                has_handlers = false;
-            }
+                // Also propagate to root logger
+                if let Some(root) = reg.get("root") {
+                    if let Some(root_handlers) = root.get_attr("handlers") {
+                        if emit_to_handlers(&root_handlers, &record, level) {
+                            any_handler_found = true;
+                        }
+                    }
+                }
+            });
             // Last-resort: only print to stderr if no handlers registered at all
-            if !has_handlers {
+            if !any_handler_found {
                 eprintln!("{}:{}:{}", level_name, name, msg);
             }
             Ok(PyObject::none())
@@ -875,6 +951,10 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             inst_data.attrs.write().insert(CompactString::from("setLevel"), set_level_fn);
         }
     }
+    // Register in thread-local logger registry
+    LOGGER_REGISTRY.with(|reg| {
+        reg.borrow_mut().insert(logger_name.to_string(), inst.clone());
+    });
     Ok(inst)
 }
 

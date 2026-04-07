@@ -14,17 +14,36 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 impl VirtualMachine {
+    /// Extract inherited metaclass from bases: if any base has a custom metaclass, return it.
+    fn inherited_metaclass(bases: &[PyObjectRef]) -> Option<PyObjectRef> {
+        for base in bases {
+            if let PyObjectPayload::Class(cd) = &base.payload {
+                if let Some(meta) = &cd.metaclass {
+                    return Some(meta.clone());
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn build_class(&mut self, args: Vec<PyObjectRef>) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
             return Err(PyException::type_error(
                 "__build_class__ requires at least 2 arguments"));
         }
+        let bases: Vec<PyObjectRef> = args[2..].to_vec();
+
+        // If any base has a custom metaclass, delegate to the kw path
+        if let Some(meta) = Self::inherited_metaclass(&bases) {
+            let kwargs = vec![(CompactString::from("metaclass"), meta)];
+            return self.build_class_kw(args, kwargs);
+        }
+
         let body_func = args[0].clone();
         let class_name = match &args[1].payload {
             PyObjectPayload::Str(s) => s.clone(),
             _ => CompactString::from(args[1].py_to_string()),
         };
-        let bases: Vec<PyObjectRef> = args[2..].to_vec();
 
         let namespace = match &body_func.payload {
             PyObjectPayload::Function(pyfunc) => {
@@ -495,10 +514,11 @@ impl VirtualMachine {
         };
         let bases: Vec<PyObjectRef> = args[2..].to_vec();
 
-        // Extract metaclass from kwargs
+        // Extract metaclass from kwargs, falling back to inherited metaclass from bases
         let metaclass = kwargs.iter()
             .find(|(k, _)| k.as_str() == "metaclass")
-            .map(|(_, v)| v.clone());
+            .map(|(_, v)| v.clone())
+            .or_else(|| Self::inherited_metaclass(&bases));
 
         // Call __prepare__ on metaclass if available (PEP 3115)
         let (prepared_ns, prepare_dict_obj): (IndexMap<CompactString, PyObjectRef>, Option<PyObjectRef>) =
