@@ -196,6 +196,18 @@ pub trait Visitor {
                 self.visit_expression(value);
             }
             StatementKind::Pass | StatementKind::Break | StatementKind::Continue => {}
+            StatementKind::Match { subject, cases } => {
+                self.visit_expression(subject);
+                for case in cases {
+                    self.visit_pattern(&case.pattern);
+                    if let Some(guard) = &case.guard {
+                        self.visit_expression(guard);
+                    }
+                    for s in &case.body {
+                        self.visit_statement(s);
+                    }
+                }
+            }
         }
         Self::Result::default()
     }
@@ -341,6 +353,48 @@ pub trait Visitor {
         self.visit_expression(&comp.iter);
         for cond in &comp.ifs {
             self.visit_expression(cond);
+        }
+    }
+
+    fn visit_pattern(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::MatchWildcard | Pattern::MatchCapture { .. } => {}
+            Pattern::MatchValue { value } | Pattern::MatchLiteral { value } => {
+                self.visit_expression(value);
+            }
+            Pattern::MatchSequence { patterns } | Pattern::MatchOr { patterns } => {
+                for p in patterns {
+                    self.visit_pattern(p);
+                }
+            }
+            Pattern::MatchMapping { keys, patterns, .. } => {
+                for k in keys {
+                    self.visit_expression(k);
+                }
+                for p in patterns {
+                    self.visit_pattern(p);
+                }
+            }
+            Pattern::MatchClass {
+                cls,
+                patterns,
+                kwd_patterns,
+                ..
+            } => {
+                self.visit_expression(cls);
+                for p in patterns {
+                    self.visit_pattern(p);
+                }
+                for p in kwd_patterns {
+                    self.visit_pattern(p);
+                }
+            }
+            Pattern::MatchAs { pattern, .. } => {
+                if let Some(p) = pattern {
+                    self.visit_pattern(p);
+                }
+            }
+            Pattern::MatchStar { .. } => {}
         }
     }
 

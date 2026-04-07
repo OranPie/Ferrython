@@ -1,5 +1,6 @@
 //! Expression compilation methods for the Compiler, plus utility functions.
 
+use compact_str::CompactString;
 use ferrython_ast::*;
 use ferrython_bytecode::{CodeFlags, ConstantValue, Opcode};
 
@@ -297,11 +298,19 @@ impl Compiler {
             }
 
             ExpressionKind::ListComp { elt, generators } => {
-                self.compile_comprehension("<listcomp>", elt, None, generators, ComprehensionKind::List)?;
+                if generators.iter().any(|g| g.is_async) {
+                    self.compile_async_comprehension_inline(elt, None, generators, ComprehensionKind::List)?;
+                } else {
+                    self.compile_comprehension("<listcomp>", elt, None, generators, ComprehensionKind::List)?;
+                }
             }
 
             ExpressionKind::SetComp { elt, generators } => {
-                self.compile_comprehension("<setcomp>", elt, None, generators, ComprehensionKind::Set)?;
+                if generators.iter().any(|g| g.is_async) {
+                    self.compile_async_comprehension_inline(elt, None, generators, ComprehensionKind::Set)?;
+                } else {
+                    self.compile_comprehension("<setcomp>", elt, None, generators, ComprehensionKind::Set)?;
+                }
             }
 
             ExpressionKind::DictComp {
@@ -309,7 +318,11 @@ impl Compiler {
                 value,
                 generators,
             } => {
-                self.compile_comprehension("<dictcomp>", key, Some(value), generators, ComprehensionKind::Dict)?;
+                if generators.iter().any(|g| g.is_async) {
+                    self.compile_async_comprehension_inline(key, Some(value), generators, ComprehensionKind::Dict)?;
+                } else {
+                    self.compile_comprehension("<dictcomp>", key, Some(value), generators, ComprehensionKind::Dict)?;
+                }
             }
 
             ExpressionKind::GeneratorExp { elt, generators } => {
@@ -905,10 +918,8 @@ impl Compiler {
         }
 
         if idx + 1 < generators.len() {
-            // Recurse into inner generators
             self.compile_comprehension_generators(generators, idx + 1, elt, value, kind)?;
         } else {
-            // Innermost generator: emit the element
             match kind {
                 ComprehensionKind::List => {
                     self.compile_expression(elt)?;
@@ -919,8 +930,8 @@ impl Compiler {
                     self.emit_arg(Opcode::SetAdd, (generators.len() + 1) as u32);
                 }
                 ComprehensionKind::Dict => {
-                    self.compile_expression(elt)?; // key
-                    self.compile_expression(value.unwrap())?; // value
+                    self.compile_expression(elt)?;
+                    self.compile_expression(value.unwrap())?;
                     self.emit_arg(Opcode::MapAdd, (generators.len() + 1) as u32);
                 }
                 ComprehensionKind::Generator => {
@@ -931,7 +942,6 @@ impl Compiler {
             }
         }
 
-        // Patch skip labels to jump to loop continuation
         let cont_target = self.current_offset();
         for label in skip_labels {
             self.patch_jump(label, cont_target);
@@ -939,6 +949,168 @@ impl Compiler {
 
         self.emit_arg(Opcode::JumpAbsolute, loop_start);
         self.patch_jump_here(done_label);
+
+        Ok(())
+    }
+
+    /// Compile an async comprehension inline (without a separate coroutine function).
+    /// Uses a temp variable for the result container to avoid stack corruption
+    /// from SetupExcept/EndAsyncFor.
+    pub(super) fn compile_async_comprehension_inline(
+        &mut self,
+        elt: &Expression,
+        value: Option<&Expression>,
+        generators: &[Comprehension],
+        kind: ComprehensionKind,
+    ) -> Result<()> {
+        // Build the empty result container and store in temp var
+        let result_temp = CompactString::from("$async_comp_result$");
+        let result_idx = self.varname_index(&result_temp);
+        match kind {
+            ComprehensionKind::List => self.emit_arg(Opcode::BuildList, 0),
+            ComprehensionKind::Set => self.emit_arg(Opcode::BuildSet, 0),
+            ComprehensionKind::Dict => self.emit_arg(Opcode::BuildMap, 0),
+            ComprehensionKind::Generator => 0,
+        };
+        self.emit_arg(Opcode::StoreFast, result_idx);
+
+        self.compile_async_comp_generator(generators, 0, elt, value, kind, result_idx)?;
+
+        // Load result back onto stack
+        self.emit_arg(Opcode::LoadFast, result_idx);
+        Ok(())
+    }
+
+    fn compile_async_comp_generator(
+        &mut self,
+        generators: &[Comprehension],
+        idx: usize,
+        elt: &Expression,
+        value: Option<&Expression>,
+        kind: ComprehensionKind,
+        result_idx: u32,
+    ) -> Result<()> {
+        let gen = &generators[idx];
+
+        self.compile_expression(&gen.iter)?;
+        if gen.is_async {
+            self.emit_op(Opcode::GetAiter);
+        } else {
+            self.emit_op(Opcode::GetIter);
+        }
+
+        let loop_start = self.current_offset();
+
+        if gen.is_async {
+            let except_label = self.emit_jump(Opcode::SetupExcept);
+            self.emit_op(Opcode::GetAnext);
+            self.emit_op(Opcode::GetAwaitable);
+            let none_idx = self.add_const(ConstantValue::None);
+            self.emit_arg(Opcode::LoadConst, none_idx);
+            self.emit_op(Opcode::YieldFrom);
+            self.compile_store_target(&gen.target)?;
+            self.emit_op(Opcode::PopBlock);
+
+            let mut skip_labels = Vec::new();
+            for cond in &gen.ifs {
+                self.compile_expression(cond)?;
+                skip_labels.push(self.emit_jump(Opcode::PopJumpIfFalse));
+            }
+
+            if idx + 1 < generators.len() {
+                self.compile_async_comp_generator(generators, idx + 1, elt, value, kind, result_idx)?;
+            } else {
+                // Innermost: load result, append element, store back
+                match kind {
+                    ComprehensionKind::List => {
+                        self.emit_arg(Opcode::LoadFast, result_idx);
+                        let append_name = self.add_name("append");
+                        self.emit_arg(Opcode::LoadAttr, append_name);
+                        self.compile_expression(elt)?;
+                        self.emit_arg(Opcode::CallFunction, 1);
+                        self.emit_op(Opcode::PopTop);
+                    }
+                    ComprehensionKind::Set => {
+                        self.emit_arg(Opcode::LoadFast, result_idx);
+                        let add_name = self.add_name("add");
+                        self.emit_arg(Opcode::LoadAttr, add_name);
+                        self.compile_expression(elt)?;
+                        self.emit_arg(Opcode::CallFunction, 1);
+                        self.emit_op(Opcode::PopTop);
+                    }
+                    ComprehensionKind::Dict => {
+                        // StoreSubscr stack: TOS=key, TOS1=obj, TOS2=value
+                        self.compile_expression(value.unwrap())?; // value
+                        self.emit_arg(Opcode::LoadFast, result_idx); // dict
+                        self.compile_expression(elt)?;   // key
+                        self.emit_op(Opcode::StoreSubscr);
+                    }
+                    ComprehensionKind::Generator => {
+                        self.compile_expression(elt)?;
+                        self.emit_op(Opcode::YieldValue);
+                        self.emit_op(Opcode::PopTop);
+                    }
+                }
+            }
+
+            let cont_target = self.current_offset();
+            for label in skip_labels {
+                self.patch_jump(label, cont_target);
+            }
+            self.emit_arg(Opcode::JumpAbsolute, loop_start);
+            self.patch_jump_here(except_label);
+            self.emit_op(Opcode::EndAsyncFor);
+        } else {
+            let done_label = self.emit_jump(Opcode::ForIter);
+            self.compile_store_target(&gen.target)?;
+
+            let mut skip_labels = Vec::new();
+            for cond in &gen.ifs {
+                self.compile_expression(cond)?;
+                skip_labels.push(self.emit_jump(Opcode::PopJumpIfFalse));
+            }
+
+            if idx + 1 < generators.len() {
+                self.compile_async_comp_generator(generators, idx + 1, elt, value, kind, result_idx)?;
+            } else {
+                match kind {
+                    ComprehensionKind::List => {
+                        self.emit_arg(Opcode::LoadFast, result_idx);
+                        let append_name = self.add_name("append");
+                        self.emit_arg(Opcode::LoadAttr, append_name);
+                        self.compile_expression(elt)?;
+                        self.emit_arg(Opcode::CallFunction, 1);
+                        self.emit_op(Opcode::PopTop);
+                    }
+                    ComprehensionKind::Set => {
+                        self.emit_arg(Opcode::LoadFast, result_idx);
+                        let add_name = self.add_name("add");
+                        self.emit_arg(Opcode::LoadAttr, add_name);
+                        self.compile_expression(elt)?;
+                        self.emit_arg(Opcode::CallFunction, 1);
+                        self.emit_op(Opcode::PopTop);
+                    }
+                    ComprehensionKind::Dict => {
+                        self.compile_expression(value.unwrap())?; // value
+                        self.emit_arg(Opcode::LoadFast, result_idx); // dict
+                        self.compile_expression(elt)?;   // key
+                        self.emit_op(Opcode::StoreSubscr);
+                    }
+                    ComprehensionKind::Generator => {
+                        self.compile_expression(elt)?;
+                        self.emit_op(Opcode::YieldValue);
+                        self.emit_op(Opcode::PopTop);
+                    }
+                }
+            }
+
+            let cont_target = self.current_offset();
+            for label in skip_labels {
+                self.patch_jump(label, cont_target);
+            }
+            self.emit_arg(Opcode::JumpAbsolute, loop_start);
+            self.patch_jump_here(done_label);
+        }
 
         Ok(())
     }

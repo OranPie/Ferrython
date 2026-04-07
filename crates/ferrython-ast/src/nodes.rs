@@ -156,6 +156,58 @@ pub enum StatementKind {
     Break,
     /// `continue`
     Continue,
+    /// `match subject: case pattern: body ...` (Python 3.10+)
+    Match {
+        subject: Box<Expression>,
+        cases: Vec<MatchCase>,
+    },
+}
+
+// ─── Match/Case (Python 3.10+) ─────────────────────────────────────
+
+/// A single `case pattern [if guard]: body` clause.
+#[derive(Debug, Clone)]
+pub struct MatchCase {
+    pub pattern: Pattern,
+    pub guard: Option<Expression>,
+    pub body: Vec<Statement>,
+}
+
+/// Pattern node for structural pattern matching.
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    /// Wildcard `_` — matches anything, binds nothing.
+    MatchWildcard,
+    /// Capture pattern — binds the subject to a name (e.g. `x`).
+    MatchCapture { name: CompactString },
+    /// Value pattern — dotted name treated as a constant (e.g. `Color.RED`).
+    MatchValue { value: Expression },
+    /// Literal pattern — a constant value (int, float, str, bool, None).
+    MatchLiteral { value: Expression },
+    /// Sequence pattern — `[p1, p2, ...]` or `(p1, p2, ...)`.
+    MatchSequence { patterns: Vec<Pattern> },
+    /// Mapping pattern — `{key1: p1, key2: p2, ...}`.
+    MatchMapping {
+        keys: Vec<Expression>,
+        patterns: Vec<Pattern>,
+        rest: Option<CompactString>,
+    },
+    /// Class pattern — `ClassName(p1, key=p2, ...)`.
+    MatchClass {
+        cls: Expression,
+        patterns: Vec<Pattern>,
+        kwd_attrs: Vec<CompactString>,
+        kwd_patterns: Vec<Pattern>,
+    },
+    /// OR pattern — `p1 | p2 | ...`.
+    MatchOr { patterns: Vec<Pattern> },
+    /// AS pattern — `pattern as name`.
+    MatchAs {
+        pattern: Option<Box<Pattern>>,
+        name: Option<CompactString>,
+    },
+    /// Star pattern in sequence — `*name` or `*_`.
+    MatchStar { name: Option<CompactString> },
 }
 
 // ─── Expressions ────────────────────────────────────────────────────

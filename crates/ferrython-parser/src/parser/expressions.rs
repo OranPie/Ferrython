@@ -421,7 +421,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn parse_atom(&mut self) -> Result<Expression, ParseError> {
+    pub(super) fn parse_atom(&mut self) -> Result<Expression, ParseError> {
         let loc = self.current_location();
         let tok = self.peek().clone();
 
@@ -514,8 +514,8 @@ impl Parser {
                     ));
                 }
                 let expr = self.parse_test_list_star_expr()?;
-                // Check for generator expression
-                if self.check(TokenKind::For) {
+                // Check for generator expression (including async)
+                if self.check(TokenKind::For) || self.check(TokenKind::Async) {
                     let generators = self.parse_comp_for()?;
                     self.expect(TokenKind::RightParen)?;
                     return Ok(Expression::new(
@@ -561,8 +561,8 @@ impl Parser {
                     ));
                 }
                 let first = self.parse_test_or_star()?;
-                // List comprehension?
-                if self.check(TokenKind::For) {
+                // List comprehension? (including async)
+                if self.check(TokenKind::For) || self.check(TokenKind::Async) {
                     let generators = self.parse_comp_for()?;
                     self.expect(TokenKind::RightBracket)?;
                     return Ok(Expression::new(
@@ -637,8 +637,8 @@ impl Parser {
                     // Dict
                     self.advance();
                     let first_val = self.parse_test()?;
-                    // Dict comprehension?
-                    if self.check(TokenKind::For) {
+                    // Dict comprehension? (including async)
+                    if self.check(TokenKind::For) || self.check(TokenKind::Async) {
                         let generators = self.parse_comp_for()?;
                         self.expect(TokenKind::RightBrace)?;
                         return Ok(Expression::new(
@@ -675,8 +675,8 @@ impl Parser {
                         loc,
                     ))
                 } else {
-                    // Set
-                    if self.check(TokenKind::For) {
+                    // Set (including async comprehension)
+                    if self.check(TokenKind::For) || self.check(TokenKind::Async) {
                         let generators = self.parse_comp_for()?;
                         self.expect(TokenKind::RightBrace)?;
                         return Ok(Expression::new(

@@ -585,6 +585,19 @@ impl Analyzer {
             }
 
             StatementKind::Pass | StatementKind::Break | StatementKind::Continue => {}
+
+            StatementKind::Match { subject, cases } => {
+                self.analyze_expression(subject);
+                for case in cases {
+                    self.analyze_pattern(&case.pattern);
+                    if let Some(guard) = &case.guard {
+                        self.analyze_expression(guard);
+                    }
+                    for stmt in &case.body {
+                        self.analyze_statement(stmt);
+                    }
+                }
+            }
         }
     }
 
@@ -880,6 +893,51 @@ impl Analyzer {
         self.analyze_target(&comp.target);
         for cond in &comp.ifs {
             self.analyze_expression(cond);
+        }
+    }
+
+    fn analyze_pattern(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::MatchWildcard | Pattern::MatchStar { name: None } => {}
+            Pattern::MatchCapture { name } | Pattern::MatchStar { name: Some(name) } => {
+                self.current_scope().mark_assigned(name);
+            }
+            Pattern::MatchLiteral { value } | Pattern::MatchValue { value } => {
+                self.analyze_expression(value);
+            }
+            Pattern::MatchSequence { patterns } | Pattern::MatchOr { patterns } => {
+                for p in patterns {
+                    self.analyze_pattern(p);
+                }
+            }
+            Pattern::MatchMapping { keys, patterns, rest } => {
+                for k in keys {
+                    self.analyze_expression(k);
+                }
+                for p in patterns {
+                    self.analyze_pattern(p);
+                }
+                if let Some(rest_name) = rest {
+                    self.current_scope().mark_assigned(rest_name);
+                }
+            }
+            Pattern::MatchClass { cls, patterns, kwd_patterns, .. } => {
+                self.analyze_expression(cls);
+                for p in patterns {
+                    self.analyze_pattern(p);
+                }
+                for p in kwd_patterns {
+                    self.analyze_pattern(p);
+                }
+            }
+            Pattern::MatchAs { pattern, name } => {
+                if let Some(inner) = pattern {
+                    self.analyze_pattern(inner);
+                }
+                if let Some(name) = name {
+                    self.current_scope().mark_assigned(name);
+                }
+            }
         }
     }
 }

@@ -1831,6 +1831,23 @@ fn stmt_to_pyobject(stmt: &ferrython_ast::Statement) -> PyObjectRef {
         Pass => { let n = make_ast_node("Pass"); set_node_fields(&n, &[]); n }
         Break => { let n = make_ast_node("Break"); set_node_fields(&n, &[]); n }
         Continue => { let n = make_ast_node("Continue"); set_node_fields(&n, &[]); n }
+        Match { subject, cases } => {
+            let n = make_ast_node("Match");
+            set_node_attr(&n, "subject", expr_to_pyobject(subject));
+            let case_nodes: Vec<PyObjectRef> = cases.iter().map(|c| {
+                let cn = make_ast_node("match_case");
+                set_node_attr(&cn, "body", PyObject::list(c.body.iter().map(stmt_to_pyobject).collect()));
+                set_node_attr(&cn, "guard", match &c.guard {
+                    Some(g) => expr_to_pyobject(g),
+                    None => PyObject::none(),
+                });
+                set_node_fields(&cn, &["pattern", "guard", "body"]);
+                cn
+            }).collect();
+            set_node_attr(&n, "cases", PyObject::list(case_nodes));
+            set_node_fields(&n, &["subject", "cases"]);
+            n
+        }
     };
     set_location(&node, &stmt.location);
     node
