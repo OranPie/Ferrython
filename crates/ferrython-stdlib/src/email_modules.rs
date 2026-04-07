@@ -289,6 +289,16 @@ fn build_message_instance(
             }));
     }
 
+    // get_content() — EmailMessage API: return decoded text payload
+    {
+        let p = payload_cell.clone();
+        attrs.insert(CompactString::from("get_content"),
+            PyObject::native_closure("get_content", move |_args| {
+                let payload = p.lock().unwrap();
+                Ok(payload.clone())
+            }));
+    }
+
     // __str__ — produces RFC 2822 formatted string
     {
         let h = headers.clone();

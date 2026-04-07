@@ -2097,6 +2097,23 @@ pub fn create_fractions_module() -> PyObjectRef {
         None
     }
 
+    fn decimal_str_to_fraction(s: &str) -> PyResult<PyObjectRef> {
+        let s = s.trim();
+        let (sign, s) = if let Some(rest) = s.strip_prefix('-') { (-1i64, rest) } else { (1i64, s) };
+        if let Some((int_part, frac_part)) = s.split_once('.') {
+            let int_part = if int_part.is_empty() { "0" } else { int_part };
+            let frac_digits = frac_part.len() as u32;
+            let denom = 10i64.checked_pow(frac_digits).unwrap_or(1);
+            let int_val: i64 = int_part.parse().unwrap_or(0);
+            let frac_val: i64 = frac_part.parse().unwrap_or(0);
+            let numer = sign * (int_val * denom + frac_val);
+            Ok(make_frac_instance(numer, denom))
+        } else {
+            let n: i64 = s.parse().unwrap_or(0);
+            Ok(make_frac_instance(sign * n, 1))
+        }
+    }
+
     fn make_frac_instance(num: i64, den: i64) -> PyObjectRef {
         let g = frac_gcd(num.abs(), den.abs());
         let (num, den) = if den < 0 { (-num / g, -den / g) } else { (num / g, den / g) };
@@ -2287,35 +2304,34 @@ pub fn create_fractions_module() -> PyObjectRef {
         let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
         let max_den = if args.len() > 1 { args[1].to_int().unwrap_or(1_000_000) } else { 1_000_000 };
         if d <= max_den { return Ok(make_frac_instance(n, d)); }
-        // CPython algorithm: continued fraction convergents
-        // p(-1)=1, p(0)=a0; q(-1)=0, q(0)=1
+        // CPython algorithm: continued fraction convergents (handles negative n)
         let mut p0: i64 = 0; let mut q0: i64 = 1;
         let mut p1: i64 = 1; let mut q1: i64 = 0;
-        let mut nn = n.abs(); let mut dd = d;
+        let mut nn = n; let mut dd = d;
         loop {
-            let a = nn / dd;
-            let (p2, q2) = (a * p1 + p0, a * q1 + q0);
+            let a = nn.div_euclid(dd);
+            let q2 = q0 + a * q1;
             if q2 > max_den { break; }
+            let new_p1 = p0 + a * p1;
+            let new_q1 = q2;
             p0 = p1; q0 = q1;
-            p1 = p2; q1 = q2;
+            p1 = new_p1; q1 = new_q1;
             let tmp = nn - a * dd;
             nn = dd; dd = tmp;
             if dd == 0 { break; }
         }
-        // Semi-convergent: k = (max_den - q0) / q1
         let k = if q1 != 0 { (max_den - q0) / q1 } else { 0 };
-        let (bound_n, bound_d) = (k * p1 + p0, k * q1 + q0);
-        // Pick whichever of p1/q1 or bound_n/bound_d is closer
-        // Compare |n*q1 - d*p1| * bound_d  vs  |n*bound_d - d*bound_n| * q1
-        let err1 = (n as i128 * q1 as i128 - d as i128 * p1 as i128).abs();
-        let err2 = (n as i128 * bound_d as i128 - d as i128 * bound_n as i128).abs();
-        let (rn, rd) = if err2 * q1 as i128 <= err1 * bound_d as i128 {
-            (bound_n, bound_d)
-        } else {
+        let (bound1_n, bound1_d) = (p0 + k * p1, q0 + k * q1);
+        // bound2 = p1/q1 (convergent), bound1 = semi-convergent
+        // Return convergent if at least as close, matching CPython tie-breaking
+        let err2 = (n as i128 * q1 as i128 - d as i128 * p1 as i128).unsigned_abs();
+        let err1 = (n as i128 * bound1_d as i128 - d as i128 * bound1_n as i128).unsigned_abs();
+        let (rn, rd) = if err2 * (bound1_d as i128).unsigned_abs() <= err1 * (q1 as i128).unsigned_abs() {
             (p1, q1)
+        } else {
+            (bound1_n, bound1_d)
         };
-        let sign = if n < 0 { -1 } else { 1 };
-        Ok(make_frac_instance(sign * rn, rd))
+        Ok(make_frac_instance(rn, rd))
     }
 
     fn frac_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -2421,7 +2437,18 @@ pub fn create_fractions_module() -> PyObjectRef {
                             if let Some((n, d)) = get_frac_parts(&real_args[0]) {
                                 return Ok(make_frac_instance(n, d));
                             }
-                            return Err(PyException::type_error("Fraction() argument must be int, float, or str"));
+                            // Handle Decimal instances by converting via string
+                            if let PyObjectPayload::Instance(inst) = &real_args[0].payload {
+                                let attrs = inst.attrs.read();
+                                if attrs.contains_key("__decimal__") {
+                                    let s = attrs.get("_value")
+                                        .map(|v| v.py_to_string())
+                                        .unwrap_or_else(|| "0".to_string());
+                                    drop(attrs);
+                                    return decimal_str_to_fraction(&s);
+                                }
+                            }
+                            return Err(PyException::type_error("Fraction() argument must be int, float, str, or Decimal"));
                         }
                     }
                 }
@@ -2441,23 +2468,34 @@ pub fn create_fractions_module() -> PyObjectRef {
 
 fn float_to_fraction(f: f64) -> (i64, i64) {
     if f == 0.0 { return (0, 1); }
-    // Use continued fraction approximation
-    let sign = if f < 0.0 { -1i64 } else { 1 };
-    let mut x = f.abs();
-    let mut p0: i64 = 0; let mut q0: i64 = 1;
-    let mut p1: i64 = 1; let mut q1: i64 = 0;
-    for _ in 0..64 {
-        let a = x as i64;
-        let p2 = a * p1 + p0;
-        let q2 = a * q1 + q0;
-        if q2 > 1_000_000_000 { break; }
-        p0 = p1; q0 = q1;
-        p1 = p2; q1 = q2;
-        let frac = x - a as f64;
-        if frac.abs() < 1e-15 { break; }
-        x = 1.0 / frac;
+    if f.is_infinite() || f.is_nan() { return (0, 1); }
+    // Exact IEEE 754 decomposition matching CPython's float.as_integer_ratio()
+    let bits = f.to_bits();
+    let sign: i64 = if (bits >> 63) != 0 { -1 } else { 1 };
+    let raw_exp = ((bits >> 52) & 0x7FF) as i64;
+    let mantissa = (bits & 0x000F_FFFF_FFFF_FFFF) as i64;
+
+    let (mut numer, exp) = if raw_exp == 0 {
+        (mantissa, -1074i64) // subnormal
+    } else {
+        ((1i64 << 52) | mantissa, raw_exp - 1075)
+    };
+
+    // Remove trailing zero bits to simplify
+    if numer != 0 {
+        let tz = numer.trailing_zeros();
+        numer >>= tz;
+        // exp += tz as i64; (already accounted for since we shift numer)
+        let adjusted_exp = exp + tz as i64;
+        if adjusted_exp >= 0 {
+            let shift = adjusted_exp.min(62) as u32;
+            return (sign * numer.checked_shl(shift).unwrap_or(numer), 1);
+        } else {
+            let shift = (-adjusted_exp).min(62) as u32;
+            return (sign * numer, 1i64.checked_shl(shift).unwrap_or(i64::MAX));
+        }
     }
-    (sign * p1, q1)
+    (0, 1)
 }
 
 fn fraction_gcd(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
