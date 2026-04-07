@@ -23,6 +23,8 @@ use crate::task;
 // ── Thread-local: asyncio.run() coroutine signal ────────────────────────
 thread_local! {
     static ASYNCIO_RUN_CORO: RefCell<Option<PyObjectRef>> = RefCell::new(None);
+    /// Active wait_for deadline: if set, asyncio.sleep should respect it
+    static WAIT_FOR_DEADLINE: RefCell<Option<std::time::Instant>> = RefCell::new(None);
 }
 
 /// Called by the VM after NativeClosure calls to check if asyncio.run() was invoked.
@@ -33,6 +35,14 @@ pub fn take_asyncio_run_coro() -> Option<PyObjectRef> {
 /// Store a coroutine for the VM to drive (used internally).
 pub(crate) fn store_asyncio_run_coro(coro: PyObjectRef) {
     ASYNCIO_RUN_CORO.with(|c| *c.borrow_mut() = Some(coro));
+}
+
+fn set_wait_for_deadline(deadline: Option<std::time::Instant>) {
+    WAIT_FOR_DEADLINE.with(|d| *d.borrow_mut() = deadline);
+}
+
+fn get_wait_for_deadline() -> Option<std::time::Instant> {
+    WAIT_FOR_DEADLINE.with(|d| *d.borrow())
 }
 
 /// Create the complete `asyncio` module.
@@ -137,9 +147,32 @@ fn asyncio_sleep(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     };
 
-    // Actually sleep (single-threaded, blocking is acceptable)
+    // Check if there's an active wait_for deadline
     if secs > 0.0 {
-        std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+        if let Some(deadline) = get_wait_for_deadline() {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                // Already past deadline — raise TimeoutError
+                set_wait_for_deadline(None);
+                return Err(PyException::new(
+                    ferrython_core::error::ExceptionKind::TimeoutError,
+                    "",
+                ));
+            }
+            let remaining = deadline.duration_since(now).as_secs_f64();
+            if secs > remaining {
+                // Sleep would exceed deadline — sleep remaining, then raise
+                std::thread::sleep(std::time::Duration::from_secs_f64(remaining));
+                set_wait_for_deadline(None);
+                return Err(PyException::new(
+                    ferrython_core::error::ExceptionKind::TimeoutError,
+                    "",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+        } else {
+            std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+        }
     }
 
     // Return value is the second argument, or None
@@ -167,29 +200,47 @@ fn asyncio_wait(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// `asyncio.wait_for(fut, timeout)`
 fn asyncio_wait_for(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("asyncio.wait_for", args, 1)?;
+
+    // Extract timeout: can be positional arg[1] or keyword in trailing Dict
     let timeout_secs = if args.len() > 1 {
         match &args[1].payload {
             PyObjectPayload::Int(n) => Some(n.to_f64()),
             PyObjectPayload::Float(f) => Some(*f),
             PyObjectPayload::None => None,
+            // kwargs dict: extract "timeout" key
+            PyObjectPayload::Dict(d) => {
+                let map = d.read();
+                if let Some(val) = map.get(&ferrython_core::types::HashableKey::Str(CompactString::from("timeout"))) {
+                    match &val.payload {
+                        PyObjectPayload::Int(n) => Some(n.to_f64()),
+                        PyObjectPayload::Float(f) => Some(*f),
+                        PyObjectPayload::None => None,
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     } else {
         None
     };
 
-    // If timeout is 0 or very small, and the coro is a sleep with longer delay,
-    // raise TimeoutError immediately
+    // If timeout is 0 or negative, raise TimeoutError immediately
     if let Some(t) = timeout_secs {
         if t <= 0.0 {
             return Err(PyException::new(
-                ferrython_core::error::ExceptionKind::RuntimeError,
-                "asyncio.TimeoutError",
+                ferrython_core::error::ExceptionKind::TimeoutError,
+                "",
             ));
         }
+        // Set deadline so asyncio.sleep respects it
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(t);
+        set_wait_for_deadline(Some(deadline));
     }
 
-    // In our sequential model, just return the coroutine — it runs to completion
+    // Return the coroutine — the VM will drive it; sleep will raise TimeoutError if needed
     Ok(args[0].clone())
 }
 

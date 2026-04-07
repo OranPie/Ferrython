@@ -786,6 +786,15 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             }
             PyObjectPayload::Property { fget, fset, fdel } => {
                 match name {
+                    "__doc__" => {
+                        // Return the docstring from fget, if any
+                        if let Some(fg) = fget {
+                            if let Some(doc) = fg.get_attr("__doc__") {
+                                return Some(doc);
+                            }
+                        }
+                        return Some(PyObject::none());
+                    }
                     "setter" | "getter" | "deleter" | "fget" | "fset" | "fdel" => {
                         match name {
                             "fget" => return fget.clone().or_else(|| Some(PyObject::none())),
