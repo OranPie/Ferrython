@@ -162,9 +162,44 @@ fn build_message_instance(
             PyObject::native_closure("get_content_type", move |_args| {
                 let guard = h.lock().unwrap();
                 match guard.get("Content-Type") {
-                    Some(v) => Ok(v.clone()),
+                    Some(v) => {
+                        let s = v.py_to_string();
+                        let ct = s.split(';').next().unwrap_or("text/plain").trim();
+                        Ok(PyObject::str_val(CompactString::from(ct)))
+                    },
                     None => Ok(PyObject::str_val(CompactString::from("text/plain"))),
                 }
+            }));
+    }
+
+    // get_content_maintype()
+    {
+        let h = headers.clone();
+        attrs.insert(CompactString::from("get_content_maintype"),
+            PyObject::native_closure("get_content_maintype", move |_args| {
+                let guard = h.lock().unwrap();
+                let ct = guard.get("Content-Type")
+                    .map(|v| v.py_to_string())
+                    .unwrap_or_else(|| "text/plain".to_string());
+                let main = ct.split('/').next().unwrap_or("text").split(';').next().unwrap_or("text").trim();
+                Ok(PyObject::str_val(CompactString::from(main)))
+            }));
+    }
+
+    // get_content_subtype()
+    {
+        let h = headers.clone();
+        attrs.insert(CompactString::from("get_content_subtype"),
+            PyObject::native_closure("get_content_subtype", move |_args| {
+                let guard = h.lock().unwrap();
+                let ct = guard.get("Content-Type")
+                    .map(|v| v.py_to_string())
+                    .unwrap_or_else(|| "text/plain".to_string());
+                let parts: Vec<&str> = ct.split('/').collect();
+                let sub = if parts.len() > 1 {
+                    parts[1].split(';').next().unwrap_or("plain").trim()
+                } else { "plain" };
+                Ok(PyObject::str_val(CompactString::from(sub)))
             }));
     }
 
