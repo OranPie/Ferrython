@@ -9,6 +9,7 @@ pub fn install_with_deps(
     version_req: Option<&str>,
     site_packages: &str,
     upgrade: bool,
+    no_deps: bool,
     quiet: bool,
     visited: &mut HashSet<String>,
 ) -> Result<(), String> {
@@ -77,10 +78,12 @@ pub fn install_with_deps(
         println!("  Successfully installed {}-{}", release.name, release.version);
     }
 
-    // Process dependencies
-    for dep_str in &release.requires_dist {
-        if let Some((dep_name, dep_spec)) = parse_dependency(dep_str) {
-            install_with_deps(&dep_name, dep_spec.as_deref(), site_packages, false, quiet, visited)?;
+    // Process dependencies (unless --no-deps)
+    if !no_deps {
+        for dep_str in &release.requires_dist {
+            if let Some((dep_name, dep_spec)) = parse_dependency(dep_str) {
+                install_with_deps(&dep_name, dep_spec.as_deref(), site_packages, false, false, quiet, visited)?;
+            }
         }
     }
 

@@ -126,9 +126,54 @@ impl PyProject {
             })
     }
 
+    /// Get the requires-python specifier (e.g., ">=3.8").
+    pub fn requires_python(&self) -> Option<&str> {
+        self.project.as_ref()?.requires_python.as_deref()
+    }
+
     /// Get project description.
     pub fn description(&self) -> Option<&str> {
         self.project.as_ref()?.description.as_deref()
+    }
+
+    /// Get project authors.
+    pub fn authors(&self) -> Vec<(Option<String>, Option<String>)> {
+        self.project.as_ref()
+            .and_then(|p| p.authors.as_ref())
+            .map(|authors| {
+                authors.iter()
+                    .map(|a| (a.name.clone(), a.email.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get project classifiers.
+    pub fn classifiers(&self) -> Vec<String> {
+        self.project.as_ref()
+            .and_then(|p| p.classifiers.as_ref())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get project keywords.
+    pub fn keywords(&self) -> Vec<String> {
+        self.project.as_ref()
+            .and_then(|p| p.keywords.as_ref())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get project URLs (homepage, documentation, etc.).
+    pub fn urls(&self) -> Vec<(String, String)> {
+        self.project.as_ref()
+            .and_then(|p| p.urls.as_ref())
+            .map(|table| {
+                table.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Get optional dependency group names.

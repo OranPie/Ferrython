@@ -32,6 +32,9 @@ pub enum ResolvedModule {
     },
 }
 
+/// Whether .pth files have already been processed for the initial search paths.
+static PTH_PROCESSED: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
+
 // ── Configurable search paths (equivalent to sys.path) ──
 
 static SEARCH_PATHS: LazyLock<RwLock<Vec<PathBuf>>> = LazyLock::new(|| {
@@ -89,6 +92,34 @@ static SEARCH_PATHS: LazyLock<RwLock<Vec<PathBuf>>> = LazyLock::new(|| {
         }
     }
 
+    // ── site-packages discovery ──
+    // Check for venv first (VIRTUAL_ENV env var), then system site-packages
+    if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
+        let venv_site = PathBuf::from(&venv)
+            .join("lib").join("ferrython").join("site-packages");
+        if venv_site.is_dir() && !paths.contains(&venv_site) {
+            paths.push(venv_site);
+        }
+    }
+
+    // System site-packages relative to the binary
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            // prefix/bin/ferrython → prefix/lib/ferrython/site-packages
+            if let Some(prefix) = bin_dir.parent() {
+                let site = prefix.join("lib").join("ferrython").join("site-packages");
+                if site.is_dir() && !paths.contains(&site) {
+                    paths.push(site);
+                }
+            }
+            // Also check alongside the binary (for cargo builds)
+            let nearby_site = bin_dir.join("lib").join("ferrython").join("site-packages");
+            if nearby_site.is_dir() && !paths.contains(&nearby_site) {
+                paths.push(nearby_site);
+            }
+        }
+    }
+
     // Current directory is always searched last
     paths.push(PathBuf::from("."));
 
@@ -130,6 +161,9 @@ pub fn append_search_path(path: PathBuf) {
 ///
 /// Supports dotted names (`a.b.c` → `a/b/c.py` or `a/b/c/__init__.py`).
 pub fn resolve_module(name: &str, importer_filename: &str) -> PyResult<ResolvedModule> {
+    // Process .pth files on first module resolution
+    process_pth_files_once();
+
     // 1. Check builtin modules
     if let Some(module) = ferrython_stdlib::load_module(name) {
         return Ok(ResolvedModule::Builtin(module));
@@ -273,4 +307,103 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
         name: CompactString::from(module_name),
         file_path: Some(CompactString::from(path_str)),
     })
+}
+
+// ── .pth file processing ──
+
+/// Process .pth files in all site-packages directories (called once on first import).
+fn process_pth_files_once() {
+    let mut processed = PTH_PROCESSED.lock();
+    if *processed {
+        return;
+    }
+    *processed = true;
+
+    let search_paths = SEARCH_PATHS.read().clone();
+    let mut new_paths = Vec::new();
+
+    for sp in &search_paths {
+        // Look for .pth files in directories that look like site-packages
+        if sp.ends_with("site-packages") || sp.to_string_lossy().contains("site-packages") {
+            if let Ok(entries) = std::fs::read_dir(sp) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.ends_with(".pth") {
+                        if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                            for line in content.lines() {
+                                let line = line.trim();
+                                // Skip empty lines, comments, and import lines
+                                if line.is_empty() || line.starts_with('#') || line.starts_with("import ") {
+                                    continue;
+                                }
+                                let path = if Path::new(line).is_absolute() {
+                                    PathBuf::from(line)
+                                } else {
+                                    sp.join(line)
+                                };
+                                if path.is_dir() && !search_paths.contains(&path) && !new_paths.contains(&path) {
+                                    new_paths.push(path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Add discovered paths to the search list
+    if !new_paths.is_empty() {
+        let mut paths = SEARCH_PATHS.write();
+        for p in new_paths {
+            if !paths.contains(&p) {
+                // Insert before the "." entry (which is always last)
+                let insert_pos = paths.len().saturating_sub(1);
+                paths.insert(insert_pos, p);
+            }
+        }
+    }
+}
+
+/// Manually trigger .pth file processing for a specific site-packages directory.
+pub fn process_pth_in_dir(site_dir: &Path) {
+    if !site_dir.is_dir() {
+        return;
+    }
+    let mut new_paths = Vec::new();
+    let search_paths = SEARCH_PATHS.read().clone();
+
+    if let Ok(entries) = std::fs::read_dir(site_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".pth") {
+                if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                    for line in content.lines() {
+                        let line = line.trim();
+                        if line.is_empty() || line.starts_with('#') || line.starts_with("import ") {
+                            continue;
+                        }
+                        let path = if Path::new(line).is_absolute() {
+                            PathBuf::from(line)
+                        } else {
+                            site_dir.join(line)
+                        };
+                        if path.is_dir() && !search_paths.contains(&path) && !new_paths.contains(&path) {
+                            new_paths.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !new_paths.is_empty() {
+        let mut paths = SEARCH_PATHS.write();
+        for p in new_paths {
+            if !paths.contains(&p) {
+                let insert_pos = paths.len().saturating_sub(1);
+                paths.insert(insert_pos, p);
+            }
+        }
+    }
 }

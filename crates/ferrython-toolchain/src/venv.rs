@@ -61,8 +61,13 @@ pub fn create_venv(venv_dir: &Path, opts: &VenvOptions) -> Result<(), String> {
     // Link or copy the ferrython binary
     install_binary(&layout, &host, opts.symlinks)?;
 
-    // Write activation scripts
+    // Write activation scripts (bash, fish, PowerShell)
     write_activation_scripts(&layout, venv_dir, opts)?;
+
+    // Install pip (ferryip) if requested
+    if opts.with_pip && !opts.without_pip {
+        install_pip_into_venv(&layout, &host)?;
+    }
 
     Ok(())
 }
@@ -235,6 +240,52 @@ end
     fs::write(layout.bin_dir.join("activate.fish"), activate_fish)
         .map_err(|e| format!("Write activate.fish: {}", e))?;
 
+    // PowerShell activation script
+    let activate_ps1 = format!(
+r#"# This file must be used with ". bin/Activate.ps1" from PowerShell.
+
+function global:deactivate ([switch]$NonDestructive) {{
+    if (Test-Path variable:_OLD_VIRTUAL_PATH) {{
+        $env:PATH = $variable:_OLD_VIRTUAL_PATH
+        Remove-Variable "_OLD_VIRTUAL_PATH" -Scope global
+    }}
+    if (Test-Path variable:_OLD_VIRTUAL_PROMPT) {{
+        $function:prompt = $variable:_OLD_VIRTUAL_PROMPT
+        Remove-Variable "_OLD_VIRTUAL_PROMPT" -Scope global
+    }}
+    if (Test-Path env:VIRTUAL_ENV) {{
+        Remove-Item env:VIRTUAL_ENV
+    }}
+    if (Test-Path env:VIRTUAL_ENV_PROMPT) {{
+        Remove-Item env:VIRTUAL_ENV_PROMPT
+    }}
+    if (-not $NonDestructive) {{
+        Remove-Item function:deactivate
+    }}
+}}
+
+deactivate -NonDestructive
+
+$env:VIRTUAL_ENV = "{venv_dir}"
+$env:VIRTUAL_ENV_PROMPT = "({venv_name}) "
+
+$variable:_OLD_VIRTUAL_PATH = $env:PATH
+$env:PATH = "{bin_path}" + [IO.Path]::PathSeparator + $env:PATH
+
+$variable:_OLD_VIRTUAL_PROMPT = $function:prompt
+function global:prompt {{
+    Write-Host -NoNewLine -ForegroundColor Green "({venv_name}) "
+    & $variable:_OLD_VIRTUAL_PROMPT
+}}
+"#,
+        venv_dir = venv_dir.display(),
+        bin_path = bin_path,
+        venv_name = venv_name,
+    );
+
+    fs::write(layout.bin_dir.join("Activate.ps1"), activate_ps1)
+        .map_err(|e| format!("Write Activate.ps1: {}", e))?;
+
     // Make activate executable
     #[cfg(unix)]
     {
@@ -244,6 +295,68 @@ end
             fs::Permissions::from_mode(0o755),
         );
     }
+
+    Ok(())
+}
+
+/// Install ferryip (pip equivalent) into the virtual environment.
+fn install_pip_into_venv(layout: &InstallLayout, host: &InstallLayout) -> Result<(), String> {
+    // Look for the ferryip binary in the host installation
+    let host_ferryip = host.bin_dir.join("ferryip");
+    let venv_ferryip = layout.bin_dir.join("ferryip");
+
+    if host_ferryip.exists() {
+        // Symlink or copy the ferryip binary
+        #[cfg(unix)]
+        {
+            let _ = std::os::unix::fs::symlink(&host_ferryip, &venv_ferryip);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = fs::copy(&host_ferryip, &venv_ferryip);
+        }
+    } else {
+        // Try to find ferryip next to the current executable
+        if let Ok(current_exe) = std::env::current_exe() {
+            if let Some(exe_dir) = current_exe.parent() {
+                let ferryip_nearby = exe_dir.join("ferryip");
+                if ferryip_nearby.exists() {
+                    #[cfg(unix)]
+                    {
+                        let _ = std::os::unix::fs::symlink(&ferryip_nearby, &venv_ferryip);
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = fs::copy(&ferryip_nearby, &venv_ferryip);
+                    }
+                }
+            }
+        }
+    }
+
+    // Also create a pip symlink pointing to ferryip for compatibility
+    if venv_ferryip.exists() {
+        let pip_link = layout.bin_dir.join("pip");
+        let pip3_link = layout.bin_dir.join("pip3");
+        #[cfg(unix)]
+        {
+            let _ = std::os::unix::fs::symlink(&venv_ferryip, &pip_link);
+            let _ = std::os::unix::fs::symlink(&venv_ferryip, &pip3_link);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = fs::copy(&venv_ferryip, &pip_link);
+            let _ = fs::copy(&venv_ferryip, &pip3_link);
+        }
+    }
+
+    // Write a pip.conf that sets the target to the venv's site-packages
+    let pip_conf = format!(
+        "[global]\ntarget = {}\n",
+        layout.site_packages.display()
+    );
+    let _ = fs::create_dir_all(layout.prefix.join("pip"));
+    let _ = fs::write(layout.prefix.join("pip").join("pip.conf"), pip_conf);
 
     Ok(())
 }

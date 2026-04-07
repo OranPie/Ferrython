@@ -34,6 +34,26 @@ enum Commands {
         /// Install the current project (reads pyproject.toml or setup.cfg)
         #[arg(short, long)]
         editable: Option<Option<String>>,
+
+        /// Don't install package dependencies
+        #[arg(long)]
+        no_deps: bool,
+
+        /// Include pre-release and development versions
+        #[arg(long)]
+        pre: bool,
+
+        /// Only install binary (wheel) packages
+        #[arg(long)]
+        only_binary: bool,
+
+        /// Install packages into <dir>
+        #[arg(short = 't', long = "install-target")]
+        install_target: Option<String>,
+
+        /// Don't use the wheel cache
+        #[arg(long)]
+        no_cache_dir: bool,
     },
 
     /// Uninstall packages
@@ -143,18 +163,19 @@ pub fn run() {
     let quiet = cli.quiet;
 
     let result = match cli.command {
-        Commands::Install { packages, requirement, upgrade, editable } => {
+        Commands::Install { packages, requirement, upgrade, editable, no_deps, pre, only_binary: _, install_target, no_cache_dir: _ } => {
+            let effective_site = install_target.as_deref().unwrap_or(&site_packages);
             if let Some(editable_path) = editable {
                 let proj_path = editable_path.unwrap_or_else(|| ".".to_string());
-                install_project(&proj_path, &site_packages, quiet)
+                install_editable(&proj_path, effective_site, quiet)
             } else if let Some(req_file) = requirement {
                 let reqs = parse_requirements_file(&req_file);
-                install_packages(&reqs, &site_packages, upgrade, quiet)
+                install_packages(&reqs, effective_site, upgrade, no_deps, pre, quiet)
             } else if packages.is_empty() {
                 eprintln!("Error: no packages specified");
                 std::process::exit(1);
             } else {
-                install_packages(&packages, &site_packages, upgrade, quiet)
+                install_packages(&packages, effective_site, upgrade, no_deps, pre, quiet)
             }
         }
         Commands::Uninstall { packages, yes } => {
@@ -231,20 +252,136 @@ fn parse_requirements_file(path: &str) -> Vec<String> {
         .collect()
 }
 
-fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, quiet: bool) -> Result<(), String> {
+fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_deps: bool, _pre: bool, quiet: bool) -> Result<(), String> {
     let mut visited = std::collections::HashSet::new();
     for spec in specs {
-        let (name, version_req) = pypi::parse_requirement(spec);
-        let spec_str = version_req.as_ref().map(|v| format!("=={}", v));
+        let (name, version_spec) = parse_version_specifier(spec);
         resolver::install_with_deps(
             &name,
-            spec_str.as_deref(),
+            version_spec.as_deref(),
             site_packages,
             upgrade,
+            no_deps,
             quiet,
             &mut visited,
         )?;
     }
+    Ok(())
+}
+
+/// Parse a full version specifier preserving the operator (>=, <=, ~=, !=, ==, etc.)
+fn parse_version_specifier(spec: &str) -> (String, Option<String>) {
+    let spec = spec.trim();
+    // Handle extras: package[extra]>=version
+    let clean = if let Some(bracket) = spec.find('[') {
+        if let Some(end) = spec.find(']') {
+            format!("{}{}", &spec[..bracket], &spec[end+1..])
+        } else {
+            spec.to_string()
+        }
+    } else {
+        spec.to_string()
+    };
+
+    for op in &["~=", ">=", "<=", "!=", "==", ">", "<"] {
+        if let Some(pos) = clean.find(op) {
+            let name = clean[..pos].trim().to_lowercase();
+            let version_part = clean[pos..].trim().to_string();
+            return (name, Some(version_part));
+        }
+    }
+    (clean.trim().to_lowercase(), None)
+}
+
+/// Install a package in editable mode: writes a .pth file pointing at the source directory.
+fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), String> {
+    let proj_dir = std::path::Path::new(path).canonicalize()
+        .map_err(|e| format!("Cannot resolve path '{}': {}", path, e))?;
+    let pyproject_path = proj_dir.join("pyproject.toml");
+
+    let (name, version) = if pyproject_path.exists() {
+        let pyproj = ferrython_toolchain::pyproject::parse_pyproject(&pyproject_path)?;
+        let name = pyproj.name().unwrap_or_else(|| {
+            proj_dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        });
+        let version = pyproj.version().unwrap_or("0.0.0").to_string();
+        (name, version)
+    } else {
+        let name = proj_dir.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        (name, "0.0.0".to_string())
+    };
+
+    let site = std::path::Path::new(site_packages);
+    std::fs::create_dir_all(site)
+        .map_err(|e| format!("Cannot create site-packages: {}", e))?;
+
+    // Determine the source root: prefer src/<package> layout, then top-level
+    let package_name = name.replace('-', "_");
+    let source_root = if proj_dir.join("src").exists() {
+        proj_dir.join("src")
+    } else {
+        proj_dir.clone()
+    };
+
+    // Write .pth file — each line is a path added to sys.path
+    let pth_file = site.join(format!("__{}.pth", package_name));
+    std::fs::write(&pth_file, format!("{}\n", source_root.display()))
+        .map_err(|e| format!("Write .pth file: {}", e))?;
+
+    // Write a minimal .dist-info for pip/ferryip compatibility
+    let dist_info_name = format!("{}-{}.dist-info", package_name, version);
+    let dist_info_path = site.join(&dist_info_name);
+    std::fs::create_dir_all(&dist_info_path)
+        .map_err(|e| format!("mkdir dist-info: {}", e))?;
+
+    let metadata = format!(
+        "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
+        name, version
+    );
+    std::fs::write(dist_info_path.join("METADATA"), &metadata)
+        .map_err(|e| format!("Write METADATA: {}", e))?;
+    std::fs::write(dist_info_path.join("INSTALLER"), "ferryip\n")
+        .map_err(|e| format!("Write INSTALLER: {}", e))?;
+
+    // Mark as direct_url.json for PEP 610 compliance
+    let direct_url = format!(
+        "{{\"url\": \"file://{}\", \"dir_info\": {{\"editable\": true}}}}",
+        proj_dir.display()
+    );
+    std::fs::write(dist_info_path.join("direct_url.json"), &direct_url)
+        .map_err(|e| format!("Write direct_url.json: {}", e))?;
+
+    // RECORD
+    let record = format!(
+        "{pth},\n{di}/METADATA,\n{di}/INSTALLER,\n{di}/direct_url.json,\n{di}/RECORD,,\n",
+        pth = pth_file.file_name().unwrap().to_string_lossy(),
+        di = dist_info_name,
+    );
+    std::fs::write(dist_info_path.join("RECORD"), &record)
+        .map_err(|e| format!("Write RECORD: {}", e))?;
+
+    if !quiet {
+        println!("Successfully installed {} (editable, {})", name, source_root.display());
+    }
+
+    // Also install project dependencies
+    if pyproject_path.exists() {
+        let pyproj = ferrython_toolchain::pyproject::parse_pyproject(&pyproject_path)?;
+        let deps = pyproj.dependencies();
+        if !deps.is_empty() {
+            if !quiet {
+                println!("Installing project dependencies...");
+            }
+            install_packages(&deps, site_packages, false, false, false, quiet)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -279,10 +416,26 @@ fn uninstall_packages(names: &[String], site_packages: &str, yes: bool, quiet: b
     Ok(())
 }
 
-fn list_packages(site_packages: &str, _outdated: bool) -> Result<(), String> {
+fn list_packages(site_packages: &str, outdated: bool) -> Result<(), String> {
     let packages = registry::list_installed(site_packages);
     if packages.is_empty() {
         println!("No packages installed.");
+        return Ok(());
+    }
+
+    if outdated {
+        println!("{:<30} {:<15} {}", "Package", "Version", "Latest");
+        println!("{:<30} {:<15} {}", "-------", "-------", "------");
+        for pkg in &packages {
+            match pypi::fetch_package_info(&pkg.name, None) {
+                Ok(latest) => {
+                    if latest.version != pkg.version {
+                        println!("{:<30} {:<15} {}", pkg.name, pkg.version, latest.version);
+                    }
+                }
+                Err(_) => {} // skip packages that can't be checked
+            }
+        }
     } else {
         println!("{:<30} {}", "Package", "Version");
         println!("{:<30} {}", "-------", "-------");
@@ -402,9 +555,8 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
         }
         let mut visited = std::collections::HashSet::new();
         for req in &build_reqs {
-            let (name, spec) = pypi::parse_requirement(req);
-            let spec_str = spec.map(|v| format!("=={}", v));
-            resolver::install_with_deps(&name, spec_str.as_deref(), site_packages, false, quiet, &mut visited)?;
+            let (name, spec) = parse_version_specifier(req);
+            resolver::install_with_deps(&name, spec.as_deref(), site_packages, false, false, quiet, &mut visited)?;
         }
 
         // Install project dependencies
@@ -414,9 +566,8 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
                 println!("Installing project dependencies...");
             }
             for dep in &deps {
-                let (name, spec) = pypi::parse_requirement(dep);
-                let spec_str = spec.map(|v| format!("=={}", v));
-                resolver::install_with_deps(&name, spec_str.as_deref(), site_packages, false, quiet, &mut visited)?;
+                let (name, spec) = parse_version_specifier(dep);
+                resolver::install_with_deps(&name, spec.as_deref(), site_packages, false, false, quiet, &mut visited)?;
             }
         }
 
@@ -436,7 +587,7 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
     let req_path = proj_dir.join("requirements.txt");
     if req_path.exists() {
         let reqs = parse_requirements_file(&req_path.to_string_lossy());
-        return install_packages(&reqs, site_packages, false, quiet);
+        return install_packages(&reqs, site_packages, false, false, false, quiet);
     }
 
     Err(format!(
@@ -490,7 +641,7 @@ fn install_from_setup_cfg(path: &std::path::Path, site_packages: &str, quiet: bo
         return Ok(());
     }
 
-    install_packages(&deps, site_packages, false, quiet)
+    install_packages(&deps, site_packages, false, false, false, quiet)
 }
 
 // ── Cache management ─────────────────────────────────────────────────────────
