@@ -1055,6 +1055,25 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
             }));
     }
 
+    // getmember(name) → TarInfo
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("getmember"),
+            PyObject::native_closure("getmember", move |args| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("getmember() requires name argument"));
+                }
+                let name = args[0].py_to_string();
+                let g = st.lock().unwrap();
+                for entry in &g.entries {
+                    if entry.name == name {
+                        return Ok(build_tarinfo(&entry.name, entry.size, entry.is_dir));
+                    }
+                }
+                Err(PyException::key_error(&format!("KeyError: '{name}'")))
+            }));
+    }
+
     // extractall(path='.')
     {
         let st = inner.clone();

@@ -411,6 +411,12 @@ fn build_socket_object(
                         }
                     }
                     guard.tcp_listener = Some(listener);
+                    // Update bound_addr with actual address (resolves port 0)
+                    if let Some(ref l) = guard.tcp_listener {
+                        if let Ok(addr) = l.local_addr() {
+                            guard.bound_addr = Some(format!("{}:{}", addr.ip(), addr.port()));
+                        }
+                    }
                     Ok(PyObject::none())
                 }
                 Err(e) => Err(PyException::os_error(format!("listen: {}", e))),
