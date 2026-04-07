@@ -1,0 +1,99 @@
+"""Internal support module for sre — constants for the regex engine.
+
+This module provides symbolic constants used by the regex engine.
+"""
+
+# error exception
+class error(Exception):
+    """Exception raised for invalid regex patterns."""
+    msg = ""
+    pattern = None
+    pos = None
+    lineno = 0
+    colno = 0
+
+    def __init__(self, msg, pattern=None, pos=None):
+        self.msg = msg
+        self.pattern = pattern
+        self.pos = pos
+        if pattern is not None and pos is not None:
+            msg = '%s at position %d' % (msg, pos)
+        super().__init__(msg)
+
+# Flags
+SRE_FLAG_TEMPLATE = 1
+SRE_FLAG_IGNORECASE = 2
+SRE_FLAG_LOCALE = 4
+SRE_FLAG_MULTILINE = 8
+SRE_FLAG_DOTALL = 16
+SRE_FLAG_UNICODE = 32
+SRE_FLAG_VERBOSE = 64
+SRE_FLAG_DEBUG = 128
+SRE_FLAG_ASCII = 256
+
+# Max
+MAXREPEAT = 4294967295
+MAXGROUPS = 2147483647
+
+# Opcodes (simplified)
+FAILURE = "FAILURE"
+SUCCESS = "SUCCESS"
+ANY = "ANY"
+ANY_ALL = "ANY_ALL"
+ASSERT = "ASSERT"
+ASSERT_NOT = "ASSERT_NOT"
+AT = "AT"
+AT_BEGINNING = "AT_BEGINNING"
+AT_BEGINNING_STRING = "AT_BEGINNING_STRING"
+AT_END = "AT_END"
+AT_END_STRING = "AT_END_STRING"
+AT_WORD_BOUNDARY = "AT_WORD_BOUNDARY"
+AT_NON_BOUNDARY = "AT_NON_BOUNDARY"
+BRANCH = "BRANCH"
+CALL = "CALL"
+CATEGORY = "CATEGORY"
+CATEGORY_DIGIT = "CATEGORY_DIGIT"
+CATEGORY_NOT_DIGIT = "CATEGORY_NOT_DIGIT"
+CATEGORY_SPACE = "CATEGORY_SPACE"
+CATEGORY_NOT_SPACE = "CATEGORY_NOT_SPACE"
+CATEGORY_WORD = "CATEGORY_WORD"
+CATEGORY_NOT_WORD = "CATEGORY_NOT_WORD"
+CHARSET = "CHARSET"
+GROUPREF = "GROUPREF"
+GROUPREF_EXISTS = "GROUPREF_EXISTS"
+IN = "IN"
+INFO = "INFO"
+JUMP = "JUMP"
+LITERAL = "LITERAL"
+MARK = "MARK"
+MAX_REPEAT = "MAX_REPEAT"
+MIN_REPEAT = "MIN_REPEAT"
+NOT_LITERAL = "NOT_LITERAL"
+NEGATE = "NEGATE"
+RANGE = "RANGE"
+REPEAT = "REPEAT"
+REPEAT_ONE = "REPEAT_ONE"
+SUBPATTERN = "SUBPATTERN"
+MIN_REPEAT_ONE = "MIN_REPEAT_ONE"
+
+OPCODES = [
+    FAILURE, SUCCESS, ANY, ANY_ALL, ASSERT, ASSERT_NOT, AT,
+    BRANCH, CALL, CATEGORY, CHARSET, GROUPREF, GROUPREF_EXISTS,
+    IN, INFO, JUMP, LITERAL, MARK, MAX_REPEAT, MIN_REPEAT,
+    NOT_LITERAL, NEGATE, RANGE, REPEAT, REPEAT_ONE, SUBPATTERN,
+    MIN_REPEAT_ONE,
+]
+
+ATCODES = [
+    AT_BEGINNING, AT_BEGINNING_STRING, AT_END, AT_END_STRING,
+    AT_WORD_BOUNDARY, AT_NON_BOUNDARY,
+]
+
+CHCODES = [
+    CATEGORY_DIGIT, CATEGORY_NOT_DIGIT,
+    CATEGORY_SPACE, CATEGORY_NOT_SPACE,
+    CATEGORY_WORD, CATEGORY_NOT_WORD,
+]
+
+# Compile and engine info
+MAGIC = 20171005

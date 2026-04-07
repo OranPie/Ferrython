@@ -1418,14 +1418,113 @@ pub fn create_decimal_module() -> PyObjectRef {
             Ok(inst)
         })),
         ("setcontext", make_builtin(|args| {
-            // Accept the context object but don't change global state yet
-            // This is a no-op that accepts 1 argument without error
             if args.is_empty() {
                 return Err(PyException::type_error("setcontext() requires 1 argument"));
             }
+            // Extract prec from context and update global
+            if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                if let Some(prec) = inst.attrs.read().get("prec") {
+                    if let Some(n) = prec.as_int() {
+                        DECIMAL_PREC.store(n as u32, Ordering::Relaxed);
+                    }
+                }
+            }
             Ok(PyObject::none())
         })),
-        ("InvalidOperation", PyObject::str_val(CompactString::from("InvalidOperation"))),
+        ("localcontext", make_builtin(|args| {
+            // localcontext(ctx=None) → context manager that saves/restores decimal context
+            let saved_prec = DECIMAL_PREC.load(Ordering::Relaxed);
+            // If a context is provided, apply its prec
+            if let Some(ctx) = args.first() {
+                if let PyObjectPayload::Instance(ref inst) = ctx.payload {
+                    if let Some(prec) = inst.attrs.read().get("prec") {
+                        if let Some(n) = prec.as_int() {
+                            DECIMAL_PREC.store(n as u32, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+            // Build a context object as the __enter__ return value
+            let mut ctx_ns = IndexMap::new();
+            ctx_ns.insert(CompactString::from("prec"), PyObject::int(DECIMAL_PREC.load(Ordering::Relaxed) as i64));
+            ctx_ns.insert(CompactString::from("rounding"), PyObject::str_val(CompactString::from("ROUND_HALF_EVEN")));
+            ctx_ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
+            ctx_ns.insert(CompactString::from("Emax"), PyObject::int(999999));
+
+            // __setattr__ on the context
+            let cls_ns = {
+                let mut ns = IndexMap::new();
+                ns.insert(CompactString::from("__setattr__"), make_builtin(|args| {
+                    if args.len() < 3 { return Ok(PyObject::none()); }
+                    let attr_name = args[1].py_to_string();
+                    if attr_name == "prec" {
+                        let new_prec = args[2].to_int()? as u32;
+                        DECIMAL_PREC.store(new_prec, Ordering::Relaxed);
+                        if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                            inst.attrs.write().insert(CompactString::from("prec"), PyObject::int(new_prec as i64));
+                        }
+                    } else if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                        inst.attrs.write().insert(CompactString::from(attr_name), args[2].clone());
+                    }
+                    Ok(PyObject::none())
+                }));
+                ns
+            };
+            let cls = PyObject::class(CompactString::from("Context"), vec![], cls_ns);
+            let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+                class: cls,
+                attrs: Arc::new(RwLock::new(ctx_ns)),
+                is_special: true, dict_storage: None,
+            }));
+            // Add __enter__ and __exit__ for context manager
+            if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                let mut attrs = inst_data.attrs.write();
+                let ctx_clone = inst.clone();
+                attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("localcontext.__enter__", move |_| {
+                    Ok(ctx_clone.clone())
+                }));
+                attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("localcontext.__exit__", move |_| {
+                    DECIMAL_PREC.store(saved_prec, Ordering::Relaxed);
+                    Ok(PyObject::bool_val(false))
+                }));
+            }
+            Ok(inst)
+        })),
+        ("InvalidOperation", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
+        ("DivisionByZero", PyObject::exception_type(ferrython_core::error::ExceptionKind::ZeroDivisionError)),
+        ("Overflow", PyObject::exception_type(ferrython_core::error::ExceptionKind::OverflowError)),
+        ("Underflow", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
+        ("Inexact", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
+        ("Rounded", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
+        ("Subnormal", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
+        ("FloatOperation", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
+        ("DecimalException", PyObject::exception_type(ferrython_core::error::ExceptionKind::ArithmeticError)),
+        ("BasicContext", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("prec"), PyObject::int(9));
+            ns.insert(CompactString::from("rounding"), PyObject::str_val(CompactString::from("ROUND_HALF_UP")));
+            ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
+            ns.insert(CompactString::from("Emax"), PyObject::int(999999));
+            let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
+            PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+                class: cls,
+                attrs: Arc::new(RwLock::new(ns)),
+                is_special: true, dict_storage: None,
+            }))
+        }),
+        ("ExtendedContext", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("prec"), PyObject::int(9));
+            ns.insert(CompactString::from("rounding"), PyObject::str_val(CompactString::from("ROUND_HALF_EVEN")));
+            ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
+            ns.insert(CompactString::from("Emax"), PyObject::int(999999));
+            let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
+            PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+                class: cls,
+                attrs: Arc::new(RwLock::new(ns)),
+                is_special: true, dict_storage: None,
+            }))
+        }),
     ])
 }
 
