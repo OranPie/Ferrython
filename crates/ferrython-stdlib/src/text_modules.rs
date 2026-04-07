@@ -2339,7 +2339,53 @@ pub fn create_pprint_module() -> PyObjectRef {
             let text = pformat_value(&args[0], indent, width, depth, 0);
             Ok(PyObject::str_val(CompactString::from(text)))
         })),
-        ("PrettyPrinter", make_builtin(|_| Ok(PyObject::none()))),
+        ("PrettyPrinter", PyObject::native_closure("PrettyPrinter", |args: &[PyObjectRef]| {
+            // Parse keyword args: indent=1, width=80, depth=None, stream=None
+            let mut indent = 1usize;
+            let mut width = 80usize;
+            let mut depth: Option<usize> = None;
+            if let Some(last) = args.last() {
+                if let PyObjectPayload::Dict(kw) = &last.payload {
+                    let r = kw.read();
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("indent"))) {
+                        indent = v.as_int().unwrap_or(1) as usize;
+                    }
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("width"))) {
+                        width = v.as_int().unwrap_or(80) as usize;
+                    }
+                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("depth"))) {
+                        depth = v.as_int().map(|d| d as usize);
+                    }
+                }
+            }
+            let cls = PyObject::class(CompactString::from("PrettyPrinter"), vec![], indexmap::IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut attrs = d.attrs.write();
+                attrs.insert(CompactString::from("_indent"), PyObject::int(indent as i64));
+                attrs.insert(CompactString::from("_width"), PyObject::int(width as i64));
+                let pp_indent = indent;
+                let pp_width = width;
+                let pp_depth = depth;
+                attrs.insert(CompactString::from("pprint"), PyObject::native_closure("pprint", move |args: &[PyObjectRef]| {
+                    if args.is_empty() { return Ok(PyObject::none()); }
+                    let text = pformat_value(&args[0], pp_indent, pp_width, pp_depth, 0);
+                    println!("{}", text);
+                    Ok(PyObject::none())
+                }));
+                let pf_indent = indent;
+                let pf_width = width;
+                let pf_depth = depth;
+                attrs.insert(CompactString::from("pformat"), PyObject::native_closure("pformat", move |args: &[PyObjectRef]| {
+                    if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+                    let text = pformat_value(&args[0], pf_indent, pf_width, pf_depth, 0);
+                    Ok(PyObject::str_val(CompactString::from(text)))
+                }));
+                attrs.insert(CompactString::from("isreadable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+                attrs.insert(CompactString::from("isrecursive"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+            }
+            Ok(inst)
+        })),
         ("isreadable", make_builtin(|_| Ok(PyObject::bool_val(true)))),
         ("isrecursive", make_builtin(|_| Ok(PyObject::bool_val(false)))),
         ("saferepr", make_builtin(|args| {

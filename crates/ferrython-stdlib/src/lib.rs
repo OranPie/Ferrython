@@ -149,7 +149,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "traceback" => Some(introspection_modules::create_traceback_module()),
         "inspect" => Some(introspection_modules::create_inspect_module()),
         "dis" => Some(introspection_modules::create_dis_module()),
-        "ast" => Some(introspection_modules::create_ast_module()),
+        "_ast" => Some(introspection_modules::create_ast_module()),
         "linecache" => Some(introspection_modules::create_linecache_module()),
         "token" => Some(introspection_modules::create_token_module()),
         // Concurrency
@@ -233,6 +233,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // HTTP server, cookies & SSL
         "http.server" => Some(network_modules::create_http_server_module()),
         "http.cookiejar" => Some(network_modules::create_http_cookiejar_module()),
+        "http.cookies" => Some(network_modules::create_http_cookies_module()),
         "ssl" => Some(network_modules::create_ssl_module()),
         // XML DOM & SAX
         "xml.dom" => Some(xml_modules::create_xml_dom_module()),

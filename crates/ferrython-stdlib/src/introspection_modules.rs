@@ -1051,9 +1051,105 @@ pub fn create_dis_module() -> PyObjectRef {
         }
     }
 
+    // code_info(x) — return formatted information about a code object
+    fn dis_code_info(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.is_empty() {
+            return Err(PyException::type_error("code_info() requires argument"));
+        }
+        let code: std::sync::Arc<ferrython_bytecode::CodeObject> = match &args[0].payload {
+            PyObjectPayload::Function(pf) => std::sync::Arc::clone(&pf.code),
+            PyObjectPayload::Code(c) => std::sync::Arc::clone(c),
+            _ => return Err(PyException::type_error("don't know how to get code info")),
+        };
+        let mut info = String::new();
+        info.push_str(&format!("Name:              {}\n", code.name));
+        info.push_str(&format!("Filename:          {}\n", code.filename));
+        info.push_str(&format!("Argument count:    {}\n", code.arg_count));
+        info.push_str(&format!("Kw-only arguments: {}\n", code.kwonlyarg_count));
+        info.push_str(&format!("Number of locals:  {}\n", code.varnames.len()));
+        info.push_str(&format!("Stack size:        {}\n", code.instructions.len()));
+        info.push_str(&format!("Flags:             0x{:04x}\n", code.flags));
+        if !code.constants.is_empty() {
+            info.push_str("Constants:\n");
+            for (i, c) in code.constants.iter().enumerate() {
+                let repr = match c {
+                    ConstantValue::Str(s) => format!("'{}'", s),
+                    ConstantValue::Integer(n) => format!("{}", n),
+                    ConstantValue::Float(f) => format!("{}", f),
+                    ConstantValue::None => "None".to_string(),
+                    ConstantValue::Bool(b) => format!("{}", b),
+                    ConstantValue::Code(c) => format!("<code object {}>", c.name),
+                    _ => "...".to_string(),
+                };
+                info.push_str(&format!("   {}: {}\n", i, repr));
+            }
+        }
+        if !code.names.is_empty() {
+            info.push_str("Names:\n");
+            for (i, n) in code.names.iter().enumerate() {
+                info.push_str(&format!("   {}: {}\n", i, n));
+            }
+        }
+        if !code.varnames.is_empty() {
+            info.push_str("Variable names:\n");
+            for (i, v) in code.varnames.iter().enumerate() {
+                info.push_str(&format!("   {}: {}\n", i, v));
+            }
+        }
+        Ok(PyObject::str_val(CompactString::from(info)))
+    }
+
+    // Instruction namedtuple-like class
+    let instruction_cls = {
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("__init__"), make_builtin(|_| Ok(PyObject::none())));
+        PyObject::class(CompactString::from("Instruction"), vec![], ns)
+    };
+
+    // Bytecode(x) — iterable of Instruction objects
+    let bytecode_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("Bytecode() requires argument"));
+        }
+        let code: std::sync::Arc<ferrython_bytecode::CodeObject> = match &args[0].payload {
+            PyObjectPayload::Function(pf) => std::sync::Arc::clone(&pf.code),
+            PyObjectPayload::Code(c) => std::sync::Arc::clone(c),
+            _ => return Err(PyException::type_error("don't know how to disassemble")),
+        };
+        let mut instructions = Vec::new();
+        for (i, instr) in code.instructions.iter().enumerate() {
+            let opname = format!("{:?}", instr.op);
+            let arg_desc = format_dis_arg(&code, instr.op, instr.arg);
+            let inst_cls = PyObject::class(CompactString::from("Instruction"), vec![], IndexMap::new());
+            let inst = PyObject::instance(inst_cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut attrs = d.attrs.write();
+                attrs.insert(CompactString::from("opcode"), PyObject::int(instr.op as i64));
+                attrs.insert(CompactString::from("opname"), PyObject::str_val(CompactString::from(&opname)));
+                attrs.insert(CompactString::from("arg"), PyObject::int(instr.arg as i64));
+                attrs.insert(CompactString::from("argval"), PyObject::str_val(CompactString::from(&arg_desc)));
+                attrs.insert(CompactString::from("offset"), PyObject::int((i * 2) as i64));
+                attrs.insert(CompactString::from("is_jump_target"), PyObject::bool_val(false));
+            }
+            instructions.push(inst);
+        }
+        Ok(PyObject::list(instructions))
+    });
+
+    // show_code(x) — print code_info to stdout
+    let show_code_fn = make_builtin(|args: &[PyObjectRef]| {
+        let info = dis_code_info(args)?;
+        println!("{}", info.py_to_string());
+        Ok(PyObject::none())
+    });
+
     make_module("dis", vec![
         ("dis", make_builtin(dis_dis)),
         ("disassemble", make_builtin(dis_dis)),
+        ("code_info", make_builtin(dis_code_info)),
+        ("show_code", show_code_fn),
+        ("Bytecode", bytecode_fn),
+        ("Instruction", instruction_cls),
     ])
 }
 
@@ -1245,6 +1341,32 @@ pub fn create_ast_module() -> PyObjectRef {
         cls
     };
 
+    // copy_location(new_node, old_node)
+    let copy_location_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.len() < 2 {
+            return Err(PyException::type_error("copy_location() requires new_node and old_node"));
+        }
+        let new_node = &args[0];
+        let old_node = &args[1];
+        for attr in &["lineno", "col_offset", "end_lineno", "end_col_offset"] {
+            if let Some(val) = old_node.get_attr(attr) {
+                if let PyObjectPayload::Instance(ref d) = new_node.payload {
+                    d.attrs.write().insert(CompactString::from(*attr), val);
+                }
+            }
+        }
+        Ok(new_node.clone())
+    });
+
+    // unparse(node) — convert AST back to source code (simplified)
+    let unparse_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("unparse() requires a node argument"));
+        }
+        let src = ast_unparse(&args[0]);
+        Ok(PyObject::str_val(CompactString::from(src)))
+    });
+
     make_module("ast", vec![
         ("parse", parse_fn),
         ("dump", dump_fn),
@@ -1254,6 +1376,8 @@ pub fn create_ast_module() -> PyObjectRef {
         ("fix_missing_locations", fix_missing_locations_fn),
         ("increment_lineno", increment_lineno_fn),
         ("iter_child_nodes", iter_child_nodes_fn),
+        ("copy_location", copy_location_fn),
+        ("unparse", unparse_fn),
         // Node types
         ("Module", make_node_type("Module")),
         ("Expression", make_node_type("Expression")),
@@ -2206,6 +2330,78 @@ fn get_child_nodes(obj: &PyObjectRef) -> Vec<PyObjectRef> {
         }
     }
     children
+}
+
+/// Simplified AST unparse — convert AST node back to Python source
+fn ast_unparse(node: &PyObjectRef) -> String {
+    // Use the class name (type_name()) which is "Module", "Assign", etc.
+    let type_name = node.type_name().to_string();
+    match type_name.as_str() {
+        "Module" => {
+            if let Some(body) = node.get_attr("body") {
+                if let PyObjectPayload::List(items) = &body.payload {
+                    return items.read().iter().map(|s| ast_unparse(s)).collect::<Vec<_>>().join("\n");
+                }
+            }
+            String::new()
+        }
+        "Assign" => {
+            let targets = node.get_attr("targets").map(|t| {
+                if let PyObjectPayload::List(items) = &t.payload {
+                    items.read().iter().map(|t| ast_unparse(t)).collect::<Vec<_>>().join(", ")
+                } else { ast_unparse(&t) }
+            }).unwrap_or_default();
+            let value = node.get_attr("value").map(|v| ast_unparse(&v)).unwrap_or_default();
+            format!("{} = {}", targets, value)
+        }
+        "Name" => node.get_attr("id").map(|i| i.py_to_string()).unwrap_or_default(),
+        "Constant" => {
+            if let Some(v) = node.get_attr("value") {
+                match &v.payload {
+                    PyObjectPayload::Str(s) => format!("'{}'", s),
+                    PyObjectPayload::None => "None".to_string(),
+                    PyObjectPayload::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+                    _ => v.py_to_string(),
+                }
+            } else { "None".to_string() }
+        }
+        "BinOp" => {
+            let left = node.get_attr("left").map(|l| ast_unparse(&l)).unwrap_or_default();
+            let right = node.get_attr("right").map(|r| ast_unparse(&r)).unwrap_or_default();
+            let op = node.get_attr("op").map(|o| {
+                let op_type = o.type_name().to_string();
+                match op_type.as_str() {
+                    "Add" => "+", "Sub" => "-", "Mult" => "*", "Div" => "/",
+                    "Mod" => "%", "Pow" => "**", "FloorDiv" => "//",
+                    "LShift" => "<<", "RShift" => ">>",
+                    "BitOr" => "|", "BitXor" => "^", "BitAnd" => "&",
+                    "MatMult" => "@",
+                    _ => "?",
+                }.to_string()
+            }).unwrap_or_else(|| "+".to_string());
+            format!("{} {} {}", left, op, right)
+        }
+        "Return" => {
+            let val = node.get_attr("value").map(|v| ast_unparse(&v)).unwrap_or_default();
+            if val.is_empty() { "return".to_string() } else { format!("return {}", val) }
+        }
+        "Expr" => node.get_attr("value").map(|v| ast_unparse(&v)).unwrap_or_default(),
+        "Call" => {
+            let func = node.get_attr("func").map(|f| ast_unparse(&f)).unwrap_or_default();
+            let args_str = node.get_attr("args").map(|a| {
+                if let PyObjectPayload::List(items) = &a.payload {
+                    items.read().iter().map(|a| ast_unparse(a)).collect::<Vec<_>>().join(", ")
+                } else { String::new() }
+            }).unwrap_or_default();
+            format!("{}({})", func, args_str)
+        }
+        "Attribute" => {
+            let val = node.get_attr("value").map(|v| ast_unparse(&v)).unwrap_or_default();
+            let attr = node.get_attr("attr").map(|a| a.py_to_string()).unwrap_or_default();
+            format!("{}.{}", val, attr)
+        }
+        _ => format!("<{}>", type_name),
+    }
 }
 
 // ── linecache module ──

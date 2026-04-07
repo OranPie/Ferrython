@@ -151,10 +151,17 @@ pub fn create_logging_module() -> PyObjectRef {
             attrs.insert(CompactString::from("formatter"), PyObject::none());
 
             let lr = level_ref.clone();
+            let inst_for_level = inst.clone();
             attrs.insert(CompactString::from("setLevel"), PyObject::native_closure(
                 "setLevel", move |args: &[PyObjectRef]| {
                     if let Some(v) = args.first() {
-                        if let Some(n) = v.as_int() { *lr.write() = n; }
+                        if let Some(n) = v.as_int() {
+                            *lr.write() = n;
+                            // Also update the instance attribute so handler.level is visible
+                            if let PyObjectPayload::Instance(ref d) = inst_for_level.payload {
+                                d.attrs.write().insert(CompactString::from("level"), PyObject::int(n));
+                            }
+                        }
                     }
                     Ok(PyObject::none())
                 }
@@ -687,6 +694,12 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if let PyObjectPayload::List(items) = &handlers.payload {
                 let items_r = items.read();
                 for handler in items_r.iter() {
+                    // Check handler level before emitting (CPython behavior)
+                    if let Some(handler_level) = handler.get_attr("level") {
+                        if let Some(hl) = handler_level.as_int() {
+                            if hl > 0 && level < hl { continue; }
+                        }
+                    }
                     if let Some(emit_fn) = handler.get_attr("emit") {
                         match &emit_fn.payload {
                             PyObjectPayload::NativeFunction { func, .. } => {
