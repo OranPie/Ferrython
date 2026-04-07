@@ -863,6 +863,102 @@ pub fn create_decimal_module() -> PyObjectRef {
                 }
             }));
             dec_ns.insert(CompactString::from("to_eng_string"), make_builtin(decimal_to_eng_string));
+            // as_tuple() → DecimalTuple(sign, digits, exponent)
+            dec_ns.insert(CompactString::from("as_tuple"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("as_tuple requires self")); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let sign = if s.starts_with('-') { 1i64 } else { 0i64 };
+                let abs_s = s.trim_start_matches('-').trim_start_matches('+');
+                if abs_s == "NaN" {
+                    return Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::tuple(vec![]), PyObject::str_val(CompactString::from("n"))]));
+                }
+                if abs_s == "Infinity" {
+                    return Ok(PyObject::tuple(vec![PyObject::int(sign), PyObject::tuple(vec![]), PyObject::str_val(CompactString::from("F"))]));
+                }
+                let (digits_str, exponent) = if abs_s.contains('.') {
+                    let parts: Vec<&str> = abs_s.splitn(2, '.').collect();
+                    let full = format!("{}{}", parts[0], parts.get(1).unwrap_or(&""));
+                    let exp = -(parts.get(1).map(|s| s.len()).unwrap_or(0) as i64);
+                    (full, exp)
+                } else if abs_s.contains('E') || abs_s.contains('e') {
+                    let parts: Vec<&str> = abs_s.splitn(2, |c: char| c == 'E' || c == 'e').collect();
+                    let exp: i64 = parts.get(1).unwrap_or(&"0").parse().unwrap_or(0);
+                    (parts[0].replace('.', ""), exp)
+                } else {
+                    (abs_s.to_string(), 0i64)
+                };
+                let digit_objs: Vec<PyObjectRef> = digits_str.chars()
+                    .filter(|c| c.is_ascii_digit())
+                    .map(|c| PyObject::int((c as u8 - b'0') as i64))
+                    .collect();
+                Ok(PyObject::tuple(vec![PyObject::int(sign), PyObject::tuple(digit_objs), PyObject::int(exponent)]))
+            }));
+            // copy_sign(other) → Decimal with sign of other
+            dec_ns.insert(CompactString::from("copy_sign"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("copy_sign requires self and other")); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let other_s = get_decimal_str(&args[1]).unwrap_or_else(|| args[1].py_to_string());
+                let abs_val = s.trim_start_matches('-').trim_start_matches('+');
+                if other_s.starts_with('-') {
+                    Ok(make_decimal(&format!("-{}", abs_val)))
+                } else {
+                    Ok(make_decimal(abs_val))
+                }
+            }));
+            // __pow__
+            dec_ns.insert(CompactString::from("__pow__"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("__pow__ requires two arguments")); }
+                let a = get_decimal_str(&args[0]).unwrap_or_default().parse::<f64>().unwrap_or(0.0);
+                let b = get_decimal_str(&args[1]).unwrap_or_else(|| args[1].py_to_string()).parse::<f64>().unwrap_or(0.0);
+                Ok(make_decimal(&format!("{}", a.powf(b))))
+            }));
+            // __mod__
+            dec_ns.insert(CompactString::from("__mod__"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("__mod__ requires two arguments")); }
+                let a = get_decimal_str(&args[0]).unwrap_or_default().parse::<f64>().unwrap_or(0.0);
+                let b = get_decimal_str(&args[1]).unwrap_or_else(|| args[1].py_to_string()).parse::<f64>().unwrap_or(1.0);
+                if b == 0.0 { return Err(PyException::zero_division_error("decimal modulo by zero")); }
+                let r = a % b;
+                Ok(make_decimal(&format!("{}", r)))
+            }));
+            // __floordiv__
+            dec_ns.insert(CompactString::from("__floordiv__"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("__floordiv__ requires two arguments")); }
+                let a = get_decimal_str(&args[0]).unwrap_or_default().parse::<f64>().unwrap_or(0.0);
+                let b = get_decimal_str(&args[1]).unwrap_or_else(|| args[1].py_to_string()).parse::<f64>().unwrap_or(1.0);
+                if b == 0.0 { return Err(PyException::zero_division_error("decimal floor division by zero")); }
+                Ok(make_decimal(&format!("{}", (a / b).floor())))
+            }));
+            // __bool__
+            dec_ns.insert(CompactString::from("__bool__"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let v: f64 = s.parse().unwrap_or(0.0);
+                Ok(PyObject::bool_val(v != 0.0))
+            }));
+            // __round__
+            dec_ns.insert(CompactString::from("__round__"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(make_decimal("0")); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let v: f64 = s.parse().unwrap_or(0.0);
+                let ndigits = args.get(1).and_then(|a| a.as_int()).unwrap_or(0);
+                let factor = 10f64.powi(ndigits as i32);
+                let rounded = (v * factor).round() / factor;
+                Ok(make_decimal(&format!("{}", rounded)))
+            }));
+            // max / min
+            dec_ns.insert(CompactString::from("max"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("max requires self and other")); }
+                let a = get_decimal_str(&args[0]).unwrap_or_default().parse::<f64>().unwrap_or(0.0);
+                let b = get_decimal_str(&args[1]).unwrap_or_else(|| args[1].py_to_string()).parse::<f64>().unwrap_or(0.0);
+                Ok(if a >= b { args[0].clone() } else { args[1].clone() })
+            }));
+            dec_ns.insert(CompactString::from("min"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("min requires self and other")); }
+                let a = get_decimal_str(&args[0]).unwrap_or_default().parse::<f64>().unwrap_or(0.0);
+                let b = get_decimal_str(&args[1]).unwrap_or_else(|| args[1].py_to_string()).parse::<f64>().unwrap_or(0.0);
+                Ok(if a <= b { args[0].clone() } else { args[1].clone() })
+            }));
             // __new__ enables Decimal("1.23") to work when called as class constructor
             dec_ns.insert(CompactString::from("__new__"), PyObject::native_function(
                 "Decimal.__new__", |args: &[PyObjectRef]| {

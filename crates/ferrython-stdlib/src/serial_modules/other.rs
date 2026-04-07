@@ -612,15 +612,87 @@ const PICKLE_FROZENSET: u8 = b'f';
 const PICKLE_STOP: u8 = b'.';
 
 pub fn create_pickle_module() -> PyObjectRef {
+    let pickler_cls = {
+        let _cls = PyObject::class(CompactString::from("Pickler"), vec![], IndexMap::new());
+        PyObject::native_closure("Pickler", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("Pickler requires a file argument"));
+            }
+            let file = args[0].clone();
+            let protocol = args.get(1).and_then(|a| a.as_int()).unwrap_or(4);
+            let buf: Arc<parking_lot::RwLock<Vec<u8>>> = Arc::new(parking_lot::RwLock::new(Vec::new()));
+
+            let cls_inner = PyObject::class(CompactString::from("Pickler"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls_inner);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("_file"), file.clone());
+                w.insert(CompactString::from("protocol"), PyObject::int(protocol));
+                let b = buf.clone();
+                let f = file.clone();
+                w.insert(CompactString::from("dump"), PyObject::native_closure("dump", move |dargs| {
+                    if dargs.is_empty() {
+                        return Err(PyException::type_error("dump requires an object"));
+                    }
+                    let obj = &dargs[dargs.len() - 1]; // last arg (skip self if present)
+                    let mut data = b.write();
+                    data.clear();
+                    pickle_serialize(obj, &mut data)?;
+                    // Write to file via .write() method
+                    if let Some(write_fn) = f.get_attr("write") {
+                        let bytes_obj = PyObject::bytes(data.clone());
+                        ferrython_core::error::request_vm_call(write_fn, vec![bytes_obj]);
+                    }
+                    Ok(PyObject::none())
+                }));
+                w.insert(CompactString::from("clear_memo"), make_builtin(|_| Ok(PyObject::none())));
+            }
+            Ok(inst)
+        })
+    };
+
+    let unpickler_cls = {
+        PyObject::native_closure("Unpickler", move |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::type_error("Unpickler requires a file argument"));
+            }
+            let file = args[0].clone();
+            let cls_inner = PyObject::class(CompactString::from("Unpickler"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls_inner);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("_file"), file.clone());
+                let f = file.clone();
+                w.insert(CompactString::from("load"), PyObject::native_closure("load", move |_largs| {
+                    // Try to read all data from file
+                    if let Some(read_fn) = f.get_attr("read") {
+                        ferrython_core::error::request_vm_call(read_fn, vec![]);
+                    }
+                    // Can't synchronously get result from vm_call, return None
+                    // Real unpickling would need the bytes — this is a structural limitation
+                    Ok(PyObject::none())
+                }));
+            }
+            Ok(inst)
+        })
+    };
+
+    // Exception classes (proper classes, not strings)
+    let pickling_error = PyObject::class(CompactString::from("PicklingError"), vec![], IndexMap::new());
+    let unpickling_error = PyObject::class(CompactString::from("UnpicklingError"), vec![], IndexMap::new());
+
     make_module("pickle", vec![
         ("dumps", make_builtin(pickle_dumps)),
         ("loads", make_builtin(pickle_loads)),
         ("dump", make_builtin(pickle_dump)),
         ("load", make_builtin(pickle_load)),
+        ("Pickler", pickler_cls),
+        ("Unpickler", unpickler_cls),
         ("HIGHEST_PROTOCOL", PyObject::int(5)),
         ("DEFAULT_PROTOCOL", PyObject::int(4)),
-        ("PicklingError", PyObject::str_val(CompactString::from("PicklingError"))),
-        ("UnpicklingError", PyObject::str_val(CompactString::from("UnpicklingError"))),
+        ("PicklingError", pickling_error),
+        ("UnpicklingError", unpickling_error),
+        ("PickleError", PyObject::class(CompactString::from("PickleError"), vec![], IndexMap::new())),
     ])
 }
 

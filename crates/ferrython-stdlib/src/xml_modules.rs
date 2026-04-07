@@ -420,17 +420,7 @@ fn build_element_object(
         Ok(default)
     }));
 
-    let ch = children.clone();
-    attrs.insert(CompactString::from("iter"), PyObject::native_closure("iter", move |args| {
-        let tag_filter = if !args.is_empty() {
-            let s = args[0].py_to_string();
-            if s == "None" { None } else { Some(s) }
-        } else { None };
-        let guard = ch.read().unwrap();
-        let mut results = Vec::new();
-        collect_pyobject_elements(&guard, &tag_filter, &mut results);
-        Ok(PyObject::list(results))
-    }));
+    // iter() is added post-creation to include self reference
 
     // ── Mutation ───────────────────────────────────────────────────────
 
@@ -486,7 +476,33 @@ fn build_element_object(
     }));
 
     let cls = PyObject::class(CompactString::from("Element"), vec![], IndexMap::new());
-    PyObject::instance_with_attrs(cls, attrs)
+    let element = PyObject::instance_with_attrs(cls, attrs);
+
+    // Post-creation: add iter() that includes self in the iteration
+    if let PyObjectPayload::Instance(ref d) = element.payload {
+        let elem_ref = element.clone();
+        let ch = children.clone();
+        d.attrs.write().insert(CompactString::from("iter"), PyObject::native_closure("iter", move |args| {
+            let tag_filter = if !args.is_empty() {
+                let s = args[0].py_to_string();
+                if s == "None" { None } else { Some(s) }
+            } else { None };
+            let mut results = Vec::new();
+            // Include self first (CPython behavior)
+            let self_tag = elem_ref.get_attr("tag").map(|t| t.py_to_string()).unwrap_or_default();
+            let self_matches = match &tag_filter {
+                Some(t) => self_tag == *t,
+                None => true,
+            };
+            if self_matches { results.push(elem_ref.clone()); }
+            // Then recurse into children
+            let guard = ch.read().unwrap();
+            collect_pyobject_elements(&guard, &tag_filter, &mut results);
+            Ok(PyObject::list(results))
+        }));
+    }
+
+    element
 }
 
 /// Recursively collect matching PyObject elements for iter().

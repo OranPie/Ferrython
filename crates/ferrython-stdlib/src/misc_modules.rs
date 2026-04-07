@@ -1993,3 +1993,127 @@ fn base64_decode(input: &str) -> Vec<u8> {
     result
 }
 
+
+// ── curses module (stub) ──
+
+pub fn create_curses_module() -> PyObjectRef {
+    // Stub curses module — provides constants and no-op functions
+    // so that programs that conditionally import curses don't crash.
+
+    let initscr_fn = make_builtin(|_: &[PyObjectRef]| {
+        // Return a "window" object with basic methods
+        let cls = PyObject::class(CompactString::from("Window"), vec![], IndexMap::new());
+        let win = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = win.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("addstr"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("addnstr"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("refresh"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("clear"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("erase"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("getch"), make_builtin(|_| Ok(PyObject::int(-1))));
+            w.insert(CompactString::from("getkey"), make_builtin(|_| Ok(PyObject::str_val(CompactString::from("")))));
+            w.insert(CompactString::from("getmaxyx"), make_builtin(|_| Ok(PyObject::tuple(vec![PyObject::int(24), PyObject::int(80)]))));
+            w.insert(CompactString::from("getyx"), make_builtin(|_| Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::int(0)]))));
+            w.insert(CompactString::from("move"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("clrtoeol"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("clrtobot"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("keypad"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("nodelay"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("timeout"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("scrollok"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("idlok"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("border"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("box"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("subwin"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("derwin"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("mvaddstr"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("attron"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("attroff"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("attrset"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("bkgd"), make_builtin(|_| Ok(PyObject::none())));
+            w.insert(CompactString::from("noutrefresh"), make_builtin(|_| Ok(PyObject::none())));
+        }
+        Ok(win)
+    });
+
+    let wrapper_fn = make_builtin(|args: &[PyObjectRef]| {
+        // curses.wrapper(func) — calls func(stdscr)
+        if args.is_empty() {
+            return Err(PyException::type_error("wrapper() requires a callable"));
+        }
+        // We can't call Python functions from native easily, queue it
+        ferrython_core::error::request_vm_call(
+            args[0].clone(),
+            vec![PyObject::none()], // stdscr placeholder
+        );
+        Ok(PyObject::none())
+    });
+
+    make_module("curses", vec![
+        ("initscr", initscr_fn.clone()),
+        ("endwin", make_builtin(|_| Ok(PyObject::none()))),
+        ("wrapper", wrapper_fn),
+        ("start_color", make_builtin(|_| Ok(PyObject::none()))),
+        ("init_pair", make_builtin(|_| Ok(PyObject::none()))),
+        ("color_pair", make_builtin(|args| {
+            Ok(PyObject::int(args.first().and_then(|a| a.as_int()).unwrap_or(0)))
+        })),
+        ("cbreak", make_builtin(|_| Ok(PyObject::none()))),
+        ("nocbreak", make_builtin(|_| Ok(PyObject::none()))),
+        ("echo", make_builtin(|_| Ok(PyObject::none()))),
+        ("noecho", make_builtin(|_| Ok(PyObject::none()))),
+        ("raw", make_builtin(|_| Ok(PyObject::none()))),
+        ("noraw", make_builtin(|_| Ok(PyObject::none()))),
+        ("curs_set", make_builtin(|_| Ok(PyObject::none()))),
+        ("newwin", initscr_fn),
+        ("newpad", make_builtin(|_| Ok(PyObject::none()))),
+        ("napms", make_builtin(|_| Ok(PyObject::none()))),
+        ("beep", make_builtin(|_| Ok(PyObject::none()))),
+        ("flash", make_builtin(|_| Ok(PyObject::none()))),
+        ("doupdate", make_builtin(|_| Ok(PyObject::none()))),
+        ("has_colors", make_builtin(|_| Ok(PyObject::bool_val(false)))),
+        ("can_change_color", make_builtin(|_| Ok(PyObject::bool_val(false)))),
+        ("use_default_colors", make_builtin(|_| Ok(PyObject::none()))),
+        ("use_env", make_builtin(|_| Ok(PyObject::none()))),
+        ("isendwin", make_builtin(|_| Ok(PyObject::bool_val(false)))),
+        ("erasechar", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("\x08"))))),
+        ("killchar", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("\x15"))))),
+        // Color constants
+        ("COLOR_BLACK", PyObject::int(0)),
+        ("COLOR_RED", PyObject::int(1)),
+        ("COLOR_GREEN", PyObject::int(2)),
+        ("COLOR_YELLOW", PyObject::int(3)),
+        ("COLOR_BLUE", PyObject::int(4)),
+        ("COLOR_MAGENTA", PyObject::int(5)),
+        ("COLOR_CYAN", PyObject::int(6)),
+        ("COLOR_WHITE", PyObject::int(7)),
+        // Attribute constants
+        ("A_NORMAL", PyObject::int(0)),
+        ("A_STANDOUT", PyObject::int(1 << 16)),
+        ("A_UNDERLINE", PyObject::int(1 << 17)),
+        ("A_REVERSE", PyObject::int(1 << 18)),
+        ("A_BLINK", PyObject::int(1 << 19)),
+        ("A_DIM", PyObject::int(1 << 20)),
+        ("A_BOLD", PyObject::int(1 << 21)),
+        ("A_PROTECT", PyObject::int(1 << 24)),
+        ("A_INVIS", PyObject::int(1 << 23)),
+        ("A_ALTCHARSET", PyObject::int(1 << 22)),
+        // Key constants
+        ("KEY_UP", PyObject::int(259)),
+        ("KEY_DOWN", PyObject::int(258)),
+        ("KEY_LEFT", PyObject::int(260)),
+        ("KEY_RIGHT", PyObject::int(261)),
+        ("KEY_HOME", PyObject::int(262)),
+        ("KEY_BACKSPACE", PyObject::int(263)),
+        ("KEY_F0", PyObject::int(264)),
+        ("KEY_DC", PyObject::int(330)),
+        ("KEY_IC", PyObject::int(331)),
+        ("KEY_NPAGE", PyObject::int(338)),
+        ("KEY_PPAGE", PyObject::int(339)),
+        ("KEY_ENTER", PyObject::int(343)),
+        ("KEY_RESIZE", PyObject::int(410)),
+        // Error class
+        ("error", PyObject::class(CompactString::from("error"), vec![], IndexMap::new())),
+    ])
+}

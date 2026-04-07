@@ -290,6 +290,9 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // Unix user/group info
         "grp" => Some(sys_modules::create_grp_module()),
         "pwd" => Some(sys_modules::create_pwd_module()),
+        // Terminal / curses
+        "curses" => Some(misc_modules::create_curses_module()),
+        "_curses" => Some(misc_modules::create_curses_module()),
         // Import resources
         "importlib.resources" => Some(import_modules::create_importlib_resources_module()),
         // Misc sub-module aliases

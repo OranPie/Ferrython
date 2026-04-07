@@ -248,6 +248,14 @@ pub fn create_re_module() -> PyObjectRef {
         ("S", PyObject::int(16)),
         ("VERBOSE", PyObject::int(64)),
         ("X", PyObject::int(64)),
+        ("UNICODE", PyObject::int(32)),
+        ("U", PyObject::int(32)),
+        ("ASCII", PyObject::int(256)),
+        ("A", PyObject::int(256)),
+        ("LOCALE", PyObject::int(4)),
+        ("L", PyObject::int(4)),
+        ("TEMPLATE", PyObject::int(1)),
+        ("T", PyObject::int(1)),
         ("match", PyObject::native_function("re.match", re_match)),
         ("search", PyObject::native_function("re.search", re_search)),
         ("findall", PyObject::native_function("re.findall", re_findall)),
@@ -258,6 +266,8 @@ pub fn create_re_module() -> PyObjectRef {
         ("compile", PyObject::native_function("re.compile", re_compile)),
         ("escape", PyObject::native_function("re.escape", re_escape)),
         ("fullmatch", PyObject::native_function("re.fullmatch", re_fullmatch)),
+        ("purge", make_builtin(|_| Ok(PyObject::none()))),
+        ("error", PyObject::class(CompactString::from("error"), vec![], IndexMap::new())),
     ])
 }
 

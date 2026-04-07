@@ -94,6 +94,28 @@ pub fn create_socket_module() -> PyObjectRef {
             // Socket options
             ("SOL_SOCKET", PyObject::int(1)),
             ("SO_REUSEADDR", PyObject::int(2)),
+            ("SO_KEEPALIVE", PyObject::int(9)),
+            ("SO_LINGER", PyObject::int(13)),
+            ("SO_RCVBUF", PyObject::int(8)),
+            ("SO_SNDBUF", PyObject::int(7)),
+            ("SO_REUSEPORT", PyObject::int(15)),
+            ("SO_BROADCAST", PyObject::int(6)),
+            ("SO_OOBINLINE", PyObject::int(10)),
+            ("SO_RCVTIMEO", PyObject::int(20)),
+            ("SO_SNDTIMEO", PyObject::int(21)),
+            ("SO_ERROR", PyObject::int(4)),
+            ("SO_TYPE", PyObject::int(3)),
+            // TCP options
+            ("IPPROTO_IP", PyObject::int(0)),
+            ("SOL_TCP", PyObject::int(6)),
+            ("TCP_NODELAY", PyObject::int(1)),
+            ("TCP_KEEPIDLE", PyObject::int(4)),
+            ("TCP_KEEPINTVL", PyObject::int(5)),
+            ("TCP_KEEPCNT", PyObject::int(6)),
+            // Socket types extras
+            ("SOCK_RAW", PyObject::int(3)),
+            ("SOCK_NONBLOCK", PyObject::int(2048)),
+            ("SOCK_CLOEXEC", PyObject::int(524288)),
             // Protocols
             ("IPPROTO_TCP", PyObject::int(6)),
             ("IPPROTO_UDP", PyObject::int(17)),
@@ -111,6 +133,61 @@ pub fn create_socket_module() -> PyObjectRef {
             ("getaddrinfo", make_builtin(socket_getaddrinfo)),
             ("getfqdn", make_builtin(socket_getfqdn)),
             ("create_connection", make_builtin(socket_create_connection)),
+            ("socketpair", make_builtin(|_args: &[PyObjectRef]| {
+                // Stub: socketpair is Unix-specific and rarely needed in pure Python
+                Err(PyException::os_error("socketpair not available in Ferrython"))
+            })),
+            ("inet_aton", make_builtin(|args: &[PyObjectRef]| {
+                let addr = args.first().map(|a| a.py_to_string()).unwrap_or_default();
+                let parts: Vec<&str> = addr.split('.').collect();
+                if parts.len() != 4 { return Err(PyException::os_error("illegal IP address string")); }
+                let mut bytes = Vec::with_capacity(4);
+                for p in parts {
+                    let b: u8 = p.parse().map_err(|_| PyException::os_error("illegal IP address string"))?;
+                    bytes.push(b);
+                }
+                Ok(PyObject::bytes(bytes))
+            })),
+            ("inet_ntoa", make_builtin(|args: &[PyObjectRef]| {
+                let data = args.first().and_then(|a| match &a.payload { PyObjectPayload::Bytes(b) => Some(b.clone()), _ => None })
+                    .unwrap_or_default();
+                if data.len() != 4 { return Err(PyException::os_error("packed IP wrong length")); }
+                Ok(PyObject::str_val(CompactString::from(format!("{}.{}.{}.{}", data[0], data[1], data[2], data[3]))))
+            })),
+            ("htons", make_builtin(|args: &[PyObjectRef]| {
+                let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u16;
+                Ok(PyObject::int(v.to_be() as i64))
+            })),
+            ("htonl", make_builtin(|args: &[PyObjectRef]| {
+                let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u32;
+                Ok(PyObject::int(v.to_be() as i64))
+            })),
+            ("ntohs", make_builtin(|args: &[PyObjectRef]| {
+                let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u16;
+                Ok(PyObject::int(u16::from_be(v) as i64))
+            })),
+            ("ntohl", make_builtin(|args: &[PyObjectRef]| {
+                let v = args.first().and_then(|a| a.as_int()).unwrap_or(0) as u32;
+                Ok(PyObject::int(u32::from_be(v) as i64))
+            })),
+            ("getdefaulttimeout", make_builtin(|_| Ok(PyObject::none()))),
+            ("setdefaulttimeout", make_builtin(|_| Ok(PyObject::none()))),
+            ("has_ipv6", PyObject::bool_val(true)),
+            ("SOMAXCONN", PyObject::int(128)),
+            ("AI_PASSIVE", PyObject::int(1)),
+            ("AI_CANONNAME", PyObject::int(2)),
+            ("AI_NUMERICHOST", PyObject::int(4)),
+            ("NI_MAXHOST", PyObject::int(1025)),
+            ("NI_MAXSERV", PyObject::int(32)),
+            ("NI_NUMERICHOST", PyObject::int(1)),
+            ("NI_NUMERICSERV", PyObject::int(2)),
+            ("INADDR_ANY", PyObject::int(0)),
+            ("INADDR_BROADCAST", PyObject::int(0xFFFFFFFFu32 as i64)),
+            ("INADDR_LOOPBACK", PyObject::int(0x7F000001)),
+            ("MSG_PEEK", PyObject::int(2)),
+            ("MSG_OOB", PyObject::int(1)),
+            ("MSG_WAITALL", PyObject::int(256)),
+            ("MSG_DONTWAIT", PyObject::int(64)),
         ],
     )
 }

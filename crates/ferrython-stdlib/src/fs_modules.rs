@@ -1051,9 +1051,119 @@ pub fn create_io_module() -> PyObjectRef {
         ("SEEK_END", PyObject::int(2)),
         ("DEFAULT_BUFFER_SIZE", PyObject::int(8192)),
         ("open", make_builtin(|args| {
-            // io.open is an alias for builtins.open
+            // io.open — replicates builtins.open() behavior
             if args.is_empty() { return Err(PyException::type_error("open() requires at least 1 argument")); }
-            Err(PyException::not_implemented_error("io.open() — use builtins.open()"))
+            let path = args[0].py_to_string();
+            let mode = if args.len() > 1 { args[1].py_to_string() } else { "r".to_string() };
+            let is_binary = mode.contains('b');
+            let is_write = mode.contains('w') || mode.contains('a') || mode.contains('x');
+
+            let content = if is_write {
+                if mode.contains('a') {
+                    std::fs::read_to_string(&path).unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            } else {
+                std::fs::read_to_string(&path).map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?
+            };
+
+            let data: Arc<RwLock<(String, usize, bool)>> = Arc::new(RwLock::new((content, 0, false)));
+            let cls = PyObject::class(CompactString::from("_io_file"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut a = d.attrs.write();
+                a.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(path.as_str())));
+                a.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(mode.as_str())));
+                a.insert(CompactString::from("closed"), PyObject::bool_val(false));
+                let d1 = data.clone();
+                a.insert(CompactString::from("read"), PyObject::native_closure("read", move |rargs| {
+                    let g = d1.read();
+                    let remaining = &g.0[g.1..];
+                    let n = rargs.first().and_then(|a| a.as_int());
+                    let text = match n {
+                        Some(n) if n >= 0 => {
+                            let end = (g.1 + n as usize).min(g.0.len());
+                            g.0[g.1..end].to_string()
+                        }
+                        _ => remaining.to_string(),
+                    };
+                    drop(g);
+                    let len = text.len();
+                    d1.write().1 += len;
+                    if is_binary { Ok(PyObject::bytes(text.into_bytes())) } else { Ok(PyObject::str_val(CompactString::from(text))) }
+                }));
+                let d2 = data.clone();
+                a.insert(CompactString::from("readline"), PyObject::native_closure("readline", move |_| {
+                    let g = d2.read();
+                    let remaining = &g.0[g.1..];
+                    if remaining.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+                    let line = if let Some(idx) = remaining.find('\n') {
+                        &remaining[..=idx]
+                    } else {
+                        remaining
+                    };
+                    let r = line.to_string();
+                    drop(g);
+                    d2.write().1 += r.len();
+                    Ok(PyObject::str_val(CompactString::from(r)))
+                }));
+                let d3 = data.clone();
+                let p2 = path.clone();
+                let m2 = mode.clone();
+                a.insert(CompactString::from("write"), PyObject::native_closure("write", move |wargs| {
+                    if wargs.is_empty() { return Err(PyException::type_error("write requires data")); }
+                    let text = wargs[wargs.len()-1].py_to_string();
+                    let len = text.len();
+                    d3.write().0.push_str(&text);
+                    // Write to disk
+                    let g = d3.read();
+                    if m2.contains('a') {
+                        use std::io::Write;
+                        let mut f = std::fs::OpenOptions::new().append(true).create(true).open(&p2)
+                            .map_err(|e| PyException::os_error(format!("{}", e)))?;
+                        f.write_all(text.as_bytes()).map_err(|e| PyException::os_error(format!("{}", e)))?;
+                    } else {
+                        std::fs::write(&p2, &g.0).map_err(|e| PyException::os_error(format!("{}", e)))?;
+                    }
+                    drop(g);
+                    Ok(PyObject::int(len as i64))
+                }));
+                let d4 = data.clone();
+                a.insert(CompactString::from("close"), PyObject::native_closure("close", move |_| {
+                    d4.write().2 = true;
+                    Ok(PyObject::none())
+                }));
+                a.insert(CompactString::from("__enter__"), PyObject::native_closure("__enter__", {
+                    let inst2 = inst.clone();
+                    move |_| Ok(inst2.clone())
+                }));
+                let d5 = data.clone();
+                a.insert(CompactString::from("__exit__"), PyObject::native_closure("__exit__", move |_| {
+                    d5.write().2 = true;
+                    Ok(PyObject::none())
+                }));
+                let d6 = data.clone();
+                a.insert(CompactString::from("seek"), PyObject::native_closure("seek", move |sargs| {
+                    let pos = sargs.first().and_then(|a| a.as_int()).unwrap_or(0) as usize;
+                    d6.write().1 = pos;
+                    Ok(PyObject::int(pos as i64))
+                }));
+                let d7 = data.clone();
+                a.insert(CompactString::from("tell"), PyObject::native_closure("tell", move |_| {
+                    Ok(PyObject::int(d7.read().1 as i64))
+                }));
+                a.insert(CompactString::from("flush"), make_builtin(|_| Ok(PyObject::none())));
+                a.insert(CompactString::from("readable"), PyObject::native_closure("readable", {
+                    let m = mode.clone();
+                    move |_| Ok(PyObject::bool_val(m.contains('r')))
+                }));
+                a.insert(CompactString::from("writable"), PyObject::native_closure("writable", {
+                    let m = mode.clone();
+                    move |_| Ok(PyObject::bool_val(is_write || m.contains('+')))
+                }));
+            }
+            Ok(inst)
         })),
         ("FileIO", make_builtin(|args| {
             // FileIO(name, mode='r') -- thin wrapper around OS file descriptor
