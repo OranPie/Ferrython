@@ -89,16 +89,70 @@ fn build_gzip_file_object(inner: Arc<Mutex<GzipFileInner>>) -> PyObjectRef {
     let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
     attrs.insert(CompactString::from("__gzipfile__"), PyObject::bool_val(true));
 
-    // read()
+    // name attribute
+    {
+        let g = inner.lock().unwrap();
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(g.filepath.as_str())));
+        attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(g.mode.as_str())));
+        attrs.insert(CompactString::from("closed"), PyObject::bool_val(g.closed));
+    }
+
+    // read(size=-1)
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("read"),
-            PyObject::native_closure("read", move |_args| {
+            PyObject::native_closure("read", move |args| {
                 let guard = st.lock().unwrap();
                 if guard.closed {
                     return Err(PyException::runtime_error("I/O operation on closed file"));
                 }
-                Ok(PyObject::bytes(guard.buffer.clone()))
+                let size = if !args.is_empty() { args[0].as_int().unwrap_or(-1) } else { -1 };
+                if size < 0 || size as usize >= guard.buffer.len() {
+                    Ok(PyObject::bytes(guard.buffer.clone()))
+                } else {
+                    Ok(PyObject::bytes(guard.buffer[..size as usize].to_vec()))
+                }
+            }));
+    }
+
+    // readline()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("readline"),
+            PyObject::native_closure("readline", move |_args| {
+                let guard = st.lock().unwrap();
+                if guard.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
+                let pos = guard.buffer.iter().position(|&b| b == b'\n');
+                match pos {
+                    Some(i) => Ok(PyObject::bytes(guard.buffer[..=i].to_vec())),
+                    None => Ok(PyObject::bytes(guard.buffer.clone())),
+                }
+            }));
+    }
+
+    // readlines()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("readlines"),
+            PyObject::native_closure("readlines", move |_args| {
+                let guard = st.lock().unwrap();
+                if guard.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
+                let mut lines = Vec::new();
+                let mut start = 0;
+                for (i, &b) in guard.buffer.iter().enumerate() {
+                    if b == b'\n' {
+                        lines.push(PyObject::bytes(guard.buffer[start..=i].to_vec()));
+                        start = i + 1;
+                    }
+                }
+                if start < guard.buffer.len() {
+                    lines.push(PyObject::bytes(guard.buffer[start..].to_vec()));
+                }
+                Ok(PyObject::list(lines))
             }));
     }
 
@@ -118,6 +172,63 @@ fn build_gzip_file_object(inner: Arc<Mutex<GzipFileInner>>) -> PyObjectRef {
                 let len = data.len();
                 guard.buffer.extend(data);
                 Ok(PyObject::int(len as i64))
+            }));
+    }
+
+    // flush()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("flush"),
+            PyObject::native_closure("flush", move |_args| {
+                let guard = st.lock().unwrap();
+                if guard.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
+                Ok(PyObject::none())
+            }));
+    }
+
+    // seek(offset, whence=0)
+    {
+        attrs.insert(CompactString::from("seek"),
+            PyObject::native_closure("seek", move |_args| {
+                Err(PyException::runtime_error("seek() not supported on gzip files"))
+            }));
+    }
+
+    // tell()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("tell"),
+            PyObject::native_closure("tell", move |_args| {
+                let guard = st.lock().unwrap();
+                if guard.closed {
+                    return Err(PyException::runtime_error("I/O operation on closed file"));
+                }
+                Ok(PyObject::int(guard.buffer.len() as i64))
+            }));
+    }
+
+    // seekable()
+    attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+
+    // readable()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("readable"),
+            PyObject::native_closure("readable", move |_args| {
+                let guard = st.lock().unwrap();
+                Ok(PyObject::bool_val(guard.mode.contains('r')))
+            }));
+    }
+
+    // writable()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("writable"),
+            PyObject::native_closure("writable", move |_args| {
+                let guard = st.lock().unwrap();
+                Ok(PyObject::bool_val(guard.mode.contains('w') || guard.mode.contains('a')))
             }));
     }
 
@@ -579,15 +690,67 @@ fn build_bz2_file(inner: Arc<Mutex<Bz2FileInner>>) -> PyObjectRef {
     let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
     attrs.insert(CompactString::from("__bz2file__"), PyObject::bool_val(true));
 
+    // name / mode / closed attributes
+    {
+        let g = inner.lock().unwrap();
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(g.filepath.as_str())));
+        attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(g.mode.as_str())));
+        attrs.insert(CompactString::from("closed"), PyObject::bool_val(g.closed));
+    }
+
+    // read(size=-1)
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("read"),
-            PyObject::native_closure("read", move |_args| {
+            PyObject::native_closure("read", move |args| {
                 let g = st.lock().unwrap();
                 if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
-                Ok(PyObject::bytes(g.buffer.clone()))
+                let size = if !args.is_empty() { args[0].as_int().unwrap_or(-1) } else { -1 };
+                if size < 0 || size as usize >= g.buffer.len() {
+                    Ok(PyObject::bytes(g.buffer.clone()))
+                } else {
+                    Ok(PyObject::bytes(g.buffer[..size as usize].to_vec()))
+                }
             }));
     }
+
+    // readline()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("readline"),
+            PyObject::native_closure("readline", move |_args| {
+                let g = st.lock().unwrap();
+                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                match g.buffer.iter().position(|&b| b == b'\n') {
+                    Some(i) => Ok(PyObject::bytes(g.buffer[..=i].to_vec())),
+                    None => Ok(PyObject::bytes(g.buffer.clone())),
+                }
+            }));
+    }
+
+    // readlines()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("readlines"),
+            PyObject::native_closure("readlines", move |_args| {
+                let g = st.lock().unwrap();
+                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                let mut lines = Vec::new();
+                let mut start = 0;
+                for (i, &b) in g.buffer.iter().enumerate() {
+                    if b == b'\n' {
+                        lines.push(PyObject::bytes(g.buffer[start..=i].to_vec()));
+                        start = i + 1;
+                    }
+                }
+                if start < g.buffer.len() {
+                    lines.push(PyObject::bytes(g.buffer[start..].to_vec()));
+                }
+                Ok(PyObject::list(lines))
+            }));
+    }
+
+    // write(data)
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("write"),
@@ -601,6 +764,55 @@ fn build_bz2_file(inner: Arc<Mutex<Bz2FileInner>>) -> PyObjectRef {
                 Ok(PyObject::int(len as i64))
             }));
     }
+
+    // flush()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("flush"),
+            PyObject::native_closure("flush", move |_args| {
+                let g = st.lock().unwrap();
+                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                Ok(PyObject::none())
+            }));
+    }
+
+    // tell()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("tell"),
+            PyObject::native_closure("tell", move |_args| {
+                let g = st.lock().unwrap();
+                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                Ok(PyObject::int(g.buffer.len() as i64))
+            }));
+    }
+
+    // seek()
+    attrs.insert(CompactString::from("seek"),
+        PyObject::native_closure("seek", move |_args| {
+            Err(PyException::runtime_error("seek() not supported on bz2 files"))
+        }));
+
+    // seekable() / readable() / writable()
+    attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("readable"),
+            PyObject::native_closure("readable", move |_args| {
+                let g = st.lock().unwrap();
+                Ok(PyObject::bool_val(g.mode.contains('r')))
+            }));
+    }
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("writable"),
+            PyObject::native_closure("writable", move |_args| {
+                let g = st.lock().unwrap();
+                Ok(PyObject::bool_val(g.mode.contains('w') || g.mode.contains('a')))
+            }));
+    }
+
+    // close()
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("close"),
@@ -625,6 +837,8 @@ fn build_bz2_file(inner: Arc<Mutex<Bz2FileInner>>) -> PyObjectRef {
                 Ok(PyObject::none())
             }));
     }
+
+    // __enter__
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("__enter__"),
@@ -632,6 +846,8 @@ fn build_bz2_file(inner: Arc<Mutex<Bz2FileInner>>) -> PyObjectRef {
                 Ok(build_bz2_file(st.clone()))
             }));
     }
+
+    // __exit__
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("__exit__"),
@@ -817,15 +1033,67 @@ fn build_lzma_file(inner: Arc<Mutex<LzmaFileInner>>) -> PyObjectRef {
     let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
     attrs.insert(CompactString::from("__lzmafile__"), PyObject::bool_val(true));
 
+    // name / mode / closed attributes
+    {
+        let g = inner.lock().unwrap();
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(g.filepath.as_str())));
+        attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(g.mode.as_str())));
+        attrs.insert(CompactString::from("closed"), PyObject::bool_val(g.closed));
+    }
+
+    // read(size=-1)
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("read"),
-            PyObject::native_closure("read", move |_args| {
+            PyObject::native_closure("read", move |args| {
                 let g = st.lock().unwrap();
                 if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
-                Ok(PyObject::bytes(g.buffer.clone()))
+                let size = if !args.is_empty() { args[0].as_int().unwrap_or(-1) } else { -1 };
+                if size < 0 || size as usize >= g.buffer.len() {
+                    Ok(PyObject::bytes(g.buffer.clone()))
+                } else {
+                    Ok(PyObject::bytes(g.buffer[..size as usize].to_vec()))
+                }
             }));
     }
+
+    // readline()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("readline"),
+            PyObject::native_closure("readline", move |_args| {
+                let g = st.lock().unwrap();
+                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                match g.buffer.iter().position(|&b| b == b'\n') {
+                    Some(i) => Ok(PyObject::bytes(g.buffer[..=i].to_vec())),
+                    None => Ok(PyObject::bytes(g.buffer.clone())),
+                }
+            }));
+    }
+
+    // readlines()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("readlines"),
+            PyObject::native_closure("readlines", move |_args| {
+                let g = st.lock().unwrap();
+                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                let mut lines = Vec::new();
+                let mut start = 0;
+                for (i, &b) in g.buffer.iter().enumerate() {
+                    if b == b'\n' {
+                        lines.push(PyObject::bytes(g.buffer[start..=i].to_vec()));
+                        start = i + 1;
+                    }
+                }
+                if start < g.buffer.len() {
+                    lines.push(PyObject::bytes(g.buffer[start..].to_vec()));
+                }
+                Ok(PyObject::list(lines))
+            }));
+    }
+
+    // write(data)
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("write"),
@@ -839,6 +1107,55 @@ fn build_lzma_file(inner: Arc<Mutex<LzmaFileInner>>) -> PyObjectRef {
                 Ok(PyObject::int(len as i64))
             }));
     }
+
+    // flush()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("flush"),
+            PyObject::native_closure("flush", move |_args| {
+                let g = st.lock().unwrap();
+                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                Ok(PyObject::none())
+            }));
+    }
+
+    // tell()
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("tell"),
+            PyObject::native_closure("tell", move |_args| {
+                let g = st.lock().unwrap();
+                if g.closed { return Err(PyException::runtime_error("I/O operation on closed file")); }
+                Ok(PyObject::int(g.buffer.len() as i64))
+            }));
+    }
+
+    // seek()
+    attrs.insert(CompactString::from("seek"),
+        PyObject::native_closure("seek", move |_args| {
+            Err(PyException::runtime_error("seek() not supported on lzma files"))
+        }));
+
+    // seekable() / readable() / writable()
+    attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("readable"),
+            PyObject::native_closure("readable", move |_args| {
+                let g = st.lock().unwrap();
+                Ok(PyObject::bool_val(g.mode.contains('r')))
+            }));
+    }
+    {
+        let st = inner.clone();
+        attrs.insert(CompactString::from("writable"),
+            PyObject::native_closure("writable", move |_args| {
+                let g = st.lock().unwrap();
+                Ok(PyObject::bool_val(g.mode.contains('w') || g.mode.contains('a')))
+            }));
+    }
+
+    // close()
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("close"),
@@ -861,6 +1178,8 @@ fn build_lzma_file(inner: Arc<Mutex<LzmaFileInner>>) -> PyObjectRef {
                 Ok(PyObject::none())
             }));
     }
+
+    // __enter__
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("__enter__"),
@@ -868,6 +1187,8 @@ fn build_lzma_file(inner: Arc<Mutex<LzmaFileInner>>) -> PyObjectRef {
                 Ok(build_lzma_file(st.clone()))
             }));
     }
+
+    // __exit__
     {
         let st = inner.clone();
         attrs.insert(CompactString::from("__exit__"),
@@ -925,21 +1246,30 @@ fn lzma_compressor_ctor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         6
     };
+    let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
 
-    attrs.insert(CompactString::from("compress"),
-        PyObject::native_closure("compress", move |args| {
-            if args.is_empty() { return Err(PyException::type_error("compress() requires data")); }
-            let data = extract_bytes(&args[0])?;
-            let mut enc = xz2::write::XzEncoder::new(Vec::new(), preset.min(9));
-            enc.write_all(&data).map_err(|e| PyException::runtime_error(&format!("{e}")))?;
-            let out = enc.finish().map_err(|e| PyException::runtime_error(&format!("{e}")))?;
-            Ok(PyObject::bytes(out))
-        }));
-    attrs.insert(CompactString::from("flush"),
-        PyObject::native_closure("flush", move |_args| {
-            Ok(PyObject::bytes(vec![]))
-        }));
+    {
+        let b = buf.clone();
+        attrs.insert(CompactString::from("compress"),
+            PyObject::native_closure("compress", move |args| {
+                if args.is_empty() { return Err(PyException::type_error("compress() requires data")); }
+                let data = extract_bytes(&args[0])?;
+                let mut enc = xz2::write::XzEncoder::new(Vec::new(), preset.min(9));
+                enc.write_all(&data).map_err(|e| PyException::runtime_error(&format!("{e}")))?;
+                let out = enc.finish().map_err(|e| PyException::runtime_error(&format!("{e}")))?;
+                b.lock().unwrap().extend(&out);
+                Ok(PyObject::bytes(out))
+            }));
+    }
+    {
+        let b = buf.clone();
+        attrs.insert(CompactString::from("flush"),
+            PyObject::native_closure("flush", move |_args| {
+                let data = b.lock().unwrap().clone();
+                Ok(PyObject::bytes(data))
+            }));
+    }
 
     let cls = PyObject::class(CompactString::from("LZMACompressor"), vec![], IndexMap::new());
     Ok(PyObject::instance_with_attrs(cls, attrs))
