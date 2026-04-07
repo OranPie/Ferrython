@@ -5,7 +5,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin,
+    make_module, make_builtin, check_args,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -954,7 +954,23 @@ fn lzma_decompressor_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub fn create_tarfile_module() -> PyObjectRef {
     make_module("tarfile", vec![
         ("open", make_builtin(tarfile_open)),
+        ("TarFile", make_builtin(tarfile_open)),
         ("TarInfo", make_builtin(tarinfo_constructor)),
+        ("is_tarfile", make_builtin(|args: &[PyObjectRef]| {
+            check_args("tarfile.is_tarfile", args, 1)?;
+            let path = args[0].py_to_string();
+            // Try to open and read magic bytes
+            match std::fs::File::open(&path) {
+                Ok(mut f) => {
+                    let mut buf = [0u8; 263];
+                    use std::io::Read;
+                    let n = f.read(&mut buf).unwrap_or(0);
+                    // tar magic at offset 257: "ustar"
+                    Ok(PyObject::bool_val(n >= 262 && &buf[257..262] == b"ustar"))
+                }
+                Err(_) => Ok(PyObject::bool_val(false)),
+            }
+        })),
         ("ENCODING", PyObject::str_val(CompactString::from("utf-8"))),
         ("DEFAULT_FORMAT", PyObject::int(1)),  // GNU_FORMAT
         ("USTAR_FORMAT", PyObject::int(0)),

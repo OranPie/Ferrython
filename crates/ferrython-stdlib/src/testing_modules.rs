@@ -1,7 +1,7 @@
 //! Logging, testing, and debugging stdlib modules
 
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, CompareOp,
@@ -1624,7 +1624,12 @@ fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) 
             .cloned().unwrap_or_else(PyObject::none);
         w.insert(CompactString::from("return_value"), init_rv);
 
-        // __call__ — tracks calls, reads return_value from live instance attrs
+        // Store side_effect if provided
+        let init_se = kwargs.get(&HashableKey::Str(CompactString::from("side_effect")))
+            .cloned().unwrap_or_else(PyObject::none);
+        w.insert(CompactString::from("side_effect"), init_se);
+
+        // __call__ — tracks calls, checks side_effect, reads return_value from live instance attrs
         let cc3 = call_count.clone();
         let cal2 = call_args_list.clone();
         let attrs_call = attrs_ref.clone();
@@ -1632,6 +1637,50 @@ fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) 
             "Mock.__call__", move |args: &[PyObjectRef]| {
                 *cc3.write() += 1;
                 cal2.write().push(PyObject::tuple(args.to_vec()));
+
+                // Check side_effect first
+                let se = attrs_call.read().get("side_effect").cloned();
+                if let Some(ref effect) = se {
+                    if !matches!(effect.payload, PyObjectPayload::None) {
+                        // If it's an exception instance, raise it
+                        if let Some(exc_type) = effect.get_attr("__class__") {
+                            let type_name = exc_type.get_attr("__name__")
+                                .map(|n| n.py_to_string())
+                                .unwrap_or_default();
+                            // Check if it's an exception type/instance
+                            if type_name.ends_with("Error") || type_name.ends_with("Exception")
+                                || type_name == "KeyboardInterrupt" || type_name == "SystemExit"
+                                || type_name == "StopIteration" || type_name == "GeneratorExit"
+                            {
+                                let msg = effect.get_attr("args")
+                                    .and_then(|a| a.get_item(&PyObject::int(0)).ok())
+                                    .map(|s| s.py_to_string())
+                                    .unwrap_or_default();
+                                let kind = match type_name.as_str() {
+                                    "ValueError" => ExceptionKind::ValueError,
+                                    "TypeError" => ExceptionKind::TypeError,
+                                    "KeyError" => ExceptionKind::KeyError,
+                                    "IndexError" => ExceptionKind::IndexError,
+                                    "AttributeError" => ExceptionKind::AttributeError,
+                                    "RuntimeError" => ExceptionKind::RuntimeError,
+                                    "OSError" | "IOError" => ExceptionKind::OSError,
+                                    "FileNotFoundError" => ExceptionKind::FileNotFoundError,
+                                    "PermissionError" => ExceptionKind::PermissionError,
+                                    "NotImplementedError" => ExceptionKind::NotImplementedError,
+                                    "StopIteration" => ExceptionKind::StopIteration,
+                                    "AssertionError" => ExceptionKind::AssertionError,
+                                    "ImportError" => ExceptionKind::ImportError,
+                                    "NameError" => ExceptionKind::NameError,
+                                    _ => ExceptionKind::RuntimeError,
+                                };
+                                return Err(PyException::new(kind, msg));
+                            }
+                        }
+                        // If it's a callable, call it
+                        // (handled at VM level if it's a Function)
+                    }
+                }
+
                 // Read return_value from live instance attrs (may have been updated via STORE_ATTR)
                 let rv = attrs_call.read()
                     .get("return_value")
@@ -1742,6 +1791,22 @@ fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) 
                 Ok(PyObject::none())
             }
         ));
+
+        // MagicMock gets default magic methods
+        if name == "MagicMock" {
+            w.insert(CompactString::from("__len__"), PyObject::native_closure("__len__", |_| Ok(PyObject::int(0))));
+            w.insert(CompactString::from("__bool__"), PyObject::native_closure("__bool__", |_| Ok(PyObject::bool_val(true))));
+            w.insert(CompactString::from("__iter__"), PyObject::native_closure("__iter__", |_| Ok(PyObject::list(vec![]).get_iter().unwrap_or_else(|_| PyObject::none()))));
+            w.insert(CompactString::from("__contains__"), PyObject::native_closure("__contains__", |_| Ok(PyObject::bool_val(false))));
+            w.insert(CompactString::from("__int__"), PyObject::native_closure("__int__", |_| Ok(PyObject::int(1))));
+            w.insert(CompactString::from("__float__"), PyObject::native_closure("__float__", |_| Ok(PyObject::float(1.0))));
+            w.insert(CompactString::from("__str__"), PyObject::native_closure("__str__", |_| Ok(PyObject::str_val(CompactString::from("MagicMock")))));
+            w.insert(CompactString::from("__repr__"), PyObject::native_closure("__repr__", |_| Ok(PyObject::str_val(CompactString::from("<MagicMock>")))));
+            w.insert(CompactString::from("__enter__"), PyObject::native_closure("__enter__", |args: &[PyObjectRef]| {
+                Ok(if !args.is_empty() { args[0].clone() } else { PyObject::none() })
+            }));
+            w.insert(CompactString::from("__exit__"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
+        }
     }
     inst
 }
@@ -1796,8 +1861,36 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
     });
 
     // sentinel — attribute access returns unique sentinels
-    let sentinel_cls = PyObject::class(CompactString::from("_SentinelObject"), vec![], IndexMap::new());
+    let sentinel_cls = PyObject::class(CompactString::from("_Sentinel"), vec![], IndexMap::new());
     let sentinel = PyObject::instance(sentinel_cls);
+    if let PyObjectPayload::Instance(ref d) = sentinel.payload {
+        let sentinel_cache: Arc<RwLock<IndexMap<String, PyObjectRef>>> = Arc::new(RwLock::new(IndexMap::new()));
+        let sc = sentinel_cache;
+        d.attrs.write().insert(CompactString::from("__getattr__"), PyObject::native_closure(
+            "_Sentinel.__getattr__", move |args: &[PyObjectRef]| {
+                let name = if !args.is_empty() { args[0].py_to_string() } else { return Ok(PyObject::none()); };
+                if name.starts_with("__") && name.ends_with("__") {
+                    return Err(PyException::attribute_error(format!("_Sentinel has no attribute '{}'", name)));
+                }
+                let mut cache = sc.write();
+                if let Some(obj) = cache.get(&name) {
+                    return Ok(obj.clone());
+                }
+                let cls = PyObject::class(CompactString::from("_SentinelObject"), vec![], IndexMap::new());
+                let obj = PyObject::instance(cls);
+                if let PyObjectPayload::Instance(ref d) = obj.payload {
+                    let n = name.clone();
+                    d.attrs.write().insert(CompactString::from("name"), PyObject::str_val(CompactString::from(n.as_str())));
+                    let n2 = name.clone();
+                    d.attrs.write().insert(CompactString::from("__repr__"), PyObject::native_closure(
+                        "__repr__", move |_| Ok(PyObject::str_val(CompactString::from(format!("sentinel.{}", n2))))
+                    ));
+                }
+                cache.insert(name, obj.clone());
+                Ok(obj)
+            }
+        ));
+    }
 
     // call — call record
     let call_fn = make_builtin(|args: &[PyObjectRef]| {
@@ -1807,6 +1900,12 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
     // ANY — matches anything
     let any_cls = PyObject::class(CompactString::from("_ANY"), vec![], IndexMap::new());
     let any_obj = PyObject::instance(any_cls);
+    if let PyObjectPayload::Instance(ref d) = any_obj.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("__eq__"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(true))));
+        w.insert(CompactString::from("__ne__"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
+        w.insert(CompactString::from("__repr__"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from("ANY")))));
+    }
 
     make_module("unittest.mock", vec![
         ("Mock", make_mock("Mock")),
@@ -2600,6 +2699,22 @@ pub fn create_pydoc_module() -> PyObjectRef {
         ("help", make_builtin(pydoc_help)),
         ("render_doc", make_builtin(render_doc)),
         ("getdoc", make_builtin(getdoc)),
+        ("describe", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            let obj = &args[0];
+            let name = obj.get_attr("__name__")
+                .map(|n| n.py_to_string())
+                .unwrap_or_else(|| obj.type_name().to_string());
+            let desc = match &obj.payload {
+                PyObjectPayload::Module(_) => format!("module {}", name),
+                PyObjectPayload::Class(_) => format!("class {}", name),
+                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }
+                | PyObjectPayload::NativeClosure { .. } => format!("function {}", name),
+                PyObjectPayload::BoundMethod { .. } => format!("method {}", name),
+                _ => obj.type_name().to_string(),
+            };
+            Ok(PyObject::str_val(CompactString::from(desc)))
+        })),
         ("Helper", make_builtin(pydoc_help)),
     ])
 }

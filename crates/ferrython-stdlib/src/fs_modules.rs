@@ -4,7 +4,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    make_module, make_builtin,
+    make_module, make_builtin, check_args,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -740,9 +740,28 @@ pub fn create_shutil_module() -> PyObjectRef {
             }
             Ok(PyObject::none())
         })),
-        ("ignore_patterns", make_builtin(|_args| {
-            Ok(PyObject::native_function("_ignore", |_| {
-                Ok(PyObject::set(indexmap::IndexMap::new()))
+        ("ignore_patterns", make_builtin(|args: &[PyObjectRef]| {
+            let patterns: Vec<String> = args.iter().map(|a| a.py_to_string()).collect();
+            Ok(PyObject::native_closure("_ignore_patterns", move |inner_args: &[PyObjectRef]| {
+                // inner_args: (path, names)
+                let names = if inner_args.len() > 1 {
+                    match &inner_args[1].payload {
+                        PyObjectPayload::List(items) => items.read().iter().map(|i| i.py_to_string()).collect::<Vec<_>>(),
+                        _ => vec![],
+                    }
+                } else { vec![] };
+                let mut ignored = IndexMap::new();
+                for pattern in &patterns {
+                    for name in &names {
+                        if glob_match(pattern, name) {
+                            ignored.insert(
+                                HashableKey::Str(CompactString::from(name.as_str())),
+                                PyObject::str_val(CompactString::from(name.as_str())),
+                            );
+                        }
+                    }
+                }
+                Ok(PyObject::set(ignored))
             }))
         })),
         ("make_archive", make_builtin(|args| {
@@ -824,6 +843,11 @@ pub fn create_glob_module() -> PyObjectRef {
         ("glob", make_builtin(glob_glob)),
         ("iglob", make_builtin(glob_glob)),
         ("escape", make_builtin(glob_escape)),
+        ("has_magic", make_builtin(|args: &[PyObjectRef]| {
+            check_args("glob.has_magic", args, 1)?;
+            let s = args[0].py_to_string();
+            Ok(PyObject::bool_val(s.contains('*') || s.contains('?') || s.contains('[') || s.contains(']')))
+        })),
     ])
 }
 
