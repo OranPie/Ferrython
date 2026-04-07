@@ -466,6 +466,21 @@ pub(super) fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
         }
         return Ok(PyObject::bool_val(false));
     }
+    // Handle PEP 604 union types: isinstance(x, int | str)
+    if let Some(union_flag) = cls.get_attr("__union_params__") {
+        if union_flag.is_truthy() {
+            if let Some(args_tuple) = cls.get_attr("__args__") {
+                if let PyObjectPayload::Tuple(types) = &args_tuple.payload {
+                    for t in types {
+                        if is_instance_of(obj, t) {
+                            return Ok(PyObject::bool_val(true));
+                        }
+                    }
+                    return Ok(PyObject::bool_val(false));
+                }
+            }
+        }
+    }
     Ok(PyObject::bool_val(is_instance_of(obj, cls)))
 }
 

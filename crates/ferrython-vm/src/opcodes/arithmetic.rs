@@ -3,7 +3,7 @@ use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
-use ferrython_core::error::PyException;
+use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
     lookup_in_class_mro, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -297,7 +297,12 @@ impl VirtualMachine {
                 else { with_enum_fallback!(a, b, bit_and) }
             }
             Opcode::BinaryOr => {
-                if let Some(r) = self.try_binary_dunder(&a, &b, "__or__", Some("__ror__"))? { r }
+                // PEP 604: type | type → UnionType for isinstance checks
+                if Self::is_type_like(&a) && Self::is_type_like(&b)
+                {
+                    self.make_union_type(&a, &b)?
+                }
+                else if let Some(r) = self.try_binary_dunder(&a, &b, "__or__", Some("__ror__"))? { r }
                 else if let (PyObjectPayload::Dict(_), PyObjectPayload::Dict(_)) = (&a.payload, &b.payload) {
                     // Delegate to py_bit_or which handles Counter union (max) vs regular dict merge
                     a.bit_or(&b)?
@@ -407,9 +412,23 @@ impl VirtualMachine {
                     self.vm_push(obj.clone());
                     return Ok(None);
                 }
-                // BuiltinType subscript: list[int], dict[str, int] → returns the type (PEP 585)
-                if matches!(&obj.payload, PyObjectPayload::BuiltinType(_)) {
-                    self.vm_push(obj.clone());
+                // BuiltinType subscript: list[int], dict[str, int] → GenericAlias (PEP 585)
+                if let PyObjectPayload::BuiltinType(bt) = &obj.payload {
+                    let type_name = bt.as_str();
+                    let params = match &key.payload {
+                        PyObjectPayload::Tuple(items) => {
+                            items.iter().map(|i| self.format_type_param(i)).collect::<Vec<_>>().join(", ")
+                        }
+                        _ => self.format_type_param(&key),
+                    };
+                    let repr = format!("{}[{}]", type_name, params);
+                    let alias_cls = PyObject::class(CompactString::from("types.GenericAlias"), vec![], IndexMap::new());
+                    let mut attrs = IndexMap::new();
+                    attrs.insert(intern_or_new("__origin__"), obj.clone());
+                    attrs.insert(intern_or_new("__args__"), key.clone());
+                    attrs.insert(intern_or_new("__typing_repr__"), PyObject::str_val(CompactString::from(&repr)));
+                    let alias = PyObject::instance_with_attrs(alias_cls, attrs);
+                    self.vm_push(alias);
                     return Ok(None);
                 }
                 // Dict subclass: Instance with dict_storage
@@ -683,6 +702,56 @@ impl VirtualMachine {
             _ => unreachable!(),
         }
         Ok(None)
+    }
+
+    fn format_type_param(&self, obj: &PyObjectRef) -> String {
+        match &obj.payload {
+            PyObjectPayload::BuiltinType(bt) => bt.as_str().to_string(),
+            PyObjectPayload::Class(cls) => cls.name.to_string(),
+            PyObjectPayload::None => "None".to_string(),
+            _ => obj.type_name().to_string(),
+        }
+    }
+
+    fn is_type_like(obj: &PyObjectRef) -> bool {
+        matches!(&obj.payload, PyObjectPayload::BuiltinType(_) | PyObjectPayload::Class(_) | PyObjectPayload::None)
+            || obj.get_attr("__union_params__").map_or(false, |f| f.is_truthy())
+    }
+
+    fn make_union_type(&self, a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
+        // Collect args from both sides (flatten nested unions)
+        let mut args = Vec::new();
+        Self::collect_union_args(a, &mut args);
+        Self::collect_union_args(b, &mut args);
+        let repr = args.iter().map(|a| {
+            match &a.payload {
+                PyObjectPayload::BuiltinType(bt) => bt.as_str().to_string(),
+                PyObjectPayload::Class(cls) => cls.name.to_string(),
+                PyObjectPayload::None => "None".to_string(),
+                _ => a.type_name().to_string(),
+            }
+        }).collect::<Vec<_>>().join(" | ");
+        let args_tuple = PyObject::tuple(args);
+        let union_cls = PyObject::class(CompactString::from("types.UnionType"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(intern_or_new("__args__"), args_tuple);
+        attrs.insert(intern_or_new("__typing_repr__"), PyObject::str_val(CompactString::from(&repr)));
+        attrs.insert(intern_or_new("__union_params__"), PyObject::bool_val(true));
+        Ok(PyObject::instance_with_attrs(union_cls, attrs))
+    }
+
+    fn collect_union_args(obj: &PyObjectRef, out: &mut Vec<PyObjectRef>) {
+        if let Some(args) = obj.get_attr("__union_params__") {
+            if args.is_truthy() {
+                if let Some(inner) = obj.get_attr("__args__") {
+                    if let PyObjectPayload::Tuple(items) = &inner.payload {
+                        out.extend(items.iter().cloned());
+                        return;
+                    }
+                }
+            }
+        }
+        out.push(obj.clone());
     }
 }
 
