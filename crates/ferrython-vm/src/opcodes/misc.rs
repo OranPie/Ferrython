@@ -1,6 +1,7 @@
 //! Miscellaneous operations: format, annotations, generators, async iterators
 
 use crate::builtins;
+use crate::frame::BlockKind;
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
@@ -349,24 +350,36 @@ impl VirtualMachine {
 
             Opcode::EndAsyncFor => {
                 // End of async for — check if exception is StopAsyncIteration.
-                // Stack: [... aiter, exception] → [...]
-                let exc = self.vm_pop();
-                let _aiter = self.vm_pop();
-                // If it's StopAsyncIteration, the loop ends normally.
-                // Otherwise, re-raise the exception.
-                let is_stop_async = match &exc.payload {
+                // VM pushes (traceback, value, type) at except handler.
+                // Stack: [... aiter, traceback, value, type] → [...]
+                let exc_type = self.vm_pop();   // type (TOS)
+                let exc_value = self.vm_pop();  // value
+                let _traceback = self.vm_pop(); // traceback
+                let _aiter = self.vm_pop();     // async iterator
+                // Check type first, then value for StopAsyncIteration
+                let is_stop_async = match &exc_type.payload {
                     PyObjectPayload::ExceptionType(k) => *k == ExceptionKind::StopAsyncIteration,
                     PyObjectPayload::ExceptionInstance { kind, .. } => *kind == ExceptionKind::StopAsyncIteration,
-                    _ => false,
+                    _ => match &exc_value.payload {
+                        PyObjectPayload::ExceptionType(k) => *k == ExceptionKind::StopAsyncIteration,
+                        PyObjectPayload::ExceptionInstance { kind, .. } => *kind == ExceptionKind::StopAsyncIteration,
+                        _ => false,
+                    },
                 };
                 if !is_stop_async {
-                    // Check if the active exception is StopAsyncIteration
                     if let Some(ref active) = self.active_exception {
                         if active.kind != ExceptionKind::StopAsyncIteration {
                             let e = active.clone();
                             self.active_exception = None;
                             return Err(e);
                         }
+                    }
+                }
+                // Also pop the ExceptHandler block that was pushed by unwind_except
+                let frame = self.vm_frame();
+                if let Some(block) = frame.block_stack.last() {
+                    if matches!(block.kind, BlockKind::ExceptHandler) {
+                        frame.pop_block();
                     }
                 }
                 self.active_exception = None;
