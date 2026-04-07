@@ -161,6 +161,10 @@ class ExitStack:
         self._exit_callbacks.append(_exit_wrapper)
         return callback
 
+    def close(self):
+        """Immediately unwind the callback stack."""
+        self.__exit__(None, None, None)
+
     def pop_all(self):
         new_stack = ExitStack()
         new_stack._exit_callbacks = self._exit_callbacks

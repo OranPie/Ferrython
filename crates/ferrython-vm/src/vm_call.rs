@@ -1809,6 +1809,38 @@ impl VirtualMachine {
                             return Ok(PyObject::bool_val(self.vm_is_truthy(&args[0])?));
                         }
                     }
+                    "mappingproxy" => {
+                        // types.MappingProxyType(dict) — read-only view of a dict
+                        if args.len() == 1 {
+                            let src = &args[0];
+                            let map = match &src.payload {
+                                PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
+                                    m.read().clone()
+                                }
+                                PyObjectPayload::InstanceDict(attrs) => {
+                                    let rd = attrs.read();
+                                    let mut m = IndexMap::new();
+                                    for (k, v) in rd.iter() {
+                                        m.insert(HashableKey::Str(k.clone()), v.clone());
+                                    }
+                                    m
+                                }
+                                _ => {
+                                    return Err(PyException::type_error(
+                                        "mappingproxy() argument must be a mapping, not a non-mapping type"
+                                    ));
+                                }
+                            };
+                            return Ok(PyObject::wrap(PyObjectPayload::MappingProxy(
+                                Arc::new(RwLock::new(map)),
+                            )));
+                        }
+                        if args.is_empty() {
+                            return Err(PyException::type_error(
+                                "mappingproxy() missing required argument: 'mapping'"
+                            ));
+                        }
+                    }
                     "dir" => {
                         if args.is_empty() {
                             // dir() with no args: return sorted local variable names

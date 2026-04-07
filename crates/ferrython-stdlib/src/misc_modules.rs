@@ -192,7 +192,6 @@ pub fn create_contextlib_module() -> PyObjectRef {
                             match &enter.payload {
                                 PyObjectPayload::NativeFunction { func, .. } => func(&[cm.clone()])?,
                                 PyObjectPayload::NativeClosure { func, .. } => func(&[cm.clone()])?,
-                                // BuiltinBoundMethod: for all builtin types __enter__ returns self
                                 PyObjectPayload::BuiltinBoundMethod { .. } => cm.clone(),
                                 _ => cm.clone()
                             }
@@ -208,6 +207,59 @@ pub fn create_contextlib_module() -> PyObjectRef {
                             }
                         }
                         Ok(result)
+                    }
+                }
+            ));
+
+            // close() — immediately unwinds the callback stack
+            attrs.insert(CompactString::from("close"), PyObject::native_closure(
+                "ExitStack.close", {
+                    let self_ref = self_ref.clone();
+                    move |_args: &[PyObjectRef]| {
+                        // Invoke __exit__ with (None, None, None)
+                        if let Some(exit_fn) = self_ref.get_attr("__exit__") {
+                            match &exit_fn.payload {
+                                PyObjectPayload::NativeClosure { func, .. } => {
+                                    let none = PyObject::none();
+                                    func(&[none.clone(), none.clone(), none])?;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok(PyObject::none())
+                    }
+                }
+            ));
+
+            // pop_all() — transfer callbacks to a new ExitStack, clearing this one
+            attrs.insert(CompactString::from("pop_all"), PyObject::native_closure(
+                "ExitStack.pop_all", {
+                    let self_ref = self_ref.clone();
+                    let cls_for_pop = exit_stack_cls_clone.clone();
+                    move |_args: &[PyObjectRef]| {
+                        // Get current callbacks
+                        let callbacks = if let Some(cbs) = self_ref.get_attr("_callbacks") {
+                            if let Ok(items) = cbs.to_list() {
+                                items
+                            } else {
+                                vec![]
+                            }
+                        } else {
+                            vec![]
+                        };
+                        // Clear our callbacks
+                        if let Some(cbs) = self_ref.get_attr("_callbacks") {
+                            if let PyObjectPayload::List(items) = &cbs.payload {
+                                items.write().clear();
+                            }
+                        }
+                        // Create new ExitStack instance with the transferred callbacks
+                        let new_inst = PyObject::instance(cls_for_pop.clone());
+                        if let PyObjectPayload::Instance(ref inst_data) = new_inst.payload {
+                            let mut new_attrs = inst_data.attrs.write();
+                            new_attrs.insert(CompactString::from("_callbacks"), PyObject::list(callbacks));
+                        }
+                        Ok(new_inst)
                     }
                 }
             ));
