@@ -480,7 +480,7 @@ pub fn create_datetime_module() -> PyObjectRef {
     // Build date class with constructor and class methods
     let mut date_ns = IndexMap::new();
     date_ns.insert(CompactString::from("today"), make_builtin(date_today));
-    date_ns.insert(CompactString::from("fromisoformat"), make_builtin(datetime_fromisoformat));
+    date_ns.insert(CompactString::from("fromisoformat"), make_builtin(date_fromisoformat));
     date_ns.insert(CompactString::from("fromordinal"), make_builtin(date_fromordinal));
     date_ns.insert(CompactString::from("__add__"), make_builtin(date_add));
     date_ns.insert(CompactString::from("__sub__"), make_builtin(date_sub));
@@ -633,6 +633,18 @@ fn date_fromordinal(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("fromordinal", args, 1)?;
     let ordinal = args[0].to_int()?;
     let (year, month, day) = ordinal_to_ymd(ordinal);
+    Ok(make_date_instance(year, month, day))
+}
+
+fn date_fromisoformat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("date.fromisoformat", args, 1)?;
+    let s = args[0].py_to_string();
+    let date_parts: Vec<&str> = s.split('-').collect();
+    if date_parts.len() < 3 { return Err(PyException::value_error("Invalid isoformat string")); }
+    let year: i64 = date_parts[0].parse().map_err(|_| PyException::value_error("Invalid year"))?;
+    let month: i64 = date_parts[1].parse().map_err(|_| PyException::value_error("Invalid month"))?;
+    let day: i64 = date_parts[2].split('T').next().unwrap_or("1")
+        .parse().map_err(|_| PyException::value_error("Invalid day"))?;
     Ok(make_date_instance(year, month, day))
 }
 

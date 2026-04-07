@@ -900,6 +900,20 @@ pub fn create_http_module() -> PyObjectRef {
                     CompactString::from("INTERNAL_SERVER_ERROR"),
                     PyObject::int(500),
                 );
+                // HTTPResponse class
+                client_attrs.insert(
+                    CompactString::from("HTTPResponse"),
+                    PyObject::class(CompactString::from("HTTPResponse"), vec![], IndexMap::new()),
+                );
+                // Common exception classes
+                client_attrs.insert(
+                    CompactString::from("HTTPException"),
+                    PyObject::builtin_type(CompactString::from("HTTPException")),
+                );
+                client_attrs.insert(
+                    CompactString::from("RemoteDisconnected"),
+                    PyObject::builtin_type(CompactString::from("RemoteDisconnected")),
+                );
                 PyObject::module_with_attrs(CompactString::from("http.client"), client_attrs)
             }),
             // Common status codes at top level

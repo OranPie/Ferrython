@@ -9,7 +9,10 @@ use ferrython_core::object::{
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Global Path class reference so helper functions can create proper Path instances.
+static PATH_CLASS: OnceLock<PyObjectRef> = OnceLock::new();
 
 /// Extract the `_path` string from a pathlib instance (args[0] = self).
 fn get_path_str(inst: &PyObjectRef) -> String {
@@ -124,12 +127,34 @@ pub fn create_pathlib_module() -> PyObjectRef {
         let pattern = args[1].py_to_string();
         let dir = std::path::Path::new(&base);
         let mut results = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if simple_glob_match(&pattern, &name) {
-                    let full = entry.path().to_string_lossy().to_string();
-                    results.push(make_path_instance(&full)?);
+        if pattern.contains("**") {
+            // Recursive glob: split on ** and match
+            let suffix = pattern.trim_start_matches("**/").trim_start_matches("**");
+            fn walk_glob(dir: &std::path::Path, suffix: &str, results: &mut Vec<PyObjectRef>) {
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if simple_glob_match(suffix, &name) {
+                            let full = entry.path().to_string_lossy().to_string();
+                            if let Ok(p) = make_path_instance(&full) {
+                                results.push(p);
+                            }
+                        }
+                        if entry.path().is_dir() {
+                            walk_glob(&entry.path(), suffix, results);
+                        }
+                    }
+                }
+            }
+            walk_glob(dir, suffix, &mut results);
+        } else {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if simple_glob_match(&pattern, &name) {
+                        let full = entry.path().to_string_lossy().to_string();
+                        results.push(make_path_instance(&full)?);
+                    }
                 }
             }
         }
@@ -447,6 +472,8 @@ pub fn create_pathlib_module() -> PyObjectRef {
     }));
 
     let path_cls = PyObject::class(CompactString::from("Path"), vec![], path_ns);
+    // Store global ref so make_path_instance() can create proper Path objects
+    let _ = PATH_CLASS.set(path_cls.clone());
     // Add __init__ for constructor dispatch: Path("/some/path")
     if let PyObjectPayload::Class(ref cd) = path_cls.payload {
         cd.namespace.write().insert(
@@ -522,7 +549,9 @@ fn pathlib_cwd(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 /// Create a standalone Path instance (for class methods like home/cwd and internal use)
 fn make_path_instance(path_str: &str) -> PyResult<PyObjectRef> {
-    let cls = PyObject::class(CompactString::from("Path"), vec![], IndexMap::new());
+    let cls = PATH_CLASS.get()
+        .cloned()
+        .unwrap_or_else(|| PyObject::class(CompactString::from("Path"), vec![], IndexMap::new()));
     let inst = PyObject::instance(cls);
     populate_path_instance(&inst, path_str)?;
     Ok(inst)

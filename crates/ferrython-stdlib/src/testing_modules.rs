@@ -690,9 +690,10 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
 
             // Dispatch to handlers via shared list
-            let mut dispatched = false;
+            let has_handlers;
             if let PyObjectPayload::List(items) = &handlers.payload {
                 let items_r = items.read();
+                has_handlers = !items_r.is_empty();
                 for handler in items_r.iter() {
                     // Check handler level before emitting (CPython behavior)
                     if let Some(handler_level) = handler.get_attr("level") {
@@ -704,25 +705,24 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         match &emit_fn.payload {
                             PyObjectPayload::NativeFunction { func, .. } => {
                                 let _ = func(&[handler.clone(), record.clone()]);
-                                dispatched = true;
                             }
                             PyObjectPayload::NativeClosure { func, .. } => {
                                 let _ = func(&[handler.clone(), record.clone()]);
-                                dispatched = true;
                             }
-                            // Python function or bound method — defer to VM
                             _ => {
                                 ferrython_core::error::request_vm_call(
                                     emit_fn.clone(),
                                     vec![record.clone()],
                                 );
-                                dispatched = true;
                             }
                         }
                     }
                 }
+            } else {
+                has_handlers = false;
             }
-            if !dispatched {
+            // Last-resort: only print to stderr if no handlers registered at all
+            if !has_handlers {
                 eprintln!("{}:{}:{}", level_name, name, msg);
             }
             Ok(PyObject::none())

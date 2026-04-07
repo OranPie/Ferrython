@@ -268,6 +268,8 @@ pub fn create_re_module() -> PyObjectRef {
         ("fullmatch", PyObject::native_function("re.fullmatch", re_fullmatch)),
         ("purge", make_builtin(|_| Ok(PyObject::none()))),
         ("error", PyObject::class(CompactString::from("error"), vec![], IndexMap::new())),
+        ("Pattern", PyObject::class(CompactString::from("Pattern"), vec![], IndexMap::new())),
+        ("Match", PyObject::class(CompactString::from("Match"), vec![], IndexMap::new())),
     ])
 }
 
