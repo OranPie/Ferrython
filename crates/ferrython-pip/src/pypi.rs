@@ -1,7 +1,7 @@
 //! PyPI API client — fetches package metadata and downloads wheels/sdists
 
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Parsed release info from PyPI
 #[allow(dead_code)]
@@ -138,8 +138,25 @@ fn find_best_download(urls: &[PyPIUrl]) -> Option<&PyPIUrl> {
     urls.iter().find(|u| u.packagetype == "sdist")
 }
 
-/// Download a wheel/sdist to a temp directory, verify SHA256
+/// Download a wheel/sdist, using local cache when available, verify SHA256
 pub fn download_wheel(release: &ReleaseInfo) -> Result<PathBuf, String> {
+    // Check cache first
+    let cache_dir = wheel_cache_dir();
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let cached = cache_dir.join(&release.filename);
+    if cached.exists() {
+        // Verify cached file integrity if hash is known
+        if let Some(ref expected_hash) = release.sha256 {
+            if verify_sha256(&cached, expected_hash) {
+                return Ok(cached);
+            }
+            // Hash mismatch — re-download
+            let _ = std::fs::remove_file(&cached);
+        } else {
+            return Ok(cached);
+        }
+    }
+
     let client = reqwest::blocking::Client::builder()
         .user_agent("ferryip/0.1.0")
         .timeout(std::time::Duration::from_secs(120))
@@ -170,14 +187,33 @@ pub fn download_wheel(release: &ReleaseInfo) -> Result<PathBuf, String> {
         }
     }
 
-    // Save to temp directory
-    let tmp_dir = std::env::temp_dir().join("ferryip");
-    let _ = std::fs::create_dir_all(&tmp_dir);
-    let dest = tmp_dir.join(&release.filename);
-    std::fs::write(&dest, &bytes)
-        .map_err(|e| format!("Write error: {}", e))?;
+    // Save to cache directory
+    std::fs::write(&cached, &bytes)
+        .map_err(|e| format!("Cache write error: {}", e))?;
 
-    Ok(dest)
+    Ok(cached)
+}
+
+fn wheel_cache_dir() -> PathBuf {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".cache")
+        });
+    base.join("ferryip").join("wheels")
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> bool {
+    use sha2::{Sha256, Digest};
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let actual = format!("{:x}", hasher.finalize());
+    actual == expected
 }
 
 /// Search PyPI (uses simple API since XMLRPC search was disabled)

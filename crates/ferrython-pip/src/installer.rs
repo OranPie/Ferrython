@@ -27,6 +27,17 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
 
     let mut installed_files = Vec::new();
     let dist_info_dir = format!("{}-{}.dist-info", normalize_name(name), version);
+    let data_dir = format!("{}-{}.data", normalize_name(name), version);
+
+    // Compute install layout paths for .data directory handling
+    let bin_dir = site.parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("bin"))
+        .unwrap_or_else(|| site.join("..").join("bin"));
+    let include_dir = site.parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("include"))
+        .unwrap_or_else(|| site.join("..").join("include"));
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)
@@ -38,7 +49,28 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
             continue;
         }
 
-        let dest_path = site.join(&entry_name);
+        // Handle .data directory: remap to correct install locations
+        let dest_path = if entry_name.starts_with(&data_dir) {
+            let relative = &entry_name[data_dir.len()..].trim_start_matches('/');
+            if relative.starts_with("scripts/") {
+                bin_dir.join(&relative["scripts/".len()..])
+            } else if relative.starts_with("headers/") {
+                include_dir.join(&relative["headers/".len()..])
+            } else if relative.starts_with("data/") {
+                site.parent()
+                    .and_then(|p| p.parent())
+                    .unwrap_or(site)
+                    .join(&relative["data/".len()..])
+            } else if relative.starts_with("purelib/") {
+                site.join(&relative["purelib/".len()..])
+            } else if relative.starts_with("platlib/") {
+                site.join(&relative["platlib/".len()..])
+            } else {
+                site.join(relative)
+            }
+        } else {
+            site.join(&entry_name)
+        };
 
         if entry.is_dir() {
             fs::create_dir_all(&dest_path)
@@ -52,6 +84,14 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
                 .map_err(|e| format!("create {}: {}", dest_path.display(), e))?;
             std::io::copy(&mut entry, &mut outfile)
                 .map_err(|e| format!("write {}: {}", dest_path.display(), e))?;
+
+            // Make scripts executable
+            #[cfg(unix)]
+            if entry_name.starts_with(&data_dir) && entry_name.contains("scripts/") {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&dest_path, fs::Permissions::from_mode(0o755));
+            }
+
             installed_files.push(entry_name.clone());
         }
     }

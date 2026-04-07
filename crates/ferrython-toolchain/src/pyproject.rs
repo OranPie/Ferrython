@@ -116,7 +116,7 @@ impl PyProject {
     }
 
     /// Get console_scripts entry points.
-    pub fn scripts(&self) -> Vec<(String, String)> {
+    pub fn scripts(&self) -> Option<Vec<(String, String)>> {
         self.project.as_ref()
             .and_then(|p| p.scripts.as_ref())
             .map(|table| {
@@ -124,7 +124,11 @@ impl PyProject {
                     .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                     .collect()
             })
-            .unwrap_or_default()
+    }
+
+    /// Get project description.
+    pub fn description(&self) -> Option<&str> {
+        self.project.as_ref()?.description.as_deref()
     }
 
     /// Get optional dependency group names.

@@ -1016,7 +1016,34 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                 )),
             }
         }
-        "hex" => Ok(PyObject::str_val(CompactString::from(hex::encode(b)))),
+        "hex" => {
+            // bytes.hex([sep[, bytes_per_sep]])
+            let hex_str = hex::encode(b);
+            if args.is_empty() {
+                Ok(PyObject::str_val(CompactString::from(hex_str)))
+            } else {
+                // sep argument: insert separator between each pair of hex digits
+                let sep = args[0].py_to_string();
+                let bytes_per_group = if args.len() > 1 {
+                    args[1].to_int().unwrap_or(1).abs() as usize
+                } else {
+                    1
+                };
+                let chars_per_group = bytes_per_group * 2;
+                let hex_bytes = hex_str.as_bytes();
+                let mut result = String::new();
+                let mut i = 0;
+                while i < hex_bytes.len() {
+                    if i > 0 {
+                        result.push_str(&sep);
+                    }
+                    let end = (i + chars_per_group).min(hex_bytes.len());
+                    result.push_str(&hex_str[i..end]);
+                    i = end;
+                }
+                Ok(PyObject::str_val(CompactString::from(result)))
+            }
+        },
         "count" => {
             if args.is_empty() { return Err(PyException::type_error("count requires an argument")); }
             match &args[0].payload {

@@ -82,6 +82,59 @@ enum Commands {
         /// Path to project directory (default: current dir)
         path: Option<String>,
     },
+
+    /// Manage the local package cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
+
+    /// Compute hash digests for files (for requirements --hash)
+    Hash {
+        /// Files to hash
+        files: Vec<String>,
+
+        /// Hash algorithm
+        #[arg(short, long, default_value = "sha256")]
+        algorithm: String,
+    },
+
+    /// Build wheel from project source
+    Wheel {
+        /// Source directory (default: current dir)
+        #[arg(default_value = ".")]
+        src: String,
+
+        /// Output directory for the wheel
+        #[arg(short, long, default_value = "dist")]
+        wheel_dir: String,
+    },
+
+    /// Show information about the ferryip configuration
+    Config {
+        /// Show all configuration values
+        #[arg(short, long)]
+        list: bool,
+    },
+
+    /// Output installed packages in pip-compatible format
+    Inspect,
+}
+
+#[derive(Subcommand)]
+enum CacheAction {
+    /// Show cache directory and size
+    Dir,
+    /// Show cached package info
+    Info,
+    /// List cached packages
+    List,
+    /// Remove all cached packages
+    Purge,
+    /// Remove a specific package from cache
+    Remove {
+        pattern: String,
+    },
 }
 
 pub fn run() {
@@ -128,6 +181,21 @@ pub fn run() {
         Commands::Project { path } => {
             let proj_path = path.unwrap_or_else(|| ".".to_string());
             install_project(&proj_path, &site_packages, quiet)
+        }
+        Commands::Cache { action } => {
+            handle_cache(action, quiet)
+        }
+        Commands::Hash { files, algorithm } => {
+            compute_hashes(&files, &algorithm)
+        }
+        Commands::Wheel { src, wheel_dir } => {
+            build_wheel(&src, &wheel_dir, quiet)
+        }
+        Commands::Config { list } => {
+            show_config(&site_packages, list)
+        }
+        Commands::Inspect => {
+            inspect_packages(&site_packages)
         }
     };
 
@@ -423,4 +491,349 @@ fn install_from_setup_cfg(path: &std::path::Path, site_packages: &str, quiet: bo
     }
 
     install_packages(&deps, site_packages, false, quiet)
+}
+
+// ── Cache management ─────────────────────────────────────────────────────────
+
+fn cache_dir() -> std::path::PathBuf {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            std::path::PathBuf::from(home).join(".cache")
+        });
+    base.join("ferryip").join("wheels")
+}
+
+fn handle_cache(action: CacheAction, _quiet: bool) -> Result<(), String> {
+    let dir = cache_dir();
+    match action {
+        CacheAction::Dir => {
+            println!("Package cache directory: {}", dir.display());
+            let size = dir_size(&dir);
+            println!("Cache size: {}", format_size(size));
+        }
+        CacheAction::Info => {
+            println!("Package cache location: {}", dir.display());
+            let count = count_cached(&dir);
+            let size = dir_size(&dir);
+            println!("Number of cached wheels: {}", count);
+            println!("Cache size: {}", format_size(size));
+        }
+        CacheAction::List => {
+            if !dir.exists() {
+                println!("Cache is empty.");
+                return Ok(());
+            }
+            let entries = std::fs::read_dir(&dir)
+                .map_err(|e| format!("Cannot read cache: {}", e))?;
+            let mut found = false;
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".whl") || name.ends_with(".tar.gz") {
+                    let meta = entry.metadata().ok();
+                    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                    println!("  {} ({})", name, format_size(size));
+                    found = true;
+                }
+            }
+            if !found {
+                println!("Cache is empty.");
+            }
+        }
+        CacheAction::Purge => {
+            if dir.exists() {
+                let count = count_cached(&dir);
+                std::fs::remove_dir_all(&dir)
+                    .map_err(|e| format!("Purge failed: {}", e))?;
+                println!("Removed {} cached files.", count);
+            } else {
+                println!("Cache is already empty.");
+            }
+        }
+        CacheAction::Remove { pattern } => {
+            if !dir.exists() {
+                println!("Cache is empty.");
+                return Ok(());
+            }
+            let pattern_lower = pattern.to_lowercase();
+            let entries = std::fs::read_dir(&dir)
+                .map_err(|e| format!("Cannot read cache: {}", e))?;
+            let mut removed = 0;
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.to_lowercase().contains(&pattern_lower) {
+                    let _ = std::fs::remove_file(entry.path());
+                    removed += 1;
+                }
+            }
+            println!("Removed {} cached file(s) matching '{}'.", removed, pattern);
+        }
+    }
+    Ok(())
+}
+
+fn dir_size(path: &std::path::Path) -> u64 {
+    if !path.exists() { return 0; }
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+fn count_cached(path: &std::path::Path) -> usize {
+    if !path.exists() { return 0; }
+    std::fs::read_dir(path)
+        .map(|entries| entries.flatten().count())
+        .unwrap_or(0)
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} kB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+// ── Hash computation ─────────────────────────────────────────────────────────
+
+fn compute_hashes(files: &[String], algorithm: &str) -> Result<(), String> {
+    use sha2::{Sha256, Digest};
+
+    if files.is_empty() {
+        return Err("No files specified".to_string());
+    }
+
+    for file_path in files {
+        let data = std::fs::read(file_path)
+            .map_err(|e| format!("Cannot read '{}': {}", file_path, e))?;
+
+        let hash = match algorithm {
+            "sha256" => {
+                let mut hasher = Sha256::new();
+                hasher.update(&data);
+                format!("{:x}", hasher.finalize())
+            }
+            other => return Err(format!("Unsupported algorithm '{}' (use sha256)", other)),
+        };
+
+        println!("{}:", file_path);
+        println!("--hash={}:{}", algorithm, hash);
+    }
+    Ok(())
+}
+
+// ── Wheel building ───────────────────────────────────────────────────────────
+
+fn build_wheel(src: &str, wheel_dir: &str, quiet: bool) -> Result<(), String> {
+    let src_path = std::path::Path::new(src);
+    let pyproject_path = src_path.join("pyproject.toml");
+
+    if !pyproject_path.exists() {
+        return Err(format!("No pyproject.toml found in {}", src_path.display()));
+    }
+
+    let pyproj = ferrython_toolchain::pyproject::parse_pyproject(&pyproject_path)?;
+    let name = pyproj.name()
+        .ok_or("No project name in pyproject.toml")?
+        .to_string();
+    let version = pyproj.version()
+        .unwrap_or("0.0.0")
+        .to_string();
+
+    let normalized_name = name.replace('-', "_").replace('.', "_");
+    let wheel_name = format!("{}-{}-py3-none-any.whl", normalized_name, version);
+
+    let out_dir = std::path::Path::new(wheel_dir);
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| format!("Cannot create output dir: {}", e))?;
+
+    let wheel_path = out_dir.join(&wheel_name);
+
+    // Build the wheel (zip archive)
+    let file = std::fs::File::create(&wheel_path)
+        .map_err(|e| format!("Cannot create wheel: {}", e))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    // Collect Python source files from the package directory
+    let pkg_dir = src_path.join(&normalized_name);
+    let alt_pkg_dir = src_path.join("src").join(&normalized_name);
+    let source_dir = if pkg_dir.exists() {
+        Some(pkg_dir)
+    } else if alt_pkg_dir.exists() {
+        Some(alt_pkg_dir)
+    } else {
+        None
+    };
+
+    let mut file_count = 0;
+    if let Some(ref pkg) = source_dir {
+        add_dir_to_zip(&mut zip, pkg, &normalized_name, &options, &mut file_count)
+            .map_err(|e| format!("Failed adding sources: {}", e))?;
+    } else {
+        // Single-file module: look for <name>.py in src dir
+        let single = src_path.join(format!("{}.py", normalized_name));
+        if single.exists() {
+            let content = std::fs::read_to_string(&single)
+                .map_err(|e| format!("Read error: {}", e))?;
+            zip.start_file(format!("{}.py", normalized_name), options)
+                .map_err(|e| format!("Zip error: {}", e))?;
+            use std::io::Write;
+            zip.write_all(content.as_bytes())
+                .map_err(|e| format!("Write error: {}", e))?;
+            file_count += 1;
+        } else {
+            return Err(format!("No package directory '{}' or '{}.py' found", normalized_name, normalized_name));
+        }
+    }
+
+    // Add dist-info
+    let dist_info_prefix = format!("{}-{}.dist-info", normalized_name, version);
+
+    // METADATA
+    let mut metadata = format!(
+        "Metadata-Version: 2.1\nName: {}\nVersion: {}\n",
+        name, version
+    );
+    if let Some(desc) = pyproj.description() {
+        metadata.push_str(&format!("Summary: {}\n", desc));
+    }
+    for dep in pyproj.dependencies() {
+        metadata.push_str(&format!("Requires-Dist: {}\n", dep));
+    }
+
+    zip.start_file(format!("{}/METADATA", dist_info_prefix), options)
+        .map_err(|e| format!("Zip error: {}", e))?;
+    {
+        use std::io::Write;
+        zip.write_all(metadata.as_bytes())
+            .map_err(|e| format!("Write error: {}", e))?;
+    }
+
+    // WHEEL
+    let wheel_metadata = format!(
+        "Wheel-Version: 1.0\nGenerator: ferryip\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+    );
+    zip.start_file(format!("{}/WHEEL", dist_info_prefix), options)
+        .map_err(|e| format!("Zip error: {}", e))?;
+    {
+        use std::io::Write;
+        zip.write_all(wheel_metadata.as_bytes())
+            .map_err(|e| format!("Write error: {}", e))?;
+    }
+
+    // RECORD (empty, will be filled by installer)
+    zip.start_file(format!("{}/RECORD", dist_info_prefix), options)
+        .map_err(|e| format!("Zip error: {}", e))?;
+
+    // Add entry points if defined
+    if let Some(scripts) = pyproj.scripts() {
+        let mut entry_points = String::from("[console_scripts]\n");
+        for (name, entry) in scripts {
+            entry_points.push_str(&format!("{} = {}\n", name, entry));
+        }
+        zip.start_file(format!("{}/entry_points.txt", dist_info_prefix), options)
+            .map_err(|e| format!("Zip error: {}", e))?;
+        use std::io::Write;
+        zip.write_all(entry_points.as_bytes())
+            .map_err(|e| format!("Write error: {}", e))?;
+    }
+
+    zip.finish().map_err(|e| format!("Zip finalize error: {}", e))?;
+
+    if !quiet {
+        println!("Built wheel: {} ({} source files)", wheel_name, file_count);
+        println!("  Output: {}", wheel_path.display());
+    }
+    Ok(())
+}
+
+fn add_dir_to_zip(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    dir: &std::path::Path,
+    prefix: &str,
+    options: &zip::write::SimpleFileOptions,
+    count: &mut usize,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("Cannot read {}: {}", dir.display(), e))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // Skip __pycache__, .pyc, hidden files
+        if name.starts_with('.') || name == "__pycache__" || name.ends_with(".pyc") {
+            continue;
+        }
+
+        let zip_path = format!("{}/{}", prefix, name);
+
+        if path.is_dir() {
+            add_dir_to_zip(zip, &path, &zip_path, options, count)?;
+        } else if name.ends_with(".py") || name.ends_with(".pyi") || name.ends_with(".json")
+            || name.ends_with(".txt") || name.ends_with(".cfg") || name.ends_with(".toml")
+        {
+            let content = std::fs::read(&path)
+                .map_err(|e| format!("Read {}: {}", path.display(), e))?;
+            zip.start_file(&zip_path, *options)
+                .map_err(|e| format!("Zip entry {}: {}", zip_path, e))?;
+            use std::io::Write;
+            zip.write_all(&content)
+                .map_err(|e| format!("Write {}: {}", zip_path, e))?;
+            *count += 1;
+        }
+    }
+    Ok(())
+}
+
+// ── Config / Inspect ─────────────────────────────────────────────────────────
+
+fn show_config(site_packages: &str, _list: bool) -> Result<(), String> {
+    let exe = std::env::current_exe().unwrap_or_default();
+    println!("ferryip version: 0.1.0");
+    println!("Ferrython compatible: 3.8+");
+    println!("Location: {}", exe.display());
+    println!("Site-packages: {}", site_packages);
+    println!("Cache directory: {}", cache_dir().display());
+    println!("Python platform: {}", if cfg!(target_os = "linux") { "linux" }
+             else if cfg!(target_os = "macos") { "darwin" }
+             else if cfg!(target_os = "windows") { "win32" }
+             else { "unknown" });
+    println!("Wheel tags: py3-none-any");
+    Ok(())
+}
+
+fn inspect_packages(site_packages: &str) -> Result<(), String> {
+    let packages = registry::list_installed(site_packages);
+    // Output in JSON-like format (pip inspect compatibility)
+    println!("{{");
+    println!("  \"version\": \"1\",");
+    println!("  \"pip_version\": \"ferryip-0.1.0\",");
+    println!("  \"installed\": [");
+    for (i, pkg) in packages.iter().enumerate() {
+        let comma = if i + 1 < packages.len() { "," } else { "" };
+        println!("    {{");
+        println!("      \"metadata\": {{");
+        println!("        \"name\": \"{}\",", pkg.name);
+        println!("        \"version\": \"{}\"", pkg.version);
+        println!("      }},");
+        println!("      \"installer\": \"ferryip\"");
+        println!("    }}{}", comma);
+    }
+    println!("  ]");
+    println!("}}");
+    Ok(())
 }
