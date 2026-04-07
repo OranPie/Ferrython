@@ -734,6 +734,51 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     ns.insert(CompactString::from("warning"), make_log_method(30, "WARNING", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
     ns.insert(CompactString::from("error"), make_log_method(40, "ERROR", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
     ns.insert(CompactString::from("critical"), make_log_method(50, "CRITICAL", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
+    // exception() — logs at ERROR level (same as error(), exc_info implied)
+    ns.insert(CompactString::from("exception"), make_log_method(40, "ERROR", handlers_list.clone(), logger_name.clone(), effective_level.clone()));
+    // log(level, msg, *args) — generic log method
+    {
+        let hl_log = handlers_list.clone();
+        let name_log = logger_name.clone();
+        let el_log = effective_level.clone();
+        ns.insert(CompactString::from("log"), PyObject::native_closure(
+            "log", move |args: &[PyObjectRef]| {
+                if args.len() < 2 { return Ok(PyObject::none()); }
+                let level = args[0].as_int().unwrap_or(20);
+                let eff = *el_log.read();
+                if eff > 0 && level < eff { return Ok(PyObject::none()); }
+                let msg = args[1].py_to_string();
+                let level_name = match level {
+                    10 => "DEBUG", 20 => "INFO", 30 => "WARNING",
+                    40 => "ERROR", 50 => "CRITICAL", _ => "UNKNOWN",
+                };
+                let record_attrs = IndexMap::from([
+                    (CompactString::from("message"), PyObject::str_val(CompactString::from(&msg))),
+                    (CompactString::from("msg"), PyObject::str_val(CompactString::from(&msg))),
+                    (CompactString::from("levelname"), PyObject::str_val(CompactString::from(level_name))),
+                    (CompactString::from("levelno"), PyObject::int(level)),
+                    (CompactString::from("name"), PyObject::str_val(name_log.clone())),
+                ]);
+                let record_cls = PyObject::class(CompactString::from("LogRecord"), vec![], IndexMap::new());
+                let record = PyObject::instance_with_attrs(record_cls, record_attrs);
+                if let PyObjectPayload::List(items) = &hl_log.payload {
+                    let r = items.read();
+                    if r.is_empty() {
+                        eprintln!("{}: {}", level_name, msg);
+                    } else {
+                        for handler in r.iter() {
+                            if let Some(emit) = handler.get_attr("emit") {
+                                if let PyObjectPayload::NativeClosure { func, .. } = &emit.payload {
+                                    let _ = func(&[record.clone()]);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(PyObject::none())
+            }
+        ));
+    }
 
     // setLevel — placeholder (patched after instance creation to update .level attr)
     let el = effective_level.clone();
@@ -757,7 +802,20 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(PyObject::none())
         }
     ));
-    ns.insert(CompactString::from("removeHandler"), make_builtin(|_| Ok(PyObject::none())));
+    ns.insert(CompactString::from("removeHandler"), {
+        let hl_rm = handlers_list.clone();
+        PyObject::native_closure("removeHandler", move |args: &[PyObjectRef]| {
+            if !args.is_empty() {
+                if let PyObjectPayload::List(items) = &hl_rm.payload {
+                    let mut w = items.write();
+                    // Remove by identity (pointer equality)
+                    let target = &args[0];
+                    w.retain(|h| !std::ptr::eq(h.as_ref(), target.as_ref()));
+                }
+            }
+            Ok(PyObject::none())
+        })
+    });
     let hl2 = handlers_list.clone();
     ns.insert(CompactString::from("hasHandlers"), PyObject::native_closure(
         "hasHandlers", move |_: &[PyObjectRef]| {

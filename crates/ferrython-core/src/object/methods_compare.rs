@@ -66,6 +66,30 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             }
             _ => {}
         }
+        // Check for dunder comparison methods on instances (__eq__, __lt__, __le__, __gt__, __ge__, __ne__)
+        {
+            let dunder = match op {
+                CompareOp::Eq => "__eq__",
+                CompareOp::Ne => "__ne__",
+                CompareOp::Lt => "__lt__",
+                CompareOp::Le => "__le__",
+                CompareOp::Gt => "__gt__",
+                CompareOp::Ge => "__ge__",
+            };
+            if let PyObjectPayload::Instance(inst) = &a.payload {
+                if let Some(method) = inst.attrs.read().get(dunder).cloned() {
+                    match &method.payload {
+                        PyObjectPayload::NativeClosure { func, .. } => {
+                            return func(&[a.clone(), b.clone()]);
+                        }
+                        PyObjectPayload::NativeFunction { func, .. } => {
+                            return func(&[a.clone(), b.clone()]);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         // NaN is never equal to anything, including itself
         let has_nan = match (&a.payload, &b.payload) {
             (PyObjectPayload::Float(f), _) if f.is_nan() => true,

@@ -29,6 +29,8 @@ pub fn create_collections_module() -> PyObjectRef {
         ("counter_update", make_builtin(counter_update)),
         ("counter_subtract", make_builtin(counter_subtract)),
         ("counter_total", make_builtin(counter_total)),
+        ("counter_copy", make_builtin(counter_copy)),
+        ("counter_clear", make_builtin(counter_clear)),
     ])
 }
 
@@ -229,6 +231,29 @@ fn counter_total(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         Err(PyException::type_error("counter_total requires a Counter"))
     }
+}
+
+fn counter_copy(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("counter_copy requires a Counter")); }
+    if let PyObjectPayload::Dict(map) = &args[0].payload {
+        let r = map.read();
+        Ok(PyObject::dict(r.clone()))
+    } else {
+        Err(PyException::type_error("counter_copy requires a Counter"))
+    }
+}
+
+fn counter_clear(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("counter_clear requires a Counter")); }
+    if let PyObjectPayload::Dict(map) = &args[0].payload {
+        let mut w = map.write();
+        let factory = w.get(&HashableKey::Str(CompactString::from("__defaultdict_factory__"))).cloned();
+        let marker = w.get(&HashableKey::Str(CompactString::from("__counter__"))).cloned();
+        w.clear();
+        if let Some(f) = factory { w.insert(HashableKey::Str(CompactString::from("__defaultdict_factory__")), f); }
+        if let Some(m) = marker { w.insert(HashableKey::Str(CompactString::from("__counter__")), m); }
+    }
+    Ok(PyObject::none())
 }
 
 fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

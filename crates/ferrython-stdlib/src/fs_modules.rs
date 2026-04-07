@@ -136,6 +136,32 @@ pub fn create_pathlib_module() -> PyObjectRef {
         Ok(PyObject::list(results))
     }));
 
+    // rglob(pattern) -> list of Path recursively matching
+    path_ns.insert(CompactString::from("rglob"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("rglob requires self and pattern")); }
+        let base = get_path_str(&args[0]);
+        let pattern = args[1].py_to_string();
+        let mut results = Vec::new();
+        fn walk_rglob(dir: &std::path::Path, pattern: &str, results: &mut Vec<PyObjectRef>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if simple_glob_match(pattern, &name) {
+                        let full = entry.path().to_string_lossy().to_string();
+                        if let Ok(p) = make_path_instance(&full) {
+                            results.push(p);
+                        }
+                    }
+                    if entry.path().is_dir() {
+                        walk_rglob(&entry.path(), pattern, results);
+                    }
+                }
+            }
+        }
+        walk_rglob(std::path::Path::new(&base), &pattern, &mut results);
+        Ok(PyObject::list(results))
+    }));
+
     // resolve() -> Path (absolute path)
     path_ns.insert(CompactString::from("resolve"), make_builtin(|args| {
         if args.is_empty() { return Err(PyException::type_error("resolve requires self")); }
@@ -183,6 +209,26 @@ pub fn create_pathlib_module() -> PyObjectRef {
         std::fs::rename(&src, &dst)
             .map_err(|e| PyException::runtime_error(format!("{}: '{}' -> '{}'", e, src, dst)))?;
         make_path_instance(&dst)
+    }));
+
+    // replace(target) -> Path (atomic rename, overwrites destination)
+    path_ns.insert(CompactString::from("replace"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("replace requires self and target")); }
+        let src = get_path_str(&args[0]);
+        let dst = args[1].py_to_string();
+        std::fs::rename(&src, &dst)
+            .map_err(|e| PyException::runtime_error(format!("{}: '{}' -> '{}'", e, src, dst)))?;
+        make_path_instance(&dst)
+    }));
+
+    // is_relative_to(other) -> bool (Python 3.9+)
+    path_ns.insert(CompactString::from("is_relative_to"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("is_relative_to requires self and other")); }
+        let path = get_path_str(&args[0]);
+        let other = args[1].py_to_string();
+        let p = std::path::Path::new(&path);
+        let o = std::path::Path::new(&other);
+        Ok(PyObject::bool_val(p.starts_with(o)))
     }));
 
     // is_symlink() -> bool
@@ -2382,6 +2428,10 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         a.insert(CompactString::from("returncode"), PyObject::none());
         a.insert(CompactString::from("args"), args[0].clone());
         a.insert(CompactString::from("pid"), PyObject::int(child_pid));
+        // Expose stdout/stderr/stdin as None or PIPE marker
+        a.insert(CompactString::from("stdout"), if capture_stdout { PyObject::str_val(CompactString::from("<pipe>")) } else { PyObject::none() });
+        a.insert(CompactString::from("stderr"), if capture_stderr { PyObject::str_val(CompactString::from("<pipe>")) } else { PyObject::none() });
+        a.insert(CompactString::from("stdin"), if pipe_stdin { PyObject::str_val(CompactString::from("<pipe>")) } else { PyObject::none() });
     }
     let is_text = text_mode;
 

@@ -82,10 +82,75 @@ pub fn get_recursion_limit() -> i64 {
 pub fn create_sys_module() -> PyObjectRef {
     make_module("sys", vec![
         ("version", PyObject::str_val(CompactString::from("3.8.0 (ferrython)"))),
-        ("version_info", PyObject::tuple(vec![
-            PyObject::int(3), PyObject::int(8), PyObject::int(0),
-            PyObject::str_val(CompactString::from("final")), PyObject::int(0),
-        ])),
+        ("version_info", {
+            let vi_attrs = IndexMap::from([
+                (CompactString::from("major"), PyObject::int(3)),
+                (CompactString::from("minor"), PyObject::int(8)),
+                (CompactString::from("micro"), PyObject::int(0)),
+                (CompactString::from("releaselevel"), PyObject::str_val(CompactString::from("final"))),
+                (CompactString::from("serial"), PyObject::int(0)),
+            ]);
+            let cls = PyObject::class(CompactString::from("sys.version_info"), vec![], IndexMap::new());
+            let inst = PyObject::instance_with_attrs(cls, vi_attrs);
+            // Also make it tuple-like for code that indexes sys.version_info[0]
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut attrs = d.attrs.write();
+                attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+                    "version_info.__getitem__", |args: &[PyObjectRef]| {
+                        // VM may pass (self, key) or just (key)
+                        let idx_obj = if args.len() >= 2 { &args[1] } else if !args.is_empty() { &args[0] } else {
+                            return Err(PyException::type_error("__getitem__ requires index"));
+                        };
+                        let idx = idx_obj.as_int().unwrap_or(0);
+                        Ok(match idx {
+                            0 => PyObject::int(3),
+                            1 => PyObject::int(8),
+                            2 => PyObject::int(0),
+                            3 => PyObject::str_val(CompactString::from("final")),
+                            4 => PyObject::int(0),
+                            _ => return Err(PyException::index_error("version_info index out of range")),
+                        })
+                    }
+                ));
+                attrs.insert(CompactString::from("__len__"), PyObject::native_closure(
+                    "version_info.__len__", |_: &[PyObjectRef]| Ok(PyObject::int(5))
+                ));
+                attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+                    "version_info.__repr__", |_: &[PyObjectRef]| {
+                        Ok(PyObject::str_val(CompactString::from("sys.version_info(major=3, minor=8, micro=0, releaselevel='final', serial=0)")))
+                    }
+                ));
+                let ge_fn = PyObject::native_closure("version_info.__ge__", |args: &[PyObjectRef]| {
+                    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+                    if let PyObjectPayload::Tuple(t) = &args[1].payload {
+                        let self_parts = [3i64, 8, 0];
+                        for (i, sp) in self_parts.iter().enumerate() {
+                            let other_val = t.get(i).and_then(|v| v.as_int()).unwrap_or(0);
+                            if *sp > other_val { return Ok(PyObject::bool_val(true)); }
+                            if *sp < other_val { return Ok(PyObject::bool_val(false)); }
+                        }
+                        return Ok(PyObject::bool_val(true)); // equal
+                    }
+                    Ok(PyObject::bool_val(false))
+                });
+                attrs.insert(CompactString::from("__ge__"), ge_fn);
+                let lt_fn = PyObject::native_closure("version_info.__lt__", |args: &[PyObjectRef]| {
+                    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+                    if let PyObjectPayload::Tuple(t) = &args[1].payload {
+                        let self_parts = [3i64, 8, 0];
+                        for (i, sp) in self_parts.iter().enumerate() {
+                            let other_val = t.get(i).and_then(|v| v.as_int()).unwrap_or(0);
+                            if *sp < other_val { return Ok(PyObject::bool_val(true)); }
+                            if *sp > other_val { return Ok(PyObject::bool_val(false)); }
+                        }
+                        return Ok(PyObject::bool_val(false)); // equal
+                    }
+                    Ok(PyObject::bool_val(false))
+                });
+                attrs.insert(CompactString::from("__lt__"), lt_fn);
+            }
+            inst
+        }),
         ("platform", PyObject::str_val(CompactString::from(std::env::consts::OS))),
         ("executable", PyObject::str_val(CompactString::from("ferrython"))),
         ("argv", PyObject::list(vec![PyObject::str_val(CompactString::from(""))])),
@@ -113,7 +178,18 @@ pub fn create_sys_module() -> PyObjectRef {
         ("byteorder", PyObject::str_val(CompactString::from(if cfg!(target_endian = "little") { "little" } else { "big" }))),
         ("prefix", PyObject::str_val(CompactString::from("/usr/local"))),
         ("exec_prefix", PyObject::str_val(CompactString::from("/usr/local"))),
-        ("implementation", PyObject::str_val(CompactString::from("ferrython"))),
+        ("implementation", {
+            let mut impl_attrs = IndexMap::new();
+            impl_attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from("ferrython")));
+            impl_attrs.insert(CompactString::from("version"), PyObject::tuple(vec![
+                PyObject::int(3), PyObject::int(8), PyObject::int(0),
+                PyObject::str_val(CompactString::from("final")), PyObject::int(0),
+            ]));
+            impl_attrs.insert(CompactString::from("cache_tag"), PyObject::str_val(CompactString::from("ferrython-38")));
+            impl_attrs.insert(CompactString::from("hexversion"), PyObject::int(0x030800f0));
+            let cls = PyObject::class(CompactString::from("sys.implementation"), vec![], IndexMap::new());
+            PyObject::instance_with_attrs(cls, impl_attrs)
+        }),
         ("stdin", make_stdio_object("<stdin>", "r", 0)),
         ("stdout", make_stdio_object("<stdout>", "w", 1)),
         ("stderr", make_stdio_object("<stderr>", "w", 2)),
@@ -454,6 +530,7 @@ pub fn create_os_module() -> PyObjectRef {
         ("rmdir", make_builtin(os_rmdir)),
         ("removedirs", make_builtin(os_removedirs)),
         ("rename", make_builtin(os_rename)),
+        ("replace", make_builtin(os_replace)),
         ("path", create_os_path_module()),
         ("getenv", make_builtin(os_getenv)),
         ("environ", {
@@ -973,6 +1050,13 @@ fn os_removedirs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 fn os_rename(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("os.rename", args, 2)?;
+    std::fs::rename(args[0].py_to_string(), args[1].py_to_string())
+        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+    Ok(PyObject::none())
+}
+fn os_replace(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args("os.replace", args, 2)?;
+    // On Unix, rename is atomic and replaces the destination
     std::fs::rename(args[0].py_to_string(), args[1].py_to_string())
         .map_err(|e| PyException::os_error(format!("{}", e)))?;
     Ok(PyObject::none())
@@ -1663,6 +1747,31 @@ pub fn create_platform_module() -> PyObjectRef {
             PyObject::str_val(CompactString::from(if cfg!(target_pointer_width = "64") { "64bit" } else { "32bit" })),
             PyObject::str_val(CompactString::from("ELF")),
         ])))),
+        ("python_version_tuple", make_builtin(|_| Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("3")),
+            PyObject::str_val(CompactString::from("8")),
+            PyObject::str_val(CompactString::from("0")),
+        ])))),
+        ("python_compiler", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("Ferrython (Rust)"))))),
+        ("python_build", make_builtin(|_| Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("default")),
+            PyObject::str_val(CompactString::from("")),
+        ])))),
+        ("uname", make_builtin(|_| {
+            let system = match std::env::consts::OS {
+                "linux" => "Linux", "macos" => "Darwin", "windows" => "Windows", o => o,
+            };
+            let machine = std::env::consts::ARCH;
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("system"), PyObject::str_val(CompactString::from(system)));
+            attrs.insert(CompactString::from("node"), PyObject::str_val(CompactString::from("localhost")));
+            attrs.insert(CompactString::from("release"), PyObject::str_val(CompactString::from("")));
+            attrs.insert(CompactString::from("version"), PyObject::str_val(CompactString::from("")));
+            attrs.insert(CompactString::from("machine"), PyObject::str_val(CompactString::from(machine)));
+            attrs.insert(CompactString::from("processor"), PyObject::str_val(CompactString::from(machine)));
+            let cls = PyObject::class(CompactString::from("uname_result"), vec![], IndexMap::new());
+            Ok(PyObject::instance_with_attrs(cls, attrs))
+        })),
     ])
 }
 
