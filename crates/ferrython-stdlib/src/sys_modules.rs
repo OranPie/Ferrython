@@ -102,7 +102,7 @@ pub fn create_sys_module() -> PyObjectRef {
                 (CompactString::from("releaselevel"), PyObject::str_val(CompactString::from("final"))),
                 (CompactString::from("serial"), PyObject::int(0)),
             ]);
-            let cls = PyObject::class(CompactString::from("sys.version_info"), vec![], IndexMap::new());
+            let cls = PyObject::class(CompactString::from("sys.version_info"), vec![PyObject::builtin_type(CompactString::from("tuple"))], IndexMap::new());
             let inst = PyObject::instance_with_attrs(cls, vi_attrs);
             // Also make it tuple-like for code that indexes sys.version_info[0]
             if let PyObjectPayload::Instance(ref d) = inst.payload {
