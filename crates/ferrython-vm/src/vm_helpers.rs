@@ -1520,6 +1520,8 @@ impl VirtualMachine {
                 }
                 drop(m);
                 // Merge locals dict into globals for execution scope
+                // Track original global keys so we can separate results later
+                let original_global_keys: Vec<CompactString> = new_globals.keys().cloned().collect();
                 if args.len() >= 3 {
                     if let PyObjectPayload::Dict(ref lmap) = args[2].payload {
                         let lm = lmap.read();
@@ -1535,20 +1537,30 @@ impl VirtualMachine {
                 }
                 let shared = Arc::new(RwLock::new(new_globals));
                 self.execute_with_globals(code, shared.clone())?;
-                // Write back results to globals dict
                 let results = shared.read();
-                let mut m = map.write();
-                for (k, v) in results.iter() {
-                    m.insert(HashableKey::Str(k.clone()), v.clone());
-                }
-                drop(m);
-                // Write back results to locals dict too
                 if args.len() >= 3 {
+                    // Separate globals/locals: only write back original global keys to globals,
+                    // and all new/modified keys to locals
+                    let mut gm = map.write();
+                    for (k, v) in results.iter() {
+                        if original_global_keys.contains(k) {
+                            gm.insert(HashableKey::Str(k.clone()), v.clone());
+                        }
+                    }
+                    drop(gm);
                     if let PyObjectPayload::Dict(ref lmap) = args[2].payload {
                         let mut lm = lmap.write();
                         for (k, v) in results.iter() {
-                            lm.insert(HashableKey::Str(k.clone()), v.clone());
+                            if !original_global_keys.contains(k) || lm.contains_key(&HashableKey::Str(k.clone())) {
+                                lm.insert(HashableKey::Str(k.clone()), v.clone());
+                            }
                         }
+                    }
+                } else {
+                    // No separate locals — write everything back to globals
+                    let mut m = map.write();
+                    for (k, v) in results.iter() {
+                        m.insert(HashableKey::Str(k.clone()), v.clone());
                     }
                 }
             } else {

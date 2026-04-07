@@ -348,7 +348,98 @@ pub fn create_operator_module() -> PyObjectRef {
                     PyObjectPayload::NativeFunction { func, .. } => func(&full_args),
                     PyObjectPayload::NativeClosure { func, .. } => func(&full_args),
                     PyObjectPayload::BuiltinBoundMethod { receiver, method_name, .. } => {
-                        // Try to resolve common methods without VM
+                        // Handle BuiltinBoundMethod with extra args by dispatching common methods
+                        if !extra_args.is_empty() {
+                            let s = receiver.py_to_string();
+                            match method_name.as_str() {
+                                "split" => {
+                                    let sep = extra_args[0].py_to_string();
+                                    let maxsplit = if extra_args.len() > 1 { extra_args[1].as_int().unwrap_or(-1) } else { -1 };
+                                    let parts: Vec<&str> = if maxsplit < 0 {
+                                        s.split(&*sep).collect()
+                                    } else {
+                                        s.splitn(maxsplit as usize + 1, &*sep).collect()
+                                    };
+                                    return Ok(PyObject::list(parts.into_iter().map(|p| PyObject::str_val(CompactString::from(p))).collect()));
+                                }
+                                "rsplit" => {
+                                    let sep = extra_args[0].py_to_string();
+                                    let maxsplit = if extra_args.len() > 1 { extra_args[1].as_int().unwrap_or(-1) } else { -1 };
+                                    let parts: Vec<&str> = if maxsplit < 0 {
+                                        s.rsplit(&*sep).collect()
+                                    } else {
+                                        s.rsplitn(maxsplit as usize + 1, &*sep).collect()
+                                    };
+                                    let mut result: Vec<PyObjectRef> = parts.into_iter().map(|p| PyObject::str_val(CompactString::from(p))).collect();
+                                    result.reverse();
+                                    return Ok(PyObject::list(result));
+                                }
+                                "replace" => {
+                                    let old = extra_args[0].py_to_string();
+                                    let new = if extra_args.len() > 1 { extra_args[1].py_to_string() } else { String::new() };
+                                    let count = if extra_args.len() > 2 { extra_args[2].as_int().unwrap_or(-1) } else { -1 };
+                                    let result = if count < 0 {
+                                        s.replace(&*old, &new)
+                                    } else {
+                                        s.replacen(&*old, &new, count as usize)
+                                    };
+                                    return Ok(PyObject::str_val(CompactString::from(result)));
+                                }
+                                "join" => {
+                                    let items = extra_args[0].to_list().unwrap_or_default();
+                                    let joined: String = items.iter().map(|i| i.py_to_string()).collect::<Vec<_>>().join(&s);
+                                    return Ok(PyObject::str_val(CompactString::from(joined)));
+                                }
+                                "encode" => {
+                                    return Ok(PyObject::bytes(s.into_bytes()));
+                                }
+                                "find" => {
+                                    let sub = extra_args[0].py_to_string();
+                                    let idx = s.find(&*sub).map(|i| i as i64).unwrap_or(-1);
+                                    return Ok(PyObject::int(idx));
+                                }
+                                "count" => {
+                                    let sub = extra_args[0].py_to_string();
+                                    return Ok(PyObject::int(s.matches(&*sub).count() as i64));
+                                }
+                                "startswith" => {
+                                    let prefix = extra_args[0].py_to_string();
+                                    return Ok(PyObject::bool_val(s.starts_with(&*prefix)));
+                                }
+                                "endswith" => {
+                                    let suffix = extra_args[0].py_to_string();
+                                    return Ok(PyObject::bool_val(s.ends_with(&*suffix)));
+                                }
+                                "center" | "ljust" | "rjust" => {
+                                    let width = extra_args[0].as_int().unwrap_or(0) as usize;
+                                    let fill = if extra_args.len() > 1 {
+                                        extra_args[1].py_to_string().chars().next().unwrap_or(' ')
+                                    } else { ' ' };
+                                    let result = if s.len() >= width {
+                                        s.clone()
+                                    } else {
+                                        let pad = width - s.len();
+                                        match method_name.as_str() {
+                                            "center" => {
+                                                let left = pad / 2;
+                                                let right = pad - left;
+                                                format!("{}{}{}", fill.to_string().repeat(left), s, fill.to_string().repeat(right))
+                                            }
+                                            "ljust" => format!("{}{}", s, fill.to_string().repeat(pad)),
+                                            "rjust" => format!("{}{}", fill.to_string().repeat(pad), s),
+                                            _ => s.clone(),
+                                        }
+                                    };
+                                    return Ok(PyObject::str_val(CompactString::from(result)));
+                                }
+                                _ => {
+                                    // Fallback: use deferred call
+                                    crate::concurrency_modules::push_deferred_call(method.clone(), extra_args.clone());
+                                    return Ok(PyObject::none());
+                                }
+                            }
+                        }
+                        // No extra args: try common zero-arg string methods
                         let result_str = match method_name.as_str() {
                             "upper" => Some(receiver.py_to_string().to_uppercase()),
                             "lower" => Some(receiver.py_to_string().to_lowercase()),

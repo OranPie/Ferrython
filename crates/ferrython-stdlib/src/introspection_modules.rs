@@ -943,19 +943,38 @@ pub fn create_dis_module() -> PyObjectRef {
             )),
         };
         let output = disassemble_code_to_string(&code, 0);
-        // Check for file= keyword argument (last arg if it's a StringIO or similar)
-        let mut written = false;
+        // Resolve file= keyword argument from trailing kwargs dict or positional arg
+        let mut file_obj: Option<PyObjectRef> = None;
         if args.len() >= 2 {
-            // Keyword handling: check if there's a "file" kwarg passed positionally
-            let file_obj = &args[args.len() - 1];
-            if let PyObjectPayload::Instance(ref inst) = file_obj.payload {
+            let last = &args[args.len() - 1];
+            // kwargs packed as trailing dict by VM
+            if let PyObjectPayload::Dict(map) = &last.payload {
+                let r = map.read();
+                if let Some(f) = r.get(&HashableKey::Str(CompactString::from("file"))) {
+                    file_obj = Some(f.clone());
+                }
+            }
+            // Also accept positional file-like object
+            if file_obj.is_none() {
+                if let PyObjectPayload::Instance(_) = &last.payload {
+                    file_obj = Some(last.clone());
+                }
+            }
+        }
+        let mut written = false;
+        if let Some(ref fobj) = file_obj {
+            if let PyObjectPayload::Instance(ref inst) = fobj.payload {
                 if let Some(write_fn) = inst.attrs.read().get("write").cloned() {
-                    if let Some(write_call) = match &write_fn.payload {
-                        PyObjectPayload::NativeFunction { func, .. } => Some(func),
-                        _ => None,
-                    } {
-                        write_call(&[PyObject::str_val(CompactString::from(output.as_str()))])?;
-                        written = true;
+                    match &write_fn.payload {
+                        PyObjectPayload::NativeFunction { func, .. } => {
+                            func(&[PyObject::str_val(CompactString::from(output.as_str()))])?;
+                            written = true;
+                        }
+                        PyObjectPayload::NativeClosure { func, .. } => {
+                            func(&[PyObject::str_val(CompactString::from(output.as_str()))])?;
+                            written = true;
+                        }
+                        _ => {}
                     }
                 }
             }

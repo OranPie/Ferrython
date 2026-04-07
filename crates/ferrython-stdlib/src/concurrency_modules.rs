@@ -241,7 +241,35 @@ pub fn create_threading_module() -> PyObjectRef {
             let mut attrs = inst_data.attrs.write();
             let l1 = locked.clone();
             attrs.insert(CompactString::from("acquire"), PyObject::native_closure(
-                "acquire", move |_: &[PyObjectRef]| { *l1.write() = true; Ok(PyObject::bool_val(true)) }));
+                "acquire", move |args: &[PyObjectRef]| {
+                    // Parse blocking kwarg: acquire(blocking=True, timeout=-1)
+                    let mut blocking = true;
+                    for a in args {
+                        match &a.payload {
+                            PyObjectPayload::Bool(b) => { blocking = *b; }
+                            PyObjectPayload::Dict(map) => {
+                                let r = map.read();
+                                if let Some(v) = r.get(&HashableKey::Str(CompactString::from("blocking"))) {
+                                    blocking = v.is_truthy();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let mut g = l1.write();
+                    if *g {
+                        // Already locked
+                        if blocking {
+                            // In real impl would block; just return True (single-thread semantics)
+                            Ok(PyObject::bool_val(true))
+                        } else {
+                            Ok(PyObject::bool_val(false))
+                        }
+                    } else {
+                        *g = true;
+                        Ok(PyObject::bool_val(true))
+                    }
+                }));
             let l2 = locked.clone();
             attrs.insert(CompactString::from("release"), PyObject::native_closure(
                 "release", move |_: &[PyObjectRef]| { *l2.write() = false; Ok(PyObject::none()) }));
@@ -270,11 +298,34 @@ pub fn create_threading_module() -> PyObjectRef {
             let mut attrs = inst_data.attrs.write();
             let s1 = state.clone();
             attrs.insert(CompactString::from("acquire"), PyObject::native_closure(
-                "acquire", move |_: &[PyObjectRef]| {
+                "acquire", move |args: &[PyObjectRef]| {
+                    let mut blocking = true;
+                    for a in args {
+                        match &a.payload {
+                            PyObjectPayload::Bool(b) => { blocking = *b; }
+                            PyObjectPayload::Dict(map) => {
+                                let r = map.read();
+                                if let Some(v) = r.get(&HashableKey::Str(CompactString::from("blocking"))) {
+                                    blocking = v.is_truthy();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     let mut s = s1.write();
-                    s.0 = true;
-                    s.1 += 1;
-                    Ok(PyObject::bool_val(true))
+                    if s.0 && blocking {
+                        // Reentrant — always succeeds
+                        s.1 += 1;
+                        Ok(PyObject::bool_val(true))
+                    } else if s.0 && !blocking {
+                        // Non-blocking on already-locked: RLock is reentrant, so succeed
+                        s.1 += 1;
+                        Ok(PyObject::bool_val(true))
+                    } else {
+                        s.0 = true;
+                        s.1 += 1;
+                        Ok(PyObject::bool_val(true))
+                    }
                 }));
             let s2 = state.clone();
             attrs.insert(CompactString::from("release"), PyObject::native_closure(

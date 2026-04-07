@@ -1201,11 +1201,23 @@ pub fn create_tempfile_module() -> PyObjectRef {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn temp_name(prefix: &str, suffix: &str) -> String {
+        // Use counter + process ID + random bits to generate unique names
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!("{}{}_{}_{}{}", 
+        let pid = std::process::id();
+        let rand_bits: u64 = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            n.hash(&mut h);
+            pid.hash(&mut h);
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_nanos().hash(&mut h);
+            h.finish()
+        };
+        format!("{}{}{}{}{}{}",
             std::env::temp_dir().to_string_lossy(),
             std::path::MAIN_SEPARATOR,
-            prefix, n, suffix)
+            prefix, rand_bits, n, suffix)
     }
 
     make_module("tempfile", vec![
@@ -1225,7 +1237,7 @@ pub fn create_tempfile_module() -> PyObjectRef {
                 }
             }
             let dir = temp_name(&prefix, &suffix);
-            std::fs::create_dir_all(&dir)
+            std::fs::create_dir(&dir)
                 .map_err(|e| PyException::runtime_error(format!("mkdtemp: {}", e)))?;
             Ok(PyObject::str_val(CompactString::from(dir)))
         })),
