@@ -157,6 +157,9 @@ fn main() {
         println!("Project commands:");
         println!("  new NAME        Create a new project with pyproject.toml");
         println!("  init            Initialize current directory as a project");
+        println!("  run [SCRIPT]    Run project entry point or a script in venv context");
+        println!("  build           Build project (create wheel/sdist)");
+        println!("  test [ARGS]     Run project tests (discovers test_*.py files)");
         return;
     }
 
@@ -172,6 +175,21 @@ fn main() {
 
     if args[1] == "init" {
         run_init_project(&args[2..]);
+        return;
+    }
+
+    if args[1] == "run" {
+        run_project_script(&args[2..]);
+        return;
+    }
+
+    if args[1] == "build" {
+        run_project_build(&args[2..]);
+        return;
+    }
+
+    if args[1] == "test" {
+        run_project_tests(&args[2..]);
         return;
     }
 
@@ -550,4 +568,405 @@ fn run_init_project(extra_args: &[String]) {
             process::exit(1);
         }
     }
+}
+
+/// Handle `ferrython run [script]` — run a script or project entry point.
+///
+/// If a script path is given, runs it directly (with venv site-packages on path).
+/// Otherwise, looks for pyproject.toml [project.scripts] or falls back to src/<name>/__main__.py.
+fn run_project_script(extra_args: &[String]) {
+    // Activate venv if present
+    activate_venv_if_present();
+
+    // If explicit script given, run it
+    if !extra_args.is_empty() && !extra_args[0].starts_with('-') {
+        let filename = &extra_args[0];
+        if let Some(parent) = std::path::Path::new(filename.as_str()).parent() {
+            ferrython_import::prepend_search_path(parent.to_path_buf());
+        }
+        match fs::read_to_string(filename) {
+            Ok(source) => run_string(&source, filename),
+            Err(e) => {
+                eprintln!("ferrython run: can't open '{}': {}", filename, e);
+                process::exit(2);
+            }
+        }
+        return;
+    }
+
+    // Look for pyproject.toml entry point
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let pyproject_path = cwd.join("pyproject.toml");
+    if pyproject_path.exists() {
+        if let Ok(content) = fs::read_to_string(&pyproject_path) {
+            if let Ok(config) = ferrython_toolchain::pyproject::parse_pyproject_str(&content) {
+                let name = config.name().unwrap_or_default();
+                // Try src/<name>/__main__.py
+                let main_paths = [
+                    cwd.join("src").join(&name).join("__main__.py"),
+                    cwd.join(&name).join("__main__.py"),
+                    cwd.join("__main__.py"),
+                    cwd.join("main.py"),
+                ];
+                for main_path in &main_paths {
+                    if main_path.exists() {
+                        ferrython_import::prepend_search_path(cwd.join("src"));
+                        ferrython_import::prepend_search_path(cwd.clone());
+                        if let Ok(source) = fs::read_to_string(main_path) {
+                            let fname = main_path.to_string_lossy().to_string();
+                            run_string(&source, &fname);
+                            return;
+                        }
+                    }
+                }
+                eprintln!("ferrython run: no entry point found for project '{}'", name);
+                eprintln!("  Expected one of:");
+                for p in &main_paths {
+                    eprintln!("    {}", p.display());
+                }
+                process::exit(1);
+            }
+        }
+    }
+    eprintln!("ferrython run: no pyproject.toml found in current directory");
+    process::exit(1);
+}
+
+/// Handle `ferrython build` — build wheel/sdist from pyproject.toml.
+fn run_project_build(_extra_args: &[String]) {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let pyproject_path = cwd.join("pyproject.toml");
+
+    if !pyproject_path.exists() {
+        eprintln!("ferrython build: no pyproject.toml found in current directory");
+        process::exit(1);
+    }
+
+    let content = match fs::read_to_string(&pyproject_path) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("ferrython build: {}", e); process::exit(1); }
+    };
+
+    let config = match ferrython_toolchain::pyproject::parse_pyproject_str(&content) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("ferrython build: invalid pyproject.toml: {}", e); process::exit(1); }
+    };
+
+    let name = config.name().unwrap_or_else(|| "unknown".to_string());
+    let version = config.version().unwrap_or("0.0.0").to_string();
+    let dist_dir = cwd.join("dist");
+    fs::create_dir_all(&dist_dir).ok();
+
+    println!("Building {}-{}...", name, version);
+
+    // Build sdist (.tar.gz)
+    let sdist_name = format!("{}-{}.tar.gz", name, version);
+    let sdist_path = dist_dir.join(&sdist_name);
+    match build_sdist(&cwd, &name, &version, &sdist_path) {
+        Ok(()) => println!("  Created sdist: dist/{}", sdist_name),
+        Err(e) => eprintln!("  Warning: sdist creation failed: {}", e),
+    }
+
+    // Build wheel (.whl)
+    let wheel_name = format!("{}-{}-py3-none-any.whl", name, version);
+    let wheel_path = dist_dir.join(&wheel_name);
+    match build_wheel(&cwd, &name, &version, &wheel_path, &config) {
+        Ok(()) => println!("  Created wheel: dist/{}", wheel_name),
+        Err(e) => eprintln!("  Warning: wheel creation failed: {}", e),
+    }
+
+    println!("Build complete.");
+}
+
+/// Handle `ferrython test [args]` — discover and run tests.
+fn run_project_tests(extra_args: &[String]) {
+    activate_venv_if_present();
+
+    let cwd = std::env::current_dir().unwrap_or_default();
+    ferrython_import::prepend_search_path(cwd.join("src"));
+    ferrython_import::prepend_search_path(cwd.clone());
+
+    // If explicit test file given, run it
+    if !extra_args.is_empty() && !extra_args[0].starts_with('-') {
+        let filename = &extra_args[0];
+        match fs::read_to_string(filename) {
+            Ok(source) => {
+                println!("Running {}...", filename);
+                run_string(&source, filename);
+            }
+            Err(e) => {
+                eprintln!("ferrython test: can't open '{}': {}", filename, e);
+                process::exit(2);
+            }
+        }
+        return;
+    }
+
+    // Auto-discover test files
+    let test_dirs = ["tests", "test", "."];
+    let mut test_files = Vec::new();
+    for dir_name in &test_dirs {
+        let dir = cwd.join(dir_name);
+        if dir.is_dir() {
+            discover_test_files(&dir, &mut test_files);
+        }
+    }
+
+    if test_files.is_empty() {
+        eprintln!("ferrython test: no test files found (test_*.py or *_test.py)");
+        process::exit(1);
+    }
+
+    test_files.sort();
+    test_files.dedup();
+    println!("Discovered {} test file(s):", test_files.len());
+
+    let mut passed = 0;
+    let mut failed = 0;
+    for test_file in &test_files {
+        let rel = test_file.strip_prefix(&cwd).unwrap_or(test_file);
+        print!("  {} ... ", rel.display());
+        match fs::read_to_string(test_file) {
+            Ok(source) => {
+                let fname = test_file.to_string_lossy().to_string();
+                match execute_pipeline(&source, &fname) {
+                    Ok(()) => { println!("ok"); passed += 1; }
+                    Err((e, _vm)) => {
+                        println!("FAIL");
+                        e.report(&fname);
+                        failed += 1;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("ERROR ({})", e);
+                failed += 1;
+            }
+        }
+    }
+
+    println!();
+    println!("{} passed, {} failed", passed, failed);
+    if failed > 0 { process::exit(1); }
+}
+
+// ── Helper functions for project commands ──
+
+fn activate_venv_if_present() {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let venv_dirs = [".venv", "venv", ".env"];
+    for venv_name in &venv_dirs {
+        let venv_dir = cwd.join(venv_name);
+        if venv_dir.join("pyvenv.cfg").exists() {
+            let site_packages = venv_dir.join("lib").join("python3.8").join("site-packages");
+            if site_packages.is_dir() {
+                ferrython_import::prepend_search_path(site_packages);
+            }
+            // Also check lib/pythonX.Y/site-packages with glob
+            if let Ok(entries) = fs::read_dir(venv_dir.join("lib")) {
+                for entry in entries.flatten() {
+                    let sp = entry.path().join("site-packages");
+                    if sp.is_dir() {
+                        ferrython_import::prepend_search_path(sp);
+                    }
+                }
+            }
+            break;
+        }
+    }
+}
+
+fn discover_test_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Recurse into subdirectories (but skip hidden dirs, __pycache__, etc.)
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if !name.starts_with('.') && name != "__pycache__" && name != "node_modules" {
+                    discover_test_files(&path, out);
+                }
+            }
+        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.ends_with(".py") && (name.starts_with("test_") || name.ends_with("_test.py")) {
+                out.push(path);
+            }
+        }
+    }
+}
+
+fn build_sdist(
+    project_dir: &std::path::Path,
+    name: &str,
+    version: &str,
+    output: &std::path::Path,
+) -> Result<(), String> {
+    let file = fs::File::create(output).map_err(|e| e.to_string())?;
+    let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut tar = tar::Builder::new(enc);
+    let prefix = format!("{}-{}", name, version);
+
+    // Add Python source files
+    let src_dirs = ["src", name, "."];
+    for dir_name in &src_dirs {
+        let dir = project_dir.join(dir_name);
+        if dir.is_dir() {
+            add_python_files_to_tar(&mut tar, &dir, project_dir, &prefix)?;
+        }
+    }
+
+    // Add pyproject.toml
+    let pyproject = project_dir.join("pyproject.toml");
+    if pyproject.exists() {
+        let data = fs::read(&pyproject).map_err(|e| e.to_string())?;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(
+            &mut header,
+            format!("{}/pyproject.toml", prefix),
+            data.as_slice(),
+        ).map_err(|e| e.to_string())?;
+    }
+
+    // Add PKG-INFO
+    let pkg_info = format!(
+        "Metadata-Version: 2.1\nName: {}\nVersion: {}\n",
+        name, version
+    );
+    let mut header = tar::Header::new_gnu();
+    header.set_size(pkg_info.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    tar.append_data(
+        &mut header,
+        format!("{}/PKG-INFO", prefix),
+        pkg_info.as_bytes(),
+    ).map_err(|e| e.to_string())?;
+
+    let enc = tar.into_inner().map_err(|e| e.to_string())?;
+    enc.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn build_wheel(
+    project_dir: &std::path::Path,
+    name: &str,
+    version: &str,
+    output: &std::path::Path,
+    config: &ferrython_toolchain::pyproject::PyProject,
+) -> Result<(), String> {
+    use std::io::Write;
+    let file = fs::File::create(output).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let dist_info = format!("{}-{}.dist-info", name, version);
+
+    // Collect source files
+    let src_dirs = ["src", name];
+    for dir_name in &src_dirs {
+        let dir = project_dir.join(dir_name);
+        if dir.is_dir() {
+            add_python_files_to_zip(&mut zip, &dir, project_dir, "", &options)?;
+        }
+    }
+
+    // METADATA
+    let description = config.description().unwrap_or_default();
+    let requires_python = config.requires_python().unwrap_or_default();
+    let mut metadata = format!(
+        "Metadata-Version: 2.1\nName: {}\nVersion: {}\n",
+        name, version
+    );
+    if !description.is_empty() {
+        metadata.push_str(&format!("Summary: {}\n", description));
+    }
+    if !requires_python.is_empty() {
+        metadata.push_str(&format!("Requires-Python: {}\n", requires_python));
+    }
+    for dep in config.dependencies() {
+        metadata.push_str(&format!("Requires-Dist: {}\n", dep));
+    }
+    zip.start_file(format!("{}/METADATA", dist_info), options).map_err(|e| e.to_string())?;
+    zip.write_all(metadata.as_bytes()).map_err(|e| e.to_string())?;
+
+    // WHEEL
+    let wheel_content = format!(
+        "Wheel-Version: 1.0\nGenerator: ferrython {}\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        "0.1.0"
+    );
+    zip.start_file(format!("{}/WHEEL", dist_info), options).map_err(|e| e.to_string())?;
+    zip.write_all(wheel_content.as_bytes()).map_err(|e| e.to_string())?;
+
+    // RECORD (empty — we'd normally hash all files)
+    zip.start_file(format!("{}/RECORD", dist_info), options).map_err(|e| e.to_string())?;
+    zip.write_all(b"").map_err(|e| e.to_string())?;
+
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn add_python_files_to_tar<W: std::io::Write>(
+    tar: &mut tar::Builder<W>,
+    dir: &std::path::Path,
+    base: &std::path::Path,
+    prefix: &str,
+) -> Result<(), String> {
+    for entry in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().unwrap().to_str().unwrap_or("");
+            if !name.starts_with('.') && name != "__pycache__" {
+                add_python_files_to_tar(tar, &path, base, prefix)?;
+            }
+        } else if let Some(ext) = path.extension() {
+            if ext == "py" || ext == "pyi" || ext == "toml" || ext == "cfg" || ext == "txt" {
+                let rel = path.strip_prefix(base).map_err(|e| e.to_string())?;
+                let tar_path = format!("{}/{}", prefix, rel.display());
+                let data = fs::read(&path).map_err(|e| e.to_string())?;
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append_data(&mut header, tar_path, data.as_slice())
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn add_python_files_to_zip<W: std::io::Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    dir: &std::path::Path,
+    base: &std::path::Path,
+    _prefix: &str,
+    options: &zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    use std::io::Write;
+    for entry in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().unwrap().to_str().unwrap_or("");
+            if !name.starts_with('.') && name != "__pycache__" {
+                add_python_files_to_zip(zip, &path, base, _prefix, options)?;
+            }
+        } else if let Some(ext) = path.extension() {
+            if ext == "py" || ext == "pyi" {
+                let rel = path.strip_prefix(base).map_err(|e| e.to_string())?;
+                let zip_path = rel.display().to_string();
+                let data = fs::read(&path).map_err(|e| e.to_string())?;
+                zip.start_file(&zip_path, *options).map_err(|e| e.to_string())?;
+                zip.write_all(&data).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(()
+    )
 }

@@ -1007,10 +1007,16 @@ impl VirtualMachine {
 
     /// Build a minimal frame object for trace/profile callbacks.
     fn make_trace_frame(&self) -> PyObjectRef {
-        let frame = self.call_stack.last().unwrap();
+        self.make_trace_frame_at(self.call_stack.len() - 1)
+    }
+
+    fn make_trace_frame_at(&self, depth: usize) -> PyObjectRef {
+        let frame = &self.call_stack[depth];
         let ip = if frame.ip > 0 { frame.ip - 1 } else { 0 };
         let lineno = Self::ip_to_line(&frame.code, ip);
         let mut attrs = IndexMap::new();
+
+        // f_code: code object with co_filename, co_name, co_firstlineno, co_varnames, co_argcount
         attrs.insert(CompactString::from("f_code"), {
             let mut code_attrs = IndexMap::new();
             code_attrs.insert(CompactString::from("co_filename"),
@@ -1019,12 +1025,52 @@ impl VirtualMachine {
                 PyObject::str_val(frame.code.name.clone()));
             code_attrs.insert(CompactString::from("co_firstlineno"),
                 PyObject::int(frame.code.first_line_number as i64));
+            code_attrs.insert(CompactString::from("co_argcount"),
+                PyObject::int(frame.code.arg_count as i64));
+            let varnames: Vec<PyObjectRef> = frame.code.varnames.iter()
+                .map(|n| PyObject::str_val(n.clone()))
+                .collect();
+            code_attrs.insert(CompactString::from("co_varnames"),
+                PyObject::tuple(varnames));
             PyObject::module_with_attrs(CompactString::from("code"), code_attrs)
         });
+
         attrs.insert(CompactString::from("f_lineno"), PyObject::int(lineno as i64));
-        attrs.insert(CompactString::from("f_locals"), PyObject::dict_from_pairs(vec![]));
-        attrs.insert(CompactString::from("f_globals"), PyObject::dict_from_pairs(vec![]));
-        attrs.insert(CompactString::from("f_back"), PyObject::none());
+        attrs.insert(CompactString::from("f_lasti"), PyObject::int(ip as i64));
+
+        // f_locals: real local variables from the frame
+        let mut local_pairs = Vec::new();
+        for (i, name) in frame.code.varnames.iter().enumerate() {
+            if let Some(Some(val)) = frame.locals.get(i) {
+                local_pairs.push((
+                    PyObject::str_val(name.clone()),
+                    val.clone(),
+                ));
+            }
+        }
+        // Also include named locals from local_names map
+        for (name, val) in &frame.local_names {
+            local_pairs.push((
+                PyObject::str_val(name.clone()),
+                val.clone(),
+            ));
+        }
+        attrs.insert(CompactString::from("f_locals"), PyObject::dict_from_pairs(local_pairs));
+
+        // f_globals: snapshot of globals dict
+        let global_pairs: Vec<(PyObjectRef, PyObjectRef)> = frame.globals.read().iter()
+            .map(|(k, v)| (PyObject::str_val(k.clone()), v.clone()))
+            .collect();
+        attrs.insert(CompactString::from("f_globals"), PyObject::dict_from_pairs(global_pairs));
+
+        // f_back: parent frame (if exists)
+        let f_back = if depth > 0 {
+            self.make_trace_frame_at(depth - 1)
+        } else {
+            PyObject::none()
+        };
+        attrs.insert(CompactString::from("f_back"), f_back);
+
         PyObject::module_with_attrs(CompactString::from("frame"), attrs)
     }
 

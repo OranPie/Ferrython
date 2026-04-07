@@ -409,9 +409,12 @@ dependencies = [
  "ferrython-stdlib",
  "ferrython-toolchain",
  "ferrython-vm",
+ "flate2",
+ "tar",
  "thiserror 1.0.69",
  "tracing",
  "tracing-subscriber",
+ "zip",
 ]
 
 [[package]]
