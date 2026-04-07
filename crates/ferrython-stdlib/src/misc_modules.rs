@@ -699,7 +699,19 @@ pub fn create_dataclasses_module() -> PyObjectRef {
             dataclass_apply(&cls, true, false, false, true, false)
         })),
         ("FrozenInstanceError", PyObject::exception_type(ferrython_core::error::ExceptionKind::AttributeError)),
-        ("InitVar", make_builtin(|_| Ok(PyObject::none()))),
+        ("InitVar", make_builtin(|args: &[PyObjectRef]| {
+            // InitVar acts as a type marker for dataclass fields
+            let cls = PyObject::class(CompactString::from("InitVar"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut attrs = d.attrs.write();
+                attrs.insert(CompactString::from("__initvar__"), PyObject::bool_val(true));
+                if !args.is_empty() {
+                    attrs.insert(CompactString::from("type"), args[0].clone());
+                }
+            }
+            Ok(inst)
+        })),
     ])
 }
 
@@ -1308,8 +1320,28 @@ pub fn create_contextvars_module() -> PyObjectRef {
             let inst = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref data) = inst.payload {
                 let mut attrs = data.attrs.write();
-                attrs.insert(CompactString::from("run"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("copy"), make_builtin(|_| Ok(PyObject::none())));
+                attrs.insert(CompactString::from("run"), make_builtin(|args: &[PyObjectRef]| {
+                    if args.is_empty() { return Err(PyException::type_error("Context.run() requires a callable")); }
+                    let callable = &args[0];
+                    let call_args: Vec<PyObjectRef> = args[1..].to_vec();
+                    match &callable.payload {
+                        PyObjectPayload::NativeFunction { func, .. } => func(&call_args),
+                        PyObjectPayload::NativeClosure { func, .. } => func(&call_args),
+                        _ => {
+                            ferrython_core::error::request_vm_call(callable.clone(), call_args);
+                            Ok(PyObject::none())
+                        }
+                    }
+                }));
+                attrs.insert(CompactString::from("copy"), make_builtin(|_| {
+                    let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
+                    let copy_inst = PyObject::instance(cls);
+                    if let PyObjectPayload::Instance(ref d) = copy_inst.payload {
+                        let mut a = d.attrs.write();
+                        a.insert(CompactString::from("__len__"), make_builtin(|_| Ok(PyObject::int(0))));
+                    }
+                    Ok(copy_inst)
+                }));
             }
             Ok(inst)
         })),
@@ -1318,9 +1350,28 @@ pub fn create_contextvars_module() -> PyObjectRef {
             let inst = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref data) = inst.payload {
                 let mut attrs = data.attrs.write();
-                attrs.insert(CompactString::from("run"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("copy"), make_builtin(|_| Ok(PyObject::none())));
-                // __len__ returns 0 since we don't actually track context vars globally
+                attrs.insert(CompactString::from("run"), make_builtin(|args: &[PyObjectRef]| {
+                    if args.is_empty() { return Err(PyException::type_error("Context.run() requires a callable")); }
+                    let callable = &args[0];
+                    let call_args: Vec<PyObjectRef> = args[1..].to_vec();
+                    match &callable.payload {
+                        PyObjectPayload::NativeFunction { func, .. } => func(&call_args),
+                        PyObjectPayload::NativeClosure { func, .. } => func(&call_args),
+                        _ => {
+                            ferrython_core::error::request_vm_call(callable.clone(), call_args);
+                            Ok(PyObject::none())
+                        }
+                    }
+                }));
+                attrs.insert(CompactString::from("copy"), make_builtin(|_| {
+                    let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
+                    let copy_inst = PyObject::instance(cls);
+                    if let PyObjectPayload::Instance(ref d) = copy_inst.payload {
+                        let mut a = d.attrs.write();
+                        a.insert(CompactString::from("__len__"), make_builtin(|_| Ok(PyObject::int(0))));
+                    }
+                    Ok(copy_inst)
+                }));
                 attrs.insert(CompactString::from("__len__"), make_builtin(|_| Ok(PyObject::int(0))));
             }
             Ok(inst)
@@ -1399,23 +1450,180 @@ pub fn create_mimetypes_module() -> PyObjectRef {
 // ── readline module ──
 
 pub fn create_readline_module() -> PyObjectRef {
-    // Stub readline — used by REPL but mostly no-ops in embedded context
+    // Shared readline state
+    let history: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+    let history_max_len: Arc<RwLock<i64>> = Arc::new(RwLock::new(-1)); // -1 = unlimited
+    let completer: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(None));
+    let completer_delims: Arc<RwLock<String>> = Arc::new(RwLock::new(
+        " \t\n`~!@#$%^&*()-=+[{]}\\|;:'\",<>/?".to_string()
+    ));
+    let startup_hook: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(None));
+    let pre_input_hook: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(None));
+
+    let h = history.clone();
+    let add_history_fn = PyObject::native_closure("add_history", move |args: &[PyObjectRef]| {
+        if !args.is_empty() {
+            let line = args[0].py_to_string();
+            h.write().push(line);
+        }
+        Ok(PyObject::none())
+    });
+
+    let h = history.clone();
+    let clear_history_fn = PyObject::native_closure("clear_history", move |_: &[PyObjectRef]| {
+        h.write().clear();
+        Ok(PyObject::none())
+    });
+
+    let h = history.clone();
+    let get_current_history_length_fn = PyObject::native_closure("get_current_history_length", move |_: &[PyObjectRef]| {
+        Ok(PyObject::int(h.read().len() as i64))
+    });
+
+    let ml = history_max_len.clone();
+    let get_history_length_fn = PyObject::native_closure("get_history_length", move |_: &[PyObjectRef]| {
+        Ok(PyObject::int(*ml.read()))
+    });
+
+    let ml = history_max_len.clone();
+    let set_history_length_fn = PyObject::native_closure("set_history_length", move |args: &[PyObjectRef]| {
+        if !args.is_empty() {
+            let n = args[0].as_int().unwrap_or(-1);
+            *ml.write() = n;
+        }
+        Ok(PyObject::none())
+    });
+
+    let h = history.clone();
+    let read_history_file_fn = PyObject::native_closure("read_history_file", move |args: &[PyObjectRef]| {
+        let path = if !args.is_empty() {
+            args[0].py_to_string()
+        } else {
+            "~/.history".to_string()
+        };
+        let expanded = if path.starts_with('~') {
+            if let Ok(home) = std::env::var("HOME") {
+                path.replacen('~', &home, 1)
+            } else { path }
+        } else { path };
+        if let Ok(contents) = std::fs::read_to_string(&expanded) {
+            let mut hist = h.write();
+            for line in contents.lines() {
+                if !line.is_empty() {
+                    hist.push(line.to_string());
+                }
+            }
+        }
+        Ok(PyObject::none())
+    });
+
+    let h = history.clone();
+    let write_history_file_fn = PyObject::native_closure("write_history_file", move |args: &[PyObjectRef]| {
+        let path = if !args.is_empty() {
+            args[0].py_to_string()
+        } else {
+            "~/.history".to_string()
+        };
+        let expanded = if path.starts_with('~') {
+            if let Ok(home) = std::env::var("HOME") {
+                path.replacen('~', &home, 1)
+            } else { path }
+        } else { path };
+        let hist = h.read();
+        let contents = hist.join("\n");
+        let _ = std::fs::write(&expanded, contents);
+        Ok(PyObject::none())
+    });
+
+    let c = completer.clone();
+    let set_completer_fn = PyObject::native_closure("set_completer", move |args: &[PyObjectRef]| {
+        if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::None) {
+            *c.write() = Some(args[0].clone());
+        } else {
+            *c.write() = None;
+        }
+        Ok(PyObject::none())
+    });
+
+    let c = completer.clone();
+    let get_completer_fn = PyObject::native_closure("get_completer", move |_: &[PyObjectRef]| {
+        Ok(c.read().clone().unwrap_or_else(PyObject::none))
+    });
+
+    let d = completer_delims.clone();
+    let set_completer_delims_fn = PyObject::native_closure("set_completer_delims", move |args: &[PyObjectRef]| {
+        if !args.is_empty() {
+            *d.write() = args[0].py_to_string();
+        }
+        Ok(PyObject::none())
+    });
+
+    let d = completer_delims.clone();
+    let get_completer_delims_fn = PyObject::native_closure("get_completer_delims", move |_: &[PyObjectRef]| {
+        Ok(PyObject::str_val(CompactString::from(d.read().as_str())))
+    });
+
+    let sh = startup_hook.clone();
+    let set_startup_hook_fn = PyObject::native_closure("set_startup_hook", move |args: &[PyObjectRef]| {
+        if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::None) {
+            *sh.write() = Some(args[0].clone());
+        } else {
+            *sh.write() = None;
+        }
+        Ok(PyObject::none())
+    });
+
+    let pih = pre_input_hook.clone();
+    let set_pre_input_hook_fn = PyObject::native_closure("set_pre_input_hook", move |args: &[PyObjectRef]| {
+        if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::None) {
+            *pih.write() = Some(args[0].clone());
+        } else {
+            *pih.write() = None;
+        }
+        Ok(PyObject::none())
+    });
+
+    let h = history.clone();
+    let get_history_item_fn = PyObject::native_closure("get_history_item", move |args: &[PyObjectRef]| {
+        if args.is_empty() { return Err(PyException::type_error("get_history_item requires an index")); }
+        let idx = args[0].as_int().unwrap_or(0) as usize;
+        let hist = h.read();
+        // readline uses 1-based indexing
+        if idx >= 1 && idx <= hist.len() {
+            Ok(PyObject::str_val(CompactString::from(hist[idx - 1].as_str())))
+        } else {
+            Ok(PyObject::none())
+        }
+    });
+
+    let h = history.clone();
+    let remove_history_item_fn = PyObject::native_closure("remove_history_item", move |args: &[PyObjectRef]| {
+        if args.is_empty() { return Err(PyException::type_error("remove_history_item requires an index")); }
+        let idx = args[0].as_int().unwrap_or(0) as usize;
+        let mut hist = h.write();
+        if idx < hist.len() {
+            hist.remove(idx);
+        }
+        Ok(PyObject::none())
+    });
+
     make_module("readline", vec![
         ("parse_and_bind", make_builtin(|_| Ok(PyObject::none()))),
-        ("set_completer", make_builtin(|_| Ok(PyObject::none()))),
-        ("get_completer", make_builtin(|_| Ok(PyObject::none()))),
-        ("set_completer_delims", make_builtin(|_| Ok(PyObject::none()))),
-        ("get_completer_delims", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(" \t\n`~!@#$%^&*()-=+[{]}\\|;:'\",<>/?"))
-        ))),
-        ("add_history", make_builtin(|_| Ok(PyObject::none()))),
-        ("clear_history", make_builtin(|_| Ok(PyObject::none()))),
-        ("get_history_length", make_builtin(|_| Ok(PyObject::int(-1)))),
-        ("set_history_length", make_builtin(|_| Ok(PyObject::none()))),
-        ("get_current_history_length", make_builtin(|_| Ok(PyObject::int(0)))),
-        ("read_history_file", make_builtin(|_| Ok(PyObject::none()))),
-        ("write_history_file", make_builtin(|_| Ok(PyObject::none()))),
-        ("set_startup_hook", make_builtin(|_| Ok(PyObject::none()))),
-        ("set_pre_input_hook", make_builtin(|_| Ok(PyObject::none()))),
+        ("set_completer", set_completer_fn),
+        ("get_completer", get_completer_fn),
+        ("set_completer_delims", set_completer_delims_fn),
+        ("get_completer_delims", get_completer_delims_fn),
+        ("add_history", add_history_fn),
+        ("clear_history", clear_history_fn),
+        ("get_history_length", get_history_length_fn),
+        ("set_history_length", set_history_length_fn),
+        ("get_current_history_length", get_current_history_length_fn),
+        ("get_history_item", get_history_item_fn),
+        ("remove_history_item", remove_history_item_fn),
+        ("read_history_file", read_history_file_fn),
+        ("write_history_file", write_history_file_fn),
+        ("set_startup_hook", set_startup_hook_fn),
+        ("set_pre_input_hook", set_pre_input_hook_fn),
     ])
 }
 
@@ -1627,11 +1835,47 @@ pub fn create_pstats_module() -> PyObjectRef {
                 if !args.is_empty() {
                     attrs.insert(CompactString::from("_data"), args[0].clone());
                 }
-                attrs.insert(CompactString::from("sort_stats"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("print_stats"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("print_callers"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("print_callees"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("strip_dirs"), make_builtin(|_| Ok(PyObject::none())));
+                // Stats methods return self for chaining
+                let self_ref = inst.clone();
+                let s = self_ref.clone();
+                attrs.insert(CompactString::from("sort_stats"), PyObject::native_closure(
+                    "Stats.sort_stats", move |args: &[PyObjectRef]| {
+                        // Store sort key for reference
+                        if let PyObjectPayload::Instance(ref d) = s.payload {
+                            if !args.is_empty() {
+                                d.attrs.write().insert(
+                                    CompactString::from("_sort_key"),
+                                    args[0].clone(),
+                                );
+                            }
+                        }
+                        Ok(s.clone())
+                    }
+                ));
+                let s = self_ref.clone();
+                attrs.insert(CompactString::from("print_stats"), PyObject::native_closure(
+                    "Stats.print_stats", move |_: &[PyObjectRef]| {
+                        Ok(s.clone())
+                    }
+                ));
+                let s = self_ref.clone();
+                attrs.insert(CompactString::from("print_callers"), PyObject::native_closure(
+                    "Stats.print_callers", move |_: &[PyObjectRef]| {
+                        Ok(s.clone())
+                    }
+                ));
+                let s = self_ref.clone();
+                attrs.insert(CompactString::from("print_callees"), PyObject::native_closure(
+                    "Stats.print_callees", move |_: &[PyObjectRef]| {
+                        Ok(s.clone())
+                    }
+                ));
+                let s = self_ref.clone();
+                attrs.insert(CompactString::from("strip_dirs"), PyObject::native_closure(
+                    "Stats.strip_dirs", move |_: &[PyObjectRef]| {
+                        Ok(s.clone())
+                    }
+                ));
             }
             Ok(inst)
         })),
@@ -2101,45 +2345,125 @@ fn base64_decode(input: &str) -> Vec<u8> {
 
 // ── curses module (stub) ──
 
+/// Helper to create a curses window object with standard methods
+fn make_curses_window(nlines: i64, ncols: i64, begin_y: i64, begin_x: i64) -> PyObjectRef {
+    let cls = PyObject::class(CompactString::from("Window"), vec![], IndexMap::new());
+    let win = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref d) = win.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("_nlines"), PyObject::int(nlines));
+        w.insert(CompactString::from("_ncols"), PyObject::int(ncols));
+        w.insert(CompactString::from("_begin_y"), PyObject::int(begin_y));
+        w.insert(CompactString::from("_begin_x"), PyObject::int(begin_x));
+        w.insert(CompactString::from("_cur_y"), PyObject::int(0));
+        w.insert(CompactString::from("_cur_x"), PyObject::int(0));
+
+        let self_ref = win.clone();
+        let s = self_ref.clone();
+        w.insert(CompactString::from("addstr"), PyObject::native_closure("addstr", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("addnstr"), PyObject::native_closure("addnstr", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("refresh"), PyObject::native_closure("refresh", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("clear"), PyObject::native_closure("clear", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("erase"), PyObject::native_closure("erase", move |_| Ok(s.clone())));
+        w.insert(CompactString::from("getch"), make_builtin(|_| Ok(PyObject::int(-1))));
+        w.insert(CompactString::from("getkey"), make_builtin(|_| Ok(PyObject::str_val(CompactString::from("")))));
+        let nl = nlines;
+        let nc = ncols;
+        w.insert(CompactString::from("getmaxyx"), PyObject::native_closure("getmaxyx", move |_| {
+            Ok(PyObject::tuple(vec![PyObject::int(nl), PyObject::int(nc)]))
+        }));
+        w.insert(CompactString::from("getyx"), make_builtin(|_| Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::int(0)]))));
+        w.insert(CompactString::from("getbegyx"), {
+            let by = begin_y;
+            let bx = begin_x;
+            PyObject::native_closure("getbegyx", move |_| {
+                Ok(PyObject::tuple(vec![PyObject::int(by), PyObject::int(bx)]))
+            })
+        });
+        let s = self_ref.clone();
+        w.insert(CompactString::from("move"), PyObject::native_closure("move", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("clrtoeol"), PyObject::native_closure("clrtoeol", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("clrtobot"), PyObject::native_closure("clrtobot", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("keypad"), PyObject::native_closure("keypad", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("nodelay"), PyObject::native_closure("nodelay", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("timeout"), PyObject::native_closure("timeout", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("scrollok"), PyObject::native_closure("scrollok", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("idlok"), PyObject::native_closure("idlok", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("border"), PyObject::native_closure("border", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("box"), PyObject::native_closure("box", move |_| Ok(s.clone())));
+        w.insert(CompactString::from("subwin"), make_builtin(|args: &[PyObjectRef]| {
+            let (nl, nc, by, bx) = match args.len() {
+                4 => (
+                    args[0].as_int().unwrap_or(24),
+                    args[1].as_int().unwrap_or(80),
+                    args[2].as_int().unwrap_or(0),
+                    args[3].as_int().unwrap_or(0),
+                ),
+                2 => (args[0].as_int().unwrap_or(24), args[1].as_int().unwrap_or(80), 0, 0),
+                _ => (24, 80, 0, 0),
+            };
+            Ok(make_curses_window(nl, nc, by, bx))
+        }));
+        w.insert(CompactString::from("derwin"), make_builtin(|args: &[PyObjectRef]| {
+            let (nl, nc, by, bx) = match args.len() {
+                4 => (
+                    args[0].as_int().unwrap_or(24),
+                    args[1].as_int().unwrap_or(80),
+                    args[2].as_int().unwrap_or(0),
+                    args[3].as_int().unwrap_or(0),
+                ),
+                2 => (args[0].as_int().unwrap_or(24), args[1].as_int().unwrap_or(80), 0, 0),
+                _ => (24, 80, 0, 0),
+            };
+            Ok(make_curses_window(nl, nc, by, bx))
+        }));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("mvaddstr"), PyObject::native_closure("mvaddstr", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("attron"), PyObject::native_closure("attron", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("attroff"), PyObject::native_closure("attroff", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("attrset"), PyObject::native_closure("attrset", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("bkgd"), PyObject::native_closure("bkgd", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("noutrefresh"), PyObject::native_closure("noutrefresh", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("insstr"), PyObject::native_closure("insstr", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("deleteln"), PyObject::native_closure("deleteln", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("insertln"), PyObject::native_closure("insertln", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("scroll"), PyObject::native_closure("scroll", move |_| Ok(s.clone())));
+        let s = self_ref.clone();
+        w.insert(CompactString::from("setscrreg"), PyObject::native_closure("setscrreg", move |_| Ok(s.clone())));
+        w.insert(CompactString::from("inch"), make_builtin(|_| Ok(PyObject::int(32)))); // space char
+        w.insert(CompactString::from("instr"), make_builtin(|_| Ok(PyObject::str_val(CompactString::from("")))));
+    }
+    win
+}
+
 pub fn create_curses_module() -> PyObjectRef {
     // Stub curses module — provides constants and no-op functions
     // so that programs that conditionally import curses don't crash.
 
     let initscr_fn = make_builtin(|_: &[PyObjectRef]| {
-        // Return a "window" object with basic methods
-        let cls = PyObject::class(CompactString::from("Window"), vec![], IndexMap::new());
-        let win = PyObject::instance(cls);
-        if let PyObjectPayload::Instance(ref d) = win.payload {
-            let mut w = d.attrs.write();
-            w.insert(CompactString::from("addstr"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("addnstr"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("refresh"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("clear"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("erase"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("getch"), make_builtin(|_| Ok(PyObject::int(-1))));
-            w.insert(CompactString::from("getkey"), make_builtin(|_| Ok(PyObject::str_val(CompactString::from("")))));
-            w.insert(CompactString::from("getmaxyx"), make_builtin(|_| Ok(PyObject::tuple(vec![PyObject::int(24), PyObject::int(80)]))));
-            w.insert(CompactString::from("getyx"), make_builtin(|_| Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::int(0)]))));
-            w.insert(CompactString::from("move"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("clrtoeol"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("clrtobot"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("keypad"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("nodelay"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("timeout"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("scrollok"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("idlok"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("border"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("box"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("subwin"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("derwin"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("mvaddstr"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("attron"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("attroff"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("attrset"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("bkgd"), make_builtin(|_| Ok(PyObject::none())));
-            w.insert(CompactString::from("noutrefresh"), make_builtin(|_| Ok(PyObject::none())));
-        }
-        Ok(win)
+        Ok(make_curses_window(24, 80, 0, 0))
     });
 
     let wrapper_fn = make_builtin(|args: &[PyObjectRef]| {
@@ -2147,10 +2471,10 @@ pub fn create_curses_module() -> PyObjectRef {
         if args.is_empty() {
             return Err(PyException::type_error("wrapper() requires a callable"));
         }
-        // We can't call Python functions from native easily, queue it
+        let stdscr = make_curses_window(24, 80, 0, 0);
         ferrython_core::error::request_vm_call(
             args[0].clone(),
-            vec![PyObject::none()], // stdscr placeholder
+            vec![stdscr],
         );
         Ok(PyObject::none())
     });
@@ -2170,10 +2494,36 @@ pub fn create_curses_module() -> PyObjectRef {
         ("noecho", make_builtin(|_| Ok(PyObject::none()))),
         ("raw", make_builtin(|_| Ok(PyObject::none()))),
         ("noraw", make_builtin(|_| Ok(PyObject::none()))),
-        ("curs_set", make_builtin(|_| Ok(PyObject::none()))),
-        ("newwin", initscr_fn),
-        ("newpad", make_builtin(|_| Ok(PyObject::none()))),
-        ("napms", make_builtin(|_| Ok(PyObject::none()))),
+        ("curs_set", make_builtin(|args| {
+            // Returns previous cursor visibility (0, 1, or 2)
+            let _new = args.first().and_then(|a| a.as_int()).unwrap_or(1);
+            Ok(PyObject::int(1))
+        })),
+        ("newwin", make_builtin(|args: &[PyObjectRef]| {
+            let (nl, nc, by, bx) = match args.len() {
+                4 => (
+                    args[0].as_int().unwrap_or(24),
+                    args[1].as_int().unwrap_or(80),
+                    args[2].as_int().unwrap_or(0),
+                    args[3].as_int().unwrap_or(0),
+                ),
+                2 => (args[0].as_int().unwrap_or(24), args[1].as_int().unwrap_or(80), 0, 0),
+                _ => (24, 80, 0, 0),
+            };
+            Ok(make_curses_window(nl, nc, by, bx))
+        })),
+        ("newpad", make_builtin(|args: &[PyObjectRef]| {
+            let nl = args.first().and_then(|a| a.as_int()).unwrap_or(100);
+            let nc = args.get(1).and_then(|a| a.as_int()).unwrap_or(100);
+            Ok(make_curses_window(nl, nc, 0, 0))
+        })),
+        ("napms", make_builtin(|args| {
+            let ms = args.first().and_then(|a| a.as_int()).unwrap_or(0);
+            if ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+            }
+            Ok(PyObject::none())
+        })),
         ("beep", make_builtin(|_| Ok(PyObject::none()))),
         ("flash", make_builtin(|_| Ok(PyObject::none()))),
         ("doupdate", make_builtin(|_| Ok(PyObject::none()))),
@@ -2184,6 +2534,10 @@ pub fn create_curses_module() -> PyObjectRef {
         ("isendwin", make_builtin(|_| Ok(PyObject::bool_val(false)))),
         ("erasechar", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("\x08"))))),
         ("killchar", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("\x15"))))),
+        ("LINES", PyObject::int(24)),
+        ("COLS", PyObject::int(80)),
+        ("COLORS", PyObject::int(256)),
+        ("COLOR_PAIRS", PyObject::int(256)),
         // Color constants
         ("COLOR_BLACK", PyObject::int(0)),
         ("COLOR_RED", PyObject::int(1)),
@@ -2223,25 +2577,49 @@ pub fn create_curses_module() -> PyObjectRef {
     ])
 }
 
-// ── ctypes module (stub) ──
+// ── ctypes module ──
 
 fn make_ctype(name: &str) -> PyObjectRef {
     // Create a callable ctypes type: c_int(42) → instance with .value attribute
     let type_name = CompactString::from(name);
     let cls = PyObject::class(type_name.clone(), vec![], IndexMap::new());
     let cls_clone = cls.clone();
+    let name_owned = name.to_string();
     PyObject::native_closure(name, move |args: &[PyObjectRef]| {
         let value = if args.is_empty() {
-            PyObject::int(0)
+            // Default values depend on type
+            if name_owned.contains("char_p") || name_owned.contains("wchar_p") {
+                PyObject::none()
+            } else if name_owned.contains("double") || name_owned.contains("float") {
+                PyObject::float(0.0)
+            } else if name_owned.contains("bool") {
+                PyObject::bool_val(false)
+            } else {
+                PyObject::int(0)
+            }
         } else {
             args[0].clone()
         };
         let inst = PyObject::instance(cls_clone.clone());
         if let PyObjectPayload::Instance(ref d) = inst.payload {
-            d.attrs.write().insert(CompactString::from("value"), value);
+            let mut attrs = d.attrs.write();
+            attrs.insert(CompactString::from("value"), value);
+            attrs.insert(CompactString::from("_type_"), PyObject::str_val(CompactString::from(name_owned.as_str())));
         }
         Ok(inst)
     })
+}
+
+/// Return the standard byte size for a ctypes type name
+fn ctype_sizeof(name: &str) -> i64 {
+    match name {
+        n if n.contains("int8") || n.contains("byte") || n.contains("char") && !n.contains("char_p") || n.contains("bool") => 1,
+        n if n.contains("int16") || n.contains("short") => 2,
+        n if n.contains("int32") || n == "c_int" || n == "c_uint" || n.contains("float") && !n.contains("double") => 4,
+        n if n.contains("int64") || n.contains("long") || n.contains("double") || n.contains("size_t") || n.contains("ssize_t") => 8,
+        n if n.contains("_p") || n.contains("void_p") => std::mem::size_of::<usize>() as i64,
+        _ => 8,
+    }
 }
 
 pub fn create_ctypes_module() -> PyObjectRef {
@@ -2268,25 +2646,80 @@ pub fn create_ctypes_module() -> PyObjectRef {
     let c_size_t = make_ctype("c_size_t");
     let c_ssize_t = make_ctype("c_ssize_t");
 
-    let structure_cls = PyObject::class(CompactString::from("Structure"), vec![], IndexMap::new());
-    let union_cls = PyObject::class(CompactString::from("Union"), vec![], IndexMap::new());
+    let structure_cls = {
+        let mut ns = IndexMap::new();
+        // _fields_ is typically set by subclasses, but provide a default empty list
+        ns.insert(CompactString::from("_fields_"), PyObject::list(vec![]));
+        ns.insert(CompactString::from("_pack_"), PyObject::int(0));
+        PyObject::class(CompactString::from("Structure"), vec![], ns)
+    };
+    let union_cls = {
+        let mut ns = IndexMap::new();
+        ns.insert(CompactString::from("_fields_"), PyObject::list(vec![]));
+        PyObject::class(CompactString::from("Union"), vec![], ns)
+    };
     let array_cls = PyObject::class(CompactString::from("Array"), vec![], IndexMap::new());
 
-    // CDLL stub
+    // CDLL stub — returns an object whose attribute access returns callable stubs
     let cdll_fn = make_builtin(|args: &[PyObjectRef]| {
         let name = args.first().map(|a| a.py_to_string()).unwrap_or_default();
         let cls = PyObject::class(CompactString::from("CDLL"), vec![], IndexMap::new());
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
-            d.attrs.write().insert(CompactString::from("_name"), PyObject::str_val(CompactString::from(name)));
+            let mut attrs = d.attrs.write();
+            attrs.insert(CompactString::from("_name"), PyObject::str_val(CompactString::from(name.as_str())));
+            attrs.insert(CompactString::from("_handle"), PyObject::int(0));
         }
         Ok(inst)
     });
 
-    // cast, POINTER, pointer, byref, addressof, sizeof
+    // POINTER(type) → returns a new pointer type callable
     let pointer_fn = make_builtin(|args: &[PyObjectRef]| {
         if args.is_empty() { return Err(PyException::type_error("POINTER requires a type")); }
-        Ok(args[0].clone())
+        let base_type = args[0].clone();
+        let type_name = format!("LP_{}", base_type.py_to_string());
+        let ptr_cls = PyObject::class(CompactString::from(type_name.as_str()), vec![], IndexMap::new());
+        let ptr_cls_clone = ptr_cls.clone();
+        Ok(PyObject::native_closure(&type_name, move |args: &[PyObjectRef]| {
+            let inst = PyObject::instance(ptr_cls_clone.clone());
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut attrs = d.attrs.write();
+                attrs.insert(CompactString::from("_type_"), base_type.clone());
+                attrs.insert(CompactString::from("contents"), if args.is_empty() {
+                    PyObject::none()
+                } else {
+                    args[0].clone()
+                });
+            }
+            Ok(inst)
+        }))
+    });
+
+    // byref(obj, offset=0) → reference wrapper with ._obj
+    let byref_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Err(PyException::type_error("byref requires an argument")); }
+        let cls = PyObject::class(CompactString::from("CArgObject"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut attrs = d.attrs.write();
+            attrs.insert(CompactString::from("_obj"), args[0].clone());
+            attrs.insert(CompactString::from("value"), args[0].clone());
+            let offset = if args.len() > 1 { args[1].as_int().unwrap_or(0) } else { 0 };
+            attrs.insert(CompactString::from("_offset"), PyObject::int(offset));
+        }
+        Ok(inst)
+    });
+
+    // sizeof(type_or_instance)
+    let sizeof_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Err(PyException::type_error("sizeof requires an argument")); }
+        // Try to get type name from _type_ attr or class name
+        let type_name = if let Some(t) = args[0].get_attr("_type_") {
+            t.py_to_string()
+        } else {
+            args[0].py_to_string()
+        };
+        Ok(PyObject::int(ctype_sizeof(&type_name)))
     });
 
     make_module("ctypes", vec![
@@ -2327,18 +2760,24 @@ pub fn create_ctypes_module() -> PyObjectRef {
         ("POINTER", pointer_fn.clone()),
         ("pointer", pointer_fn),
         ("cast", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("cast requires arguments")); }
-            Ok(args[0].clone())
+            if args.len() < 2 { return Err(PyException::type_error("cast requires obj and type")); }
+            // Return a new instance of the target type wrapping the source value
+            let source = &args[0];
+            let target_type = &args[1];
+            match &target_type.payload {
+                PyObjectPayload::NativeFunction { func, .. } => func(&[source.clone()]),
+                PyObjectPayload::NativeClosure { func, .. } => func(&[source.clone()]),
+                _ => Ok(source.clone()),
+            }
         })),
-        ("byref", make_builtin(|args| {
-            if args.is_empty() { return Err(PyException::type_error("byref requires an argument")); }
-            Ok(args[0].clone())
+        ("byref", byref_fn),
+        ("addressof", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("addressof requires an argument")); }
+            // Return a fake address based on the Arc pointer
+            let ptr = Arc::as_ptr(&args[0]) as usize;
+            Ok(PyObject::int(ptr as i64))
         })),
-        ("addressof", make_builtin(|_| Ok(PyObject::int(0)))),
-        ("sizeof", make_builtin(|args| {
-            // Return reasonable sizes for common types
-            Ok(PyObject::int(args.first().map(|_| 8i64).unwrap_or(0)))
-        })),
+        ("sizeof", sizeof_fn),
         ("create_string_buffer", make_builtin(|args| {
             let size = args.first().and_then(|a| a.as_int()).unwrap_or(256) as usize;
             Ok(PyObject::bytes(vec![0u8; size]))
@@ -2348,9 +2787,15 @@ pub fn create_ctypes_module() -> PyObjectRef {
             Ok(PyObject::str_val(CompactString::from("\0".repeat(size))))
         })),
         ("get_errno", make_builtin(|_| Ok(PyObject::int(0)))),
-        ("set_errno", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("set_errno", make_builtin(|args| {
+            let _new_val = args.first().and_then(|a| a.as_int()).unwrap_or(0);
+            Ok(PyObject::int(0)) // return old errno (always 0 in stub)
+        })),
         ("get_last_error", make_builtin(|_| Ok(PyObject::int(0)))),
-        ("set_last_error", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("set_last_error", make_builtin(|args| {
+            let _new_val = args.first().and_then(|a| a.as_int()).unwrap_or(0);
+            Ok(PyObject::int(0)) // return old error (always 0 in stub)
+        })),
         ("util", {
             // ctypes.util.find_library
             let mut util_attrs = IndexMap::new();
