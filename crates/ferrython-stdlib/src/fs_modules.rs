@@ -638,16 +638,26 @@ pub fn create_shutil_module() -> PyObjectRef {
         ("copy", make_builtin(|args| {
             if args.len() < 2 { return Err(PyException::type_error("copy requires src and dst")); }
             let src = args[0].py_to_string();
-            let dst = args[1].py_to_string();
+            let mut dst = std::path::PathBuf::from(args[1].py_to_string());
+            if dst.is_dir() {
+                if let Some(fname) = std::path::Path::new(&src).file_name() {
+                    dst = dst.join(fname);
+                }
+            }
             std::fs::copy(&src, &dst).map_err(|e| PyException::runtime_error(format!("{}", e)))?;
-            Ok(PyObject::str_val(CompactString::from(dst)))
+            Ok(PyObject::str_val(CompactString::from(dst.to_string_lossy().to_string())))
         })),
         ("copy2", make_builtin(|args| {
             if args.len() < 2 { return Err(PyException::type_error("copy2 requires src and dst")); }
             let src = args[0].py_to_string();
-            let dst = args[1].py_to_string();
+            let mut dst = std::path::PathBuf::from(args[1].py_to_string());
+            if dst.is_dir() {
+                if let Some(fname) = std::path::Path::new(&src).file_name() {
+                    dst = dst.join(fname);
+                }
+            }
             std::fs::copy(&src, &dst).map_err(|e| PyException::runtime_error(format!("{}", e)))?;
-            Ok(PyObject::str_val(CompactString::from(dst)))
+            Ok(PyObject::str_val(CompactString::from(dst.to_string_lossy().to_string())))
         })),
         ("rmtree", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("rmtree requires path")); }
@@ -658,9 +668,14 @@ pub fn create_shutil_module() -> PyObjectRef {
         ("move", make_builtin(|args| {
             if args.len() < 2 { return Err(PyException::type_error("move requires src and dst")); }
             let src = args[0].py_to_string();
-            let dst = args[1].py_to_string();
+            let mut dst = std::path::PathBuf::from(args[1].py_to_string());
+            if dst.is_dir() {
+                if let Some(fname) = std::path::Path::new(&src).file_name() {
+                    dst = dst.join(fname);
+                }
+            }
             std::fs::rename(&src, &dst).map_err(|e| PyException::runtime_error(format!("{}", e)))?;
-            Ok(PyObject::str_val(CompactString::from(dst)))
+            Ok(PyObject::str_val(CompactString::from(dst.to_string_lossy().to_string())))
         })),
         ("which", make_builtin(|args| {
             if args.is_empty() { return Ok(PyObject::none()); }

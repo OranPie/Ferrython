@@ -1911,10 +1911,98 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
         w.insert(CompactString::from("__repr__"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::str_val(CompactString::from("ANY")))));
     }
 
+    // patch.object(target, attribute, new=DEFAULT, **kwargs) — context manager
+    let patch_object_fn = make_builtin(|args: &[PyObjectRef]| {
+        // args: target_obj, attribute_name, [new], **kwargs
+        if args.len() < 2 {
+            return Err(PyException::type_error("patch.object requires at least 2 arguments".to_string()));
+        }
+        let target = args[0].clone();
+        let attr_name = args[1].py_to_string();
+        let kwargs = extract_mock_kwargs(&args[2..]);
+        let rv_key = HashableKey::Str(CompactString::from("return_value"));
+        // Build replacement value
+        let replacement = if let Some(rv) = kwargs.get(&rv_key) {
+            build_mock_instance("MagicMock", &kwargs)
+        } else if args.len() >= 3 {
+            args[2].clone()
+        } else {
+            build_mock_instance("MagicMock", &kwargs)
+        };
+
+        let cls = PyObject::class(CompactString::from("_patch_object"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            let target_enter = target.clone();
+            let attr_enter = attr_name.clone();
+            let repl_enter = replacement.clone();
+            let saved: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(None));
+            let saved_for_exit = saved.clone();
+            let target_exit = target.clone();
+            let attr_exit = attr_name.clone();
+
+            w.insert(CompactString::from("__enter__"), PyObject::native_closure(
+                "patch.object.__enter__", move |_: &[PyObjectRef]| {
+                    // Save old value
+                    let old = target_enter.get_attr(&attr_enter);
+                    *saved.write() = old;
+                    // Set new value
+                    if let PyObjectPayload::Instance(ref d) = target_enter.payload {
+                        d.attrs.write().insert(CompactString::from(attr_enter.as_str()), repl_enter.clone());
+                    }
+                    Ok(repl_enter.clone())
+                }
+            ));
+            w.insert(CompactString::from("__exit__"), PyObject::native_closure(
+                "patch.object.__exit__", move |_: &[PyObjectRef]| {
+                    // Restore old value
+                    if let PyObjectPayload::Instance(ref d) = target_exit.payload {
+                        let old = saved_for_exit.read().clone();
+                        if let Some(old_val) = old {
+                            d.attrs.write().insert(CompactString::from(attr_exit.as_str()), old_val);
+                        } else {
+                            d.attrs.write().shift_remove(&CompactString::from(attr_exit.as_str()));
+                        }
+                    }
+                    Ok(PyObject::bool_val(false))
+                }
+            ));
+        }
+        Ok(inst)
+    });
+
+    // patch.dict — context manager for dict patching
+    let patch_dict_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("patch.dict requires at least 1 argument".to_string()));
+        }
+        let cls = PyObject::class(CompactString::from("_patch_dict"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("__enter__"), make_builtin(|args: &[PyObjectRef]| {
+                if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
+            }));
+            w.insert(CompactString::from("__exit__"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::bool_val(false))));
+        }
+        Ok(inst)
+    });
+
+    // Make patch a callable object with .object and .dict attributes
+    let patch_cls = PyObject::class(CompactString::from("_patcher"), vec![], IndexMap::new());
+    let patch_obj = PyObject::instance(patch_cls);
+    if let PyObjectPayload::Instance(ref d) = patch_obj.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("__call__"), patch_fn);
+        w.insert(CompactString::from("object"), patch_object_fn);
+        w.insert(CompactString::from("dict"), patch_dict_fn);
+    }
+
     make_module("unittest.mock", vec![
         ("Mock", make_mock("Mock")),
         ("MagicMock", make_mock("MagicMock")),
-        ("patch", patch_fn),
+        ("patch", patch_obj),
         ("sentinel", sentinel),
         ("call", call_fn),
         ("ANY", any_obj),
@@ -2226,16 +2314,58 @@ pub fn create_cprofile_module() -> PyObjectRef {
             let stats4 = stats.clone();
             w.insert(CompactString::from("print_stats"), PyObject::native_closure(
                 "print_stats", move |args: &[PyObjectRef]| {
-                    let sort_key = if !args.is_empty() { args[0].py_to_string() } else { "cumulative".to_string() };
+                    let sort_key = if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::None) {
+                        args[0].py_to_string()
+                    } else {
+                        "cumulative".to_string()
+                    };
                     let st = stats4.read();
                     let total: f64 = st.iter().map(|(_, _, t)| t).sum();
                     let ncalls: i64 = st.iter().map(|(_, n, _)| n).sum();
-                    eprintln!("         {} function calls in {:.3} seconds", ncalls.max(1), total);
-                    eprintln!("   Ordered by: {}", sort_key);
-                    eprintln!("   ncalls  tottime  percall  cumtime  percall filename:lineno(function)");
+                    let mut lines = Vec::new();
+                    lines.push(format!("         {} function calls in {:.3} seconds", ncalls.max(1), total));
+                    lines.push(String::new());
+                    lines.push(format!("   Ordered by: {}", sort_key));
+                    lines.push(String::new());
+                    lines.push("   ncalls  tottime  percall  cumtime  percall filename:lineno(function)".to_string());
                     for (name, calls, time) in st.iter() {
                         let percall = if *calls > 0 { time / *calls as f64 } else { 0.0 };
-                        eprintln!("   {:>5}    {:.3}    {:.3}    {:.3}    {:.3} <string>:1({})", calls, time, percall, time, percall, name);
+                        lines.push(format!("   {:>5}    {:.3}    {:.3}    {:.3}    {:.3} <string>:1({})", calls, time, percall, time, percall, name));
+                    }
+                    let output = lines.join("\n") + "\n";
+                    // Check for stream= kwarg (may be passed as last positional arg)
+                    let mut wrote_to_stream = false;
+                    for arg in args.iter() {
+                        if let Some(_write) = arg.get_attr("write") {
+                            // Looks like a stream — write to it via deferred call
+                            if let PyObjectPayload::Instance(ref d) = arg.payload {
+                                // Try StringIO-like direct write
+                                if let Some(buf_ref) = d.attrs.read().get(&CompactString::from("_buffer")) {
+                                    if let PyObjectPayload::List(items) = &buf_ref.payload {
+                                        items.write().push(PyObject::str_val(CompactString::from(output.as_str())));
+                                        wrote_to_stream = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            // Fallback: call the write method
+                            match &_write.payload {
+                                PyObjectPayload::NativeFunction { func, .. } => {
+                                    let _ = func(&[PyObject::str_val(CompactString::from(output.as_str()))]);
+                                    wrote_to_stream = true;
+                                    break;
+                                }
+                                PyObjectPayload::NativeClosure { func, .. } => {
+                                    let _ = func(&[PyObject::str_val(CompactString::from(output.as_str()))]);
+                                    wrote_to_stream = true;
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if !wrote_to_stream {
+                        eprint!("{}", output);
                     }
                     Ok(PyObject::none())
                 }

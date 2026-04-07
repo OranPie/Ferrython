@@ -64,6 +64,7 @@ struct FileState {
     path: String,
     closed: bool,
     write_buf: String,
+    binary_write_buf: Vec<u8>,
 }
 
 impl FileState {
@@ -101,6 +102,7 @@ impl FileState {
             path: path.to_string(),
             closed: false,
             write_buf: String::new(),
+            binary_write_buf: Vec::new(),
         })
     }
 }
@@ -184,14 +186,14 @@ pub(super) fn file_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
     if s.mode.contains('b') {
-        // Binary write: extract bytes from arg
+        // Binary write: store raw bytes
         let data = match &args[1].payload {
             PyObjectPayload::Bytes(b) => b.clone(),
             PyObjectPayload::ByteArray(b) => b.clone(),
             _ => args[1].py_to_string().into_bytes(),
         };
         let len = data.len();
-        s.write_buf.push_str(&String::from_utf8_lossy(&data));
+        s.binary_write_buf.extend_from_slice(&data);
         Ok(PyObject::int(len as i64))
     } else {
         let text = args[1].py_to_string();
@@ -220,7 +222,21 @@ pub(super) fn file_close(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let state = get_file_state(args)?;
     let mut s = state.write();
     if !s.closed {
-        if !s.write_buf.is_empty() {
+        if s.mode.contains('b') {
+            // Binary mode: flush binary_write_buf
+            if !s.binary_write_buf.is_empty() {
+                if s.mode.contains('a') {
+                    let mut existing = std::fs::read(&s.path).unwrap_or_default();
+                    existing.extend_from_slice(&s.binary_write_buf);
+                    std::fs::write(&s.path, &existing)
+                        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+                } else {
+                    std::fs::write(&s.path, &s.binary_write_buf)
+                        .map_err(|e| PyException::os_error(format!("{}", e)))?;
+                }
+                s.binary_write_buf.clear();
+            }
+        } else if !s.write_buf.is_empty() {
             if s.mode.contains('a') {
                 let mut content = std::fs::read_to_string(&s.path).unwrap_or_default();
                 content.push_str(&s.write_buf);
@@ -261,13 +277,15 @@ pub(super) fn file_seek(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
     let offset = args[1].to_int()?;
     let whence = if args.len() > 2 { args[2].to_int()? } else { 0 };
+    let is_binary = s.mode.contains('b');
+    let data_len = if is_binary { s.binary_content.len() } else { s.content.len() };
     let new_pos = match whence {
         0 => offset.max(0) as usize,  // SEEK_SET
         1 => (s.position as i64 + offset).max(0) as usize,  // SEEK_CUR
-        2 => (s.content.len() as i64 + offset).max(0) as usize,  // SEEK_END
+        2 => (data_len as i64 + offset).max(0) as usize,  // SEEK_END
         _ => return Err(PyException::value_error("invalid whence value")),
     };
-    s.position = new_pos.min(s.content.len());
+    s.position = new_pos;
     Ok(PyObject::int(s.position as i64))
 }
 
@@ -282,7 +300,20 @@ pub(super) fn file_flush(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let state = get_file_state(args)?;
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
-    if !s.write_buf.is_empty() {
+    if s.mode.contains('b') {
+        if !s.binary_write_buf.is_empty() {
+            if s.mode.contains('a') {
+                let mut existing = std::fs::read(&s.path).unwrap_or_default();
+                existing.extend_from_slice(&s.binary_write_buf);
+                std::fs::write(&s.path, &existing)
+                    .map_err(|e| PyException::os_error(format!("{}", e)))?;
+            } else {
+                std::fs::write(&s.path, &s.binary_write_buf)
+                    .map_err(|e| PyException::os_error(format!("{}", e)))?;
+            }
+            s.binary_write_buf.clear();
+        }
+    } else if !s.write_buf.is_empty() {
         if s.mode.contains('a') {
             let mut content = std::fs::read_to_string(&s.path).unwrap_or_default();
             content.push_str(&s.write_buf);
