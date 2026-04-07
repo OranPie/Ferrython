@@ -765,23 +765,70 @@ pub(super) fn builtin_chr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::str_val(CompactString::from(c.to_string())))
 }
 
+/// Resolve an integer from an object, trying `as_int()` first then `__index__`.
+fn resolve_index(obj: &PyObjectRef, func_name: &str) -> PyResult<i64> {
+    if let Some(n) = obj.as_int() {
+        return Ok(n);
+    }
+    // Try __index__ protocol on instances
+    if let PyObjectPayload::Instance(inst) = &obj.payload {
+        // Look up __index__ in the instance's class or attrs
+        let index_fn = {
+            let attrs = inst.attrs.read();
+            attrs.get("__index__").cloned()
+        }.or_else(|| obj.get_attr("__index__"));
+        if let Some(func) = index_fn {
+            let result = match &func.payload {
+                PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+                PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
+                PyObjectPayload::BoundMethod { receiver: _, method } => {
+                    // Call the bound method — for simple __index__ methods that
+                    // just return an int, we can try NativeFunction/NativeClosure
+                    match &method.payload {
+                        PyObjectPayload::NativeClosure { func, .. } => func(&[obj.clone()])?,
+                        PyObjectPayload::NativeFunction { func, .. } => func(&[obj.clone()])?,
+                        // Python-defined __index__ needs VM; we can't call it here.
+                        // Fall through to error.
+                        _ => return Err(PyException::type_error(format!(
+                            "'{}'() integer argument expected, got '{}'", func_name, obj.type_name()))),
+                    }
+                }
+                PyObjectPayload::Function(_) => {
+                    // Python function needs VM to call — can't do it from here.
+                    // But for the common case of __index__ defined in the class,
+                    // it'll be accessed as BoundMethod via get_attr, handled above.
+                    return Err(PyException::type_error(format!(
+                        "'{}'() integer argument expected, got '{}'", func_name, obj.type_name())));
+                }
+                _ => return Err(PyException::type_error(format!(
+                    "'{}'() integer argument expected, got '{}'", func_name, obj.type_name()))),
+            };
+            if let Some(n) = result.as_int() {
+                return Ok(n);
+            }
+        }
+    }
+    Err(PyException::type_error(format!(
+        "'{}'() integer argument expected, got '{}'", func_name, obj.type_name())))
+}
+
 pub(super) fn builtin_hex(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hex", args, 1)?;
-    let n = args[0].as_int().ok_or_else(|| PyException::type_error("hex() expects int"))?;
+    let n = resolve_index(&args[0], "hex")?;
     let s = if n < 0 { format!("-0x{:x}", -n) } else { format!("0x{:x}", n) };
     Ok(PyObject::str_val(CompactString::from(s)))
 }
 
 pub(super) fn builtin_oct(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("oct", args, 1)?;
-    let n = args[0].as_int().ok_or_else(|| PyException::type_error("oct() expects int"))?;
+    let n = resolve_index(&args[0], "oct")?;
     let s = if n < 0 { format!("-0o{:o}", -n) } else { format!("0o{:o}", n) };
     Ok(PyObject::str_val(CompactString::from(s)))
 }
 
 pub(super) fn builtin_bin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("bin", args, 1)?;
-    let n = args[0].as_int().ok_or_else(|| PyException::type_error("bin() expects int"))?;
+    let n = resolve_index(&args[0], "bin")?;
     let s = if n < 0 { format!("-0b{:b}", -n) } else { format!("0b{:b}", n) };
     Ok(PyObject::str_val(CompactString::from(s)))
 }
@@ -1688,8 +1735,20 @@ pub(crate) fn take_import_request() -> Option<ImportRequest> {
 pub(super) fn builtin_memoryview(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("memoryview", args, 1)?;
     match &args[0].payload {
-        PyObjectPayload::Bytes(b) => Ok(PyObject::bytes(b.clone())),
-        PyObjectPayload::ByteArray(b) => Ok(PyObject::bytes(b.clone())),
+        PyObjectPayload::Bytes(_) => {
+            // Read-only memoryview — wrap as bytes (immutable)
+            Ok(PyObject::bytes(match &args[0].payload {
+                PyObjectPayload::Bytes(b) => b.clone(),
+                _ => unreachable!(),
+            }))
+        }
+        PyObjectPayload::ByteArray(_) => {
+            // Mutable memoryview — keep as bytearray so __setitem__ works
+            Ok(PyObject::bytearray(match &args[0].payload {
+                PyObjectPayload::ByteArray(b) => b.clone(),
+                _ => unreachable!(),
+            }))
+        }
         _ => Err(PyException::type_error(format!(
             "memoryview: a bytes-like object is required, not '{}'",
             args[0].type_name()

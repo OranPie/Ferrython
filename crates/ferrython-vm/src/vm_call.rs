@@ -1738,6 +1738,18 @@ impl VirtualMachine {
                             }
                         }
                     }
+                    "bin" | "oct" | "hex" => {
+                        if args.len() == 1 {
+                            if let PyObjectPayload::Instance(_) = &args[0].payload {
+                                if let Some(method) = Self::resolve_instance_dunder(&args[0], "__index__") {
+                                    let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] };
+                                    let idx_val = self.call_object(method, ca)?;
+                                    // Re-call bin/oct/hex with the resolved int
+                                    return self.call_object(func.clone(), vec![idx_val]);
+                                }
+                            }
+                        }
+                    }
                     "format" => {
                         if !args.is_empty() {
                             if let PyObjectPayload::Instance(_) = &args[0].payload {
