@@ -404,6 +404,29 @@ fn build_element_object(
             if let Some(found) = find_desc(&guard, real_tag) { return Ok(found); }
             return Ok(PyObject::none());
         }
+        // Handle path expressions like "book/title"
+        if tag_match.contains('/') {
+            let parts: Vec<&str> = tag_match.splitn(2, '/').collect();
+            let first = parts[0];
+            let rest = parts[1];
+            let guard = ch.read().unwrap();
+            for child in guard.iter() {
+                if let Some(t) = child.get_attr("tag") {
+                    if t.py_to_string() == first {
+                        if let Some(find_fn) = child.get_attr("find") {
+                            if let PyObjectPayload::NativeClosure { func, .. } = &find_fn.payload {
+                                if let Ok(result) = func(&[PyObject::str_val(CompactString::from(rest))]) {
+                                    if !matches!(result.payload, PyObjectPayload::None) {
+                                        return Ok(result);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(PyObject::none());
+        }
         let guard = ch.read().unwrap();
         for child in guard.iter() {
             if let Some(t) = child.get_attr("tag") {
