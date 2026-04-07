@@ -945,6 +945,18 @@ fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     attrs.insert(CompactString::from("sub"), PyObject::native_function("Pattern.sub", compiled_sub));
     attrs.insert(CompactString::from("split"), PyObject::native_function("Pattern.split", compiled_split));
     attrs.insert(CompactString::from("fullmatch"), PyObject::native_function("Pattern.fullmatch", compiled_fullmatch));
+    attrs.insert(CompactString::from("subn"), PyObject::native_function("Pattern.subn", compiled_subn));
+    attrs.insert(CompactString::from("__repr__"), PyObject::native_closure("Pattern.__repr__", {
+        let p = pattern.clone();
+        let f = flags;
+        move |_| {
+            if f == 0 {
+                Ok(PyObject::str_val(CompactString::from(format!("re.compile('{}')", p))))
+            } else {
+                Ok(PyObject::str_val(CompactString::from(format!("re.compile('{}', re.{})", p, f))))
+            }
+        }
+    }));
     // groups/groupindex: best-effort for standard regex
     if !needs_fancy_regex(&pattern) {
         if let Ok(re_obj) = build_regex(&pattern, flags) {
@@ -1017,6 +1029,14 @@ fn compiled_fullmatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pattern = self_obj.get_attr("pattern").ok_or(PyException::attribute_error("pattern"))?.py_to_string();
     let flags = self_obj.get_attr("flags").and_then(|f| f.to_int().ok()).unwrap_or(0);
     re_fullmatch(&[PyObject::str_val(CompactString::from(pattern)), args[1].clone(), PyObject::int(flags)])
+}
+
+fn compiled_subn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 3 { return Err(PyException::type_error("Pattern.subn() requires self, repl, and string")); }
+    let self_obj = &args[0];
+    let pattern = self_obj.get_attr("pattern").ok_or(PyException::attribute_error("pattern"))?.py_to_string();
+    let flags = self_obj.get_attr("flags").and_then(|f| f.to_int().ok()).unwrap_or(0);
+    re_subn(&[PyObject::str_val(CompactString::from(pattern)), args[1].clone(), args[2].clone(), PyObject::int(0), PyObject::int(flags)])
 }
 
 fn re_escape(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

@@ -2020,6 +2020,27 @@ pub fn create_fractions_module() -> PyObjectRef {
         frac_ns.insert(CompactString::from("__int__"), make_builtin(frac_int));
         frac_ns.insert(CompactString::from("__bool__"), make_builtin(frac_bool));
         frac_ns.insert(CompactString::from("limit_denominator"), make_builtin(frac_limit_denominator));
+        frac_ns.insert(CompactString::from("__pow__"), make_builtin(frac_pow));
+        frac_ns.insert(CompactString::from("__mod__"), make_builtin(frac_mod));
+        frac_ns.insert(CompactString::from("__rtruediv__"), make_builtin(frac_rtruediv));
+        frac_ns.insert(CompactString::from("__rfloordiv__"), make_builtin(frac_rfloordiv));
+        frac_ns.insert(CompactString::from("__format__"), make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("0"))); }
+            let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+            let spec = args.get(1).map(|a| a.py_to_string()).unwrap_or_default();
+            if spec.is_empty() || spec == "s" {
+                if d == 1 { return Ok(PyObject::str_val(CompactString::from(format!("{}", n)))); }
+                return Ok(PyObject::str_val(CompactString::from(format!("{}/{}", n, d))));
+            }
+            // For numeric format specs, convert to float
+            let f = n as f64 / d as f64;
+            Ok(PyObject::str_val(CompactString::from(format!("{}", f))))
+        }));
+        frac_ns.insert(CompactString::from("as_integer_ratio"), make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::tuple(vec![PyObject::int(0), PyObject::int(1)])); }
+            let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+            Ok(PyObject::tuple(vec![PyObject::int(n), PyObject::int(d)]))
+        }));
         let class = PyObject::class(CompactString::from("Fraction"), vec![], frac_ns);
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
@@ -2179,6 +2200,54 @@ pub fn create_fractions_module() -> PyObjectRef {
         let err1 = (f - p1 as f64 / q1 as f64).abs();
         if err0 <= err1 { Ok(make_frac_instance(p0, q0)) }
         else { Ok(make_frac_instance(p1, q1)) }
+    }
+
+    fn frac_pow(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("Fraction.__pow__ requires 2 args")); }
+        let (n, d) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        let exp = args[1].to_int().unwrap_or(1);
+        if exp >= 0 {
+            let e = exp as u32;
+            Ok(make_frac_instance(n.pow(e), d.pow(e)))
+        } else {
+            let e = (-exp) as u32;
+            if n == 0 { return Err(PyException::zero_division_error("Fraction division by zero")); }
+            Ok(make_frac_instance(d.pow(e), n.pow(e)))
+        }
+    }
+
+    fn frac_mod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("Fraction.__mod__ requires 2 args")); }
+        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((1, 1));
+        if bn == 0 { return Err(PyException::zero_division_error("Fraction modulo by zero")); }
+        // a % b = a - b * floor(a/b)
+        let num = an * bd;
+        let den = ad * bn;
+        let floor_div = if den > 0 { num.div_euclid(den) } else { -((-num).div_euclid(-den)) };
+        let result_n = an * bd * bd - floor_div * bn * ad * bd;
+        let result_d = ad * bd * bd;
+        Ok(make_frac_instance(result_n, result_d))
+    }
+
+    fn frac_rtruediv(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("requires 2 args")); }
+        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((1, 1));
+        if an == 0 { return Err(PyException::zero_division_error("Fraction division by zero")); }
+        Ok(make_frac_instance(bn * ad, bd * an))
+    }
+
+    fn frac_rfloordiv(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+        if args.len() < 2 { return Err(PyException::type_error("requires 2 args")); }
+        let (an, ad) = get_frac_parts(&args[0]).unwrap_or((0, 1));
+        let (bn, bd) = get_frac_parts(&args[1]).unwrap_or((1, 1));
+        if an == 0 { return Err(PyException::zero_division_error("Fraction division by zero")); }
+        let num = bn * ad;
+        let den = bd * an;
+        let result = if (num < 0) ^ (den < 0) { -((-num).abs() / den.abs()) - if num.abs() % den.abs() != 0 { 1 } else { 0 } }
+        else { num / den };
+        Ok(make_frac_instance(result, 1))
     }
 
     // Fraction as a module-like callable with class methods
