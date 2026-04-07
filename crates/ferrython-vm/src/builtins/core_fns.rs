@@ -760,9 +760,18 @@ pub(super) fn builtin_ord(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_chr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("chr", args, 1)?;
     let n = args[0].as_int().ok_or_else(|| PyException::type_error("chr() expects int"))?;
-    let c = char::from_u32(n as u32).ok_or_else(|| PyException::value_error(
-        format!("chr() arg not in range(0x110000): {}", n)))?;
-    Ok(PyObject::str_val(CompactString::from(c.to_string())))
+    if n < 0 || n > 0x10FFFF {
+        return Err(PyException::value_error(
+            format!("chr() arg not in range(0x110000): {}", n)));
+    }
+    // Rust char doesn't allow surrogates (0xD800-0xDFFF), but CPython does
+    let s = if let Some(c) = char::from_u32(n as u32) {
+        c.to_string()
+    } else {
+        // Surrogate codepoint — encode as replacement char
+        String::from('\u{FFFD}')
+    };
+    Ok(PyObject::str_val(CompactString::from(s)))
 }
 
 /// Resolve an integer from an object, trying `as_int()` first then `__index__`.

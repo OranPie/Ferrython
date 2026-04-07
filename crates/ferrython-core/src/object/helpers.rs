@@ -1340,6 +1340,19 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             Ok(PyObject::int(args[0].to_int()?))
         })),
         (_, "__iter__") => None, // handled by VM iter() builtin
+        (_, "__sizeof__") => Some(PyObject::native_function("__sizeof__", |args| {
+            if args.is_empty() { return Err(PyException::type_error("__sizeof__ takes 1 argument")); }
+            let size = std::mem::size_of::<PyObject>() as i64 + match &args[0].payload {
+                PyObjectPayload::Str(s) => s.len() as i64,
+                PyObjectPayload::Bytes(b) => b.len() as i64,
+                PyObjectPayload::List(items) => (items.read().len() * std::mem::size_of::<PyObjectRef>()) as i64,
+                PyObjectPayload::Dict(map) => (map.read().len() * 64) as i64,
+                PyObjectPayload::Set(set) => (set.read().len() * 32) as i64,
+                PyObjectPayload::Tuple(items) => (items.len() * std::mem::size_of::<PyObjectRef>()) as i64,
+                _ => 0,
+            };
+            Ok(PyObject::int(size))
+        })),
         _ => None,
     }
 }

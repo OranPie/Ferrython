@@ -1132,7 +1132,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__neg__" | "__pos__" | "__invert__" |
                 "__repr__" | "__str__" | "__hash__" | "__format__" |
                 "__ceil__" | "__floor__" | "__round__" | "__trunc__" |
-                "as_integer_ratio" => Some(Arc::new(PyObject {
+                "__sizeof__" | "as_integer_ratio" => Some(Arc::new(PyObject {
                     payload: PyObjectPayload::BuiltinBoundMethod {
                         receiver: obj.clone(),
                         method_name: CompactString::from(name),
@@ -1150,7 +1150,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__neg__" | "__pos__" |
                 "__repr__" | "__str__" | "__hash__" | "__format__" |
                 "__ceil__" | "__floor__" | "__round__" | "__trunc__" |
-                "as_integer_ratio" | "fromhex" => Some(Arc::new(PyObject {
+                "__sizeof__" | "as_integer_ratio" | "fromhex" => Some(Arc::new(PyObject {
                     payload: PyObjectPayload::BuiltinBoundMethod {
                         receiver: obj.clone(),
                         method_name: CompactString::from(name),
@@ -1166,8 +1166,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("bool"))),
                 "bit_length" | "bit_count" | "to_bytes" | "conjugate" | "__abs__" |
                 "__int__" | "__float__" | "__index__" | "__bool__" |
-                "__repr__" | "__str__" | "__hash__" | "__format__" => Some(Arc::new(PyObject {
-                    payload: PyObjectPayload::BuiltinBoundMethod {
+                "__repr__" | "__str__" | "__hash__" | "__format__" | "__sizeof__" => Some(Arc::new(PyObject {                    payload: PyObjectPayload::BuiltinBoundMethod {
                         receiver: obj.clone(),
                         method_name: CompactString::from(name),
                     }
@@ -1191,7 +1190,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__hash__"
                     | "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__"
                     | "__repr__" | "__str__" | "__format__" | "__add__" | "__mul__" | "__rmul__"
-                    | "__mod__" | "__bool__"
+                    | "__mod__" | "__bool__" | "__sizeof__"
                 ) {
                     return Some(Arc::new(PyObject {
                         payload: PyObjectPayload::BuiltinBoundMethod {
@@ -1212,7 +1211,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__setitem__"
                     | "__delitem__" | "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__"
                     | "__repr__" | "__str__" | "__add__" | "__mul__" | "__iadd__" | "__imul__"
-                    | "__reversed__" | "__bool__" | "__hash__"
+                    | "__reversed__" | "__bool__" | "__hash__" | "__sizeof__"
                 ) {
                     return Some(Arc::new(PyObject {
                         payload: PyObjectPayload::BuiltinBoundMethod {
@@ -1234,7 +1233,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "move_to_end"
                     | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__setitem__"
                     | "__delitem__" | "__eq__" | "__ne__" | "__repr__" | "__str__"
-                    | "__or__" | "__ior__" | "__bool__" | "__hash__"
+                    | "__or__" | "__ior__" | "__bool__" | "__hash__" | "__sizeof__"
                 ) {
                     return Some(Arc::new(PyObject {
                         payload: PyObjectPayload::BuiltinBoundMethod {
@@ -1253,7 +1252,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "count" | "index"
                     | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__hash__"
                     | "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__"
-                    | "__repr__" | "__str__" | "__add__" | "__mul__" | "__bool__"
+                    | "__repr__" | "__str__" | "__add__" | "__mul__" | "__bool__" | "__sizeof__"
                 ) {
                     return Some(Arc::new(PyObject {
                         payload: PyObjectPayload::BuiltinBoundMethod {
@@ -1275,7 +1274,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "intersection_update" | "difference_update" | "symmetric_difference_update"
                     | "__len__" | "__contains__" | "__iter__" | "__or__" | "__and__"
                     | "__sub__" | "__xor__" | "__eq__" | "__ne__" | "__lt__" | "__le__"
-                    | "__gt__" | "__ge__" | "__repr__" | "__str__" | "__bool__" | "__hash__"
+                    | "__gt__" | "__ge__" | "__repr__" | "__str__" | "__bool__" | "__hash__" | "__sizeof__"
                 ) {
                     return Some(Arc::new(PyObject {
                         payload: PyObjectPayload::BuiltinBoundMethod {
@@ -1295,7 +1294,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "issubset" | "issuperset" | "isdisjoint"
                     | "__len__" | "__contains__" | "__iter__" | "__or__" | "__and__"
                     | "__sub__" | "__xor__" | "__eq__" | "__ne__" | "__hash__"
-                    | "__repr__" | "__str__" | "__bool__"
+                    | "__repr__" | "__str__" | "__bool__" | "__sizeof__"
                 ) {
                     return Some(Arc::new(PyObject {
                         payload: PyObjectPayload::BuiltinBoundMethod {
@@ -1323,7 +1322,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "append" | "extend" | "pop" | "insert" | "clear" | "reverse" | "copy"
                     | "__len__" | "__contains__" | "__iter__" | "__getitem__" | "__setitem__"
                     | "__eq__" | "__ne__" | "__repr__" | "__str__" | "__add__" | "__mul__"
-                    | "__bool__" | "__hash__"
+                    | "__bool__" | "__hash__" | "__sizeof__"
                 ) {
                     return Some(Arc::new(PyObject {
                         payload: PyObjectPayload::BuiltinBoundMethod {
@@ -1427,9 +1426,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if name == "__class__" {
                     return Some(PyObject::builtin_type(CompactString::from("super")));
                 }
-                // super().__getattribute__(name) → delegate to super's MRO lookup
+                // super().__getattribute__(name) → behaves like object.__getattribute__(self, name)
+                // Must check both MRO (from parent) AND instance __dict__ to match CPython.
                 if name == "__getattribute__" {
                     let super_obj = obj.clone();
+                    let inst_ref = instance.clone();
                     return Some(Arc::new(PyObject {
                         payload: PyObjectPayload::NativeClosure {
                             name: CompactString::from("super.__getattribute__"),
@@ -1440,11 +1441,19 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     ));
                                 }
                                 let attr_name = args[0].py_to_string();
-                                super_obj.get_attr(&attr_name).ok_or_else(|| {
-                                    PyException::attribute_error(format!(
-                                        "'super' object has no attribute '{}'", attr_name
-                                    ))
-                                })
+                                // First try MRO lookup through the super proxy
+                                if let Some(v) = super_obj.get_attr(&attr_name) {
+                                    return Ok(v);
+                                }
+                                // Fall back to instance __dict__ (like object.__getattribute__)
+                                if let PyObjectPayload::Instance(inst) = &inst_ref.payload {
+                                    if let Some(v) = inst.attrs.read().get(attr_name.as_str()) {
+                                        return Ok(v.clone());
+                                    }
+                                }
+                                Err(PyException::attribute_error(format!(
+                                    "'super' object has no attribute '{}'", attr_name
+                                )))
                             }),
                         }
                     }));

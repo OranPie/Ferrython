@@ -343,6 +343,22 @@ pub(crate) use ferrython_core::object::{check_args, check_args_min, make_module,
 // ── Built-in type method dispatch ──
 
 pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Universal methods available on all types
+    if method == "__sizeof__" {
+        let base = std::mem::size_of::<PyObject>() as i64;
+        let extra = match &receiver.payload {
+            PyObjectPayload::Str(s) => s.len() as i64,
+            PyObjectPayload::Bytes(b) => b.len() as i64,
+            PyObjectPayload::ByteArray(b) => b.len() as i64,
+            PyObjectPayload::List(items) => (items.read().len() * std::mem::size_of::<PyObjectRef>()) as i64,
+            PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => (map.read().len() * 64) as i64,
+            PyObjectPayload::Set(set) => (set.read().len() * 32) as i64,
+            PyObjectPayload::FrozenSet(set) => (set.len() * 32) as i64,
+            PyObjectPayload::Tuple(items) => (items.len() * std::mem::size_of::<PyObjectRef>()) as i64,
+            _ => 0,
+        };
+        return Ok(PyObject::int(base + extra));
+    }
     match &receiver.payload {
         PyObjectPayload::Str(s) => call_str_method(s, method, args),
         PyObjectPayload::List(items) => call_list_method(items.clone(), method, args),
