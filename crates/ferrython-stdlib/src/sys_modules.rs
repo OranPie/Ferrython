@@ -236,23 +236,48 @@ pub fn create_sys_module() -> PyObjectRef {
         ("getdefaultencoding", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("utf-8"))))),
         ("getfilesystemencoding", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("utf-8"))))),
         ("intern", make_builtin(|args| { check_args("sys.intern", args, 1)?; Ok(args[0].clone()) })),
-        ("flags", PyObject::tuple(vec![
-            PyObject::int(0), // debug
-            PyObject::int(0), // inspect
-            PyObject::int(0), // interactive
-            PyObject::int(0), // optimize
-            PyObject::int(0), // dont_write_bytecode
-            PyObject::int(0), // no_user_site
-            PyObject::int(0), // no_site
-            PyObject::int(0), // ignore_environment
-            PyObject::int(0), // verbose
-            PyObject::int(0), // bytes_warning
-            PyObject::int(0), // quiet
-            PyObject::int(0), // hash_randomization
-            PyObject::int(0), // isolated
-            PyObject::bool_val(false), // dev_mode
-            PyObject::int(0), // utf8_mode
-        ])),
+        ("flags", {
+            // CPython sys.flags is a named structseq with attribute access
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("__namedtuple__"), PyObject::bool_val(true));
+            ns.insert(CompactString::from("_fields"), PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from("debug")),
+                PyObject::str_val(CompactString::from("inspect")),
+                PyObject::str_val(CompactString::from("interactive")),
+                PyObject::str_val(CompactString::from("optimize")),
+                PyObject::str_val(CompactString::from("dont_write_bytecode")),
+                PyObject::str_val(CompactString::from("no_user_site")),
+                PyObject::str_val(CompactString::from("no_site")),
+                PyObject::str_val(CompactString::from("ignore_environment")),
+                PyObject::str_val(CompactString::from("verbose")),
+                PyObject::str_val(CompactString::from("bytes_warning")),
+                PyObject::str_val(CompactString::from("quiet")),
+                PyObject::str_val(CompactString::from("hash_randomization")),
+                PyObject::str_val(CompactString::from("isolated")),
+                PyObject::str_val(CompactString::from("dev_mode")),
+                PyObject::str_val(CompactString::from("utf8_mode")),
+            ]));
+            ns.insert(CompactString::from("_field_defaults"), PyObject::dict(IndexMap::new()));
+            let cls = PyObject::class(CompactString::from("sys.flags"), vec![], ns);
+            let mut attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+            attrs.insert(CompactString::from("debug"), PyObject::int(0));
+            attrs.insert(CompactString::from("inspect"), PyObject::int(0));
+            attrs.insert(CompactString::from("interactive"), PyObject::int(0));
+            attrs.insert(CompactString::from("optimize"), PyObject::int(0));
+            attrs.insert(CompactString::from("dont_write_bytecode"), PyObject::int(0));
+            attrs.insert(CompactString::from("no_user_site"), PyObject::int(0));
+            attrs.insert(CompactString::from("no_site"), PyObject::int(0));
+            attrs.insert(CompactString::from("ignore_environment"), PyObject::int(0));
+            attrs.insert(CompactString::from("verbose"), PyObject::int(0));
+            attrs.insert(CompactString::from("bytes_warning"), PyObject::int(0));
+            attrs.insert(CompactString::from("quiet"), PyObject::int(0));
+            attrs.insert(CompactString::from("hash_randomization"), PyObject::int(0));
+            attrs.insert(CompactString::from("isolated"), PyObject::int(0));
+            attrs.insert(CompactString::from("dev_mode"), PyObject::bool_val(false));
+            attrs.insert(CompactString::from("utf8_mode"), PyObject::int(0));
+            let inst = PyObject::instance_with_attrs(cls, attrs);
+            inst
+        }),
         ("float_info", {
             // CPython sys.float_info is a named structseq — we use a namedtuple-style class
             let mut ns = IndexMap::new();

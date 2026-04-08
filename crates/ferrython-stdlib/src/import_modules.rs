@@ -347,17 +347,23 @@ pub fn create_importlib_metadata_module() -> PyObjectRef {
 }
 
 /// Read installed package metadata from dist-info directories.
-/// Searches site-packages using the toolchain's discovered layout.
+/// Searches site-packages using the toolchain's discovered layout and binary-relative paths.
 fn find_dist_info(package_name: &str) -> Option<std::path::PathBuf> {
     let normalized = package_name.to_lowercase().replace('-', "_");
     let layout = ferrython_toolchain::paths::InstallLayout::discover();
 
-    // Search paths: ferrython's site-packages, user site, system locations
     let home = std::env::var("HOME").unwrap_or_default();
     let mut search_paths = vec![
         layout.site_packages.clone(),
         std::path::PathBuf::from(format!("{}/.local/lib/ferrython/site-packages", home)),
     ];
+
+    // Search relative to the binary (target/release/lib/ferrython/site-packages)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            search_paths.push(exe_dir.join("lib").join("ferrython").join("site-packages"));
+        }
+    }
 
     // Also check cwd-relative site-packages for development
     if let Ok(cwd) = std::env::current_dir() {
@@ -393,11 +399,17 @@ fn parse_metadata_file(path: &std::path::Path) -> IndexMap<CompactString, Compac
     let mut result = IndexMap::new();
     if let Ok(content) = std::fs::read_to_string(path) {
         for line in content.lines() {
+            if line.is_empty() { break; } // stop at body separator
             if let Some((key, value)) = line.split_once(": ") {
-                result.insert(
-                    CompactString::from(key.trim()),
-                    CompactString::from(value.trim()),
-                );
+                let k = CompactString::from(key.trim());
+                let v = CompactString::from(value.trim());
+                // For multi-value keys, join with newline
+                if let Some(existing) = result.get(&k) {
+                    let joined = CompactString::from(format!("{}\n{}", existing, v));
+                    result.insert(k, joined);
+                } else {
+                    result.insert(k, v);
+                }
             }
         }
     }
