@@ -55,28 +55,16 @@ impl VirtualMachine {
                 let conversion = (instr.arg & 0x03) as u8;
                 let base_str = match conversion {
                     1 => {
-                        // !s conversion — use VM-aware str for instances
-                        if matches!(&value.payload, PyObjectPayload::Instance(_)) {
-                            self.vm_str(&value)?
-                        } else {
-                            value.py_to_string()
-                        }
+                        // !s conversion — use VM-aware str for all types
+                        self.vm_str(&value)?
                     }
                     2 => {
-                        // !r conversion — use VM-aware repr for instances
-                        if matches!(&value.payload, PyObjectPayload::Instance(_)) {
-                            self.vm_repr(&value)?
-                        } else {
-                            value.repr()
-                        }
+                        // !r conversion — use VM-aware repr for all types
+                        self.vm_repr(&value)?
                     }
                     3 => {
-                        // !a conversion — ascii repr (same as repr for ASCII strings)
-                        if matches!(&value.payload, PyObjectPayload::Instance(_)) {
-                            self.vm_repr(&value)?
-                        } else {
-                            value.repr()
-                        }
+                        // !a conversion — ascii repr
+                        self.vm_repr(&value)?
                     }
                     _ => {
                         if !fmt_spec.is_empty() {

@@ -68,6 +68,11 @@ pub fn get_stderr_override() -> Option<PyObjectRef> {
     STDERR_OVERRIDE.read().last().cloned()
 }
 
+/// Check if a module name corresponds to a built-in Rust-implemented module.
+pub fn is_builtin_module(name: &str) -> bool {
+    load_module(name).is_some()
+}
+
 /// Look up a built-in stdlib module by name.
 /// Returns `Some(module)` if found, `None` otherwise.
 pub fn load_module(name: &str) -> Option<PyObjectRef> {

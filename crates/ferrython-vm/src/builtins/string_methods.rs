@@ -861,10 +861,29 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                                     return Err(PyException::key_error(field));
                                 }
                             }
-                        } else if let Some(val) = mapping.get_attr(&field) {
-                            result.push_str(&val.py_to_string());
                         } else {
-                            return Err(PyException::key_error(field));
+                            // Custom mapping: try __getitem__ subscription
+                            let key_obj = PyObject::str_val(CompactString::from(&field));
+                            let resolved = if let Some(getitem) = mapping.get_attr("__getitem__") {
+                                match &getitem.payload {
+                                    PyObjectPayload::NativeFunction { func, .. } => {
+                                        Some(func(&[key_obj])?)
+                                    }
+                                    PyObjectPayload::NativeClosure { func, .. } => {
+                                        Some(func(&[key_obj])?)
+                                    }
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            };
+                            if let Some(val) = resolved {
+                                result.push_str(&val.py_to_string());
+                            } else if let Some(val) = mapping.get_attr(&field) {
+                                result.push_str(&val.py_to_string());
+                            } else {
+                                return Err(PyException::key_error(field));
+                            }
                         }
                     }
                 } else if c == '}' && chars.peek() == Some(&'}') {

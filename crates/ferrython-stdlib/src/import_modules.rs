@@ -96,21 +96,40 @@ fn create_importlib_util_module() -> PyObjectRef {
     let find_spec = make_builtin(|args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         check_args_min("importlib.util.find_spec", args, 1)?;
         let name = args[0].py_to_string();
-        // Check if module exists in sys.modules (can't check directly without VM)
-        // Return a spec if the file exists on disk
-        let possible_paths = vec![
-            format!("{}.py", name.replace('.', "/")),
-            format!("{}/__init__.py", name.replace('.', "/")),
-        ];
-        for path in &possible_paths {
-            if std::path::Path::new(path).exists() {
-                let cls = PyObject::class(CompactString::from("ModuleSpec"), vec![], IndexMap::new());
-                let mut attrs = IndexMap::new();
-                attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name.clone())));
-                attrs.insert(CompactString::from("origin"), PyObject::str_val(CompactString::from(path.as_str())));
-                attrs.insert(CompactString::from("loader"), PyObject::none());
-                attrs.insert(CompactString::from("submodule_search_locations"), PyObject::none());
-                return Ok(PyObject::instance_with_attrs(cls, attrs));
+
+        let make_spec = |origin: Option<&str>| -> PyObjectRef {
+            let cls = PyObject::class(CompactString::from("ModuleSpec"), vec![], IndexMap::new());
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name.clone())));
+            attrs.insert(CompactString::from("origin"), match origin {
+                Some(o) => PyObject::str_val(CompactString::from(o)),
+                None => PyObject::none(),
+            });
+            attrs.insert(CompactString::from("loader"), PyObject::none());
+            attrs.insert(CompactString::from("submodule_search_locations"), PyObject::none());
+            PyObject::instance_with_attrs(cls, attrs)
+        };
+
+        // Check if it's a built-in module
+        if crate::is_builtin_module(&name) {
+            return Ok(make_spec(Some("built-in")));
+        }
+
+        // Search import paths for the module file
+        let search_paths = ferrython_core::get_extra_sys_paths();
+        let mut all_paths: Vec<String> = vec![".".to_string()];
+        all_paths.extend(search_paths);
+
+        let rel_path = name.replace('.', "/");
+        for base in &all_paths {
+            let base_path = std::path::Path::new(base);
+            let file_path = base_path.join(format!("{}.py", rel_path));
+            if file_path.exists() {
+                return Ok(make_spec(Some(&file_path.to_string_lossy())));
+            }
+            let init_path = base_path.join(&rel_path).join("__init__.py");
+            if init_path.exists() {
+                return Ok(make_spec(Some(&init_path.to_string_lossy())));
             }
         }
         Ok(PyObject::none())
@@ -318,6 +337,9 @@ pub fn create_importlib_metadata_module() -> PyObjectRef {
         ("metadata", make_builtin(metadata_metadata)),
         ("packages_distributions", make_builtin(metadata_packages_distributions)),
         ("requires", make_builtin(metadata_requires)),
+        ("distributions", make_builtin(metadata_distributions)),
+        ("entry_points", make_builtin(metadata_entry_points)),
+        ("files", make_builtin(metadata_files)),
         ("PackageNotFoundError", PyObject::exception_type(
             ferrython_core::error::ExceptionKind::ModuleNotFoundError
         )),
@@ -444,6 +466,85 @@ fn metadata_requires(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             return Ok(PyObject::none());
         }
         return Ok(PyObject::list(requires));
+    }
+    Ok(PyObject::none())
+}
+
+/// List all installed distributions (packages) by scanning site-packages.
+fn metadata_distributions(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let layout = ferrython_toolchain::paths::InstallLayout::discover();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut search_paths = vec![
+        layout.site_packages.clone(),
+        std::path::PathBuf::from(format!("{}/.local/lib/ferrython/site-packages", home)),
+    ];
+    if let Ok(cwd) = std::env::current_dir() {
+        let local_site = cwd.join("lib").join("ferrython").join("site-packages");
+        if local_site.is_dir() {
+            search_paths.push(local_site);
+        }
+    }
+
+    let mut distributions = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for base in &search_paths {
+        if !base.is_dir() { continue; }
+        if let Ok(entries) = std::fs::read_dir(base) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".dist-info") {
+                    let dist_name = name.trim_end_matches(".dist-info")
+                        .split('-').next().unwrap_or("")
+                        .to_string();
+                    if !dist_name.is_empty() && seen.insert(dist_name.clone()) {
+                        let metadata_path = entry.path().join("METADATA");
+                        let meta = parse_metadata_file(&metadata_path);
+                        let mut attrs = IndexMap::new();
+                        attrs.insert(CompactString::from("name"),
+                            PyObject::str_val(CompactString::from(
+                                meta.get("Name").map(|s| s.as_str()).unwrap_or(&dist_name)
+                            )));
+                        attrs.insert(CompactString::from("version"),
+                            PyObject::str_val(CompactString::from(
+                                meta.get("Version").map(|s| s.as_str()).unwrap_or("0.0.0")
+                            )));
+                        attrs.insert(CompactString::from("_path"),
+                            PyObject::str_val(CompactString::from(
+                                entry.path().to_string_lossy().as_ref()
+                            )));
+                        let cls = PyObject::class(
+                            CompactString::from("Distribution"),
+                            vec![], IndexMap::new(),
+                        );
+                        distributions.push(PyObject::instance_with_attrs(cls, attrs));
+                    }
+                }
+            }
+        }
+    }
+    Ok(PyObject::list(distributions))
+}
+
+fn metadata_entry_points(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    Ok(PyObject::list(vec![]))
+}
+
+fn metadata_files(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    check_args_min("importlib.metadata.files", args, 1)?;
+    let name = args[0].as_str()
+        .ok_or_else(|| PyException::type_error("files() argument must be str"))?;
+    if let Some(dist_info) = find_dist_info(name) {
+        let record_path = dist_info.join("RECORD");
+        if let Ok(content) = std::fs::read_to_string(&record_path) {
+            let files: Vec<PyObjectRef> = content.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| {
+                    let file_path = l.split(',').next().unwrap_or(l);
+                    PyObject::str_val(CompactString::from(file_path.trim()))
+                })
+                .collect();
+            return Ok(PyObject::list(files));
+        }
     }
     Ok(PyObject::none())
 }
