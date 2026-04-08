@@ -281,12 +281,52 @@ fn struct_calcsize(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn format_char_size(c: char) -> usize {
     match c {
         'x' | 'c' | 'b' | 'B' | '?' => 1,
-        'h' | 'H' => 2,
+        'e' | 'h' | 'H' => 2,
         'i' | 'I' | 'l' | 'L' | 'f' => 4,
         'q' | 'Q' | 'd' => 8,
         'n' | 'N' | 'P' => std::mem::size_of::<usize>(),
         's' | 'p' => 1,
         _ => 0,
+    }
+}
+
+/// Convert f32 to IEEE 754 half-precision (16-bit)
+fn f32_to_f16(val: f32) -> u16 {
+    let bits = val.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xFF) as i32;
+    let frac = bits & 0x007FFFFF;
+    if exp == 255 {
+        // Inf or NaN
+        sign | 0x7C00 | if frac != 0 { 0x0200 } else { 0 }
+    } else if exp > 142 {
+        sign | 0x7C00 // overflow to inf
+    } else if exp < 113 {
+        sign // underflow to zero
+    } else {
+        let new_exp = ((exp - 127 + 15) as u16) << 10;
+        let new_frac = (frac >> 13) as u16;
+        sign | new_exp | new_frac
+    }
+}
+
+/// Convert IEEE 754 half-precision (16-bit) to f32
+fn f16_to_f32(half: u16) -> f32 {
+    let sign = ((half & 0x8000) as u32) << 16;
+    let exp = ((half >> 10) & 0x1F) as u32;
+    let frac = (half & 0x03FF) as u32;
+    if exp == 0 {
+        if frac == 0 { return f32::from_bits(sign); }
+        // Subnormal
+        let mut e = 1u32;
+        let mut f = frac;
+        while f & 0x0400 == 0 { f <<= 1; e += 1; }
+        f &= 0x03FF;
+        f32::from_bits(sign | ((127 - 15 + 1 - e) << 23) | (f << 13))
+    } else if exp == 31 {
+        f32::from_bits(sign | 0x7F800000 | if frac != 0 { 0x00400000 } else { 0 })
+    } else {
+        f32::from_bits(sign | ((exp + 112) << 23) | (frac << 13))
     }
 }
 
@@ -417,6 +457,52 @@ fn pack_one_format(c: char, count: usize, args: &[PyObjectRef], arg_idx: &mut us
         }
         'x' => {
             for _ in 0..count { result.push(0); }
+        }
+        'c' => {
+            for _ in 0..count {
+                if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let b = match &args[*arg_idx].payload {
+                    PyObjectPayload::Bytes(v) if v.len() == 1 => v[0],
+                    _ => return Err(PyException::type_error("char format requires a bytes object of length 1")),
+                };
+                result.push(b);
+                *arg_idx += 1;
+            }
+        }
+        'p' => {
+            // Pascal string: first byte is length, then data, padded to `count` bytes total
+            if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+            let src = match &args[*arg_idx].payload {
+                PyObjectPayload::Bytes(b) => b.clone(),
+                _ => args[*arg_idx].py_to_string().into_bytes(),
+            };
+            let max_len = if count > 0 { count - 1 } else { 0 };
+            let actual = src.len().min(max_len).min(255);
+            result.push(actual as u8);
+            for i in 0..max_len {
+                result.push(if i < actual { src[i] } else { 0 });
+            }
+            *arg_idx += 1;
+        }
+        'e' => {
+            // IEEE 754 half-precision float (16-bit)
+            for _ in 0..count {
+                if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[*arg_idx].to_float()? as f32;
+                let half = f32_to_f16(val);
+                let bytes = if little_endian { half.to_le_bytes() } else { half.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                *arg_idx += 1;
+            }
+        }
+        'n' | 'N' | 'P' => {
+            for _ in 0..count {
+                if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
+                let val = args[*arg_idx].to_int()? as usize;
+                let bytes = if little_endian { val.to_le_bytes() } else { val.to_be_bytes() };
+                result.extend_from_slice(&bytes);
+                *arg_idx += 1;
+            }
         }
         _ => {}
     }
@@ -645,6 +731,55 @@ fn unpack_one_format(c: char, count: usize, data: &[u8], offset: &mut usize, res
             }
         }
         'x' => { *offset += count; }
+        'c' => {
+            for _ in 0..count {
+                if *offset >= data.len() { break; }
+                result.push(PyObject::bytes(vec![data[*offset]]));
+                *offset += 1;
+            }
+        }
+        'p' => {
+            // Pascal string: first byte is length
+            if *offset >= data.len() { return; }
+            let str_len = data[*offset] as usize;
+            *offset += 1;
+            let available = count.saturating_sub(1);
+            let actual = str_len.min(available);
+            if *offset + available > data.len() { return; }
+            result.push(PyObject::bytes(data[*offset..*offset + actual].to_vec()));
+            *offset += available;
+        }
+        'e' => {
+            for _ in 0..count {
+                if *offset + 2 > data.len() { break; }
+                let bytes: [u8; 2] = [data[*offset], data[*offset + 1]];
+                let half = if little_endian { u16::from_le_bytes(bytes) } else { u16::from_be_bytes(bytes) };
+                result.push(PyObject::float(f16_to_f32(half) as f64));
+                *offset += 2;
+            }
+        }
+        'n' => {
+            for _ in 0..count {
+                let sz = std::mem::size_of::<isize>();
+                if *offset + sz > data.len() { break; }
+                let mut bytes = [0u8; 8];
+                bytes[..sz].copy_from_slice(&data[*offset..*offset + sz]);
+                let val = if little_endian { isize::from_le_bytes(bytes[..sz].try_into().unwrap_or([0; 8])) } else { isize::from_be_bytes(bytes[..sz].try_into().unwrap_or([0; 8])) };
+                result.push(PyObject::int(val as i64));
+                *offset += sz;
+            }
+        }
+        'N' | 'P' => {
+            for _ in 0..count {
+                let sz = std::mem::size_of::<usize>();
+                if *offset + sz > data.len() { break; }
+                let mut bytes = [0u8; 8];
+                bytes[..sz].copy_from_slice(&data[*offset..*offset + sz]);
+                let val = if little_endian { usize::from_le_bytes(bytes[..sz].try_into().unwrap_or([0; 8])) } else { usize::from_be_bytes(bytes[..sz].try_into().unwrap_or([0; 8])) };
+                result.push(PyObject::int(val as i64));
+                *offset += sz;
+            }
+        }
         _ => {}
     }
 }
