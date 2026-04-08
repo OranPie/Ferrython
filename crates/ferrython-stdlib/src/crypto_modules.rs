@@ -15,7 +15,11 @@ use super::serial_modules::extract_bytes;
 // ── hashlib module ──
 
 pub fn create_hashlib_module() -> PyObjectRef {
-    let algos = vec!["md5", "sha1", "sha224", "sha256", "sha384", "sha512"];
+    let algos = vec![
+        "md5", "sha1", "sha224", "sha256", "sha384", "sha512",
+        "sha3_224", "sha3_256", "sha3_384", "sha3_512",
+        "blake2b", "blake2s",
+    ];
     let algo_set: IndexMap<ferrython_core::types::HashableKey, PyObjectRef> = algos.iter()
         .map(|&a| (ferrython_core::types::HashableKey::Str(CompactString::from(a)), PyObject::none()))
         .collect();
@@ -26,6 +30,12 @@ pub fn create_hashlib_module() -> PyObjectRef {
         ("sha512", make_builtin(hashlib_sha512)),
         ("sha224", make_builtin(hashlib_sha224)),
         ("sha384", make_builtin(hashlib_sha384)),
+        ("sha3_224", make_builtin(|args| make_hash_obj("sha3_224", args))),
+        ("sha3_256", make_builtin(|args| make_hash_obj("sha3_256", args))),
+        ("sha3_384", make_builtin(|args| make_hash_obj("sha3_384", args))),
+        ("sha3_512", make_builtin(|args| make_hash_obj("sha3_512", args))),
+        ("blake2b", make_builtin(|args| make_hash_obj("blake2b", args))),
+        ("blake2s", make_builtin(|args| make_hash_obj("blake2s", args))),
         ("new", make_builtin(hashlib_new)),
         ("pbkdf2_hmac", make_builtin(hashlib_pbkdf2_hmac)),
         ("scrypt", make_builtin(hashlib_scrypt)),
@@ -38,12 +48,18 @@ pub fn create_hashlib_module() -> PyObjectRef {
 fn compute_digest(name: &str, data: &[u8]) -> PyResult<(String, Vec<u8>)> {
     use digest::Digest;
     match name {
-        "md5"    => { let mut h = md5::Md5::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha1"   => { let mut h = sha1::Sha1::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha224" => { let mut h = sha2::Sha224::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha256" => { let mut h = sha2::Sha256::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha384" => { let mut h = sha2::Sha384::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
-        "sha512" => { let mut h = sha2::Sha512::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "md5"      => { let mut h = md5::Md5::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha1"     => { let mut h = sha1::Sha1::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha224"   => { let mut h = sha2::Sha224::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha256"   => { let mut h = sha2::Sha256::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha384"   => { let mut h = sha2::Sha384::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha512"   => { let mut h = sha2::Sha512::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha3_224" | "sha3-224" => { let mut h = sha3::Sha3_224::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha3_256" | "sha3-256" => { let mut h = sha3::Sha3_256::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha3_384" | "sha3-384" => { let mut h = sha3::Sha3_384::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "sha3_512" | "sha3-512" => { let mut h = sha3::Sha3_512::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "blake2b"  => { let mut h = blake2::Blake2b512::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
+        "blake2s"  => { let mut h = blake2::Blake2s256::new(); h.update(data); let r = h.finalize(); Ok((hex_encode(&r), r.to_vec())) }
         _ => Err(PyException::value_error(format!("unsupported hash type {}", name))),
     }
 }
@@ -53,11 +69,22 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hash_block_size(name: &str) -> i64 {
-    match name { "sha384" | "sha512" => 128, _ => 64 }
+    match name {
+        "sha384" | "sha512" | "sha3_384" | "sha3_512" | "blake2b" => 128,
+        "blake2s" => 64,
+        _ => 64,
+    }
 }
 
 fn hash_digest_size(name: &str) -> i64 {
-    match name { "md5" => 16, "sha1" => 20, "sha224" => 28, "sha256" => 32, "sha384" => 48, "sha512" => 64, _ => 0 }
+    match name {
+        "md5" => 16, "sha1" => 20, "sha224" => 28, "sha256" => 32,
+        "sha384" => 48, "sha512" => 64,
+        "sha3_224" | "sha3-224" => 28, "sha3_256" | "sha3-256" => 32,
+        "sha3_384" | "sha3-384" => 48, "sha3_512" | "sha3-512" => 64,
+        "blake2b" => 64, "blake2s" => 32,
+        _ => 0,
+    }
 }
 
 /// Build a hash object with incremental update/digest/hexdigest/copy support.
@@ -133,41 +160,20 @@ fn make_hash_object(name: &str, data: Vec<u8>, _digest_hex: String, _digest_byte
     inst
 }
 
-fn hashlib_md5(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+fn make_hash_obj(name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let (hex, bytes) = compute_digest("md5", &data)?;
-    Ok(make_hash_object("md5", data, hex, bytes, 64, 16))
+    let bs = hash_block_size(name);
+    let ds = hash_digest_size(name);
+    let (hex, bytes) = compute_digest(name, &data)?;
+    Ok(make_hash_object(name, data, hex, bytes, bs, ds))
 }
 
-fn hashlib_sha1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let (hex, bytes) = compute_digest("sha1", &data)?;
-    Ok(make_hash_object("sha1", data, hex, bytes, 64, 20))
-}
-
-fn hashlib_sha256(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let (hex, bytes) = compute_digest("sha256", &data)?;
-    Ok(make_hash_object("sha256", data, hex, bytes, 64, 32))
-}
-
-fn hashlib_sha224(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let (hex, bytes) = compute_digest("sha224", &data)?;
-    Ok(make_hash_object("sha224", data, hex, bytes, 64, 28))
-}
-
-fn hashlib_sha384(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let (hex, bytes) = compute_digest("sha384", &data)?;
-    Ok(make_hash_object("sha384", data, hex, bytes, 128, 48))
-}
-
-fn hashlib_sha512(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let data = if args.is_empty() { vec![] } else { extract_bytes(&args[0])? };
-    let (hex, bytes) = compute_digest("sha512", &data)?;
-    Ok(make_hash_object("sha512", data, hex, bytes, 128, 64))
-}
+fn hashlib_md5(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("md5", args) }
+fn hashlib_sha1(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("sha1", args) }
+fn hashlib_sha256(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("sha256", args) }
+fn hashlib_sha224(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("sha224", args) }
+fn hashlib_sha384(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("sha384", args) }
+fn hashlib_sha512(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { make_hash_obj("sha512", args) }
 
 fn hashlib_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("hashlib.new() requires algorithm name")); }
@@ -176,15 +182,7 @@ fn hashlib_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         _ => return Err(PyException::type_error("algorithm name must be a string")),
     };
     let data_args = if args.len() > 1 { &args[1..] } else { &[] as &[PyObjectRef] };
-    match name.as_str() {
-        "md5" => hashlib_md5(data_args),
-        "sha1" => hashlib_sha1(data_args),
-        "sha256" => hashlib_sha256(data_args),
-        "sha224" => hashlib_sha224(data_args),
-        "sha384" => hashlib_sha384(data_args),
-        "sha512" => hashlib_sha512(data_args),
-        _ => Err(PyException::value_error(format!("unsupported hash type {}", name))),
-    }
+    make_hash_obj(&name, data_args)
 }
 
 /// HMAC helper used by pbkdf2_hmac (same logic as hmac module's compute_hmac)

@@ -803,6 +803,9 @@ pub fn create_os_module() -> PyObjectRef {
         ("O_CREAT", PyObject::int(0o100)),
         ("O_TRUNC", PyObject::int(0o1000)),
         ("O_APPEND", PyObject::int(0o2000)),
+        ("SEEK_SET", PyObject::int(0)),
+        ("SEEK_CUR", PyObject::int(1)),
+        ("SEEK_END", PyObject::int(2)),
         ("scandir", make_builtin(os_scandir)),
         ("putenv", make_builtin(|args| {
             if args.len() < 2 { return Err(PyException::type_error("putenv requires 2 arguments")); }
@@ -1025,9 +1028,85 @@ pub fn create_os_module() -> PyObjectRef {
         })),
         ("fdopen", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("os.fdopen requires fd")); }
-            let _fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))?;
-            // For now, return a simple wrapper — full implementation would create a file object
-            Err(PyException::not_implemented_error("os.fdopen not fully implemented; use open() instead"))
+            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
+            let mode = if args.len() > 1 { args[1].py_to_string() } else { "r".to_string() };
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::FromRawFd;
+                use std::io::Read;
+                let is_binary = mode.contains('b');
+                let file = unsafe { std::fs::File::from_raw_fd(fd) };
+                let (content, binary) = if mode.contains('r') || mode.contains('+') {
+                    if is_binary {
+                        let mut buf = Vec::new();
+                        let mut f = file;
+                        let _ = f.read_to_end(&mut buf);
+                        std::mem::forget(f);
+                        (String::new(), buf)
+                    } else {
+                        let mut buf = String::new();
+                        let mut f = file;
+                        let _ = f.read_to_string(&mut buf);
+                        std::mem::forget(f);
+                        (buf, Vec::new())
+                    }
+                } else {
+                    std::mem::forget(file);
+                    (String::new(), Vec::new())
+                };
+                // Build a simple file-like object with read/write/close
+                let data = std::sync::Arc::new(std::sync::RwLock::new((content, binary, 0usize, false)));
+                let d1 = data.clone();
+                let d2 = data.clone();
+                let d3 = data.clone();
+                let mut attrs = IndexMap::new();
+                attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(&mode)));
+                attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
+                let is_bin = is_binary;
+                attrs.insert(CompactString::from("read"), PyObject::native_closure("fdopen.read", move |a| {
+                    let g = d1.read().unwrap();
+                    if is_bin {
+                        Ok(PyObject::bytes(g.1.clone()))
+                    } else {
+                        Ok(PyObject::str_val(CompactString::from(&g.0)))
+                    }
+                }));
+                let fd_w = fd;
+                attrs.insert(CompactString::from("write"), PyObject::native_closure("fdopen.write", move |a| {
+                    if a.is_empty() { return Err(PyException::type_error("write requires data")); }
+                    let data_bytes = match &a[0].payload {
+                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                        PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                        _ => return Err(PyException::type_error("write requires str or bytes")),
+                    };
+                    let n = unsafe { libc::write(fd_w, data_bytes.as_ptr() as *const libc::c_void, data_bytes.len()) };
+                    if n < 0 { return Err(PyException::os_error("write failed".to_string())); }
+                    Ok(PyObject::int(n as i64))
+                }));
+                let fd_c = fd;
+                attrs.insert(CompactString::from("close"), PyObject::native_closure("fdopen.close", move |_| {
+                    let mut g = d2.write().unwrap();
+                    g.3 = true;
+                    unsafe { libc::close(fd_c); }
+                    Ok(PyObject::none())
+                }));
+                attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("fdopen.__enter__", move |a| {
+                    if a.is_empty() { return Ok(PyObject::none()); }
+                    Ok(a[0].clone())
+                }));
+                let d4 = d3.clone();
+                attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("fdopen.__exit__", move |_| {
+                    let mut g = d4.write().unwrap();
+                    g.3 = true;
+                    Ok(PyObject::none())
+                }));
+                Ok(PyObject::module_with_attrs(CompactString::from("_fdopen"), attrs))
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (fd, mode);
+                Err(PyException::not_implemented_error("os.fdopen not available on this platform"))
+            }
         })),
         ("fstat", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("os.fstat requires fd")); }
@@ -1064,6 +1143,53 @@ pub fn create_os_module() -> PyObjectRef {
             {
                 let _ = (fd, length);
                 Err(PyException::not_implemented_error("os.ftruncate not supported on this platform"))
+            }
+        })),
+        ("lseek", make_builtin(|args| {
+            check_args_min("os.lseek", args, 3)?;
+            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
+            let offset = args[1].as_int().ok_or_else(|| PyException::type_error("offset must be int"))? as i64;
+            let whence = args[2].as_int().ok_or_else(|| PyException::type_error("whence must be int"))? as i32;
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::FromRawFd;
+                use std::io::Seek;
+                let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+                let seek_from = match whence {
+                    0 => std::io::SeekFrom::Start(offset as u64),
+                    1 => std::io::SeekFrom::Current(offset),
+                    2 => std::io::SeekFrom::End(offset),
+                    _ => { std::mem::forget(file); return Err(PyException::value_error("invalid whence")); }
+                };
+                let result = file.seek(seek_from);
+                std::mem::forget(file);
+                match result {
+                    Ok(pos) => Ok(PyObject::int(pos as i64)),
+                    Err(e) => Err(PyException::os_error(format!("{}", e))),
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (fd, offset, whence);
+                Err(PyException::not_implemented_error("os.lseek not supported on this platform"))
+            }
+        })),
+        ("fsync", make_builtin(|args| {
+            check_args_min("os.fsync", args, 1)?;
+            let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::FromRawFd;
+                let file = unsafe { std::fs::File::from_raw_fd(fd) };
+                let result = file.sync_all().map_err(|e| PyException::os_error(format!("{}", e)));
+                std::mem::forget(file);
+                result?;
+                Ok(PyObject::none())
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = fd;
+                Err(PyException::not_implemented_error("os.fsync not supported on this platform"))
             }
         })),
         ("stat_result", make_builtin(|_| {

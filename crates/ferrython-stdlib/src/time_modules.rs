@@ -167,6 +167,10 @@ fn get_epoch_secs(args: &[PyObjectRef]) -> u64 {
 
 /// Format struct_time components using strftime format codes
 fn format_time(fmt: &str, y: i64, mon: i64, day: i64, h: i64, m: i64, s: i64, wday: i64, yday: i64) -> String {
+    format_time_us(fmt, y, mon, day, h, m, s, 0, wday, yday)
+}
+
+fn format_time_us(fmt: &str, y: i64, mon: i64, day: i64, h: i64, m: i64, s: i64, us: i64, wday: i64, yday: i64) -> String {
     let hour12 = if h == 0 { 12 } else if h > 12 { h - 12 } else { h };
     let ampm = if h < 12 { "AM" } else { "PM" };
     let mut result = String::with_capacity(fmt.len() * 2);
@@ -180,6 +184,7 @@ fn format_time(fmt: &str, y: i64, mon: i64, day: i64, h: i64, m: i64, s: i64, wd
                 Some('H') => result.push_str(&format!("{:02}", h)),
                 Some('M') => result.push_str(&format!("{:02}", m)),
                 Some('S') => result.push_str(&format!("{:02}", s)),
+                Some('f') => result.push_str(&format!("{:06}", us)),
                 Some('I') => result.push_str(&format!("{:02}", hour12)),
                 Some('p') => result.push_str(ampm),
                 Some('a') => result.push_str(DAY_NAMES_ABBR[wday as usize % 7]),
@@ -190,8 +195,17 @@ fn format_time(fmt: &str, y: i64, mon: i64, day: i64, h: i64, m: i64, s: i64, wd
                 Some('w') => result.push_str(&format!("{}", (wday + 1) % 7)), // 0=Sunday
                 Some('u') => result.push_str(&format!("{}", if wday == 6 { 7 } else { wday + 1 })), // 1=Monday
                 Some('y') => result.push_str(&format!("{:02}", y % 100)),
+                Some('G') => {
+                    // ISO year (may differ from calendar year at year boundaries)
+                    let (iso_y, _, _) = iso_week_date(y, mon, day);
+                    result.push_str(&format!("{:04}", iso_y));
+                }
+                Some('V') => {
+                    // ISO week number (01-53)
+                    let (_, iso_w, _) = iso_week_date(y, mon, day);
+                    result.push_str(&format!("{:02}", iso_w));
+                }
                 Some('c') => {
-                    // Locale's date+time: "Mon Jan  1 00:00:00 2024"
                     result.push_str(&format!("{} {} {:2} {:02}:{:02}:{:02} {:04}",
                         DAY_NAMES_ABBR[wday as usize % 7], MONTH_NAMES_ABBR[(mon - 1) as usize % 12],
                         day, h, m, s, y));
@@ -211,6 +225,23 @@ fn format_time(fmt: &str, y: i64, mon: i64, day: i64, h: i64, m: i64, s: i64, wd
         }
     }
     result
+}
+
+/// ISO 8601 week date: returns (iso_year, iso_week, iso_weekday)
+fn iso_week_date(y: i64, m: i64, d: i64) -> (i64, i64, i64) {
+    let ord = ymd_to_ordinal(y, m, d);
+    let wday = ((ord + 6) % 7) as i64; // 0=Mon
+    let iso_wday = wday + 1; // 1=Mon
+    // Find Thursday of this week (ISO weeks are defined by Thursday)
+    let thu_ord = ord + (3 - wday);
+    // ISO year is the year that contains that Thursday
+    let (thu_y, _, _) = ordinal_to_ymd(thu_ord);
+    let jan1_ord = ymd_to_ordinal(thu_y, 1, 1);
+    let jan1_wd = ((jan1_ord + 6) % 7) as i64;
+    // Week 1 starts on the Monday <= Jan 4
+    let week1_mon = jan1_ord - jan1_wd;
+    let iso_week = (ord - week1_mon) / 7 + 1;
+    (thu_y, iso_week, iso_wday)
 }
 
 fn time_strftime(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -990,11 +1021,12 @@ fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64,
             for i in 0..(month - 1) as usize { if i < 12 { yd += md[i]; } }
             yd
         };
+        let us_for_fmt = microsecond;
         w.insert(CompactString::from("strftime"), PyObject::native_closure(
             "datetime.strftime", move |args: &[PyObjectRef]| {
                 if args.is_empty() { return Err(PyException::type_error("strftime requires format string")); }
                 let fmt = args[0].py_to_string();
-                let result = format_time(&fmt, y2, mo2, da2, h2, mi2, s2, wd_for_fmt, yday_for_fmt);
+                let result = format_time_us(&fmt, y2, mo2, da2, h2, mi2, s2, us_for_fmt, wd_for_fmt, yday_for_fmt);
                 Ok(PyObject::str_val(CompactString::from(result)))
             }
         ));
@@ -1160,14 +1192,87 @@ fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64,
                 Ok(make_datetime_instance(ny, nmo, nda, nh, nmi, ns, nus))
             }
         ));
+
+        // time() -> time object (extract time component)
+        let (th, tmi, ts, tus) = (hour, minute, second, microsecond);
+        w.insert(CompactString::from("time"), PyObject::native_closure(
+            "datetime.time", move |_: &[PyObjectRef]| {
+                make_time_instance(th, tmi, ts, tus)
+            }
+        ));
+
+        // ctime() -> str (C format: "Mon Jan  1 00:00:00 2024")
+        let (cy, cmo, cda, ch2, cmi2, cs2) = (year, month, day, hour, minute, second);
+        let cwd = wd;
+        w.insert(CompactString::from("ctime"), PyObject::native_closure(
+            "datetime.ctime", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(format!(
+                    "{} {} {:2} {:02}:{:02}:{:02} {:04}",
+                    DAY_NAMES_ABBR[cwd as usize % 7],
+                    MONTH_NAMES_ABBR[(cmo - 1) as usize % 12],
+                    cda, ch2, cmi2, cs2, cy
+                ))))
+            }
+        ));
+
+        // toordinal() -> int
+        let to_y = year; let to_m = month; let to_d = day;
+        w.insert(CompactString::from("toordinal"), PyObject::native_closure(
+            "datetime.toordinal", move |_: &[PyObjectRef]| {
+                Ok(PyObject::int(ymd_to_ordinal(to_y, to_m, to_d)))
+            }
+        ));
+
+        // dst() -> timedelta or None (delegates to tzinfo.dst)
+        let inst_for_dst = inst.clone();
+        w.insert(CompactString::from("dst"), PyObject::native_closure(
+            "datetime.dst", move |_: &[PyObjectRef]| {
+                if let Some(tz) = inst_for_dst.get_attr("tzinfo") {
+                    if !matches!(tz.payload, PyObjectPayload::None) {
+                        if let Some(dst_fn) = tz.get_attr("dst") {
+                            match &dst_fn.payload {
+                                PyObjectPayload::NativeFunction { func, .. } => return func(&[inst_for_dst.clone()]),
+                                PyObjectPayload::NativeClosure { func, .. } => return func(&[inst_for_dst.clone()]),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Ok(PyObject::none())
+            }
+        ));
+
+        // tzname() -> str or None (delegates to tzinfo.tzname)
+        let inst_for_tzname = inst.clone();
+        w.insert(CompactString::from("tzname"), PyObject::native_closure(
+            "datetime.tzname", move |_: &[PyObjectRef]| {
+                if let Some(tz) = inst_for_tzname.get_attr("tzinfo") {
+                    if !matches!(tz.payload, PyObjectPayload::None) {
+                        if let Some(tzn_fn) = tz.get_attr("tzname") {
+                            match &tzn_fn.payload {
+                                PyObjectPayload::NativeFunction { func, .. } => return func(&[inst_for_tzname.clone()]),
+                                PyObjectPayload::NativeClosure { func, .. } => return func(&[inst_for_tzname.clone()]),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Ok(PyObject::none())
+            }
+        ));
+
+        // __hash__() for use in sets/dicts
+        let (hy, hmo, hda, hh, hmi, hs, hus) = (year, month, day, hour, minute, second, microsecond);
+        w.insert(CompactString::from("__hash__"), PyObject::native_closure(
+            "datetime.__hash__", move |_: &[PyObjectRef]| {
+                let hash = hy * 13 + hmo * 7 + hda * 3 + hh * 31 + hmi * 37 + hs * 41 + hus;
+                Ok(PyObject::int(hash))
+            }
+        ));
     }
 }
 
-fn datetime_time_obj(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let hour = if !args.is_empty() { args[0].to_int()? } else { 0 };
-    let minute = if args.len() > 1 { args[1].to_int()? } else { 0 };
-    let second = if args.len() > 2 { args[2].to_int()? } else { 0 };
-    let microsecond = if args.len() > 3 { args[3].to_int()? } else { 0 };
+fn make_time_instance(hour: i64, minute: i64, second: i64, microsecond: i64) -> PyResult<PyObjectRef> {
     let class = PyObject::class(CompactString::from("time"), vec![], IndexMap::new());
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
@@ -1182,8 +1287,106 @@ fn datetime_time_obj(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         w.insert(CompactString::from("minute"), PyObject::int(minute));
         w.insert(CompactString::from("second"), PyObject::int(second));
         w.insert(CompactString::from("microsecond"), PyObject::int(microsecond));
+        w.insert(CompactString::from("tzinfo"), PyObject::none());
+
+        // isoformat() -> str
+        let (h, mi, s, us) = (hour, minute, second, microsecond);
+        w.insert(CompactString::from("isoformat"), PyObject::native_closure(
+            "time.isoformat", move |_: &[PyObjectRef]| {
+                let base = format!("{:02}:{:02}:{:02}", h, mi, s);
+                if us != 0 {
+                    Ok(PyObject::str_val(CompactString::from(format!("{}.{:06}", base, us))))
+                } else {
+                    Ok(PyObject::str_val(CompactString::from(base)))
+                }
+            }
+        ));
+
+        // strftime(format) -> str
+        w.insert(CompactString::from("strftime"), PyObject::native_closure(
+            "time.strftime", move |args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("strftime requires format string")); }
+                let fmt = args[0].py_to_string();
+                let result = format_time_us(&fmt, 1900, 1, 1, h, mi, s, us, 0, 1);
+                Ok(PyObject::str_val(CompactString::from(result)))
+            }
+        ));
+
+        // replace(**kwargs)
+        let (rh, rmi, rs, rus) = (hour, minute, second, microsecond);
+        w.insert(CompactString::from("replace"), PyObject::native_closure(
+            "time.replace", move |args: &[PyObjectRef]| {
+                let mut nh = rh; let mut nmi = rmi; let mut ns = rs; let mut nus = rus;
+                if let Some(last) = args.last() {
+                    if let PyObjectPayload::Dict(kw) = &last.payload {
+                        let r = kw.read();
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("hour"))) { nh = v.as_int().unwrap_or(nh); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("minute"))) { nmi = v.as_int().unwrap_or(nmi); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("second"))) { ns = v.as_int().unwrap_or(ns); }
+                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("microsecond"))) { nus = v.as_int().unwrap_or(nus); }
+                    }
+                }
+                if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::Dict(_)) {
+                    if !args.is_empty() { nh = args[0].as_int().unwrap_or(nh); }
+                    if args.len() > 1 { nmi = args[1].as_int().unwrap_or(nmi); }
+                    if args.len() > 2 { ns = args[2].as_int().unwrap_or(ns); }
+                    if args.len() > 3 { nus = args[3].as_int().unwrap_or(nus); }
+                }
+                make_time_instance(nh, nmi, ns, nus)
+            }
+        ));
+
+        // __str__() / __repr__()
+        let iso_str = if microsecond != 0 {
+            format!("{:02}:{:02}:{:02}.{:06}", hour, minute, second, microsecond)
+        } else {
+            format!("{:02}:{:02}:{:02}", hour, minute, second)
+        };
+        let iso_clone = iso_str.clone();
+        w.insert(CompactString::from("__str__"), PyObject::native_closure(
+            "time.__str__", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(&iso_str)))
+            }
+        ));
+        w.insert(CompactString::from("__repr__"), PyObject::native_closure(
+            "time.__repr__", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(format!("datetime.time({})", iso_clone))))
+            }
+        ));
+
+        // __eq__, __lt__, __le__, __gt__, __ge__
+        let time_key = hour * 3600_000_000 + minute * 60_000_000 + second * 1_000_000 + microsecond;
+        w.insert(CompactString::from("__eq__"), PyObject::native_closure(
+            "time.__eq__", move |args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::bool_val(false)); }
+                let other = &args[0];
+                let ok = other.get_attr("hour").and_then(|h| h.as_int())
+                    .and_then(|oh| {
+                        let om = other.get_attr("minute").and_then(|v| v.as_int()).unwrap_or(-1);
+                        let os = other.get_attr("second").and_then(|v| v.as_int()).unwrap_or(-1);
+                        let ou = other.get_attr("microsecond").and_then(|v| v.as_int()).unwrap_or(-1);
+                        Some(oh * 3600_000_000 + om * 60_000_000 + os * 1_000_000 + ou)
+                    }).unwrap_or(-1);
+                Ok(PyObject::bool_val(time_key == ok))
+            }
+        ));
+
+        // __hash__
+        w.insert(CompactString::from("__hash__"), PyObject::native_closure(
+            "time.__hash__", move |_: &[PyObjectRef]| {
+                Ok(PyObject::int(time_key))
+            }
+        ));
     }
     Ok(inst)
+}
+
+fn datetime_time_obj(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let hour = if !args.is_empty() { args[0].to_int()? } else { 0 };
+    let minute = if args.len() > 1 { args[1].to_int()? } else { 0 };
+    let second = if args.len() > 2 { args[2].to_int()? } else { 0 };
+    let microsecond = if args.len() > 3 { args[3].to_int()? } else { 0 };
+    make_time_instance(hour, minute, second, microsecond)
 }
 
 fn datetime_timedelta(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1366,6 +1569,42 @@ fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
                     if args.len() > 2 { nda = args[2].as_int().unwrap_or(nda); }
                 }
                 Ok(make_date_instance(ny, nmo, nda))
+            }
+        ));
+
+        // ctime() -> str (C format: "Mon Jan  1 00:00:00 2024")
+        let (cy, cmo, cda) = (year, month, day);
+        let cwd = wd;
+        w.insert(CompactString::from("ctime"), PyObject::native_closure(
+            "date.ctime", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(format!(
+                    "{} {} {:2} 00:00:00 {:04}",
+                    DAY_NAMES_ABBR[cwd as usize % 7],
+                    MONTH_NAMES_ABBR[(cmo - 1) as usize % 12],
+                    cda, cy
+                ))))
+            }
+        ));
+
+        // timetuple() -> struct_time compatible tuple
+        let (ty, tmo, tda) = (year, month, day);
+        let twd = wd;
+        let tyd = yday_d;
+        w.insert(CompactString::from("timetuple"), PyObject::native_closure(
+            "date.timetuple", move |_: &[PyObjectRef]| {
+                Ok(PyObject::tuple(vec![
+                    PyObject::int(ty), PyObject::int(tmo), PyObject::int(tda),
+                    PyObject::int(0), PyObject::int(0), PyObject::int(0),
+                    PyObject::int(twd), PyObject::int(tyd), PyObject::int(-1),
+                ]))
+            }
+        ));
+
+        // __hash__
+        let (hy, hmo, hda) = (year, month, day);
+        w.insert(CompactString::from("__hash__"), PyObject::native_closure(
+            "date.__hash__", move |_: &[PyObjectRef]| {
+                Ok(PyObject::int(hy * 13 + hmo * 7 + hda * 3))
             }
         ));
     }
