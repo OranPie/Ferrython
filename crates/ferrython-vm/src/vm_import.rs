@@ -228,9 +228,23 @@ impl VirtualMachine {
         level: usize,
         importer_file: &str,
     ) -> PyResult<PyObjectRef> {
-        // 1. Check cache
+        // 1. Check VM cache
         if let Some(module) = self.modules.get(name) {
             return Ok(module.clone());
+        }
+
+        // 1b. Check sys.modules dict (catches dynamically-inserted modules)
+        if let Some(ref sys_mod_dict) = self.sys_modules_dict {
+            if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
+                let key = HashableKey::Str(CompactString::from(name));
+                if let Some(module) = d.read().get(&key).cloned() {
+                    // Only use if it's actually a module (not a placeholder string)
+                    if matches!(&module.payload, PyObjectPayload::Module(_)) {
+                        self.modules.insert(CompactString::from(name), module.clone());
+                        return Ok(module);
+                    }
+                }
+            }
         }
 
         // 2. Try stdlib

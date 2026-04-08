@@ -1494,6 +1494,26 @@ impl VirtualMachine {
                                 }
                             }
                         }
+                        // OSError and subclasses: OSError(errno, strerror[, filename])
+                        if kind.is_subclass_of(&ExceptionKind::OSError) && pos_args.len() >= 2 {
+                            if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
+                                let mut a = attrs.write();
+                                // First arg is errno (int), second is strerror (str)
+                                a.insert(CompactString::from("errno"), pos_args[0].clone());
+                                a.insert(CompactString::from("strerror"), pos_args[1].clone());
+                                if pos_args.len() >= 3 {
+                                    a.insert(CompactString::from("filename"), pos_args[2].clone());
+                                } else {
+                                    a.insert(CompactString::from("filename"), PyObject::none());
+                                }
+                            }
+                        }
+                        // SystemExit: store .code attribute
+                        if *kind == ExceptionKind::SystemExit && !pos_args.is_empty() {
+                            if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
+                                attrs.write().insert(CompactString::from("code"), pos_args[0].clone());
+                            }
+                        }
                         return Ok(inst);
                     }
                     PyObjectPayload::Instance(_) => {
@@ -2802,6 +2822,25 @@ impl VirtualMachine {
                                 }
                             ));
                         }
+                    }
+                }
+                // OSError and subclasses: OSError(errno, strerror[, filename])
+                if kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2 {
+                    if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
+                        let mut a = attrs.write();
+                        a.insert(CompactString::from("errno"), args[0].clone());
+                        a.insert(CompactString::from("strerror"), args[1].clone());
+                        if args.len() >= 3 {
+                            a.insert(CompactString::from("filename"), args[2].clone());
+                        } else {
+                            a.insert(CompactString::from("filename"), PyObject::none());
+                        }
+                    }
+                }
+                // SystemExit: store .code attribute
+                if *kind == ExceptionKind::SystemExit && !args.is_empty() {
+                    if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
+                        attrs.write().insert(CompactString::from("code"), args[0].clone());
                     }
                 }
                 Ok(inst)

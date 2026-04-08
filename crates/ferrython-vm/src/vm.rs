@@ -835,11 +835,27 @@ impl VirtualMachine {
         // CPython chain: outermost -> ... -> innermost -> None
         // Build from innermost to outermost so tb_next links are correct.
         let tb_class = PyObject::builtin_type(CompactString::from("traceback"));
+        let frame_class = PyObject::builtin_type(CompactString::from("frame"));
         let mut tb_next = PyObject::none();
         for entry in entries.iter().rev() {
+            // Build a minimal frame-like object for tb_frame
+            let mut frame_attrs = IndexMap::new();
+            frame_attrs.insert(CompactString::from("f_lineno"), PyObject::int(entry.lineno as i64));
+            let mut code_attrs = IndexMap::new();
+            code_attrs.insert(CompactString::from("co_filename"),
+                PyObject::str_val(CompactString::from(&entry.filename)));
+            code_attrs.insert(CompactString::from("co_name"),
+                PyObject::str_val(CompactString::from(&entry.function)));
+            let code_class = PyObject::builtin_type(CompactString::from("code"));
+            let code_obj = PyObject::instance_with_attrs(code_class, code_attrs);
+            frame_attrs.insert(CompactString::from("f_code"), code_obj);
+            frame_attrs.insert(CompactString::from("f_locals"), PyObject::dict(IndexMap::new()));
+            frame_attrs.insert(CompactString::from("f_globals"), PyObject::dict(IndexMap::new()));
+            let frame_obj = PyObject::instance_with_attrs(frame_class.clone(), frame_attrs);
+
             let mut attrs = IndexMap::new();
             attrs.insert(CompactString::from("tb_lineno"), PyObject::int(entry.lineno as i64));
-            attrs.insert(CompactString::from("tb_frame"), PyObject::none());
+            attrs.insert(CompactString::from("tb_frame"), frame_obj);
             attrs.insert(CompactString::from("tb_next"), tb_next);
             attrs.insert(CompactString::from("tb_filename"),
                 PyObject::str_val(CompactString::from(&entry.filename)));

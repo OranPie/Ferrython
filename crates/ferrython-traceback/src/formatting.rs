@@ -49,6 +49,10 @@ pub fn format_exception_only(exc: &PyException) -> String {
 pub fn format_traceback(exc: &PyException) -> String {
     let mut out = String::new();
     format_traceback_inner(exc, &mut out, 0);
+    // Ensure trailing newline (CPython always ends with \n)
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
     out
 }
 
