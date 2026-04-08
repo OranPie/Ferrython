@@ -527,6 +527,7 @@ fn make_fancy_match_object(text: &str, start: usize, end: usize, full: &str, gro
     attrs.insert(CompactString::from("start"), PyObject::native_function("Match.start", match_start));
     attrs.insert(CompactString::from("end"), PyObject::native_function("Match.end", match_end));
     attrs.insert(CompactString::from("span"), PyObject::native_function("Match.span", match_span));
+    attrs.insert(CompactString::from("__getitem__"), PyObject::native_function("Match.__getitem__", match_getitem));
     attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
     PyObject::module_with_attrs(CompactString::from("Match"), attrs)
 }
@@ -573,6 +574,7 @@ fn make_match_object(m: regex::Match, text: &str, re_obj: &regex::Regex) -> PyOb
     attrs.insert(CompactString::from("start"), PyObject::native_function("Match.start", match_start));
     attrs.insert(CompactString::from("end"), PyObject::native_function("Match.end", match_end));
     attrs.insert(CompactString::from("span"), PyObject::native_function("Match.span", match_span));
+    attrs.insert(CompactString::from("__getitem__"), PyObject::native_function("Match.__getitem__", match_getitem));
     attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
     let match_obj = PyObject::module_with_attrs(CompactString::from("Match"), attrs);
     match_obj
@@ -678,6 +680,13 @@ fn match_span(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let start = args[0].get_attr("_start").unwrap_or(PyObject::int(0));
     let end = args[0].get_attr("_end").unwrap_or(PyObject::int(0));
     Ok(PyObject::tuple(vec![start, end]))
+}
+
+/// Match.__getitem__: m[0], m[1], m['name'] — delegates to match_group
+fn match_getitem(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("Match.__getitem__() requires self and index")); }
+    // Repack as [self, index] for match_group
+    match_group(args)
 }
 
 // Public wrappers for match object methods (used by VM re_sub_with_callable)
