@@ -517,6 +517,11 @@ impl Analyzer {
                 for s in body {
                     self.analyze_statement(s);
                 }
+                // Visit orelse BEFORE handlers to match compiler visitation order
+                // (compiler emits: body → orelse → jump → handlers → finally)
+                for s in orelse {
+                    self.analyze_statement(s);
+                }
                 for handler in handlers {
                     if let Some(typ) = &handler.typ {
                         self.analyze_expression(typ);
@@ -527,9 +532,6 @@ impl Analyzer {
                     for s in &handler.body {
                         self.analyze_statement(s);
                     }
-                }
-                for s in orelse {
-                    self.analyze_statement(s);
                 }
                 for s in finalbody {
                     self.analyze_statement(s);

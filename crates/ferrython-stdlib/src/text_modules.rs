@@ -282,7 +282,26 @@ fn convert_python_regex(pattern: &str) -> String {
         if chars[i] == '\\' && i + 1 < chars.len() {
             match chars[i + 1] {
                 'Z' => { result.push_str("\\z"); i += 2; }
-                'a' => { result.push('\x07'); i += 2; } // Python \a = bell (BEL)
+                'a' => { result.push_str("\\x07"); i += 2; } // Python \a = bell (BEL)
+                // Octal escapes: \0, \033, \177, etc.
+                '0'..='3' => {
+                    // Collect up to 3 octal digits
+                    let start = i + 1;
+                    let mut end = start + 1;
+                    while end < chars.len() && end < start + 3
+                        && chars[end] >= '0' && chars[end] <= '7' {
+                        end += 1;
+                    }
+                    let oct_str: String = chars[start..end].iter().collect();
+                    if let Ok(val) = u8::from_str_radix(&oct_str, 8) {
+                        result.push_str(&format!("\\x{:02x}", val));
+                    } else {
+                        // Fallback: pass through
+                        result.push(chars[i]);
+                        result.push(chars[i + 1]);
+                    }
+                    i = end;
+                }
                 _ => { result.push(chars[i]); result.push(chars[i + 1]); i += 2; }
             }
         } else {

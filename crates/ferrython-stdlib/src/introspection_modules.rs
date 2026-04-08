@@ -921,6 +921,109 @@ pub fn create_inspect_module() -> PyObjectRef {
             }
             p_cls
         }),
+        ("cleandoc", make_builtin(|args| {
+            check_args("inspect.cleandoc", args, 1)?;
+            let doc = args[0].py_to_string();
+            // CPython cleandoc: trim leading/trailing blank lines, remove common indent
+            let lines: Vec<&str> = doc.lines().collect();
+            if lines.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            // Skip leading blank lines
+            let mut start = 0;
+            while start < lines.len() && lines[start].trim().is_empty() { start += 1; }
+            // Skip trailing blank lines
+            let mut end = lines.len();
+            while end > start && lines[end - 1].trim().is_empty() { end -= 1; }
+            if start >= end { return Ok(PyObject::str_val(CompactString::from(""))); }
+            // Find minimum indentation (ignoring first non-blank line's indent in some cases)
+            let min_indent = lines[start..end].iter()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.len() - l.trim_start().len())
+                .min().unwrap_or(0);
+            let result: Vec<&str> = lines[start..end].iter()
+                .map(|l| if l.len() >= min_indent { &l[min_indent..] } else { l.trim() })
+                .collect();
+            Ok(PyObject::str_val(CompactString::from(result.join("\n"))))
+        })),
+        ("currentframe", make_builtin(|_args| {
+            // Return a stub frame object
+            let frame = PyObject::instance(PyObject::class(
+                CompactString::from("frame"), vec![], IndexMap::new()));
+            if let PyObjectPayload::Instance(inst) = &frame.payload {
+                let mut attrs = inst.attrs.write();
+                attrs.insert(CompactString::from("f_back"), PyObject::none());
+                attrs.insert(CompactString::from("f_lineno"), PyObject::int(0));
+                attrs.insert(CompactString::from("f_locals"), PyObject::dict(IndexMap::new()));
+                attrs.insert(CompactString::from("f_globals"), PyObject::dict(IndexMap::new()));
+            }
+            Ok(frame)
+        })),
+        ("stack", make_builtin(|_args| {
+            Ok(PyObject::list(vec![]))
+        })),
+        ("getfullargspec", make_builtin(|args| {
+            check_args("inspect.getfullargspec", args, 1)?;
+            // Extract actual args from function object if possible
+            let mut arg_names = Vec::new();
+            if let PyObjectPayload::Function(f) = &args[0].payload {
+                for name in &f.code.varnames {
+                    if arg_names.len() < f.code.arg_count as usize {
+                        arg_names.push(PyObject::str_val(name.clone()));
+                    }
+                }
+            }
+            // Return as a dict-like object that also supports attribute access
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("args"), PyObject::list(arg_names));
+            ns.insert(CompactString::from("varargs"), PyObject::none());
+            ns.insert(CompactString::from("varkw"), PyObject::none());
+            ns.insert(CompactString::from("defaults"), PyObject::none());
+            ns.insert(CompactString::from("kwonlyargs"), PyObject::list(vec![]));
+            ns.insert(CompactString::from("kwonlydefaults"), PyObject::none());
+            ns.insert(CompactString::from("annotations"), PyObject::dict(IndexMap::new()));
+            // Return as dict so spec["args"] works, but also wrap as instance
+            let hashable_ns: IndexMap<HashableKey, PyObjectRef> = ns.iter()
+                .map(|(k, v)| (HashableKey::Str(k.clone()), v.clone()))
+                .collect();
+            Ok(PyObject::dict(hashable_ns))
+        })),
+        ("unwrap", make_builtin(|args| {
+            check_args("inspect.unwrap", args, 1)?;
+            let mut func = args[0].clone();
+            for _ in 0..100 {
+                if let Some(wrapped) = func.get_attr("__wrapped__") {
+                    func = wrapped;
+                } else {
+                    break;
+                }
+            }
+            Ok(func)
+        })),
+        ("isasyncgen", make_builtin(|args| {
+            check_args("inspect.isasyncgen", args, 1)?;
+            Ok(PyObject::bool_val(false))
+        })),
+        ("isasyncgenfunction", make_builtin(|args| {
+            check_args("inspect.isasyncgenfunction", args, 1)?;
+            Ok(PyObject::bool_val(false))
+        })),
+        ("isawaitable", make_builtin(|args| {
+            check_args("inspect.isawaitable", args, 1)?;
+            Ok(PyObject::bool_val(matches!(&args[0].payload, PyObjectPayload::Coroutine(_))))
+        })),
+        ("isdatadescriptor", make_builtin(|args| {
+            check_args("inspect.isdatadescriptor", args, 1)?;
+            Ok(PyObject::bool_val(args[0].get_attr("__get__").is_some() && args[0].get_attr("__set__").is_some()))
+        })),
+        ("getmro", make_builtin(|args| {
+            check_args("inspect.getmro", args, 1)?;
+            if let Some(mro) = args[0].get_attr("__mro__") {
+                return Ok(mro);
+            }
+            Ok(PyObject::tuple(vec![args[0].clone()]))
+        })),
+        ("CO_VARARGS", PyObject::int(0x04)),
+        ("CO_VARKEYWORDS", PyObject::int(0x08)),
+        ("TPFLAGS_IS_ABSTRACT", PyObject::int(1 << 20)),
     ])
 }
 

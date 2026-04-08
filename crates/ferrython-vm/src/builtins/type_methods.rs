@@ -1293,6 +1293,14 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                     }).collect();
                     Ok(PyObject::str_val(CompactString::from(s)))
                 }
+                "punycode" => {
+                    crate::builtins::string_methods::punycode_decode_bytes(b)
+                }
+                "idna" => {
+                    let s = std::str::from_utf8(b)
+                        .map_err(|_| PyException::value_error("idna: invalid bytes"))?;
+                    Ok(PyObject::str_val(CompactString::from(s.to_string())))
+                }
                 _ => Err(PyException::new(
                     ExceptionKind::LookupError,
                     format!("unknown encoding: {}", encoding),
