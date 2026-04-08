@@ -129,14 +129,22 @@ fn parse_dependency(dep: &str) -> Option<(String, Option<String>)> {
         }
     }
 
-    // Handle inline specifiers: "requests>=2.20"
-    // Try to find version operators directly first (more reliable)
+    // Handle inline specifiers: "requests>=2.20" or "charset_normalizer<4,>=2"
+    // Find the earliest version operator to correctly split name from spec
+    let mut earliest_pos = None;
+    let mut earliest_len = 0;
     for op in &[">=", "<=", "!=", "~=", "==", ">", "<"] {
         if let Some(pos) = dep.find(op) {
-            let name = dep[..pos].trim().to_lowercase().replace('-', "_").replace('.', "_");
-            let spec = dep[pos..].trim().to_string();
-            return Some((name, Some(spec)));
+            if earliest_pos.is_none() || pos < earliest_pos.unwrap() {
+                earliest_pos = Some(pos);
+                earliest_len = op.len();
+            }
         }
+    }
+    if let Some(pos) = earliest_pos {
+        let name = dep[..pos].trim().to_lowercase().replace('-', "_").replace('.', "_");
+        let spec = dep[pos..].trim().to_string();
+        return Some((name, Some(spec)));
     }
     // No version constraint — just a bare name
     let name = dep.trim().to_lowercase().replace('-', "_").replace('.', "_");

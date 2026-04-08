@@ -65,16 +65,26 @@ pub fn parse_requirement(spec: &str) -> (String, Option<String>) {
         spec.to_string()
     };
 
-    for sep in &["==", ">=", "<=", "!=", "~=", ">", "<"] {
+    // Find the earliest version operator to correctly split name from spec
+    let mut earliest_pos = None;
+    let mut earliest_sep = "";
+    for sep in &[">=", "<=", "!=", "~=", "==", ">", "<"] {
         if let Some(pos) = spec_no_extras.find(sep) {
-            let name = spec_no_extras[..pos].trim().to_lowercase();
-            let version = spec_no_extras[pos + sep.len()..].trim();
-            if *sep == "==" {
-                return (name, Some(version.to_string()));
-            } else {
-                // For non-exact specifiers, we'll fetch the latest compatible version
-                return (name, None);
+            if earliest_pos.is_none() || pos < earliest_pos.unwrap() {
+                earliest_pos = Some(pos);
+                earliest_sep = sep;
             }
+        }
+    }
+    if let Some(pos) = earliest_pos {
+        let name = spec_no_extras[..pos].trim().to_lowercase();
+        if earliest_sep == "==" {
+            let version = spec_no_extras[pos + 2..].trim();
+            // Strip trailing comma-separated specs for exact pin
+            let version = version.split(',').next().unwrap_or(version);
+            return (name, Some(version.to_string()));
+        } else {
+            return (name, None);
         }
     }
     (spec_no_extras.trim().to_lowercase(), None)
