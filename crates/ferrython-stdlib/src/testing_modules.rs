@@ -807,8 +807,46 @@ fn logging_log(level: i64, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         msg_fmt
     };
-    let formatted = format_log_message(root_format(), level_name, "root", &msg);
-    eprintln!("{}", formatted);
+
+    // Dispatch through the root logger's handlers if any are registered
+    let mut dispatched = false;
+    LOGGER_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        if let Some(root) = reg.get("root") {
+            if let Some(handlers) = root.get_attr("handlers") {
+                if let PyObjectPayload::List(items) = &handlers.payload {
+                    let r = items.read();
+                    if !r.is_empty() {
+                        // Build a LogRecord
+                        let rec_cls = PyObject::class(CompactString::from("LogRecord"), vec![], IndexMap::new());
+                        let mut rec_attrs = IndexMap::new();
+                        rec_attrs.insert(CompactString::from("levelname"), PyObject::str_val(CompactString::from(level_name)));
+                        rec_attrs.insert(CompactString::from("levelno"), PyObject::int(level));
+                        rec_attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from("root")));
+                        rec_attrs.insert(CompactString::from("message"), PyObject::str_val(CompactString::from(msg.as_str())));
+                        rec_attrs.insert(CompactString::from("msg"), PyObject::str_val(CompactString::from(msg.as_str())));
+                        let record = PyObject::instance_with_attrs(rec_cls, rec_attrs);
+
+                        for handler in r.iter() {
+                            if let Some(emit_fn) = handler.get_attr("emit") {
+                                match &emit_fn.payload {
+                                    PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&[record.clone()]); }
+                                    PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[record.clone()]); }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        dispatched = true;
+                    }
+                }
+            }
+        }
+    });
+
+    if !dispatched {
+        let formatted = format_log_message(root_format(), level_name, "root", &msg);
+        eprintln!("{}", formatted);
+    }
     Ok(PyObject::none())
 }
 

@@ -378,7 +378,28 @@ fn build_socket_object(
                             sock.set_read_timeout(Some(t)).ok();
                             sock.set_write_timeout(Some(t)).ok();
                         }
+                        // Update bound_addr with actual assigned port
+                        if let Ok(real_addr) = sock.local_addr() {
+                            guard.bound_addr = Some(real_addr.to_string());
+                        }
                         guard.udp_socket = Some(sock);
+                    }
+                    Err(e) => {
+                        return Err(PyException::os_error(format!("bind: {}", e)));
+                    }
+                }
+            } else {
+                // TCP — create listener now so getsockname() returns real port
+                match TcpListener::bind(&addr_str) {
+                    Ok(listener) => {
+                        if let Some(t) = guard.timeout {
+                            listener.set_nonblocking(false).ok();
+                            let _ = t; // timeout applied at accept time
+                        }
+                        if let Ok(real_addr) = listener.local_addr() {
+                            guard.bound_addr = Some(real_addr.to_string());
+                        }
+                        guard.tcp_listener = Some(listener);
                     }
                     Err(e) => {
                         return Err(PyException::os_error(format!("bind: {}", e)));
@@ -402,6 +423,39 @@ fn build_socket_object(
             let mut guard = lock_inner(&st)?;
             if guard.closed {
                 return Err(PyException::os_error("[Errno 9] Bad file descriptor"));
+            }
+            // If listener already created by bind(), just apply options
+            if guard.tcp_listener.is_some() {
+                #[cfg(unix)]
+                if let Some(ref listener) = guard.tcp_listener {
+                    use std::os::unix::io::AsRawFd;
+                    let fd = listener.as_raw_fd();
+                    if let Some(t) = guard.timeout {
+                        listener.set_nonblocking(false).ok();
+                        let tv = libc::timeval {
+                            tv_sec: t.as_secs() as libc::time_t,
+                            tv_usec: t.subsec_micros() as libc::suseconds_t,
+                        };
+                        unsafe {
+                            libc::setsockopt(
+                                fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO,
+                                &tv as *const libc::timeval as *const libc::c_void,
+                                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+                            );
+                        }
+                    }
+                    for &(level, optname, value) in &guard.options {
+                        let val = value as libc::c_int;
+                        unsafe {
+                            libc::setsockopt(
+                                fd, level as libc::c_int, optname as libc::c_int,
+                                &val as *const libc::c_int as *const libc::c_void,
+                                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                            );
+                        }
+                    }
+                }
+                return Ok(PyObject::none());
             }
             let addr = guard
                 .bound_addr
