@@ -849,12 +849,69 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             }
                         } else {
                             // Unbound method access: str.upper, list.append, etc.
-                            Some(Arc::new(PyObject {
-                                payload: PyObjectPayload::BuiltinBoundMethod {
-                                    receiver: obj.clone(),
-                                    method_name: CompactString::from(name),
-                                }
-                            }))
+                            // Only return a bound method if the type actually has this method.
+                            if let Some(native) = resolve_builtin_type_method(n, name) {
+                                return Some(native);
+                            }
+                            // Check a known set of non-dunder methods per type
+                            let has_method = match n.as_str() {
+                                "str" => matches!(name,
+                                    "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "split" | "rsplit"
+                                    | "join" | "replace" | "find" | "rfind" | "index" | "rindex" | "count"
+                                    | "startswith" | "endswith" | "encode" | "decode" | "format"
+                                    | "format_map" | "center" | "ljust" | "rjust" | "zfill"
+                                    | "expandtabs" | "title" | "capitalize" | "swapcase" | "casefold"
+                                    | "isalpha" | "isdigit" | "isalnum" | "isspace" | "isupper" | "islower"
+                                    | "istitle" | "isnumeric" | "isdecimal" | "isidentifier" | "isprintable"
+                                    | "isascii" | "partition" | "rpartition" | "splitlines" | "translate"
+                                    | "removeprefix" | "removesuffix" | "maketrans"
+                                ),
+                                "list" => matches!(name,
+                                    "append" | "extend" | "insert" | "remove" | "pop" | "clear"
+                                    | "index" | "count" | "sort" | "reverse" | "copy"
+                                ),
+                                "dict" => matches!(name,
+                                    "keys" | "values" | "items" | "get" | "pop" | "setdefault"
+                                    | "update" | "clear" | "copy" | "fromkeys"
+                                ),
+                                "set" | "frozenset" => matches!(name,
+                                    "add" | "remove" | "discard" | "pop" | "clear" | "copy"
+                                    | "union" | "intersection" | "difference" | "symmetric_difference"
+                                    | "update" | "intersection_update" | "difference_update"
+                                    | "symmetric_difference_update" | "issubset" | "issuperset" | "isdisjoint"
+                                ),
+                                "tuple" => matches!(name, "count" | "index"),
+                                "bytes" | "bytearray" => matches!(name,
+                                    "decode" | "hex" | "count" | "find" | "rfind" | "index" | "rindex"
+                                    | "split" | "rsplit" | "join" | "replace" | "strip" | "lstrip" | "rstrip"
+                                    | "startswith" | "endswith" | "upper" | "lower" | "title" | "capitalize"
+                                    | "swapcase" | "center" | "ljust" | "rjust" | "zfill" | "expandtabs"
+                                    | "isalpha" | "isdigit" | "isalnum" | "isspace" | "isupper" | "islower"
+                                    | "translate" | "partition" | "rpartition" | "splitlines" | "fromhex"
+                                    | "extend" | "append" | "insert" | "pop" | "remove" | "reverse" | "copy" | "clear"
+                                    | "maketrans"
+                                ),
+                                "int" => matches!(name,
+                                    "bit_length" | "to_bytes" | "from_bytes" | "conjugate"
+                                    | "real" | "imag" | "numerator" | "denominator"
+                                ),
+                                "float" => matches!(name,
+                                    "is_integer" | "hex" | "fromhex" | "as_integer_ratio"
+                                    | "conjugate" | "real" | "imag"
+                                ),
+                                "type" => matches!(name, "mro"),
+                                _ => false,
+                            };
+                            if has_method {
+                                Some(Arc::new(PyObject {
+                                    payload: PyObjectPayload::BuiltinBoundMethod {
+                                        receiver: obj.clone(),
+                                        method_name: CompactString::from(name),
+                                    }
+                                }))
+                            } else {
+                                None
+                            }
                         }
                     }
                 }

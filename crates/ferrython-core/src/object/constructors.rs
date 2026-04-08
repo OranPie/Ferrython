@@ -312,6 +312,25 @@ impl PyObject {
         }
         Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(attrs)) }))
     }
+    /// Create a module that shares an existing globals Arc (for circular import support).
+    pub fn module_with_shared_globals(name: CompactString, globals: Arc<parking_lot::RwLock<IndexMap<CompactString, PyObjectRef>>>) -> PyObjectRef {
+        {
+            let mut g = globals.write();
+            if !g.contains_key("__name__") {
+                g.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
+            }
+            if !g.contains_key("__loader__") {
+                g.insert(CompactString::from("__loader__"), PyObject::none());
+            }
+            if !g.contains_key("__spec__") {
+                g.insert(CompactString::from("__spec__"), PyObject::none());
+            }
+            if !g.contains_key("__package__") {
+                g.insert(CompactString::from("__package__"), PyObject::none());
+            }
+        }
+        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: globals }))
+    }
     pub fn native_function(name: &str, func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::NativeFunction { name: CompactString::from(name), func })
     }

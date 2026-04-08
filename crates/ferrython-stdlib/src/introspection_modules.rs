@@ -1221,6 +1221,21 @@ pub fn create_inspect_module() -> PyObjectRef {
         })),
 
         // ── Frame introspection ──
+        ("getattr_static", make_builtin(|args| {
+            // getattr_static(obj, name[, default]) — like getattr but no descriptor protocol
+            if args.is_empty() || args.len() < 2 {
+                return Err(PyException::type_error("getattr_static() requires at least 2 arguments"));
+            }
+            let name_str = args[1].py_to_string();
+            if let Some(v) = args[0].get_attr(&name_str) {
+                Ok(v)
+            } else if args.len() >= 3 {
+                Ok(args[2].clone())
+            } else {
+                Err(PyException::attribute_error(format!(
+                    "'{}' object has no attribute '{}'", args[0].type_name(), name_str)))
+            }
+        })),
         ("currentframe", make_builtin(|_args| {
             let cls = PyObject::class(CompactString::from("frame"), vec![], IndexMap::new());
             let mut attrs = IndexMap::new();

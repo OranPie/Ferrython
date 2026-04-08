@@ -150,6 +150,17 @@ pub fn create_functools_module() -> PyObjectRef {
             }
             Ok(wrapper.clone())
         })),
+        // Constants used by wraps/update_wrapper
+        ("WRAPPER_ASSIGNMENTS", PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("__module__")),
+            PyObject::str_val(CompactString::from("__name__")),
+            PyObject::str_val(CompactString::from("__qualname__")),
+            PyObject::str_val(CompactString::from("__annotations__")),
+            PyObject::str_val(CompactString::from("__doc__")),
+        ])),
+        ("WRAPPER_UPDATES", PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("__dict__")),
+        ])),
     ])
 }
 

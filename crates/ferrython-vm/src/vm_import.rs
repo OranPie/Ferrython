@@ -309,11 +309,14 @@ impl VirtualMachine {
             g.insert(CompactString::from("__doc__"), PyObject::none());
         }
 
-        // Circular import protection: insert partial module before executing
-        let partial_mod = PyObject::module_with_attrs(mod_name.clone(), globals.read().clone());
+        // Circular import protection: insert partial module that shares the same
+        // globals Arc, so submodules attached during circular imports and names
+        // added during execution are all visible through the same module object.
+        let partial_mod = PyObject::module_with_shared_globals(mod_name.clone(), globals.clone());
         self.cache_module(cache_name, &partial_mod);
 
-        // Execute module body
+        // Execute module body — writes go to `globals`, which is the same
+        // Arc backing partial_mod's attrs.
         let frame = Frame::new(code, globals.clone(), Arc::clone(&self.builtins));
         self.call_stack.push(frame);
         let exec_result = self.run_frame();
@@ -321,12 +324,10 @@ impl VirtualMachine {
             frame.recycle(&mut self.frame_pool);
         }
 
-        // Build final module from executed globals
-        let final_mod = PyObject::module_with_attrs(mod_name, globals.read().clone());
-        self.cache_module(cache_name, &final_mod);
-
+        // The partial_mod's attrs are already up-to-date (shared globals).
+        // Just propagate it as the final module — no need to rebuild.
         exec_result?;
-        Ok(final_mod)
+        Ok(partial_mod)
     }
 
     /// Attach a submodule as an attribute of a parent module.
