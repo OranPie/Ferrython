@@ -3231,10 +3231,28 @@ pub fn create_ctypes_module() -> PyObjectRef {
             let size = args.first().and_then(|a| a.as_int()).unwrap_or(256) as usize;
             Ok(PyObject::str_val(CompactString::from("\0".repeat(size))))
         })),
-        ("get_errno", make_builtin(|_| Ok(PyObject::int(0)))),
+        ("get_errno", make_builtin(|_| {
+            #[cfg(unix)]
+            {
+                let e = unsafe { *libc::__errno_location() };
+                Ok(PyObject::int(e as i64))
+            }
+            #[cfg(not(unix))]
+            Ok(PyObject::int(0))
+        })),
         ("set_errno", make_builtin(|args| {
-            let _new_val = args.first().and_then(|a| a.as_int()).unwrap_or(0);
-            Ok(PyObject::int(0)) // return old errno (always 0 in stub)
+            let new_val = args.first().and_then(|a| a.as_int()).unwrap_or(0);
+            #[cfg(unix)]
+            {
+                let old = unsafe { *libc::__errno_location() };
+                unsafe { *libc::__errno_location() = new_val as i32; }
+                Ok(PyObject::int(old as i64))
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = new_val;
+                Ok(PyObject::int(0))
+            }
         })),
         ("get_last_error", make_builtin(|_| Ok(PyObject::int(0)))),
         ("set_last_error", make_builtin(|args| {

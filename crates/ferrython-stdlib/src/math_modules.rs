@@ -963,6 +963,77 @@ pub fn create_decimal_module() -> PyObjectRef {
                 let b = get_decimal_str(&args[1]).unwrap_or_else(|| args[1].py_to_string()).parse::<f64>().unwrap_or(0.0);
                 Ok(if a <= b { args[0].clone() } else { args[1].clone() })
             }));
+            // compare(other) → Decimal(-1, 0, or 1)
+            dec_ns.insert(CompactString::from("compare"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("compare requires self and other")); }
+                let a = get_decimal_str(&args[0]).unwrap_or_default().parse::<f64>().unwrap_or(0.0);
+                let b = get_decimal_str(&args[1]).unwrap_or_else(|| args[1].py_to_string()).parse::<f64>().unwrap_or(0.0);
+                let result = if a < b { -1 } else if a > b { 1 } else { 0 };
+                Ok(make_decimal(&format!("{}", result)))
+            }));
+            dec_ns.insert(CompactString::from("conjugate"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("conjugate requires self")); }
+                Ok(args[0].clone())
+            }));
+            dec_ns.insert(CompactString::from("radix"), make_builtin(|_| {
+                Ok(make_decimal("10"))
+            }));
+            dec_ns.insert(CompactString::from("to_integral_value"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(make_decimal("0")); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let v: f64 = s.parse().unwrap_or(0.0);
+                Ok(make_decimal(&format!("{}", v.round() as i64)))
+            }));
+            dec_ns.insert(CompactString::from("to_integral_exact"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(make_decimal("0")); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let v: f64 = s.parse().unwrap_or(0.0);
+                Ok(make_decimal(&format!("{}", v.round() as i64)))
+            }));
+            dec_ns.insert(CompactString::from("log10"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("log10 requires self")); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let v: f64 = s.parse().unwrap_or(1.0);
+                Ok(make_decimal(&format!("{}", v.log10())))
+            }));
+            dec_ns.insert(CompactString::from("logb"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("logb requires self")); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let v: f64 = s.parse().unwrap_or(1.0);
+                let abs_v = v.abs();
+                if abs_v == 0.0 { return Err(PyException::value_error("logarithm of zero")); }
+                Ok(make_decimal(&format!("{}", abs_v.log10().floor() as i64)))
+            }));
+            dec_ns.insert(CompactString::from("fma"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 3 { return Err(PyException::type_error("fma requires self, other, third")); }
+                let a = get_decimal_str(&args[0]).unwrap_or_default().parse::<f64>().unwrap_or(0.0);
+                let b = get_decimal_str(&args[1]).unwrap_or_else(|| args[1].py_to_string()).parse::<f64>().unwrap_or(0.0);
+                let c = get_decimal_str(&args[2]).unwrap_or_else(|| args[2].py_to_string()).parse::<f64>().unwrap_or(0.0);
+                Ok(make_decimal(&format!("{}", a * b + c)))
+            }));
+            dec_ns.insert(CompactString::from("same_quantum"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("same_quantum requires self and other")); }
+                let a = get_decimal_str(&args[0]).unwrap_or_default();
+                let b = get_decimal_str(&args[1]).unwrap_or_else(|| args[1].py_to_string());
+                let exp_a = if a.contains('.') { a.split('.').nth(1).map(|s| s.len()).unwrap_or(0) } else { 0 };
+                let exp_b = if b.contains('.') { b.split('.').nth(1).map(|s| s.len()).unwrap_or(0) } else { 0 };
+                Ok(PyObject::bool_val(exp_a == exp_b))
+            }));
+            dec_ns.insert(CompactString::from("number_class"), make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Ok(PyObject::str_val(CompactString::from("+Zero"))); }
+                let s = get_decimal_str(&args[0]).unwrap_or_default();
+                let lower = s.to_lowercase();
+                let result = if lower.contains("nan") { "NaN" }
+                    else if lower.contains("infinity") || lower.contains("inf") {
+                        if s.starts_with('-') { "-Infinity" } else { "+Infinity" }
+                    } else {
+                        let v: f64 = s.parse().unwrap_or(0.0);
+                        if v == 0.0 { if s.starts_with('-') { "-Zero" } else { "+Zero" } }
+                        else if v < 0.0 { "-Normal" }
+                        else { "+Normal" }
+                    };
+                Ok(PyObject::str_val(CompactString::from(result)))
+            }));
             // __new__ enables Decimal("1.23") to work when called as class constructor
             dec_ns.insert(CompactString::from("__new__"), PyObject::native_function(
                 "Decimal.__new__", |args: &[PyObjectRef]| {
@@ -1542,6 +1613,29 @@ pub fn create_decimal_module() -> PyObjectRef {
                 is_special: true, dict_storage: None,
             }))
         }),
+        ("Context", make_builtin(|args| {
+            // Context(prec=28, rounding=ROUND_HALF_EVEN, ...)
+            let mut ctx_ns = IndexMap::new();
+            let prec = args.first()
+                .and_then(|a| if matches!(a.payload, PyObjectPayload::Dict(_)) {
+                    if let PyObjectPayload::Dict(ref m) = a.payload {
+                        m.read().get(&HashableKey::Str(CompactString::from("prec"))).and_then(|v| v.as_int())
+                    } else { None }
+                } else { a.as_int() })
+                .unwrap_or(28) as i64;
+            ctx_ns.insert(CompactString::from("prec"), PyObject::int(prec));
+            ctx_ns.insert(CompactString::from("rounding"), PyObject::str_val(CompactString::from("ROUND_HALF_EVEN")));
+            ctx_ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
+            ctx_ns.insert(CompactString::from("Emax"), PyObject::int(999999));
+            ctx_ns.insert(CompactString::from("capitals"), PyObject::int(1));
+            ctx_ns.insert(CompactString::from("clamp"), PyObject::int(0));
+            let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
+            Ok(PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+                class: cls,
+                attrs: Arc::new(RwLock::new(ctx_ns)),
+                is_special: true, dict_storage: None,
+            })))
+        })),
     ])
 }
 
