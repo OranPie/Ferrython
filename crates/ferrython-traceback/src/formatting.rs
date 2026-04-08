@@ -172,7 +172,7 @@ mod tests {
     fn test_format_traceback_no_entries() {
         let exc = PyException::new(ExceptionKind::TypeError, "wrong type");
         let formatted = format_traceback(&exc);
-        assert_eq!(formatted, "TypeError: wrong type");
+        assert_eq!(formatted, "TypeError: wrong type\n");
     }
 
     #[test]

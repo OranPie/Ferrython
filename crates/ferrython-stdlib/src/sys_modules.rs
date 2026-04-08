@@ -189,11 +189,7 @@ pub fn create_sys_module() -> PyObjectRef {
             path_items.push(PyObject::str_val(CompactString::from(".")));
             PyObject::list(path_items)
         }),
-        ("modules", PyObject::dict_from_pairs(vec![
-            (PyObject::str_val(CompactString::from("sys")), PyObject::str_val(CompactString::from("<module 'sys' (built-in)>"))),
-            (PyObject::str_val(CompactString::from("os")), PyObject::str_val(CompactString::from("<module 'os' (built-in)>"))),
-            (PyObject::str_val(CompactString::from("builtins")), PyObject::str_val(CompactString::from("<module 'builtins' (built-in)>"))),
-        ])),
+        ("modules", PyObject::dict_from_pairs(vec![])),
         ("maxsize", PyObject::int(i64::MAX)),
         ("maxunicode", PyObject::int(0x10FFFF)),
         ("byteorder", PyObject::str_val(CompactString::from(if cfg!(target_endian = "little") { "little" } else { "big" }))),
