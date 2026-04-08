@@ -1725,6 +1725,44 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                         }
                                     }));
                                 }
+                                // For builtin type methods (list.append, dict.update, etc.)
+                                // that aren't in resolve_builtin_type_method, return a
+                                // BuiltinBoundMethod that the VM dispatches via __builtin_value__
+                                let known_methods = match bt_name.as_str() {
+                                    "list" => matches!(name, "append" | "extend" | "insert" | "remove"
+                                        | "pop" | "clear" | "reverse" | "sort" | "copy" | "count"
+                                        | "index" | "__len__" | "__iter__" | "__contains__"
+                                        | "__getitem__" | "__setitem__" | "__delitem__"),
+                                    "dict" => matches!(name, "keys" | "values" | "items" | "get"
+                                        | "pop" | "update" | "setdefault" | "clear" | "copy"
+                                        | "popitem" | "__len__" | "__iter__" | "__contains__"
+                                        | "__getitem__" | "__setitem__" | "__delitem__"),
+                                    "set" => matches!(name, "add" | "remove" | "discard" | "pop"
+                                        | "clear" | "copy" | "update" | "intersection_update"
+                                        | "difference_update" | "symmetric_difference_update"
+                                        | "union" | "intersection" | "difference" | "symmetric_difference"
+                                        | "issubset" | "issuperset" | "__len__" | "__iter__" | "__contains__"),
+                                    "str" => matches!(name, "upper" | "lower" | "strip" | "lstrip"
+                                        | "rstrip" | "split" | "rsplit" | "join" | "replace"
+                                        | "startswith" | "endswith" | "find" | "rfind" | "index"
+                                        | "rindex" | "count" | "encode" | "format" | "center"
+                                        | "ljust" | "rjust" | "zfill" | "title" | "capitalize"
+                                        | "swapcase" | "partition" | "rpartition" | "expandtabs"
+                                        | "__len__" | "__iter__" | "__contains__" | "__getitem__"),
+                                    "int" => matches!(name, "bit_length" | "to_bytes" | "from_bytes"
+                                        | "__int__" | "__float__" | "__index__"),
+                                    "tuple" => matches!(name, "count" | "index" | "__len__"
+                                        | "__iter__" | "__contains__" | "__getitem__"),
+                                    _ => false,
+                                };
+                                if known_methods {
+                                    return Some(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BuiltinBoundMethod {
+                                            receiver: instance.clone(),
+                                            method_name: CompactString::from(name),
+                                        }
+                                    }));
+                                }
                             }
                         }
                         // Fallback: if cls not found in MRO, look in cls's own bases

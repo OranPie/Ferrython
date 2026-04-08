@@ -495,6 +495,123 @@ pub fn create_email_mime_base_module() -> PyObjectRef {
     ])
 }
 
+// ── email.mime.application module ──────────────────────────────────────
+
+fn mime_application_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "MIMEApplication() missing required argument: 'data'",
+        ));
+    }
+    let data = match &args[0].payload {
+        PyObjectPayload::Bytes(b) => b.clone(),
+        PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+        _ => args[0].py_to_string().into_bytes(),
+    };
+    let subtype = if args.len() > 1 {
+        args[1].py_to_string()
+    } else {
+        "octet-stream".to_string()
+    };
+    let ct = format!("application/{}", subtype);
+    // Base64-encode the data
+    let encoded = base64_encode(&data);
+    let msg = build_message_instance(
+        Some(&ct),
+        Some(PyObject::str_val(CompactString::from(encoded))),
+    );
+    // Set Content-Transfer-Encoding header
+    if let PyObjectPayload::Instance(ref inst) = msg.payload {
+        let attrs = inst.attrs.read();
+        if let Some(setitem) = attrs.get("__setitem__") {
+            if let PyObjectPayload::NativeClosure { func, .. } = &setitem.payload {
+                let _ = func(&[
+                    PyObject::str_val(CompactString::from("Content-Transfer-Encoding")),
+                    PyObject::str_val(CompactString::from("base64")),
+                ]);
+            }
+        }
+    }
+    Ok(msg)
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+pub fn create_email_mime_application_module() -> PyObjectRef {
+    make_module("email.mime.application", vec![
+        ("MIMEApplication", make_builtin(mime_application_constructor)),
+    ])
+}
+
+// ── email.mime.image module ────────────────────────────────────────────
+
+fn mime_image_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error(
+            "MIMEImage() missing required argument: 'imagedata'",
+        ));
+    }
+    let data = match &args[0].payload {
+        PyObjectPayload::Bytes(b) => b.clone(),
+        _ => args[0].py_to_string().into_bytes(),
+    };
+    let subtype = if args.len() > 1 {
+        args[1].py_to_string()
+    } else {
+        // Auto-detect from data magic bytes
+        if data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) { "png".to_string() }
+        else if data.starts_with(&[0xFF, 0xD8, 0xFF]) { "jpeg".to_string() }
+        else if data.starts_with(b"GIF8") { "gif".to_string() }
+        else { "octet-stream".to_string() }
+    };
+    let ct = format!("image/{}", subtype);
+    let encoded = base64_encode(&data);
+    let msg = build_message_instance(
+        Some(&ct),
+        Some(PyObject::str_val(CompactString::from(encoded))),
+    );
+    if let PyObjectPayload::Instance(ref inst) = msg.payload {
+        let attrs = inst.attrs.read();
+        if let Some(setitem) = attrs.get("__setitem__") {
+            if let PyObjectPayload::NativeClosure { func, .. } = &setitem.payload {
+                let _ = func(&[
+                    PyObject::str_val(CompactString::from("Content-Transfer-Encoding")),
+                    PyObject::str_val(CompactString::from("base64")),
+                ]);
+            }
+        }
+    }
+    Ok(msg)
+}
+
+pub fn create_email_mime_image_module() -> PyObjectRef {
+    make_module("email.mime.image", vec![
+        ("MIMEImage", make_builtin(mime_image_constructor)),
+    ])
+}
+
 // ── email.mime package ─────────────────────────────────────────────────
 
 pub fn create_email_mime_module() -> PyObjectRef {
@@ -502,6 +619,139 @@ pub fn create_email_mime_module() -> PyObjectRef {
         ("text", create_email_mime_text_module()),
         ("multipart", create_email_mime_multipart_module()),
         ("base", create_email_mime_base_module()),
+        ("application", create_email_mime_application_module()),
+        ("image", create_email_mime_image_module()),
+    ])
+}
+
+// ── email.policy module ────────────────────────────────────────────────
+
+pub fn create_email_policy_module() -> PyObjectRef {
+    // Build an EmailPolicy class that can be instantiated with kwargs
+    let make_policy = |name: &str, utf8: bool, max_line_len: i64| -> PyObjectRef {
+        let cls = PyObject::class(CompactString::from("EmailPolicy"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("utf8"), PyObject::bool_val(utf8));
+        attrs.insert(CompactString::from("max_line_length"), PyObject::int(max_line_len));
+        attrs.insert(CompactString::from("raise_on_defect"), PyObject::bool_val(false));
+        let name_str = CompactString::from(name);
+        attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+            "__repr__", move |_: &[PyObjectRef]| {
+                Ok(PyObject::str_val(CompactString::from(format!("email.policy.{}", name_str))))
+            }
+        ));
+        // clone(**kw) — return a copy with overrides
+        attrs.insert(CompactString::from("clone"), PyObject::native_closure(
+            "clone", |_args: &[PyObjectRef]| {
+                let cls = PyObject::class(CompactString::from("EmailPolicy"), vec![], IndexMap::new());
+                Ok(PyObject::instance(cls))
+            }
+        ));
+        PyObject::instance_with_attrs(cls, attrs)
+    };
+
+    let default_policy = make_policy("default", false, 78);
+    let smtp = make_policy("SMTP", false, 998);
+    let smtputf8 = make_policy("SMTPUTF8", true, 998);
+    let http = make_policy("HTTP", false, 0);
+    let strict = make_policy("strict", false, 78);
+    let compat32 = make_policy("compat32", false, 78);
+
+    // EmailPolicy constructor
+    let email_policy_fn = make_builtin(|args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("EmailPolicy"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("utf8"), PyObject::bool_val(false));
+            w.insert(CompactString::from("max_line_length"), PyObject::int(78));
+            w.insert(CompactString::from("raise_on_defect"), PyObject::bool_val(false));
+            // Apply kwargs
+            if let Some(last) = args.last() {
+                if let PyObjectPayload::Dict(kw) = &last.payload {
+                    let r = kw.read();
+                    for (k, v) in r.iter() {
+                        if let ferrython_core::types::HashableKey::Str(key) = k {
+                            w.insert(CompactString::from(key.as_str()), v.clone());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(inst)
+    });
+
+    make_module("email.policy", vec![
+        ("EmailPolicy", email_policy_fn),
+        ("default", default_policy),
+        ("SMTP", smtp),
+        ("SMTPUTF8", smtputf8),
+        ("HTTP", http),
+        ("strict", strict),
+        ("compat32", compat32),
+    ])
+}
+
+// ── email.contentmanager module ────────────────────────────────────────
+
+pub fn create_email_contentmanager_module() -> PyObjectRef {
+    let content_manager_fn = make_builtin(|_args: &[PyObjectRef]| {
+        let cls = PyObject::class(CompactString::from("ContentManager"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("get_content"), make_builtin(|args| {
+                if let Some(msg) = args.first() {
+                    if let Some(payload) = msg.get_attr("_payload") {
+                        return Ok(payload);
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+            w.insert(CompactString::from("set_content"), make_builtin(|_| Ok(PyObject::none())));
+        }
+        Ok(inst)
+    });
+
+    let raw_mgr = content_manager_fn.clone();
+    // Create a default ContentManager instance
+    let default_mgr = match &raw_mgr.payload {
+        PyObjectPayload::NativeFunction { func, .. } => func(&[]).unwrap_or_else(|_| PyObject::none()),
+        _ => PyObject::none(),
+    };
+
+    make_module("email.contentmanager", vec![
+        ("ContentManager", content_manager_fn),
+        ("raw_data_manager", default_mgr),
+    ])
+}
+
+// ── email.charset module ──────────────────────────────────────────────
+
+pub fn create_email_charset_module() -> PyObjectRef {
+    let charset_fn = make_builtin(|args: &[PyObjectRef]| {
+        let name = if !args.is_empty() { args[0].py_to_string() } else { "us-ascii".to_string() };
+        let cls = PyObject::class(CompactString::from("Charset"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("input_charset"), PyObject::str_val(CompactString::from(name.as_str())));
+            w.insert(CompactString::from("output_charset"), PyObject::str_val(CompactString::from(name.as_str())));
+            let n = name.clone();
+            w.insert(CompactString::from("__str__"), PyObject::native_closure(
+                "__str__", move |_: &[PyObjectRef]| {
+                    Ok(PyObject::str_val(CompactString::from(n.clone())))
+                }
+            ));
+            w.insert(CompactString::from("get_body_encoding"), make_builtin(|_| {
+                Ok(PyObject::str_val(CompactString::from("base64")))
+            }));
+        }
+        Ok(inst)
+    });
+
+    make_module("email.charset", vec![
+        ("Charset", charset_fn),
     ])
 }
 
@@ -862,6 +1112,9 @@ pub fn create_email_module() -> PyObjectRef {
         ("mime", create_email_mime_module()),
         ("utils", create_email_utils_module()),
         ("errors", create_email_errors_module()),
+        ("policy", create_email_policy_module()),
+        ("contentmanager", create_email_contentmanager_module()),
+        ("charset", create_email_charset_module()),
         ("message_from_string", PyObject::native_function("email.message_from_string", email_message_from_string)),
         ("message_from_bytes", PyObject::native_function("email.message_from_bytes", email_message_from_bytes)),
     ])

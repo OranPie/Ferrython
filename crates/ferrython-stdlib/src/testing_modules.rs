@@ -551,6 +551,83 @@ pub fn create_logging_module() -> PyObjectRef {
                 if let Some(format) = r.get(&HashableKey::Str(CompactString::from("format"))) {
                     let _ = ROOT_FORMAT.set(format.py_to_string().to_string());
                 }
+                // filename= creates a FileHandler on the root logger
+                if let Some(filename) = r.get(&HashableKey::Str(CompactString::from("filename"))) {
+                    let fname = filename.py_to_string();
+                    let filemode = r.get(&HashableKey::Str(CompactString::from("filemode")))
+                        .map(|v| v.py_to_string())
+                        .unwrap_or_else(|| "a".to_string());
+                    // Create a FileHandler and add it to the root logger
+                    let fmt_ref: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
+                    // If format= was provided, build a Formatter and attach it
+                    if let Some(format_val) = r.get(&HashableKey::Str(CompactString::from("format"))) {
+                        let fs = format_val.py_to_string();
+                        let fmt_cls = PyObject::class(CompactString::from("Formatter"), vec![], IndexMap::new());
+                        let fmt_inst = PyObject::instance(fmt_cls);
+                        if let PyObjectPayload::Instance(ref fd) = fmt_inst.payload {
+                            fd.attrs.write().insert(CompactString::from("_fmt"), PyObject::str_val(CompactString::from(fs)));
+                        }
+                        *fmt_ref.write() = fmt_inst;
+                    }
+                    let fr2 = fmt_ref.clone();
+                    let fname_c = CompactString::from(fname.clone());
+                    let fmode_c = filemode.clone();
+                    let fh_cls = PyObject::class(CompactString::from("FileHandler"), vec![], IndexMap::new());
+                    let fh_inst = PyObject::instance(fh_cls);
+                    if let PyObjectPayload::Instance(ref fd) = fh_inst.payload {
+                        let mut attrs = fd.attrs.write();
+                        attrs.insert(CompactString::from("baseFilename"), PyObject::str_val(fname_c.clone()));
+                        attrs.insert(CompactString::from("level"), PyObject::int(0));
+                        attrs.insert(CompactString::from("emit"), PyObject::native_closure(
+                            "emit", move |args: &[PyObjectRef]| {
+                                let record = if args.len() >= 2 { &args[1] } else if !args.is_empty() { &args[0] } else {
+                                    return Ok(PyObject::none());
+                                };
+                                let msg = if let Some(m) = record.get_attr("message") { m.py_to_string() }
+                                    else if let Some(m) = record.get_attr("msg") { m.py_to_string() }
+                                    else { record.py_to_string() };
+                                let fmt = fr2.read().clone();
+                                let formatted = if !matches!(&fmt.payload, PyObjectPayload::None) {
+                                    if let Some(fmt_str) = fmt.get_attr("_fmt") {
+                                        let fs = fmt_str.py_to_string();
+                                        let mut result = fs.clone();
+                                        result = result.replace("%(message)s", &msg);
+                                        let levelname = record.get_attr("levelname").map(|l| l.py_to_string()).unwrap_or_else(|| "INFO".to_string());
+                                        let name = record.get_attr("name").map(|n| n.py_to_string()).unwrap_or_else(|| "root".to_string());
+                                        result = result.replace("%(levelname)s", &levelname);
+                                        result = result.replace("%(name)s", &name);
+                                        result
+                                    } else { msg.clone() }
+                                } else { msg.clone() };
+                                use std::io::Write;
+                                let line = format!("{}\n", formatted);
+                                let result = if fmode_c == "w" {
+                                    std::fs::write(fname_c.as_str(), &line)
+                                } else {
+                                    std::fs::OpenOptions::new()
+                                        .create(true).append(true)
+                                        .open(fname_c.as_str())
+                                        .and_then(|mut f| f.write_all(line.as_bytes()))
+                                };
+                                if let Err(e) = result {
+                                    eprintln!("FileHandler error: {}", e);
+                                }
+                                Ok(PyObject::none())
+                            }
+                        ));
+                    }
+                    // Add the handler to the root logger
+                    LOGGER_REGISTRY.with(|reg| {
+                        let reg = reg.borrow();
+                        if let Some(root) = reg.get("root") {
+                            if let Some(handlers) = root.get_attr("handlers") {
+                                if let PyObjectPayload::List(items) = &handlers.payload {
+                                    items.write().push(fh_inst.clone());
+                                }
+                            }
+                        }
+                    });
+                }
             }
         }
         let _ = ROOT_CONFIGURED.set(());
@@ -598,12 +675,81 @@ pub fn create_logging_module() -> PyObjectRef {
         }
     });
 
+    // Filter(name='') — filters records by logger name prefix
+    let filter_fn = PyObject::native_closure("Filter", move |args: &[PyObjectRef]| {
+        let name = if args.is_empty() { String::new() } else { args[0].py_to_string() };
+        let cls = PyObject::class(CompactString::from("Filter"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            w.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name.as_str())));
+            let filter_name = name.clone();
+            w.insert(CompactString::from("filter"), PyObject::native_closure(
+                "Filter.filter", move |args: &[PyObjectRef]| {
+                    if filter_name.is_empty() { return Ok(PyObject::bool_val(true)); }
+                    let record = if !args.is_empty() { &args[0] } else { return Ok(PyObject::bool_val(true)); };
+                    let rec_name = record.get_attr("name").map(|n| n.py_to_string()).unwrap_or_default();
+                    let ok = rec_name == filter_name
+                        || rec_name.starts_with(&format!("{}.", filter_name));
+                    Ok(PyObject::bool_val(ok))
+                }
+            ));
+        }
+        Ok(inst)
+    });
+
+    // LogRecord(name, level, pathname, lineno, msg, args, exc_info)
+    let log_record_fn = make_builtin(|args: &[PyObjectRef]| {
+        let name = if !args.is_empty() { args[0].py_to_string() } else { "root".to_string() };
+        let level = if args.len() > 1 { args[1].as_int().unwrap_or(20) } else { 20 };
+        let pathname = if args.len() > 2 { args[2].py_to_string() } else { String::new() };
+        let lineno = if args.len() > 3 { args[3].as_int().unwrap_or(0) } else { 0 };
+        let msg = if args.len() > 4 { args[4].py_to_string() } else { String::new() };
+        let level_name = match level {
+            10 => "DEBUG", 20 => "INFO", 30 => "WARNING",
+            40 => "ERROR", 50 => "CRITICAL", _ => "UNKNOWN",
+        };
+        let cls = PyObject::class(CompactString::from("LogRecord"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name.as_str())));
+        attrs.insert(CompactString::from("levelno"), PyObject::int(level));
+        attrs.insert(CompactString::from("levelname"), PyObject::str_val(CompactString::from(level_name)));
+        attrs.insert(CompactString::from("pathname"), PyObject::str_val(CompactString::from(pathname.as_str())));
+        attrs.insert(CompactString::from("filename"), PyObject::str_val(CompactString::from(pathname.as_str())));
+        attrs.insert(CompactString::from("lineno"), PyObject::int(lineno));
+        attrs.insert(CompactString::from("msg"), PyObject::str_val(CompactString::from(msg.as_str())));
+        attrs.insert(CompactString::from("message"), PyObject::str_val(CompactString::from(msg.as_str())));
+        attrs.insert(CompactString::from("args"), if args.len() > 5 { args[5].clone() } else { PyObject::none() });
+        attrs.insert(CompactString::from("exc_info"), if args.len() > 6 { args[6].clone() } else { PyObject::none() });
+        attrs.insert(CompactString::from("funcName"), PyObject::str_val(CompactString::from("")));
+        attrs.insert(CompactString::from("module"), PyObject::str_val(CompactString::from("")));
+        attrs.insert(CompactString::from("created"), PyObject::float(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_secs_f64()
+        ));
+        let msg_clone = msg.clone();
+        attrs.insert(CompactString::from("getMessage"), PyObject::native_closure("LogRecord.getMessage", move |_args| {
+            Ok(PyObject::str_val(CompactString::from(msg_clone.clone())))
+        }));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
+    });
+
+    // disable(level) — set the global disable level
+    let disable_fn = make_builtin(|args: &[PyObjectRef]| {
+        if let Some(n) = args.first().and_then(|a| a.as_int()) {
+            ROOT_LEVEL.store(n, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(PyObject::none())
+    });
+
     make_module("logging", vec![
         ("DEBUG", debug_level),
         ("INFO", info_level),
         ("WARNING", warning_level.clone()),
+        ("WARN", warning_level),
         ("ERROR", error_level),
         ("CRITICAL", critical_level),
+        ("FATAL", PyObject::int(50)),
         ("NOTSET", PyObject::int(0)),
         ("basicConfig", basic_config_fn),
         ("getLogger", make_builtin(logging_get_logger)),
@@ -621,13 +767,17 @@ pub fn create_logging_module() -> PyObjectRef {
                 Ok(PyObject::none())
             }
         })),
+        ("disable", disable_fn),
         ("StreamHandler", stream_handler_fn),
         ("FileHandler", file_handler_fn),
         ("RotatingFileHandler", rotating_file_handler_fn),
         ("Formatter", formatter_fn),
         ("Handler", handler_fn),
         ("NullHandler", null_handler_fn),
+        ("Filter", filter_fn),
+        ("LogRecord", log_record_fn),
         ("Logger", make_builtin(logging_get_logger)),
+        ("root", make_builtin(|_| logging_get_logger(&[]))),
     ])
 }
 
@@ -933,6 +1083,75 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(PyObject::int(*el3.read()))
         }
     ));
+    // parent — reference to parent logger (None for root, else the parent)
+    {
+        let parent_name = if logger_name.as_str() == "root" {
+            None
+        } else if let Some(dot) = logger_name.rfind('.') {
+            Some(CompactString::from(&logger_name.as_str()[..dot]))
+        } else {
+            Some(CompactString::from("root"))
+        };
+        if let Some(pn) = parent_name {
+            let parent = LOGGER_REGISTRY.with(|reg| {
+                reg.borrow().get(pn.as_str()).cloned()
+            });
+            ns.insert(CompactString::from("parent"), parent.unwrap_or_else(PyObject::none));
+        } else {
+            ns.insert(CompactString::from("parent"), PyObject::none());
+        }
+    }
+    // getChild(suffix) — return a child logger
+    {
+        let name_for_child = logger_name.clone();
+        ns.insert(CompactString::from("getChild"), PyObject::native_closure(
+            "getChild", move |args: &[PyObjectRef]| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("getChild() requires a suffix"));
+                }
+                let suffix = args[0].py_to_string();
+                let child_name = if name_for_child.as_str() == "root" {
+                    suffix
+                } else {
+                    format!("{}.{}", name_for_child, suffix)
+                };
+                logging_get_logger(&[PyObject::str_val(CompactString::from(child_name))])
+            }
+        ));
+    }
+    // addFilter / removeFilter — manage filter list on logger
+    let filters_list = PyObject::list(vec![]);
+    {
+        let fl = filters_list.clone();
+        ns.insert(CompactString::from("addFilter"), PyObject::native_closure(
+            "addFilter", move |args: &[PyObjectRef]| {
+                if !args.is_empty() {
+                    if let PyObjectPayload::List(items) = &fl.payload {
+                        items.write().push(args[0].clone());
+                    }
+                }
+                Ok(PyObject::none())
+            }
+        ));
+    }
+    {
+        let fl = filters_list.clone();
+        ns.insert(CompactString::from("removeFilter"), PyObject::native_closure(
+            "removeFilter", move |args: &[PyObjectRef]| {
+                if !args.is_empty() {
+                    if let PyObjectPayload::List(items) = &fl.payload {
+                        let target = &args[0];
+                        items.write().retain(|h| !std::ptr::eq(h.as_ref(), target.as_ref()));
+                    }
+                }
+                Ok(PyObject::none())
+            }
+        ));
+    }
+    ns.insert(CompactString::from("filters"), filters_list);
+    // manager attribute (stub for compatibility)
+    ns.insert(CompactString::from("manager"), PyObject::none());
+    ns.insert(CompactString::from("disabled"), PyObject::bool_val(false));
     
     let cls = PyObject::class(CompactString::from("Logger"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);

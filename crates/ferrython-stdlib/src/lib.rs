@@ -213,7 +213,12 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "email.mime.text" => Some(email_modules::create_email_mime_text_module()),
         "email.mime.multipart" => Some(email_modules::create_email_mime_multipart_module()),
         "email.mime.base" => Some(email_modules::create_email_mime_base_module()),
+        "email.mime.application" => Some(email_modules::create_email_mime_application_module()),
+        "email.mime.image" => Some(email_modules::create_email_mime_image_module()),
         "email.utils" => Some(email_modules::create_email_utils_module()),
+        "email.policy" => Some(email_modules::create_email_policy_module()),
+        "email.contentmanager" => Some(email_modules::create_email_contentmanager_module()),
+        "email.charset" => Some(email_modules::create_email_charset_module()),
         // Zip / Compression
         "zipfile" => Some(compression_modules::create_zipfile_module()),
         "bz2" => Some(compression_modules::create_bz2_module()),
