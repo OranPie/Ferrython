@@ -592,6 +592,12 @@ impl VirtualMachine {
             PyObjectPayload::Module(md) => {
                 md.attrs.write().shift_remove(name.as_str());
             }
+            PyObjectPayload::Function(f) => {
+                if f.attrs.write().swap_remove(name.as_str()).is_none() {
+                    return Err(PyException::attribute_error(format!(
+                        "'function' object has no attribute '{}'", name)));
+                }
+            }
             _ => return Err(PyException::attribute_error(format!(
                 "'{}' object does not support attribute deletion", obj.type_name()))),
         }

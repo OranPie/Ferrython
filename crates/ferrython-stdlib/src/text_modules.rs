@@ -532,12 +532,55 @@ fn make_fancy_match_object(text: &str, start: usize, end: usize, full: &str, gro
     PyObject::module_with_attrs(CompactString::from("Match"), attrs)
 }
 
+fn make_match_object_from_captures(caps: &regex::Captures, text: &str, re_obj: &regex::Regex) -> PyObjectRef {
+    let whole = caps.get(0).unwrap();
+    let full_match = whole.as_str().to_string();
+    let start = whole.start() as i64;
+    let end = whole.end() as i64;
+    let mut groups = Vec::new();
+    for i in 1..caps.len() {
+        if let Some(g) = caps.get(i) {
+            groups.push(PyObject::str_val(CompactString::from(g.as_str().to_string())));
+        } else {
+            groups.push(PyObject::none());
+        }
+    }
+    let groups_tuple = PyObject::tuple(groups);
+    let mut groupindex_map = IndexMap::new();
+    for (i, name_opt) in re_obj.capture_names().enumerate() {
+        if let Some(name) = name_opt {
+            groupindex_map.insert(
+                HashableKey::Str(CompactString::from(name)),
+                PyObject::int(i as i64),
+            );
+        }
+    }
+    let groupindex = PyObject::dict(groupindex_map);
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("_match"), PyObject::str_val(CompactString::from(full_match)));
+    attrs.insert(CompactString::from("_start"), PyObject::int(start));
+    attrs.insert(CompactString::from("_end"), PyObject::int(end));
+    attrs.insert(CompactString::from("_text"), PyObject::str_val(CompactString::from(text.to_string())));
+    attrs.insert(CompactString::from("_groups"), groups_tuple);
+    attrs.insert(CompactString::from("_groupindex"), groupindex);
+    attrs.insert(CompactString::from("group"), PyObject::native_function("Match.group", match_group));
+    attrs.insert(CompactString::from("groups"), PyObject::native_function("Match.groups", match_groups));
+    attrs.insert(CompactString::from("groupdict"), PyObject::native_function("Match.groupdict", match_groupdict));
+    attrs.insert(CompactString::from("start"), PyObject::native_function("Match.start", match_start));
+    attrs.insert(CompactString::from("end"), PyObject::native_function("Match.end", match_end));
+    attrs.insert(CompactString::from("span"), PyObject::native_function("Match.span", match_span));
+    attrs.insert(CompactString::from("__getitem__"), PyObject::native_function("Match.__getitem__", match_getitem));
+    attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
+    PyObject::module_with_attrs(CompactString::from("Match"), attrs)
+}
+
 fn make_match_object(m: regex::Match, text: &str, re_obj: &regex::Regex) -> PyObjectRef {
     let full_match = m.as_str().to_string();
     let start = m.start() as i64;
     let end = m.end() as i64;
     // groups - store captured groups
-    let captures = re_obj.captures(text);
+    // Use captures_at to find the capture at this match's start position
+    let captures = re_obj.captures_at(text, m.start());
     let mut groups = Vec::new();
     if let Some(caps) = &captures {
         for i in 1..caps.len() {
@@ -852,13 +895,40 @@ fn re_finditer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pattern = args[0].py_to_string();
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
-    let re = build_regex(&pattern, flags)?;
-    let matches: Vec<PyObjectRef> = re.find_iter(&text)
-        .map(|m| make_match_object(m, &text, &re))
-        .collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(std::sync::Mutex::new(
-        IteratorData::List { items: matches, index: 0 }
-    )))))
+    if needs_fancy_regex_with_flags(&pattern, flags) {
+        let re = build_fancy_regex(&pattern, flags)?;
+        let group_names = extract_fancy_group_names(&re);
+        let mut matches: Vec<PyObjectRef> = Vec::new();
+        let mut pos = 0;
+        while pos <= text.len() {
+            match re.captures(&text[pos..]) {
+                Ok(Some(caps)) => {
+                    let whole = caps.get(0).unwrap();
+                    if whole.start() == whole.end() { pos += 1; continue; }
+                    let abs_start = pos + whole.start();
+                    let abs_end = pos + whole.end();
+                    let mut groups = Vec::new();
+                    for i in 1..caps.len() {
+                        groups.push(caps.get(i).map(|g| g.as_str().to_string()));
+                    }
+                    matches.push(make_fancy_match_object(&text, abs_start, abs_end, &text[abs_start..abs_end], groups, group_names.clone()));
+                    pos = abs_end;
+                }
+                _ => break,
+            }
+        }
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(std::sync::Mutex::new(
+            IteratorData::List { items: matches, index: 0 }
+        )))))
+    } else {
+        let re = build_regex(&pattern, flags)?;
+        let matches: Vec<PyObjectRef> = re.captures_iter(&text)
+            .map(|caps| make_match_object_from_captures(&caps, &text, &re))
+            .collect();
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(std::sync::Mutex::new(
+            IteratorData::List { items: matches, index: 0 }
+        )))))
+    }
 }
 
 fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -942,7 +1012,7 @@ fn re_sub_callable(pattern: &str, repl_fn: &PyObjectRef, text: &str, count: usiz
         if count > 0 && n >= count { break; }
         let whole = caps.get(0).unwrap();
         result.push_str(&text[last..whole.start()]);
-        let match_obj = make_match_object(whole, text, &re);
+        let match_obj = make_match_object_from_captures(&caps, text, &re);
         // Call the replacement function with the match object
         let replacement = match &repl_fn.payload {
             PyObjectPayload::NativeFunction { func, .. } => func(&[match_obj])?,

@@ -3,8 +3,21 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 
+use crate::metadata::PackageMetadata;
+
 /// Install a wheel file into site-packages
 pub fn install_wheel(wheel_path: &Path, site_packages: &str, name: &str, version: &str) -> Result<(), String> {
+    install_wheel_with_metadata(wheel_path, site_packages, name, version, None)
+}
+
+/// Install a wheel file into site-packages, optionally using rich metadata for non-wheel sources.
+pub fn install_wheel_with_metadata(
+    wheel_path: &Path,
+    site_packages: &str,
+    name: &str,
+    version: &str,
+    pkg_meta: Option<&PackageMetadata>,
+) -> Result<(), String> {
     let site = Path::new(site_packages);
     if !site.exists() {
         fs::create_dir_all(site).map_err(|e| format!("mkdir: {}", e))?;
@@ -13,13 +26,25 @@ pub fn install_wheel(wheel_path: &Path, site_packages: &str, name: &str, version
     let ext = wheel_path.extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
         "whl" => install_from_wheel(wheel_path, site, name, version),
-        "gz" | "tar" => install_from_sdist(wheel_path, site, name, version),
+        "gz" | "tar" => install_from_sdist(wheel_path, site, name, version, pkg_meta),
         _ => Err(format!("Unknown package format: .{}", ext)),
     }
 }
 
 /// Install a package in editable mode by writing a .pth file.
+#[allow(dead_code)]
 pub fn install_editable(source_dir: &Path, site_packages: &str, name: &str, version: &str) -> Result<(), String> {
+    install_editable_with_metadata(source_dir, site_packages, name, version, None)
+}
+
+/// Install a package in editable mode with optional rich metadata.
+pub fn install_editable_with_metadata(
+    source_dir: &Path,
+    site_packages: &str,
+    name: &str,
+    version: &str,
+    pkg_meta: Option<&PackageMetadata>,
+) -> Result<(), String> {
     let site = Path::new(site_packages);
     fs::create_dir_all(site).map_err(|e| format!("mkdir: {}", e))?;
 
@@ -46,10 +71,14 @@ pub fn install_editable(source_dir: &Path, site_packages: &str, name: &str, vers
         .map_err(|e| format!("mkdir dist-info: {}", e))?;
 
     // METADATA
-    let metadata = format!(
-        "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
-        name, version
-    );
+    let metadata = if let Some(meta) = pkg_meta {
+        meta.render()
+    } else {
+        format!(
+            "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
+            name, version
+        )
+    };
     fs::write(dist_info_path.join("METADATA"), &metadata)
         .map_err(|e| format!("Write METADATA: {}", e))?;
 
@@ -236,7 +265,7 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
     }
 
     // Write RECORD and metadata files, preserving original wheel RECORD entries when available
-    write_record(site, &actual_dist_info_dir, name, version, &installed_files, &wheel_record_entries)?;
+    write_record(site, &actual_dist_info_dir, name, version, &installed_files, &wheel_record_entries, None)?;
 
     // Generate console_scripts from entry_points.txt if present
     if has_wheel_entry_points {
@@ -247,7 +276,7 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
 }
 
 /// Install from an sdist (.tar.gz) — extracts Python files only
-fn install_from_sdist(sdist_path: &Path, site: &Path, name: &str, version: &str) -> Result<(), String> {
+fn install_from_sdist(sdist_path: &Path, site: &Path, name: &str, version: &str, pkg_meta: Option<&PackageMetadata>) -> Result<(), String> {
     let file = fs::File::open(sdist_path)
         .map_err(|e| format!("Open sdist: {}", e))?;
     let gz = flate2::read::GzDecoder::new(file);
@@ -260,6 +289,53 @@ fn install_from_sdist(sdist_path: &Path, site: &Path, name: &str, version: &str)
     let dist_info_path = site.join(&dist_info_dir);
     fs::create_dir_all(&dist_info_path)
         .map_err(|e| format!("mkdir dist-info: {}", e))?;
+
+    // Collect pyproject.toml and setup.cfg content from the sdist for metadata
+    let mut sdist_pyproject: Option<String> = None;
+    let mut sdist_setup_cfg: Option<String> = None;
+    {
+        let file2 = fs::File::open(sdist_path)
+            .map_err(|e| format!("Open sdist: {}", e))?;
+        let gz2 = flate2::read::GzDecoder::new(file2);
+        let mut archive2 = tar::Archive::new(gz2);
+        let entries2 = archive2.entries().map_err(|e| format!("Tar error: {}", e))?;
+        for entry in entries2 {
+            let mut entry = entry.map_err(|e| format!("Tar entry: {}", e))?;
+            let path = entry.path().map_err(|e| format!("Path error: {}", e))?.to_path_buf();
+            let path_str = path.to_string_lossy().to_string();
+            let components: Vec<_> = path.components().collect();
+            if components.len() == 2 {
+                let filename = components[1].as_os_str().to_string_lossy();
+                if filename == "pyproject.toml" {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut entry, &mut buf).ok();
+                    sdist_pyproject = Some(buf);
+                } else if filename == "setup.cfg" {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut entry, &mut buf).ok();
+                    sdist_setup_cfg = Some(buf);
+                }
+            }
+            let _ = path_str; // suppress unused warning
+        }
+    }
+
+    // Derive rich metadata from the sdist contents
+    let derived_meta: Option<PackageMetadata> = if pkg_meta.is_some() {
+        None // caller provided metadata, use that
+    } else if let Some(ref pyproject_content) = sdist_pyproject {
+        ferrython_toolchain::pyproject::parse_pyproject_str(pyproject_content)
+            .ok()
+            .map(|pp| PackageMetadata::from_pyproject(&pp))
+    } else if let Some(ref setup_cfg_content) = sdist_setup_cfg {
+        crate::setup_cfg::parse_setup_cfg_str(setup_cfg_content)
+            .ok()
+            .map(|sc| PackageMetadata::from_setup_cfg(&sc))
+    } else {
+        None
+    };
+
+    let effective_meta = pkg_meta.or(derived_meta.as_ref());
 
     let entries = archive.entries()
         .map_err(|e| format!("Tar error: {}", e))?;
@@ -305,7 +381,7 @@ fn install_from_sdist(sdist_path: &Path, site: &Path, name: &str, version: &str)
         installed_files.push(relative.to_string_lossy().to_string());
     }
 
-    write_record(site, &dist_info_dir, name, version, &installed_files, &[])?;
+    write_record(site, &dist_info_dir, name, version, &installed_files, &[], effective_meta)?;
     Ok(())
 }
 
@@ -313,6 +389,9 @@ fn install_from_sdist(sdist_path: &Path, site: &Path, name: &str, version: &str)
 ///
 /// If `wheel_record` is non-empty, it contains the original RECORD entries from the wheel
 /// and we merge them instead of recomputing hashes for every file.
+///
+/// If `pkg_meta` is provided, it is used to write a complete METADATA file when one does
+/// not already exist (i.e. for sdist / editable installs).
 fn write_record(
     site: &Path,
     dist_info_dir: &str,
@@ -320,6 +399,7 @@ fn write_record(
     version: &str,
     files: &[String],
     wheel_record: &[String],
+    pkg_meta: Option<&PackageMetadata>,
 ) -> Result<(), String> {
     let dist_info_path = site.join(dist_info_dir);
     fs::create_dir_all(&dist_info_path)
@@ -328,10 +408,14 @@ fn write_record(
     // Only write METADATA if it doesn't already exist (wheel may have provided a richer one)
     let metadata_path = dist_info_path.join("METADATA");
     if !metadata_path.exists() {
-        let metadata = format!(
-            "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
-            name, version
-        );
+        let metadata = if let Some(meta) = pkg_meta {
+            meta.render()
+        } else {
+            format!(
+                "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
+                name, version
+            )
+        };
         fs::write(&metadata_path, metadata)
             .map_err(|e| format!("Write METADATA: {}", e))?;
     }

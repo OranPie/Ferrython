@@ -15,6 +15,8 @@ mod installer;
 mod registry;
 mod resolver;
 pub mod version;
+pub mod metadata;
+pub mod setup_cfg;
 mod cli;
 
 fn main() {

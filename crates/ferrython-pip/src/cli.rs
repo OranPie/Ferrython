@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use crate::{pypi, registry, resolver};
+use crate::{pypi, registry, resolver, metadata::PackageMetadata};
 
 #[derive(Parser)]
 #[command(name = "ferryip", version = env!("CARGO_PKG_VERSION"), about = "Ferrython package manager (pip-compatible)")]
@@ -695,9 +695,11 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
     let proj_dir = std::path::Path::new(path).canonicalize()
         .map_err(|e| format!("Cannot resolve path '{}': {}", path, e))?;
     let pyproject_path = proj_dir.join("pyproject.toml");
+    let setup_cfg_path = proj_dir.join("setup.cfg");
 
-    let (name, version) = if pyproject_path.exists() {
+    let (name, version, pkg_meta) = if pyproject_path.exists() {
         let pyproj = ferrython_toolchain::pyproject::parse_pyproject(&pyproject_path)?;
+        let meta = PackageMetadata::from_pyproject(&pyproj);
         let name = pyproj.name().unwrap_or_else(|| {
             proj_dir.file_name()
                 .and_then(|n| n.to_str())
@@ -705,16 +707,29 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
                 .to_string()
         });
         let version = pyproj.version().unwrap_or("0.0.0").to_string();
-        (name, version)
+        (name, version, Some(meta))
+    } else if setup_cfg_path.exists() {
+        let cfg = crate::setup_cfg::parse_setup_cfg(&setup_cfg_path)?;
+        let meta = PackageMetadata::from_setup_cfg(&cfg);
+        let name = cfg.name.unwrap_or_else(|| {
+            proj_dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        });
+        let version = cfg.version.unwrap_or_else(|| "0.0.0".into());
+        (name, version, Some(meta))
     } else {
         let name = proj_dir.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
-        (name, "0.0.0".to_string())
+        (name, "0.0.0".to_string(), None)
     };
 
-    crate::installer::install_editable(&proj_dir, site_packages, &name, &version)?;
+    crate::installer::install_editable_with_metadata(
+        &proj_dir, site_packages, &name, &version, pkg_meta.as_ref(),
+    )?;
 
     if !quiet {
         let source_root = if proj_dir.join("src").exists() {
@@ -743,6 +758,14 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
                 println!("Installing {} build dependencies...", build_reqs.len());
             }
             install_packages(&build_reqs, site_packages, false, false, false, quiet, false)?;
+        }
+    } else if setup_cfg_path.exists() {
+        let cfg = crate::setup_cfg::parse_setup_cfg(&setup_cfg_path)?;
+        if !cfg.install_requires.is_empty() {
+            if !quiet {
+                println!("Installing {} project dependencies...", cfg.install_requires.len());
+            }
+            install_packages(&cfg.install_requires, site_packages, false, false, false, quiet, false)?;
         }
     }
 
@@ -1295,52 +1318,46 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
     ))
 }
 
-/// Install dependencies from a setup.cfg file.
+/// Install dependencies from a setup.cfg file using the structured parser.
 fn install_from_setup_cfg(path: &std::path::Path, site_packages: &str, quiet: bool) -> Result<(), String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
+    let cfg = crate::setup_cfg::parse_setup_cfg(path)?;
 
-    let mut deps = Vec::new();
-    let mut in_install_requires = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed == "[options]" || trimmed.starts_with("[options]") {
-            continue;
-        }
-        if trimmed.starts_with("install_requires") {
-            in_install_requires = true;
-            // Handle inline: install_requires = package1
-            if let Some(eq_pos) = trimmed.find('=') {
-                let val = trimmed[eq_pos + 1..].trim();
-                if !val.is_empty() {
-                    deps.push(val.to_string());
-                }
-            }
-            continue;
-        }
-        if in_install_requires {
-            if trimmed.is_empty() || (!trimmed.starts_with(' ') && !trimmed.starts_with('\t') && trimmed.contains('=')) {
-                in_install_requires = false;
-                continue;
-            }
-            if !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with('[') {
-                deps.push(trimmed.to_string());
-            }
-            if trimmed.starts_with('[') {
-                in_install_requires = false;
+    if !quiet {
+        if let Some(ref name) = cfg.name {
+            let version = cfg.version.as_deref().unwrap_or("0.0.0");
+            println!("Installing project: {} ({})", name, version);
+            if let Some(ref desc) = cfg.description {
+                println!("  {}", desc);
             }
         }
     }
 
-    if deps.is_empty() {
+    // Check python_requires compatibility
+    if let Some(ref requires_python) = cfg.python_requires {
+        if !crate::version::version_matches("3.12", requires_python) {
+            return Err(format!(
+                "This project requires Python {} but Ferrython provides 3.12",
+                requires_python
+            ));
+        }
+    }
+
+    if cfg.install_requires.is_empty() {
         if !quiet {
             println!("No dependencies found in setup.cfg");
         }
         return Ok(());
     }
 
-    install_packages(&deps, site_packages, false, false, false, quiet, false)
+    if !quiet {
+        println!("Installing {} dependencies from setup.cfg...", cfg.install_requires.len());
+        if !cfg.extras_require.is_empty() {
+            let extras: Vec<&String> = cfg.extras_require.keys().collect();
+            println!("  Available extras: {}", extras.iter().map(|e| e.as_str()).collect::<Vec<_>>().join(", "));
+        }
+    }
+
+    install_packages(&cfg.install_requires, site_packages, false, false, false, quiet, false)
 }
 
 /// Extract dependencies from a setup.py file using regex-based heuristic parsing.
@@ -1681,17 +1698,9 @@ fn build_wheel(src: &str, wheel_dir: &str, quiet: bool) -> Result<(), String> {
     // Add dist-info
     let dist_info_prefix = format!("{}-{}.dist-info", normalized_name, version);
 
-    // METADATA
-    let mut metadata = format!(
-        "Metadata-Version: 2.1\nName: {}\nVersion: {}\n",
-        name, version
-    );
-    if let Some(desc) = pyproj.description() {
-        metadata.push_str(&format!("Summary: {}\n", desc));
-    }
-    for dep in pyproj.dependencies() {
-        metadata.push_str(&format!("Requires-Dist: {}\n", dep));
-    }
+    // METADATA — use rich metadata from pyproject.toml
+    let pkg_meta = PackageMetadata::from_pyproject(&pyproj);
+    let metadata = pkg_meta.render();
 
     zip.start_file(format!("{}/METADATA", dist_info_prefix), options)
         .map_err(|e| format!("Zip error: {}", e))?;

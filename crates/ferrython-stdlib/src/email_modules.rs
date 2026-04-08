@@ -862,5 +862,58 @@ pub fn create_email_module() -> PyObjectRef {
         ("mime", create_email_mime_module()),
         ("utils", create_email_utils_module()),
         ("errors", create_email_errors_module()),
+        ("message_from_string", PyObject::native_function("email.message_from_string", email_message_from_string)),
     ])
+}
+
+fn email_message_from_string(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("message_from_string() requires a string argument"));
+    }
+    let raw = args[0].py_to_string();
+
+    // Split headers from body at first blank line
+    let (header_part, body) = if let Some(idx) = raw.find("\n\n") {
+        (&raw[..idx], raw[idx + 2..].to_string())
+    } else if let Some(idx) = raw.find("\r\n\r\n") {
+        (&raw[..idx], raw[idx + 4..].to_string())
+    } else {
+        (raw.as_str(), String::new())
+    };
+
+    // Parse headers (handle continuation lines)
+    let mut headers: Vec<(String, String)> = Vec::new();
+    for line in header_part.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            // Continuation of previous header
+            if let Some(last) = headers.last_mut() {
+                last.1.push(' ');
+                last.1.push_str(line.trim());
+            }
+        } else if let Some(colon_pos) = line.find(':') {
+            let key = line[..colon_pos].trim().to_string();
+            let val = line[colon_pos + 1..].trim().to_string();
+            headers.push((key, val));
+        }
+    }
+
+    // Build message using existing build_message_instance
+    let msg = build_message_instance(None, Some(PyObject::str_val(CompactString::from(&body))));
+
+    // Set headers via __setitem__
+    if let PyObjectPayload::Instance(ref inst) = msg.payload {
+        let attrs = inst.attrs.read();
+        if let Some(setitem) = attrs.get("__setitem__") {
+            if let PyObjectPayload::NativeClosure { func, .. } = &setitem.payload {
+                for (k, v) in &headers {
+                    let _ = func(&[
+                        PyObject::str_val(CompactString::from(k.as_str())),
+                        PyObject::str_val(CompactString::from(v.as_str())),
+                    ]);
+                }
+            }
+        }
+    }
+
+    Ok(msg)
 }

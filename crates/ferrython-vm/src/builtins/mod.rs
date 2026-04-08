@@ -64,6 +64,7 @@ pub fn init_builtins() -> IndexMap<CompactString, PyObjectRef> {
     m.insert(CompactString::from("False"), PyObject::bool_val(false));
     m.insert(CompactString::from("Ellipsis"), PyObject::ellipsis());
     m.insert(CompactString::from("NotImplemented"), PyObject::not_implemented());
+    m.insert(CompactString::from("__debug__"), PyObject::bool_val(true));
 
     // Exception types
     use ferrython_core::error::ExceptionKind;
