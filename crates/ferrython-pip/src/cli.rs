@@ -66,6 +66,10 @@ enum Commands {
         /// Force reinstallation of packages
         #[arg(long)]
         force_reinstall: bool,
+
+        /// Verify RECORD hashes after installation
+        #[arg(long)]
+        verify: bool,
     },
 
     /// Uninstall packages
@@ -212,7 +216,7 @@ pub fn run() {
     let verbose = cli.verbose;
 
     let result = match cli.command {
-        Commands::Install { packages, requirement, upgrade, editable, no_deps, pre, only_binary: _, install_target, no_cache_dir: _, dry_run, force_reinstall } => {
+        Commands::Install { packages, requirement, upgrade, editable, no_deps, pre, only_binary: _, install_target, no_cache_dir: _, dry_run, force_reinstall, verify } => {
             let effective_site = install_target.as_deref().unwrap_or(&site_packages);
             let effective_upgrade = upgrade || force_reinstall;
             if dry_run {
@@ -227,13 +231,21 @@ pub fn run() {
                     reqs.extend(parse_requirements_file(req_file));
                 }
                 reqs.extend(packages.iter().cloned());
-                install_packages(&reqs, effective_site, effective_upgrade, no_deps, pre, quiet, verbose)
+                let result = install_packages(&reqs, effective_site, effective_upgrade, no_deps, pre, quiet, verbose);
+                if verify && result.is_ok() {
+                    verify_all_installed(effective_site, &reqs, quiet);
+                }
+                result
             } else if packages.is_empty() {
                 eprintln!("Error: You must give at least one requirement to install \
                            (see 'ferryip install --help')");
                 std::process::exit(1);
             } else {
-                install_packages(&packages, effective_site, effective_upgrade, no_deps, pre, quiet, verbose)
+                let result = install_packages(&packages, effective_site, effective_upgrade, no_deps, pre, quiet, verbose);
+                if verify && result.is_ok() {
+                    verify_all_installed(effective_site, &packages, quiet);
+                }
+                result
             }
         }
         Commands::Uninstall { packages, yes } => {
@@ -456,9 +468,36 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
     let mut visited = std::collections::HashSet::new();
     let total = specs.len();
     let mut installed_count = 0;
+    let mut next_no_deps = false;
 
     for (idx, spec) in specs.iter().enumerate() {
         let trimmed = spec.trim();
+
+        // Handle flag:no-deps from requirements files
+        if trimmed == "flag:no-deps" {
+            next_no_deps = true;
+            continue;
+        }
+
+        let effective_no_deps = no_deps || next_no_deps;
+        next_no_deps = false; // reset for next package
+
+        // Handle hash-verified entries from requirements files: hash:<hashes>:<spec>
+        let (trimmed, expected_hashes) = if let Some(rest) = trimmed.strip_prefix("hash:") {
+            if let Some(colon) = rest.find(':') {
+                let hashes_str = &rest[..colon];
+                let actual_spec = &rest[colon + 1..];
+                let hashes: Vec<String> = hashes_str.split(',')
+                    .map(|h| h.trim().to_string())
+                    .filter(|h| !h.is_empty())
+                    .collect();
+                (actual_spec, hashes)
+            } else {
+                (trimmed, vec![])
+            }
+        } else {
+            (trimmed, vec![])
+        };
 
         // Handle editable entries from requirements files (editable:<path>)
         if let Some(edit_path) = trimmed.strip_prefix("editable:") {
@@ -502,12 +541,16 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
 
         // Handle local wheel/sdist file paths
         if trimmed.ends_with(".whl") || trimmed.ends_with(".tar.gz") {
+            // Verify hash if provided by requirements file
+            if !expected_hashes.is_empty() {
+                verify_file_hashes(trimmed, &expected_hashes)?;
+            }
             install_local_archive(trimmed, site_packages, quiet)?;
             installed_count += 1;
             continue;
         }
 
-        let (name, version_spec, extras) = parse_version_specifier_with_extras(spec);
+        let (name, version_spec, extras) = parse_version_specifier_with_extras(&trimmed.to_string());
         if !quiet && total > 1 {
             let ver_display = version_spec.as_deref().unwrap_or("");
             println!("[{}/{}] Processing {}{}", idx + 1, total, name, ver_display);
@@ -526,14 +569,14 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
             version_spec.as_deref(),
             site_packages,
             upgrade,
-            no_deps,
+            effective_no_deps,
             quiet,
             &mut visited,
         )?;
         installed_count += 1;
 
         // Install extras if requested (e.g., package[security,socks])
-        if !extras.is_empty() && !no_deps {
+        if !extras.is_empty() && !effective_no_deps {
             install_extras(&name, &extras, site_packages, quiet, &mut visited)?;
         }
     }
@@ -543,6 +586,57 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
         println!("\nSuccessfully processed {} package(s) in {:.1}s.", installed_count, elapsed.as_secs_f64());
     }
     Ok(())
+}
+
+/// Verify file hashes match expected values (from --hash= in requirements files).
+fn verify_file_hashes(path: &str, expected_hashes: &[String]) -> Result<(), String> {
+    let data = std::fs::read(path)
+        .map_err(|e| format!("Cannot read '{}' for hash verification: {}", path, e))?;
+
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let actual = format!("{:x}", hasher.finalize());
+
+    for expected in expected_hashes {
+        // Support sha256:HASH format
+        let hash_val = expected.strip_prefix("sha256:").unwrap_or(expected);
+        if actual == hash_val {
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "Hash verification failed for {}:\n  Expected one of: {}\n  Got: sha256:{}",
+        path,
+        expected_hashes.join(", "),
+        actual,
+    ))
+}
+
+/// Post-install verification: check RECORD hashes for recently installed packages.
+fn verify_all_installed(site_packages: &str, specs: &[String], quiet: bool) {
+    for spec in specs {
+        let trimmed = spec.trim();
+        // Skip flags and special entries
+        if trimmed.starts_with("flag:") || trimmed.starts_with("editable:")
+            || trimmed.starts_with("hash:") || trimmed == "." || trimmed.starts_with("./")
+        {
+            continue;
+        }
+        let (name, _, _) = parse_version_specifier_with_extras(&trimmed.to_string());
+        let failures = crate::installer::verify_installed_record(site_packages, &name);
+        if failures.is_empty() {
+            if !quiet {
+                println!("  ✓ {} RECORD verified", name);
+            }
+        } else {
+            eprintln!("  ✗ {} has {} file(s) with mismatched hashes", name, failures.len());
+            for f in failures.iter().take(3) {
+                eprintln!("      {}", f);
+            }
+        }
+    }
 }
 
 /// Install a local .whl or .tar.gz file directly.
@@ -1169,6 +1263,20 @@ fn check_packages(site_packages: &str) -> Result<(), String> {
     let mut checked = 0;
 
     for pkg in &packages {
+        // Verify RECORD hash integrity
+        let hash_failures = crate::installer::verify_installed_record(site_packages, &pkg.name);
+        if !hash_failures.is_empty() {
+            println!("{} {} has {} file(s) with mismatched RECORD hashes:",
+                     pkg.name, pkg.version, hash_failures.len());
+            for f in hash_failures.iter().take(3) {
+                println!("    {}", f);
+            }
+            if hash_failures.len() > 3 {
+                println!("    ... and {} more", hash_failures.len() - 3);
+            }
+            has_errors = true;
+        }
+
         if let Some(ref requires) = pkg.requires {
             for req in requires {
                 // Strip environment markers for the check
@@ -1848,16 +1956,41 @@ fn add_dir_to_zip(
 
 fn show_config(site_packages: &str, _list: bool) -> Result<(), String> {
     let exe = std::env::current_exe().unwrap_or_default();
+    let arch = std::env::consts::ARCH;
+    let os = std::env::consts::OS;
     println!("ferryip version: {}", env!("CARGO_PKG_VERSION"));
     println!("Ferrython compatible: 3.8+");
     println!("Location: {}", exe.display());
     println!("Site-packages: {}", site_packages);
     println!("Cache directory: {}", cache_dir().display());
-    println!("Python platform: {}", if cfg!(target_os = "linux") { "linux" }
-             else if cfg!(target_os = "macos") { "darwin" }
-             else if cfg!(target_os = "windows") { "win32" }
+    println!("Python platform: {}", if os == "linux" { "linux" }
+             else if os == "macos" { "darwin" }
+             else if os == "windows" { "win32" }
              else { "unknown" });
-    println!("Wheel tags: py3-none-any");
+    println!("Architecture: {}", arch);
+    // Show compatible wheel tags
+    let mut tags = vec!["py3-none-any".to_string()];
+    match os {
+        "linux" => {
+            tags.push(format!("cp312-cp312-linux_{}", arch));
+            tags.push(format!("cp312-abi3-manylinux_2_17_{}", arch));
+            tags.push(format!("cp312-cp312-manylinux_2_17_{}", arch));
+        }
+        "macos" => {
+            let mac_arch = if arch == "aarch64" { "arm64" } else { arch };
+            tags.push(format!("cp312-cp312-macosx_11_0_{}", mac_arch));
+            tags.push(format!("cp312-abi3-macosx_10_9_{}", mac_arch));
+        }
+        "windows" => {
+            let plat = if arch == "x86_64" { "win_amd64" } else { "win32" };
+            tags.push(format!("cp312-cp312-{}", plat));
+        }
+        _ => {}
+    }
+    println!("Compatible wheel tags:");
+    for tag in &tags {
+        println!("  {}", tag);
+    }
     Ok(())
 }
 

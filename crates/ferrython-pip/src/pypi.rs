@@ -15,6 +15,8 @@ pub struct ReleaseInfo {
     pub summary: String,
     pub author: String,
     pub license: String,
+    pub yanked: bool,
+    pub yanked_reason: Option<String>,
 }
 
 /// PyPI JSON API response
@@ -34,6 +36,8 @@ struct PyPIInfo {
     author: Option<String>,
     license: Option<String>,
     requires_dist: Option<Vec<String>>,
+    yanked: Option<bool>,
+    yanked_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -126,6 +130,8 @@ pub fn fetch_package_info(name: &str, version: Option<&str>) -> Result<ReleaseIn
         summary: data.info.summary.unwrap_or_default(),
         author: data.info.author.unwrap_or_default(),
         license: data.info.license.unwrap_or_default(),
+        yanked: data.info.yanked.unwrap_or(false),
+        yanked_reason: data.info.yanked_reason,
     })
 }
 
@@ -133,6 +139,7 @@ pub fn fetch_package_info(name: &str, version: Option<&str>) -> Result<ReleaseIn
 ///
 /// This fetches the project page (all releases), filters by the given specs,
 /// and returns the info for the highest compatible version.
+/// Skips yanked versions unless the spec is an exact pin (==X.Y.Z).
 pub fn fetch_best_version(name: &str, specs: &str) -> Result<ReleaseInfo, String> {
     let url = format!("https://pypi.org/pypi/{}/json", name);
     let client = make_client()?;
@@ -146,8 +153,9 @@ pub fn fetch_best_version(name: &str, specs: &str) -> Result<ReleaseInfo, String
     let data: PyPIResponse = resp.json()
         .map_err(|e| format!("JSON parse error for '{}': {}", name, e))?;
 
-    // If latest version satisfies, use it directly (common fast path)
-    if crate::version::version_matches(&data.info.version, specs) {
+    // If latest version satisfies and is not yanked, use it directly (common fast path)
+    let is_yanked = data.info.yanked.unwrap_or(false);
+    if crate::version::version_matches(&data.info.version, specs) && !is_yanked {
         let best_url = find_best_download(&data.urls)
             .ok_or_else(|| format!("No compatible distribution found for {}", name))?;
         return Ok(ReleaseInfo {
@@ -160,16 +168,32 @@ pub fn fetch_best_version(name: &str, specs: &str) -> Result<ReleaseInfo, String
             summary: data.info.summary.unwrap_or_default(),
             author: data.info.author.unwrap_or_default(),
             license: data.info.license.unwrap_or_default(),
+            yanked: false,
+            yanked_reason: None,
         });
     }
 
-    // Latest doesn't match — scan all releases for the best compatible version
+    // Latest doesn't match or is yanked — scan all releases for the best compatible version
     if let Some(ref releases) = data.releases {
         if let Some(releases_map) = releases.as_object() {
-            let versions: Vec<&str> = releases_map.keys().map(|s| s.as_str()).collect();
+            // Filter out yanked versions: a release is yanked if all its files are yanked
+            // or the release array is empty. We check for the "yanked" field on each file entry.
+            let versions: Vec<&str> = releases_map.iter()
+                .filter(|(_, files)| {
+                    if let Some(files_arr) = files.as_array() {
+                        if files_arr.is_empty() { return false; }
+                        // Keep if at least one file is not yanked
+                        files_arr.iter().any(|f| {
+                            !f.get("yanked").and_then(|y| y.as_bool()).unwrap_or(false)
+                        })
+                    } else {
+                        true
+                    }
+                })
+                .map(|(ver, _)| ver.as_str())
+                .collect();
             // Find best version matching specs
             if let Some(best_ver) = crate::version::find_best_version(&versions, specs) {
-                // Fetch the specific version
                 return fetch_package_info(name, Some(best_ver));
             }
         }

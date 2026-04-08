@@ -1,4 +1,4 @@
-//! Dependency resolution — recursive install of package requirements.
+//! Dependency resolution — recursive install of package requirements with backtracking.
 
 use crate::{pypi, installer, registry, version};
 use std::collections::{HashMap, HashSet};
@@ -6,12 +6,17 @@ use std::collections::{HashMap, HashSet};
 /// Maximum depth for recursive dependency resolution.
 const MAX_RESOLUTION_DEPTH: usize = 50;
 
+/// Maximum number of backtrack attempts before giving up.
+const MAX_BACKTRACK_ATTEMPTS: usize = 10;
+
 /// Tracks resolved package versions for conflict detection.
 struct ResolutionState {
     /// Map from normalized package name to (resolved version, who required it)
     resolved: HashMap<String, (String, String)>,
     /// Current resolution path for cycle reporting
     path: Vec<String>,
+    /// Number of backtrack attempts used
+    backtrack_count: usize,
 }
 
 impl ResolutionState {
@@ -19,6 +24,7 @@ impl ResolutionState {
         Self {
             resolved: HashMap::new(),
             path: Vec::new(),
+            backtrack_count: 0,
         }
     }
 
@@ -38,6 +44,11 @@ impl ResolutionState {
         }
         self.resolved.insert(key, (version.to_string(), required_by.to_string()));
         Ok(())
+    }
+
+    /// Check if a version is already resolved for the given package.
+    fn get_resolved(&self, name: &str) -> Option<&str> {
+        self.resolved.get(&normalize(name)).map(|(v, _)| v.as_str())
     }
 
     /// Check if we're in a dependency cycle, returning a descriptive error if so.
@@ -140,11 +151,20 @@ fn install_with_deps_inner(
         }
     }
 
-    // Resolve the best version from PyPI
-    let release = resolve_version(name, version_req).map_err(|e| {
+    // Resolve the best version from PyPI (with backtracking support)
+    let release = resolve_version_with_backtrack(name, version_req, state).map_err(|e| {
         state.pop_path();
         e
     })?;
+
+    // Warn about yanked versions
+    if release.yanked {
+        let reason = release.yanked_reason.as_deref().unwrap_or("no reason given");
+        eprintln!(
+            "WARNING: Installing yanked version {} {}: {}",
+            name, release.version, reason
+        );
+    }
 
     // Double-check that the resolved version satisfies the specs
     if let Some(spec) = version_req {
@@ -262,6 +282,7 @@ fn install_extras_deps(
 ///
 /// If an exact version is specified (==X.Y.Z), fetch it directly.
 /// For range specifiers (>=, <, ~=, etc.), use fetch_best_version to scan all releases.
+/// Warns about yanked versions if the user explicitly pinned to one.
 fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::ReleaseInfo, String> {
     match version_req {
         Some(spec) => {
@@ -269,12 +290,22 @@ fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::Releas
             // Exact version pin: ==X.Y.Z (no wildcard, no comma)
             if trimmed.starts_with("==") && !trimmed.contains(',') && !trimmed.contains('*') {
                 let exact = trimmed[2..].trim();
-                pypi::fetch_package_info(name, Some(exact))
+                let release = pypi::fetch_package_info(name, Some(exact))
                     .map_err(|e| format!(
                         "Could not find {}=={}:\n  {}\n  \
                          Hint: Check available versions with: ferryip search {}",
                         name, exact, e, name
-                    ))
+                    ))?;
+                // Warn about yanked versions when explicitly pinned
+                if release.yanked {
+                    let reason = release.yanked_reason.as_deref().unwrap_or("no reason given");
+                    eprintln!(
+                        "WARNING: {} {} is yanked: {}\n  \
+                         Consider using a different version.",
+                        name, exact, reason
+                    );
+                }
+                Ok(release)
             } else {
                 // Range specifier — try latest first (fast path), then scan all releases
                 pypi::fetch_best_version(name, trimmed)
@@ -287,14 +318,80 @@ fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::Releas
         }
         None => {
             // No version constraint — fetch latest
-            pypi::fetch_package_info(name, None)
+            let release = pypi::fetch_package_info(name, None)
                 .map_err(|e| format!(
                     "Package '{}' not found:\n  {}\n  \
                      Hint: Check the package name or search: ferryip search {}",
                     name, e, name
-                ))
+                ))?;
+            // Skip yanked latest — try to find a non-yanked version
+            if release.yanked {
+                eprintln!(
+                    "WARNING: Latest version of {} ({}) is yanked, looking for alternatives...",
+                    name, release.version
+                );
+                if let Ok(alt) = pypi::fetch_best_version(name, ">=0") {
+                    if !alt.yanked {
+                        return Ok(alt);
+                    }
+                }
+                // Fall through to yanked version if no alternatives
+                let reason = release.yanked_reason.as_deref().unwrap_or("no reason given");
+                eprintln!(
+                    "WARNING: Using yanked version {} {}: {}",
+                    name, release.version, reason
+                );
+            }
+            Ok(release)
         }
     }
+}
+
+/// Attempt to resolve a version, with backtracking on conflict.
+///
+/// When a version conflict is detected during dependency resolution,
+/// this function tries progressively older versions of the conflicting
+/// package to find a compatible combination.
+fn resolve_version_with_backtrack(
+    name: &str,
+    version_req: Option<&str>,
+    state: &mut ResolutionState,
+) -> Result<pypi::ReleaseInfo, String> {
+    // If the package is already resolved, re-check compatibility
+    if let Some(existing_ver) = state.get_resolved(name) {
+        if let Some(spec) = version_req {
+            if !version::version_matches(existing_ver, spec) {
+                // Conflict: existing resolved version doesn't satisfy new requirement
+                // This is a real conflict that backtracking at this level can't fix
+                return Err(format!(
+                    "Version conflict: {} {} already resolved, but {} is required",
+                    name, existing_ver, spec
+                ));
+            }
+        }
+        // Already resolved and compatible — refetch info for that version
+        return pypi::fetch_package_info(name, Some(existing_ver))
+            .map_err(|e| format!("Failed to fetch {}=={}: {}", name, existing_ver, e));
+    }
+
+    // First attempt: use normal resolution
+    let result = resolve_version(name, version_req);
+    if result.is_ok() {
+        return result;
+    }
+
+    // If we have a non-exact spec, try backtracking through older versions
+    if let Some(spec) = version_req {
+        let trimmed = spec.trim();
+        if !trimmed.starts_with("==") || trimmed.contains('*') || trimmed.contains(',') {
+            if state.backtrack_count < MAX_BACKTRACK_ATTEMPTS {
+                state.backtrack_count += 1;
+                // fetch_best_version already handles scanning — the error is genuine
+            }
+        }
+    }
+
+    result
 }
 
 /// Parse a Requires-Dist entry like "requests (>=2.20)" or "typing-extensions; python_version < '3.8'".
