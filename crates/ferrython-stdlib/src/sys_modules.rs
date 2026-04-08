@@ -761,6 +761,7 @@ pub fn create_os_module() -> PyObjectRef {
         ("walk", make_builtin(os_walk)),
         ("stat", make_builtin(os_stat)),
         ("chmod", make_builtin(os_chmod)),
+        ("chown", make_builtin(os_chown)),
         ("symlink", make_builtin(os_symlink)),
         ("readlink", make_builtin(os_readlink)),
         ("isatty", make_builtin(os_isatty)),
@@ -1502,6 +1503,27 @@ fn os_chmod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let perms = std::fs::Permissions::from_mode(mode as u32);
         std::fs::set_permissions(&path, perms)
             .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
+    }
+    Ok(PyObject::none())
+}
+
+fn os_chown(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 3 {
+        return Err(PyException::type_error("chown requires at least 3 arguments"));
+    }
+    #[cfg(unix)]
+    {
+        let path = args[0].py_to_string();
+        let uid = args[1].as_int().unwrap_or(-1);
+        let gid = args[2].as_int().unwrap_or(-1);
+        let cpath = std::ffi::CString::new(path.as_str())
+            .map_err(|_| PyException::value_error("embedded null in path"))?;
+        let ret = unsafe { libc::chown(cpath.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) };
+        if ret != 0 {
+            return Err(PyException::os_error(format!(
+                "{}: '{}'", std::io::Error::last_os_error(), path
+            )));
+        }
     }
     Ok(PyObject::none())
 }

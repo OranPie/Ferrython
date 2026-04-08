@@ -590,12 +590,29 @@ pub fn create_datetime_module() -> PyObjectRef {
         );
     }
 
+    // Build tzinfo abstract base class (base of timezone)
+    let mut tzinfo_ns = IndexMap::new();
+    tzinfo_ns.insert(CompactString::from("utcoffset"), make_builtin(|_| {
+        Err(PyException::type_error("tzinfo.utcoffset() must be overridden"))
+    }));
+    tzinfo_ns.insert(CompactString::from("tzname"), make_builtin(|_| {
+        Err(PyException::type_error("tzinfo.tzname() must be overridden"))
+    }));
+    tzinfo_ns.insert(CompactString::from("dst"), make_builtin(|_| {
+        Err(PyException::type_error("tzinfo.dst() must be overridden"))
+    }));
+    tzinfo_ns.insert(CompactString::from("fromutc"), make_builtin(|_args| {
+        Ok(PyObject::none())
+    }));
+    let tzinfo_cls = PyObject::class(CompactString::from("tzinfo"), vec![], tzinfo_ns);
+
     make_module("datetime", vec![
         ("datetime", datetime_cls),
         ("date", date_cls),
         ("time", make_builtin(datetime_time_obj)),
         ("timedelta", make_builtin(datetime_timedelta)),
         ("timezone", tz_cls),
+        ("tzinfo", tzinfo_cls),
         ("MINYEAR", PyObject::int(1)),
         ("MAXYEAR", PyObject::int(9999)),
     ])

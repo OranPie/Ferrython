@@ -984,11 +984,24 @@ pub fn create_decimal_module() -> PyObjectRef {
                         }
                     }
                     let check = trimmed.trim_start_matches('+').trim_start_matches('-');
+                    let check_lower = check.to_lowercase();
                     let parts: Vec<&str> = check.splitn(2, '.').collect();
                     let valid = parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-                        || check == "Infinity" || check == "NaN";
+                        || check == "Infinity" || check == "NaN"
+                        || check_lower == "inf" || check_lower == "infinity"
+                        || check_lower == "nan" || check_lower == "snan";
                     if valid {
-                        Ok(make_decimal(trimmed))
+                        // Normalize special values
+                        let normalized = if check_lower == "inf" || check_lower == "infinity" {
+                            let sign = if trimmed.starts_with('-') { "-" } else { "" };
+                            format!("{}Infinity", sign)
+                        } else if check_lower == "nan" || check_lower == "snan" {
+                            let sign = if trimmed.starts_with('-') { "-" } else { "" };
+                            format!("{}NaN", sign)
+                        } else {
+                            trimmed.to_string()
+                        };
+                        Ok(make_decimal(&normalized))
                     } else if check.contains('E') || check.contains('e') {
                         match trimmed.parse::<f64>() {
                             Ok(f) => Ok(make_decimal(&format!("{}", f))),

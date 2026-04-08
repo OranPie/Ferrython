@@ -799,14 +799,51 @@ impl VirtualMachine {
                 return Ok(None);
             }
             Opcode::ImportFrom => {
-                let frame = self.vm_frame();
-                let name = &frame.code.names[instr.arg as usize];
-                let module = frame.peek().clone();
-                match module.get_attr(name) {
-                    Some(v) => frame.push(v),
-                    None => return Err(PyException::import_error(format!(
-                        "cannot import name '{}' from module", name
-                    ))),
+                let (name, module, mod_name, mod_file, filename) = {
+                    let frame = self.vm_frame();
+                    let name = frame.code.names[instr.arg as usize].clone();
+                    let module = frame.peek().clone();
+                    let mod_name = module.get_attr("__name__")
+                        .map(|n| n.py_to_string())
+                        .unwrap_or_default();
+                    let mod_file = module.get_attr("__file__")
+                        .map(|f| f.py_to_string())
+                        .unwrap_or_else(|| "unknown location".to_string());
+                    let filename = frame.code.filename.clone();
+                    (name, module, mod_name, mod_file, filename)
+                };
+                match module.get_attr(&name) {
+                    Some(v) => { self.vm_frame().push(v); }
+                    None => {
+                        // CPython fallback: try importing package.submodule
+                        if !mod_name.is_empty() {
+                            let submod_name = format!("{}.{}", mod_name, name);
+                            match self.import_module_dotted(&submod_name, 0, true, &filename) {
+                                Ok(submod) => {
+                                    match &module.payload {
+                                        PyObjectPayload::Module(md) => {
+                                            md.attrs.write().insert(name.clone(), submod.clone());
+                                        }
+                                        PyObjectPayload::Instance(inst) => {
+                                            inst.attrs.write().insert(name.clone(), submod.clone());
+                                        }
+                                        _ => {}
+                                    }
+                                    self.vm_frame().push(submod);
+                                }
+                                Err(_) => {
+                                    return Err(PyException::import_error(format!(
+                                        "cannot import name '{}' from '{}' ({})",
+                                        name, mod_name, mod_file
+                                    )));
+                                }
+                            }
+                        } else {
+                            return Err(PyException::import_error(format!(
+                                "cannot import name '{}' from module", name
+                            )));
+                        }
+                    }
                 }
             }
             Opcode::ImportStar => {

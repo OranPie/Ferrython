@@ -1041,6 +1041,19 @@ impl VirtualMachine {
                             all_args.push(start);
                             return self.call_object(func, all_args);
                         }
+                        "int" => {
+                            // int(x, base=N)
+                            let mut all_args = pos_args;
+                            if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "base") {
+                                while all_args.len() < 1 { all_args.push(PyObject::int(0)); }
+                                all_args.push(v.clone());
+                            }
+                            return self.call_object(func, all_args);
+                        }
+                        "float" | "str" | "bool" | "bytes" | "bytearray" | "list" | "tuple" | "set" | "frozenset" => {
+                            // These builtins don't use kwargs meaningfully — just pass positional
+                            return self.call_object(func, pos_args);
+                        }
                         "open" => {
                             // open(file, mode='r', buffering=-1, encoding=None, ...)
                             let mut all_args = pos_args;
