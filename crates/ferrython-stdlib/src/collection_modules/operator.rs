@@ -328,6 +328,54 @@ pub fn create_operator_module() -> PyObjectRef {
             check_args_min("iadd", args, 2)?;
             args[0].add(&args[1])
         })),
+        ("isub", make_builtin(|args| {
+            check_args_min("isub", args, 2)?;
+            args[0].sub(&args[1])
+        })),
+        ("imul", make_builtin(|args| {
+            check_args_min("imul", args, 2)?;
+            args[0].mul(&args[1])
+        })),
+        ("itruediv", make_builtin(|args| {
+            check_args_min("itruediv", args, 2)?;
+            args[0].true_div(&args[1])
+        })),
+        ("ifloordiv", make_builtin(|args| {
+            check_args_min("ifloordiv", args, 2)?;
+            args[0].floor_div(&args[1])
+        })),
+        ("imod", make_builtin(|args| {
+            check_args_min("imod", args, 2)?;
+            args[0].modulo(&args[1])
+        })),
+        ("ipow", make_builtin(|args| {
+            check_args_min("ipow", args, 2)?;
+            args[0].power(&args[1])
+        })),
+        ("iand", make_builtin(|args| {
+            check_args_min("iand", args, 2)?;
+            args[0].bit_and(&args[1])
+        })),
+        ("ior", make_builtin(|args| {
+            check_args_min("ior", args, 2)?;
+            args[0].bit_or(&args[1])
+        })),
+        ("ixor", make_builtin(|args| {
+            check_args_min("ixor", args, 2)?;
+            args[0].bit_xor(&args[1])
+        })),
+        ("ilshift", make_builtin(|args| {
+            check_args_min("ilshift", args, 2)?;
+            args[0].lshift(&args[1])
+        })),
+        ("irshift", make_builtin(|args| {
+            check_args_min("irshift", args, 2)?;
+            args[0].rshift(&args[1])
+        })),
+        ("iconcat", make_builtin(|args| {
+            check_args_min("iconcat", args, 2)?;
+            args[0].add(&args[1])
+        })),
         ("methodcaller", make_builtin(|args| {
             check_args_min("methodcaller", args, 1)?;
             let method_name = args[0].py_to_string();

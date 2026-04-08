@@ -926,6 +926,23 @@ pub fn create_logging_module() -> PyObjectRef {
         ("LogRecord", log_record_fn),
         ("Logger", make_builtin(logging_get_logger)),
         ("root", make_builtin(|_| logging_get_logger(&[]))),
+        ("addLevelName", make_builtin(|_args| Ok(PyObject::none()))),
+        ("setLoggerClass", make_builtin(|_args| Ok(PyObject::none()))),
+        ("Filterer", make_builtin(|_args| {
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("filters"), PyObject::list(vec![]));
+            attrs.insert(CompactString::from("addFilter"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("removeFilter"), make_builtin(|_| Ok(PyObject::none())));
+            attrs.insert(CompactString::from("filter"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+            Ok(PyObject::module_with_attrs(CompactString::from("Filterer"), attrs))
+        })),
+        ("lastResort", PyObject::none()),
+        ("raiseExceptions", PyObject::bool_val(true)),
+        ("captureWarnings", make_builtin(|_args| Ok(PyObject::none()))),
+        ("shutdown", make_builtin(|_args| Ok(PyObject::none()))),
+        ("makeLogRecord", make_builtin(|args| {
+            if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
+        })),
     ])
 }
 

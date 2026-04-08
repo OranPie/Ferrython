@@ -332,9 +332,7 @@ impl VirtualMachine {
     /// Attach a submodule as an attribute of a parent module.
     fn attach_submodule(&self, parent: &PyObjectRef, name: &str, child: &PyObjectRef) {
         if let PyObjectPayload::Module(ref mod_data) = &parent.payload {
-            if mod_data.attrs.read().get(name).is_none() {
-                mod_data.attrs.write().insert(CompactString::from(name), child.clone());
-            }
+            mod_data.attrs.write().insert(CompactString::from(name), child.clone());
         }
     }
 
