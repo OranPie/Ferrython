@@ -155,11 +155,57 @@ pub fn create_sys_module() -> PyObjectRef {
                             if *sp < other_val { return Ok(PyObject::bool_val(true)); }
                             if *sp > other_val { return Ok(PyObject::bool_val(false)); }
                         }
-                        return Ok(PyObject::bool_val(false)); // equal
+                        // If we've exhausted self_parts but other tuple is longer, self is "less"
+                        return Ok(PyObject::bool_val(self_parts.len() < t.len()));
                     }
                     Ok(PyObject::bool_val(false))
                 });
                 attrs.insert(CompactString::from("__lt__"), lt_fn);
+                let gt_fn = PyObject::native_closure("version_info.__gt__", |args: &[PyObjectRef]| {
+                    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+                    if let PyObjectPayload::Tuple(t) = &args[1].payload {
+                        let self_parts = [3i64, 8, 0];
+                        let cmp_len = self_parts.len().min(t.len());
+                        for i in 0..cmp_len {
+                            let other_val = t.get(i).and_then(|v| v.as_int()).unwrap_or(0);
+                            if self_parts[i] > other_val { return Ok(PyObject::bool_val(true)); }
+                            if self_parts[i] < other_val { return Ok(PyObject::bool_val(false)); }
+                        }
+                        // Equal up to min length — longer one is greater
+                        return Ok(PyObject::bool_val(self_parts.len() > t.len()));
+                    }
+                    Ok(PyObject::bool_val(false))
+                });
+                attrs.insert(CompactString::from("__gt__"), gt_fn);
+                let le_fn = PyObject::native_closure("version_info.__le__", |args: &[PyObjectRef]| {
+                    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+                    if let PyObjectPayload::Tuple(t) = &args[1].payload {
+                        let self_parts = [3i64, 8, 0];
+                        let cmp_len = self_parts.len().min(t.len());
+                        for i in 0..cmp_len {
+                            let other_val = t.get(i).and_then(|v| v.as_int()).unwrap_or(0);
+                            if self_parts[i] < other_val { return Ok(PyObject::bool_val(true)); }
+                            if self_parts[i] > other_val { return Ok(PyObject::bool_val(false)); }
+                        }
+                        return Ok(PyObject::bool_val(self_parts.len() <= t.len()));
+                    }
+                    Ok(PyObject::bool_val(false))
+                });
+                attrs.insert(CompactString::from("__le__"), le_fn);
+                let eq_fn = PyObject::native_closure("version_info.__eq__", |args: &[PyObjectRef]| {
+                    if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+                    if let PyObjectPayload::Tuple(t) = &args[1].payload {
+                        let self_parts = [3i64, 8, 0];
+                        if t.len() != self_parts.len() { return Ok(PyObject::bool_val(false)); }
+                        for (i, sp) in self_parts.iter().enumerate() {
+                            let other_val = t.get(i).and_then(|v| v.as_int()).unwrap_or(-1);
+                            if *sp != other_val { return Ok(PyObject::bool_val(false)); }
+                        }
+                        return Ok(PyObject::bool_val(true));
+                    }
+                    Ok(PyObject::bool_val(false))
+                });
+                attrs.insert(CompactString::from("__eq__"), eq_fn);
             }
             inst
         }),

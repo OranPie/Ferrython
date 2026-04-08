@@ -1337,6 +1337,27 @@ pub fn create_weakref_module() -> PyObjectRef {
 
         // ── CallableProxyType ──
         ("CallableProxyType", PyObject::class(CompactString::from("weakcallableproxy"), vec![], IndexMap::new())),
+
+        // ── WeakMethod(method, callback=None) ──
+        ("WeakMethod", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("WeakMethod requires at least 1 argument")); }
+            let method = args[0].clone();
+            let weak: Weak<PyObject> = Arc::downgrade(&method);
+            let cls = PyObject::class(CompactString::from("WeakMethod"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                let w1 = weak.clone();
+                w.insert(CompactString::from("__call__"), PyObject::native_closure(
+                    "WeakMethod.__call__", move |_| Ok(upgrade_or_none(&w1)),
+                ));
+                let w2 = weak.clone();
+                w.insert(CompactString::from("__bool__"), PyObject::native_closure(
+                    "WeakMethod.__bool__", move |_| Ok(PyObject::bool_val(w2.upgrade().is_some())),
+                ));
+            }
+            Ok(inst)
+        })),
     ])
 }
 

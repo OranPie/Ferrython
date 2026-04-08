@@ -21,6 +21,7 @@ pub fn create_traceback_module() -> PyObjectRef {
         ("format_exception", make_builtin(traceback_format_exception)),
         ("format_tb", make_builtin(traceback_format_tb)),
         ("format_stack", make_builtin(traceback_format_stack)),
+        ("extract_stack", make_builtin(traceback_extract_stack)),
         ("extract_tb", make_builtin(traceback_extract_tb)),
         ("print_exc", make_builtin(traceback_print_exc)),
         ("print_exception", make_builtin(traceback_print_exception)),
@@ -100,6 +101,25 @@ fn traceback_format_tb(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// returns an empty list (the VM would need to populate frame info).
 fn traceback_format_stack(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::list(vec![]))
+}
+
+// ── traceback.extract_stack() ───────────────────────────────────────────
+
+/// `traceback.extract_stack(f=None, limit=None)` — extract current stack as StackSummary.
+/// Returns a minimal StackSummary with a synthetic frame since we don't have live frame access.
+fn traceback_extract_stack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let limit = if args.len() >= 2 {
+        args[1].as_int().map(|n| n as usize).unwrap_or(usize::MAX)
+    } else if args.len() == 1 && args[0].as_int().is_some() {
+        // extract_stack(limit=N) — keyword becomes positional
+        args[0].as_int().map(|n| n as usize).unwrap_or(usize::MAX)
+    } else {
+        usize::MAX
+    };
+    let frame = make_frame_summary("<module>", 1, "<module>");
+    let mut frames = vec![frame];
+    frames.truncate(limit);
+    Ok(PyObject::list(frames))
 }
 
 // ── traceback.extract_tb(tb, limit=None) ────────────────────────────────
@@ -361,20 +381,42 @@ fn linecache_checkcache(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Create a FrameSummary instance with filename, lineno, name, line attributes.
+/// Supports tuple-like indexing: [0]=filename, [1]=lineno, [2]=name, [3]=line
 fn make_frame_summary(filename: &str, lineno: u32, name: &str) -> PyObjectRef {
     let cls = PyObject::builtin_type(CompactString::from("FrameSummary"));
     let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("filename"), PyObject::str_val(CompactString::from(filename)));
-    attrs.insert(CompactString::from("lineno"), PyObject::int(lineno as i64));
-    attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name)));
+    let fname_s = CompactString::from(filename);
+    let lineno_i = lineno as i64;
+    let name_s = CompactString::from(name);
+    attrs.insert(CompactString::from("filename"), PyObject::str_val(fname_s.clone()));
+    attrs.insert(CompactString::from("lineno"), PyObject::int(lineno_i));
+    attrs.insert(CompactString::from("name"), PyObject::str_val(name_s.clone()));
 
     // Source line (may be None)
     let line = SourceCache::get_line(filename, lineno);
-    attrs.insert(CompactString::from("line"), match line {
+    let line_val = match line {
         Some(l) => PyObject::str_val(CompactString::from(l.trim())),
         None => PyObject::none(),
-    });
+    };
+    attrs.insert(CompactString::from("line"), line_val.clone());
     attrs.insert(CompactString::from("locals"), PyObject::none());
+
+    // Tuple-like subscript: FrameSummary[0..3]
+    let items = vec![
+        PyObject::str_val(fname_s.clone()),
+        PyObject::int(lineno_i),
+        PyObject::str_val(name_s.clone()),
+        line_val,
+    ];
+    attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+        "FrameSummary.__getitem__",
+        move |args| {
+            let idx = args.first()
+                .and_then(|a| a.as_int())
+                .unwrap_or(0) as usize;
+            Ok(items.get(idx).cloned().unwrap_or(PyObject::none()))
+        },
+    ));
 
     // __repr__
     let fname = filename.to_string();

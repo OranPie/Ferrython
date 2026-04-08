@@ -12,6 +12,25 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 pub fn create_time_module() -> PyObjectRef {
+    // struct_time class — callable constructor + type object
+    let struct_time_cls = PyObject::class(CompactString::from("struct_time"), vec![], IndexMap::new());
+    if let PyObjectPayload::Class(ref cd) = struct_time_cls.payload {
+        let mut ns = cd.namespace.write();
+        ns.insert(CompactString::from("__new__"), make_builtin(|args: &[PyObjectRef]| {
+            // struct_time((y, m, d, h, mi, s, wday, yday, isdst))
+            if args.is_empty() {
+                return Err(PyException::type_error("struct_time() takes a 9-sequence"));
+            }
+            let seq = &args[args.len().min(2) - 1]; // skip cls if 2 args
+            let items = seq.to_list()?;
+            if items.len() < 9 {
+                return Err(PyException::type_error("struct_time() takes a 9-sequence"));
+            }
+            let get = |i: usize| items[i].as_int().unwrap_or(0);
+            Ok(make_struct_time(get(0), get(1), get(2), get(3), get(4), get(5), get(6), get(7)))
+        }));
+    }
+
     make_module("time", vec![
         ("time", make_builtin(time_time)),
         ("sleep", make_builtin(time_sleep)),
@@ -36,6 +55,7 @@ pub fn create_time_module() -> PyObjectRef {
         ("mktime", make_builtin(time_mktime)),
         ("ctime", make_builtin(time_ctime)),
         ("asctime", make_builtin(time_asctime)),
+        ("struct_time", struct_time_cls),
         ("timezone", PyObject::int(0)),
         ("altzone", PyObject::int(0)),
         ("daylight", PyObject::int(0)),

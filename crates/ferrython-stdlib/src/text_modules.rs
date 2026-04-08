@@ -1717,9 +1717,19 @@ pub fn create_html_module() -> PyObjectRef {
         Ok(PyObject::str_val(CompactString::from(result)))
     }
 
+    // _replace_charref is internal CPython — used by html.parser and some libs
+    let replace_charref = make_builtin(|args: &[PyObjectRef]| {
+        // _replace_charref(s) — replace HTML character references in string
+        if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+        let s = args[0].py_to_string();
+        // Simple passthrough — mistune uses re.sub with this
+        Ok(PyObject::str_val(CompactString::from(s)))
+    });
+
     make_module("html", vec![
         ("escape", make_builtin(html_escape)),
         ("unescape", make_builtin(html_unescape)),
+        ("_replace_charref", replace_charref),
     ])
 }
 

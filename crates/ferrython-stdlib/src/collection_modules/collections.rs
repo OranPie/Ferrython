@@ -12,6 +12,24 @@ use std::sync::Arc;
 
 pub fn create_collections_module() -> PyObjectRef {
     let abc_module = crate::type_modules::create_collections_abc_module();
+
+    // Deprecated aliases (Python 3.3-3.9 compat — removed in 3.10 but many packages still use them)
+    let get_abc_attr = |name: &str| -> PyObjectRef {
+        abc_module.get_attr(name).unwrap_or(PyObject::none())
+    };
+    let mapping = get_abc_attr("Mapping");
+    let mutable_mapping = get_abc_attr("MutableMapping");
+    let sequence = get_abc_attr("Sequence");
+    let mutable_sequence = get_abc_attr("MutableSequence");
+    let set_abc = get_abc_attr("Set");
+    let mutable_set = get_abc_attr("MutableSet");
+    let iterable = get_abc_attr("Iterable");
+    let iterator = get_abc_attr("Iterator");
+    let callable = get_abc_attr("Callable");
+    let sized = get_abc_attr("Sized");
+    let container = get_abc_attr("Container");
+    let hashable = get_abc_attr("Hashable");
+
     make_module("collections", vec![
         ("abc", abc_module),
         ("OrderedDict", PyObject::native_function("collections.OrderedDict", collections_ordered_dict)),
@@ -24,7 +42,20 @@ pub fn create_collections_module() -> PyObjectRef {
         ("UserDict", make_user_dict_class()),
         ("UserList", make_user_list_class()),
         ("UserString", make_user_string_class()),
-        // Counter helper functions (usable as Counter.elements(c), Counter.update(c, other), etc.)
+        // Deprecated ABC aliases for compat
+        ("Mapping", mapping),
+        ("MutableMapping", mutable_mapping),
+        ("Sequence", sequence),
+        ("MutableSequence", mutable_sequence),
+        ("Set", set_abc),
+        ("MutableSet", mutable_set),
+        ("Iterable", iterable),
+        ("Iterator", iterator),
+        ("Callable", callable),
+        ("Sized", sized),
+        ("Container", container),
+        ("Hashable", hashable),
+        // Counter helper functions
         ("counter_elements", make_builtin(counter_elements)),
         ("counter_update", make_builtin(counter_update)),
         ("counter_subtract", make_builtin(counter_subtract)),

@@ -1286,6 +1286,7 @@ pub fn create_tempfile_module() -> PyObjectRef {
             Ok(PyObject::str_val(CompactString::from(temp_name(&prefix, &suffix))))
         })),
         ("NamedTemporaryFile", make_builtin(named_temporary_file)),
+        ("TemporaryFile", make_builtin(named_temporary_file)),
         ("TemporaryDirectory", make_builtin(|args| {
             let mut prefix = "tmp".to_string();
             for arg in args {

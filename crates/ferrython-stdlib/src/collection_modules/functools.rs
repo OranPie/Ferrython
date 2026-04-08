@@ -161,6 +161,49 @@ pub fn create_functools_module() -> PyObjectRef {
         ("WRAPPER_UPDATES", PyObject::tuple(vec![
             PyObject::str_val(CompactString::from("__dict__")),
         ])),
+        ("partialmethod", make_builtin(|args: &[PyObjectRef]| {
+            // partialmethod(func, *args, **kwargs) — descriptor for partial on methods
+            if args.is_empty() {
+                return Err(PyException::type_error("partialmethod requires at least 1 argument"));
+            }
+            let func = args[0].clone();
+            let bound_args: Vec<PyObjectRef> = args[1..].to_vec();
+            let cls = PyObject::class(CompactString::from("partialmethod"), vec![], IndexMap::new());
+            let inst = PyObject::instance(cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("func"), func.clone());
+                w.insert(CompactString::from("args"), PyObject::tuple(bound_args.clone()));
+                w.insert(CompactString::from("keywords"), PyObject::dict(IndexMap::new()));
+                // __get__ descriptor — when accessed on instance, return bound partial
+                w.insert(CompactString::from("__get__"), PyObject::native_closure(
+                    "partialmethod.__get__",
+                    move |get_args| {
+                        let obj = get_args.first().cloned().unwrap_or(PyObject::none());
+                        let f = func.clone();
+                        let ba = bound_args.clone();
+                        Ok(PyObject::native_closure("partialmethod.bound", move |call_args| {
+                            let mut all_args = vec![obj.clone()];
+                            all_args.extend(ba.iter().cloned());
+                            all_args.extend(call_args.iter().cloned());
+                            // We can't call the function directly from here without VM,
+                            // so wrap as a callable that stores the info
+                            Ok(PyObject::native_closure("_partial_call", {
+                                let f2 = f.clone();
+                                let args2 = all_args.clone();
+                                move |extra| {
+                                    let mut a = args2.clone();
+                                    a.extend(extra.iter().cloned());
+                                    // Return partial application info
+                                    Ok(PyObject::tuple(a))
+                                }
+                            }))
+                        }))
+                    },
+                ));
+            }
+            Ok(inst)
+        })),
     ])
 }
 

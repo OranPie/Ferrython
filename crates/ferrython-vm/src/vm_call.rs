@@ -445,12 +445,20 @@ impl VirtualMachine {
                         if !is_abstract_marker(val) {
                             continue;
                         }
-                        // Check if any class from the concrete class up through
+                        // Check if any class from the concrete class through
                         // the MRO (before this ancestor) provides a concrete override
-                        let overridden = cd.namespace.read().get(name.as_str())
+                        let overridden_in_own = cd.namespace.read().get(name.as_str())
                             .map(|v| !is_abstract_marker(v))
                             .unwrap_or(false);
-                        if !overridden && !abstract_names.contains(&name.to_string()) {
+                        let overridden_in_mro = cd.mro.iter().any(|m| {
+                            if std::sync::Arc::ptr_eq(m, ancestor) { return false; }
+                            if let PyObjectPayload::Class(mcd) = &m.payload {
+                                mcd.namespace.read().get(name.as_str())
+                                    .map(|v| !is_abstract_marker(v))
+                                    .unwrap_or(false)
+                            } else { false }
+                        });
+                        if !overridden_in_own && !overridden_in_mro && !abstract_names.contains(&name.to_string()) {
                             abstract_names.push(name.to_string());
                         }
                     }

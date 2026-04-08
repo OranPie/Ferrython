@@ -293,8 +293,18 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 let count = n.to_i64().unwrap_or(0).max(0) as usize;
                 Ok(PyObject::str_val(CompactString::from(s.repeat(count))))
             }
+            (PyObjectPayload::Str(s), PyObjectPayload::Bool(b)) | (PyObjectPayload::Bool(b), PyObjectPayload::Str(s)) => {
+                Ok(PyObject::str_val(CompactString::from(s.repeat(*b as usize))))
+            }
             (PyObjectPayload::List(items), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::List(items)) => {
                 let count = n.to_i64().unwrap_or(0).max(0) as usize;
+                let read = items.read();
+                let mut result = Vec::with_capacity(read.len() * count);
+                for _ in 0..count { result.extend(read.iter().cloned()); }
+                Ok(PyObject::list(result))
+            }
+            (PyObjectPayload::List(items), PyObjectPayload::Bool(b)) | (PyObjectPayload::Bool(b), PyObjectPayload::List(items)) => {
+                let count = *b as usize;
                 let read = items.read();
                 let mut result = Vec::with_capacity(read.len() * count);
                 for _ in 0..count { result.extend(read.iter().cloned()); }
@@ -306,10 +316,22 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 for _ in 0..count { result.extend(items.iter().cloned()); }
                 Ok(PyObject::tuple(result))
             }
+            (PyObjectPayload::Tuple(items), PyObjectPayload::Bool(b)) | (PyObjectPayload::Bool(b), PyObjectPayload::Tuple(items)) => {
+                let count = *b as usize;
+                let mut result = Vec::with_capacity(items.len() * count);
+                for _ in 0..count { result.extend(items.iter().cloned()); }
+                Ok(PyObject::tuple(result))
+            }
             (PyObjectPayload::Bytes(b), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::Bytes(b)) => {
                 let count = n.to_i64().unwrap_or(0).max(0) as usize;
                 let mut result = Vec::with_capacity(b.len() * count);
                 for _ in 0..count { result.extend(b); }
+                Ok(PyObject::bytes(result))
+            }
+            (PyObjectPayload::Bytes(bytes), PyObjectPayload::Bool(bl)) | (PyObjectPayload::Bool(bl), PyObjectPayload::Bytes(bytes)) => {
+                let count = *bl as usize;
+                let mut result = Vec::with_capacity(bytes.len() * count);
+                for _ in 0..count { result.extend(bytes); }
                 Ok(PyObject::bytes(result))
             }
             (PyObjectPayload::ByteArray(b), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::ByteArray(b)) => {

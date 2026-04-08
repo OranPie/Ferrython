@@ -203,6 +203,10 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "xml" => Some(xml_modules::create_xml_module()),
         "xml.etree" => Some(xml_modules::create_xml_etree_module()),
         "xml.etree.ElementTree" => Some(xml_modules::create_xml_etree_elementtree_module()),
+        "xml.parsers" => Some(xml_modules::create_xml_parsers_module()),
+        "xml.parsers.expat" => Some(xml_modules::create_xml_parsers_expat_module()),
+        "xml.sax" => Some(xml_modules::create_xml_sax_module()),
+        "xml.sax.handler" => Some(xml_modules::create_xml_sax_handler_module()),
         // Database
         "sqlite3" => Some(db_modules::create_sqlite3_module()),
         // Email

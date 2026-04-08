@@ -243,7 +243,7 @@ pub fn resolve_module(name: &str, importer_filename: &str) -> PyResult<ResolvedM
         }
     }
 
-    Err(PyException::import_error(format!("No module named '{}'", name)))
+    Err(PyException::module_not_found_error(format!("No module named '{}'", name)))
 }
 
 /// Resolve a relative import (leading dots).
