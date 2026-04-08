@@ -803,9 +803,38 @@ impl VirtualMachine {
                     let frame = self.vm_frame();
                     let name = frame.code.names[instr.arg as usize].clone();
                     let module = frame.peek().clone();
-                    let mod_name = module.get_attr("__name__")
+                    // Prefer __name__, but fall back to __package__ for relative imports
+                    let raw_name = module.get_attr("__name__")
                         .map(|n| n.py_to_string())
                         .unwrap_or_default();
+                    let mod_name = if raw_name == "<package>" || raw_name.is_empty() {
+                        // Use __package__ or derive from __file__
+                        module.get_attr("__package__")
+                            .map(|p| p.py_to_string())
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| {
+                                module.get_attr("__file__").map(|f| {
+                                    let fp = f.py_to_string();
+                                    let path = std::path::Path::new(&fp);
+                                    let is_init = path.file_name().map(|f| f == "__init__.py").unwrap_or(false);
+                                    if is_init {
+                                        path.parent()
+                                            .and_then(|p| p.file_name())
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("")
+                                            .to_string()
+                                    } else {
+                                        path.file_stem()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("")
+                                            .to_string()
+                                    }
+                                })
+                            })
+                            .unwrap_or(raw_name)
+                    } else {
+                        raw_name
+                    };
                     let mod_file = module.get_attr("__file__")
                         .map(|f| f.py_to_string())
                         .unwrap_or_else(|| "unknown location".to_string());
@@ -818,7 +847,20 @@ impl VirtualMachine {
                         // CPython fallback: try importing package.submodule
                         if !mod_name.is_empty() {
                             let submod_name = format!("{}.{}", mod_name, name);
-                            match self.import_module_dotted(&submod_name, 0, true, &filename) {
+                            // Use the correct search root: for packages (__init__.py),
+                            // the importer must be the parent of the package directory
+                            // so "urllib3/exceptions" resolves relative to site-packages/
+                            let search_file = if mod_file.ends_with("__init__.py") {
+                                // Go up two levels: __init__.py -> pkg_dir -> parent
+                                let p = std::path::Path::new(&mod_file);
+                                p.parent()
+                                    .and_then(|pkg| pkg.parent())
+                                    .map(|root| root.join("__importer__").to_string_lossy().to_string())
+                                    .unwrap_or_else(|| filename.to_string())
+                            } else {
+                                filename.to_string()
+                            };
+                            match self.import_module_dotted(&submod_name, 0, true, &search_file) {
                                 Ok(submod) => {
                                     match &module.payload {
                                         PyObjectPayload::Module(md) => {
@@ -831,7 +873,7 @@ impl VirtualMachine {
                                     }
                                     self.vm_frame().push(submod);
                                 }
-                                Err(_) => {
+                                Err(_e) => {
                                     return Err(PyException::import_error(format!(
                                         "cannot import name '{}' from '{}' ({})",
                                         name, mod_name, mod_file

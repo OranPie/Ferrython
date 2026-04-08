@@ -275,11 +275,21 @@ pub fn create_re_module() -> PyObjectRef {
 
 fn convert_python_regex(pattern: &str) -> String {
     // Convert Python regex syntax to Rust regex syntax
-    // Most are compatible, but a few need translation
-    let result = pattern.to_string();
-    // Python uses (?P<name>) for named groups, Rust regex uses (?P<name>) too — compatible!
-    // Python uses \d, \w, \s etc — compatible
-    // Python uses (?:...) for non-capturing groups — compatible
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut result = String::with_capacity(pattern.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            match chars[i + 1] {
+                'Z' => { result.push_str("\\z"); i += 2; }
+                'a' => { result.push('\x07'); i += 2; } // Python \a = bell (BEL)
+                _ => { result.push(chars[i]); result.push(chars[i + 1]); i += 2; }
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
     result
 }
 
@@ -3707,5 +3717,74 @@ pub fn create_encodings_module() -> PyObjectRef {
         ("utf_8", make_builtin(|_| Ok(PyObject::none()))),
         ("ascii", make_builtin(|_| Ok(PyObject::none()))),
         ("latin_1", make_builtin(|_| Ok(PyObject::none()))),
+    ])
+}
+
+pub fn create_encodings_aliases_module() -> PyObjectRef {
+    let mut aliases = IndexMap::new();
+    let alias_pairs = [
+        ("646", "ascii"), ("ansi_x3.4_1968", "ascii"), ("ansi_x3_4_1968", "ascii"),
+        ("ascii", "ascii"), ("cp367", "ascii"), ("csascii", "ascii"), ("ibm367", "ascii"),
+        ("iso646_us", "ascii"), ("iso_646.irv_1991", "ascii"), ("iso_ir_6", "ascii"), ("us", "ascii"), ("us_ascii", "ascii"),
+        ("utf_8", "utf_8"), ("utf8", "utf_8"), ("utf", "utf_8"), ("cp65001", "utf_8"),
+        ("utf_8_sig", "utf_8_sig"),
+        ("latin_1", "iso8859_1"), ("latin1", "iso8859_1"), ("iso_8859_1", "iso8859_1"),
+        ("iso8859_1", "iso8859_1"), ("8859", "iso8859_1"), ("cp819", "iso8859_1"),
+        ("iso_8859_1_1987", "iso8859_1"), ("l1", "iso8859_1"),
+        ("utf_16", "utf_16"), ("utf16", "utf_16"),
+        ("utf_16_le", "utf_16_le"), ("utf_16_be", "utf_16_be"),
+        ("utf_32", "utf_32"), ("utf_32_le", "utf_32_le"), ("utf_32_be", "utf_32_be"),
+        ("cp1252", "cp1252"), ("windows_1252", "cp1252"),
+        ("cp437", "cp437"), ("ibm437", "cp437"),
+        ("shift_jis", "shift_jis"), ("shiftjis", "shift_jis"), ("csshiftjis", "shift_jis"),
+        ("euc_jp", "euc_jp"), ("eucjp", "euc_jp"),
+        ("euc_kr", "euc_kr"), ("euckr", "euc_kr"),
+        ("gb2312", "gb2312"), ("gbk", "gbk"), ("gb18030", "gb18030"),
+        ("big5", "big5"), ("big5hkscs", "big5hkscs"),
+        ("cp949", "cp949"), ("uhc", "cp949"),
+        ("iso8859_2", "iso8859_2"), ("latin2", "iso8859_2"), ("l2", "iso8859_2"),
+        ("iso8859_15", "iso8859_15"), ("latin9", "iso8859_15"),
+        ("koi8_r", "koi8_r"), ("koi8_u", "koi8_u"),
+        ("mac_roman", "mac_roman"), ("macintosh", "mac_roman"),
+        ("idna", "idna"),
+    ];
+    for (alias, codec) in &alias_pairs {
+        aliases.insert(
+            HashableKey::Str(CompactString::from(*alias)),
+            PyObject::str_val(CompactString::from(*codec)),
+        );
+    }
+    make_module("encodings.aliases", vec![
+        ("aliases", PyObject::dict(aliases)),
+    ])
+}
+
+pub fn create_encodings_idna_module() -> PyObjectRef {
+    make_module("encodings.idna", vec![
+        ("name", PyObject::str_val(CompactString::from("idna"))),
+        ("encode", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("encode() requires input")); }
+            let s = args[0].py_to_string();
+            // Simple IDNA encoding: just lowercase ASCII
+            let encoded = s.to_ascii_lowercase();
+            Ok(PyObject::tuple(vec![
+                PyObject::bytes(encoded.into_bytes()),
+                PyObject::int(s.len() as i64),
+            ]))
+        })),
+        ("decode", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("decode() requires input")); }
+            let s = args[0].py_to_string();
+            Ok(PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from(&s)),
+                PyObject::int(s.len() as i64),
+            ]))
+        })),
+        ("IncrementalEncoder", make_builtin(|_args: &[PyObjectRef]| {
+            Ok(PyObject::none())
+        })),
+        ("IncrementalDecoder", make_builtin(|_args: &[PyObjectRef]| {
+            Ok(PyObject::none())
+        })),
     ])
 }

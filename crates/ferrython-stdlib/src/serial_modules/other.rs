@@ -1,5 +1,5 @@
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min,
@@ -2386,6 +2386,85 @@ fn resolve_encoding(norm: &str) -> &str {
 
 // ── codecs module ──────────────────────────────────────────────────
 pub fn create_codecs_module() -> PyObjectRef {
+    // IncrementalDecoder base class
+    let inc_decoder_cls = {
+        let cls = PyObject::class(CompactString::from("IncrementalDecoder"), vec![], IndexMap::new());
+        if let PyObjectPayload::Class(ref cd) = cls.payload {
+            cd.namespace.write().insert(
+                CompactString::from("__init__"),
+                make_builtin(|args: &[PyObjectRef]| {
+                    if args.is_empty() { return Err(PyException::type_error("IncrementalDecoder.__init__ requires self")); }
+                    let encoding = if args.len() > 1 { args[1].py_to_string() } else { "strict".to_string() };
+                    if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                        inst.attrs.write().insert(CompactString::from("errors"), PyObject::str_val(CompactString::from(encoding)));
+                    }
+                    Ok(PyObject::none())
+                }),
+            );
+            cd.namespace.write().insert(
+                CompactString::from("decode"),
+                make_builtin(|_args: &[PyObjectRef]| {
+                    Err(PyException::not_implemented_error("IncrementalDecoder.decode() is abstract"))
+                }),
+            );
+            cd.namespace.write().insert(
+                CompactString::from("reset"),
+                make_builtin(|_args: &[PyObjectRef]| { Ok(PyObject::none()) }),
+            );
+            cd.namespace.write().insert(
+                CompactString::from("getstate"),
+                make_builtin(|_args: &[PyObjectRef]| { Ok(PyObject::tuple(vec![PyObject::bytes(vec![]), PyObject::int(0)])) }),
+            );
+            cd.namespace.write().insert(
+                CompactString::from("setstate"),
+                make_builtin(|_args: &[PyObjectRef]| { Ok(PyObject::none()) }),
+            );
+        }
+        cls
+    };
+
+    // IncrementalEncoder base class
+    let inc_encoder_cls = {
+        let cls = PyObject::class(CompactString::from("IncrementalEncoder"), vec![], IndexMap::new());
+        if let PyObjectPayload::Class(ref cd) = cls.payload {
+            cd.namespace.write().insert(
+                CompactString::from("__init__"),
+                make_builtin(|args: &[PyObjectRef]| {
+                    if args.is_empty() { return Err(PyException::type_error("IncrementalEncoder.__init__ requires self")); }
+                    let errors = if args.len() > 1 { args[1].py_to_string() } else { "strict".to_string() };
+                    if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                        inst.attrs.write().insert(CompactString::from("errors"), PyObject::str_val(CompactString::from(errors)));
+                    }
+                    Ok(PyObject::none())
+                }),
+            );
+            cd.namespace.write().insert(
+                CompactString::from("encode"),
+                make_builtin(|_args: &[PyObjectRef]| {
+                    Err(PyException::not_implemented_error("IncrementalEncoder.encode() is abstract"))
+                }),
+            );
+            cd.namespace.write().insert(
+                CompactString::from("reset"),
+                make_builtin(|_args: &[PyObjectRef]| { Ok(PyObject::none()) }),
+            );
+            cd.namespace.write().insert(
+                CompactString::from("getstate"),
+                make_builtin(|_args: &[PyObjectRef]| { Ok(PyObject::int(0)) }),
+            );
+            cd.namespace.write().insert(
+                CompactString::from("setstate"),
+                make_builtin(|_args: &[PyObjectRef]| { Ok(PyObject::none()) }),
+            );
+        }
+        cls
+    };
+
+    // StreamReader / StreamWriter / CodecInfo base classes (stubs)
+    let stream_reader_cls = PyObject::class(CompactString::from("StreamReader"), vec![], IndexMap::new());
+    let stream_writer_cls = PyObject::class(CompactString::from("StreamWriter"), vec![], IndexMap::new());
+    let codec_info_cls = PyObject::class(CompactString::from("CodecInfo"), vec![], IndexMap::new());
+
     make_module("codecs", vec![
         ("encode", make_builtin(codecs_encode)),
         ("decode", make_builtin(codecs_decode)),
@@ -2394,6 +2473,30 @@ pub fn create_codecs_module() -> PyObjectRef {
         ("getdecoder", make_builtin(codecs_getdecoder)),
         ("utf_8_encode", make_builtin(codecs_utf8_encode)),
         ("utf_8_decode", make_builtin(codecs_utf8_decode)),
+        ("IncrementalDecoder", inc_decoder_cls),
+        ("IncrementalEncoder", inc_encoder_cls),
+        ("StreamReader", stream_reader_cls),
+        ("StreamWriter", stream_writer_cls),
+        ("CodecInfo", codec_info_cls),
+        ("register", make_builtin(|_args: &[PyObjectRef]| { Ok(PyObject::none()) })),
+        ("register_error", make_builtin(|_args: &[PyObjectRef]| { Ok(PyObject::none()) })),
+        ("lookup_error", make_builtin(|args: &[PyObjectRef]| {
+            check_args("codecs.lookup_error", args, 1)?;
+            Err(PyException::new(ExceptionKind::LookupError, format!("unknown error handler name '{}'", args[0].py_to_string())))
+        })),
+        ("open", make_builtin(|args: &[PyObjectRef]| {
+            check_args_min("codecs.open", args, 1)?;
+            // Simplified: just delegate to builtins open
+            Err(PyException::not_implemented_error("codecs.open not yet implemented"))
+        })),
+        ("BOM", PyObject::bytes(vec![0xFF, 0xFE])),
+        ("BOM_UTF8", PyObject::bytes(vec![0xEF, 0xBB, 0xBF])),
+        ("BOM_UTF16", PyObject::bytes(vec![0xFF, 0xFE])),
+        ("BOM_UTF16_LE", PyObject::bytes(vec![0xFF, 0xFE])),
+        ("BOM_UTF16_BE", PyObject::bytes(vec![0xFE, 0xFF])),
+        ("BOM_UTF32", PyObject::bytes(vec![0xFF, 0xFE, 0x00, 0x00])),
+        ("BOM_UTF32_LE", PyObject::bytes(vec![0xFF, 0xFE, 0x00, 0x00])),
+        ("BOM_UTF32_BE", PyObject::bytes(vec![0x00, 0x00, 0xFE, 0xFF])),
     ])
 }
 

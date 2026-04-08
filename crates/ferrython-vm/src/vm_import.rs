@@ -73,20 +73,84 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         self.ensure_sys_modules();
 
+        // Handle `from . import X` (empty name with relative level)
+        if name.is_empty() && level > 0 {
+            let pkg_name = self.resolve_package_name(importer_file, level);
+            if !pkg_name.is_empty() {
+                // Return cached parent package module if available
+                if let Some(module) = self.modules.get(pkg_name.as_str()) {
+                    return Ok(module.clone());
+                }
+                // Otherwise resolve it
+                return self.resolve_single_module_with_filename(
+                    &pkg_name, 0, importer_file,
+                );
+            }
+            // Fall through to the relative import resolver
+            return self.resolve_single_module_with_filename("", level, importer_file);
+        }
+
         let parts: Vec<&str> = name.split('.').collect();
         let mut current_name = String::new();
         let mut parent: Option<PyObjectRef> = None;
         let mut top_level: Option<PyObjectRef> = None;
 
+        // For relative imports (level > 0), compute the fully-qualified base package name.
+        // E.g., `from .util import X` in urllib3/__init__.py → base_pkg = "urllib3",
+        // so "util" becomes "urllib3.util" for caching/naming.
+        let fq_prefix = if level > 0 {
+            let pkg = self.resolve_package_name(importer_file, level);
+            if pkg.is_empty() { String::new() } else { format!("{}.", pkg) }
+        } else {
+            String::new()
+        };
+
         for (i, part) in parts.iter().enumerate() {
             if i > 0 { current_name.push('.'); }
             current_name.push_str(part);
 
-            let module = self.resolve_single_module_with_filename(
-                &current_name,
-                if level > 0 && i == 0 { level } else { 0 },
-                importer_file,
-            )?;
+            // Build fully-qualified cache name for relative imports
+            let fq_name = if !fq_prefix.is_empty() {
+                format!("{}{}", fq_prefix, current_name)
+            } else {
+                current_name.clone()
+            };
+
+            // Check cache with fully-qualified name first
+            let module = if let Some(cached) = self.modules.get(fq_name.as_str()) {
+                cached.clone()
+            } else if fq_prefix.is_empty() {
+                // Absolute import: use standard resolution (includes cache)
+                if let Some(cached) = self.modules.get(current_name.as_str()) {
+                    cached.clone()
+                } else {
+                    self.resolve_single_module_with_filename(
+                        &current_name,
+                        if level > 0 && i == 0 { level } else { 0 },
+                        importer_file,
+                    )?
+                }
+            } else {
+                // Relative import: bypass bare-name cache, resolve from filesystem
+                let the_level = if i == 0 { level } else { 0 };
+                let resolved_mod = if the_level > 0 {
+                    ferrython_import::resolve_relative_import(&current_name, importer_file, the_level)?
+                } else {
+                    // For i > 0 in a dotted relative import, resolve relative
+                    // to the same base directory
+                    ferrython_import::resolve_relative_import(&current_name, importer_file, 1)?
+                };
+                let module = match resolved_mod {
+                    ferrython_import::ResolvedModule::Builtin(m) => {
+                        self.cache_module(&fq_name, &m);
+                        m
+                    }
+                    ferrython_import::ResolvedModule::Source { code, name: mod_name, file_path } => {
+                        self.exec_module_source(&fq_name, code, CompactString::from(fq_name.as_str()), file_path)?
+                    }
+                };
+                module
+            };
 
             // Attach submodule to parent (e.g., os.path on os)
             if let Some(ref p) = parent {
@@ -207,12 +271,20 @@ impl VirtualMachine {
             if let Some(ref fp) = file_path {
                 g.insert(CompactString::from("__file__"), PyObject::str_val(fp.clone()));
             }
-            let pkg = if let Some(pos) = cache_name.rfind('.') {
+            // __package__: for __init__.py, it's the module name itself;
+            // for regular modules (foo.bar), it's the parent package (foo).
+            let is_init = file_path.as_ref()
+                .map(|fp| fp.ends_with("__init__.py"))
+                .unwrap_or(false);
+            let pkg = if is_init {
+                cache_name
+            } else if let Some(pos) = cache_name.rfind('.') {
                 &cache_name[..pos]
             } else {
                 ""
             };
             g.insert(CompactString::from("__package__"), PyObject::str_val(CompactString::from(pkg)));
+            g.insert(CompactString::from("__doc__"), PyObject::none());
         }
 
         // Circular import protection: insert partial module before executing
@@ -249,6 +321,47 @@ impl VirtualMachine {
         self.call_stack.last()
             .map(|f| f.code.filename.as_str().to_string())
             .unwrap_or_default()
+    }
+
+    /// Determine the package name from a file path and relative import level.
+    /// E.g., for `/path/to/site-packages/urllib3/__init__.py` with level=1,
+    /// returns "urllib3". For `/path/to/pkg/sub.py` with level=1, returns "pkg".
+    fn resolve_package_name(&self, importer_file: &str, level: usize) -> String {
+        // First try __package__ from the current frame's globals
+        if let Some(frame) = self.call_stack.last() {
+            if let Some(pkg) = frame.globals.read().get("__package__") {
+                let pkg_str = pkg.py_to_string();
+                if !pkg_str.is_empty() {
+                    // For level > 1, go up extra levels
+                    if level <= 1 {
+                        return pkg_str;
+                    }
+                    let parts: Vec<&str> = pkg_str.split('.').collect();
+                    if parts.len() >= level {
+                        return parts[..parts.len() - (level - 1)].join(".");
+                    }
+                    return pkg_str;
+                }
+            }
+        }
+        // Fallback: derive from file path
+        let path = std::path::Path::new(importer_file);
+        let is_init = path.file_name().map(|f| f == "__init__.py").unwrap_or(false);
+        let mut base = if is_init {
+            path.parent().unwrap_or(path)
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        // Go up extra levels for level > 1
+        for _ in 1..level {
+            base = base.parent().unwrap_or(base);
+        }
+        // Try to find the package name from the cached modules
+        let dir_name = base.file_name().map(|f| f.to_str().unwrap_or("")).unwrap_or("");
+        if self.modules.contains_key(dir_name) {
+            return dir_name.to_string();
+        }
+        dir_name.to_string()
     }
 
     // ── Module cache management ─────────────────────────────────────────

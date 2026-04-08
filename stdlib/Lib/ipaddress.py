@@ -352,3 +352,130 @@ def ip_interface(address):
     if isinstance(address, str) and ':' in address:
         raise NotImplementedError("IPv6 not yet supported")
     return IPv4Interface(address)
+
+
+# ── IPv6 stub classes ───────────────────────────────────────────────
+
+class IPv6Address:
+    """Stub IPv6 address representation."""
+    def __init__(self, address):
+        if isinstance(address, int):
+            if address < 0 or address > 2**128 - 1:
+                raise AddressValueError(f"{address} is not a valid IPv6 address")
+            self._ip = address
+            self._string = self._int_to_str(address)
+        elif isinstance(address, str):
+            self._string = address.strip()
+            self._ip = self._str_to_int(self._string)
+        else:
+            raise TypeError(f"invalid address type: {type(address)}")
+
+    @staticmethod
+    def _str_to_int(s):
+        # Minimal IPv6 parsing: full form and :: shorthand
+        if '::' in s:
+            left, right = s.split('::', 1)
+            left_parts = left.split(':') if left else []
+            right_parts = right.split(':') if right else []
+            missing = 8 - len(left_parts) - len(right_parts)
+            parts = left_parts + ['0'] * missing + right_parts
+        else:
+            parts = s.split(':')
+        if len(parts) != 8:
+            raise AddressValueError(f"invalid IPv6 address: {s}")
+        result = 0
+        for part in parts:
+            result = (result << 16) | int(part, 16)
+        return result
+
+    @staticmethod
+    def _int_to_str(n):
+        parts = []
+        for _ in range(8):
+            parts.append(format(n & 0xffff, 'x'))
+            n >>= 16
+        return ':'.join(reversed(parts))
+
+    @property
+    def packed(self):
+        return self._ip.to_bytes(16, 'big')
+
+    @property
+    def version(self):
+        return 6
+
+    @property
+    def max_prefixlen(self):
+        return 128
+
+    @property
+    def is_loopback(self):
+        return self._ip == 1
+
+    @property
+    def is_link_local(self):
+        return (self._ip >> 118) == 0x3fa  # fe80::/10
+
+    @property
+    def is_multicast(self):
+        return (self._ip >> 120) == 0xff
+
+    def __str__(self):
+        return self._string
+
+    def __repr__(self):
+        return f"IPv6Address('{self._string}')"
+
+    def __eq__(self, other):
+        if isinstance(other, IPv6Address):
+            return self._ip == other._ip
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self._ip)
+
+    def __int__(self):
+        return self._ip
+
+
+class IPv6Network:
+    """Stub IPv6 network representation."""
+    def __init__(self, address, strict=True):
+        if isinstance(address, str):
+            if '/' in address:
+                addr_str, prefix = address.split('/', 1)
+                self.network_address = IPv6Address(addr_str)
+                self.prefixlen = int(prefix)
+            else:
+                self.network_address = IPv6Address(address)
+                self.prefixlen = 128
+        else:
+            raise TypeError(f"invalid network type: {type(address)}")
+
+    def __str__(self):
+        return f"{self.network_address}/{self.prefixlen}"
+
+    def __repr__(self):
+        return f"IPv6Network('{self}')"
+
+
+class IPv6Interface(IPv6Address):
+    """Stub IPv6 interface representation."""
+    def __init__(self, address):
+        if isinstance(address, str) and '/' in address:
+            addr_str, prefix = address.split('/', 1)
+            super().__init__(addr_str)
+            self._prefixlen = int(prefix)
+        else:
+            super().__init__(address)
+            self._prefixlen = 128
+
+    @property
+    def network(self):
+        return IPv6Network(f"{self._string}/{self._prefixlen}")
+
+    def __str__(self):
+        return f"{self._string}/{self._prefixlen}"
+
+    def __repr__(self):
+        return f"IPv6Interface('{self}')"

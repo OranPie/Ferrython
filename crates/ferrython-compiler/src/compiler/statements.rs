@@ -64,8 +64,14 @@ impl Compiler {
                 }
                 // Store annotation in __annotations__ dict: __annotations__[name] = annotation
                 if let ExpressionKind::Name { id: name, .. } = &target.node {
-                    // Stack needs: value(annotation), obj(__annotations__), key(name_str)
-                    self.compile_expression(annotation)?;  // push annotation value
+                    if self.future_annotations {
+                        // PEP 563: store annotation as string constant
+                        let ann_str = Self::annotation_to_string(annotation);
+                        let idx = self.add_const(ConstantValue::Str(CompactString::from(ann_str)));
+                        self.emit_arg(Opcode::LoadConst, idx);
+                    } else {
+                        self.compile_expression(annotation)?;
+                    }
                     self.load_name("__annotations__");      // push __annotations__ dict
                     let name_idx = self.add_const(ConstantValue::Str(CompactString::from(name.as_str())));
                     self.emit_arg(Opcode::LoadConst, name_idx);  // push key
@@ -500,14 +506,26 @@ impl Compiler {
             if let Some(ref annotation) = arg.annotation {
                 let key_idx = self.add_const(ConstantValue::Str(arg.arg.clone()));
                 self.emit_arg(Opcode::LoadConst, key_idx);
-                self.compile_expression(annotation)?;
+                if self.future_annotations {
+                    let ann_str = Self::annotation_to_string(annotation);
+                    let idx = self.add_const(ConstantValue::Str(CompactString::from(ann_str)));
+                    self.emit_arg(Opcode::LoadConst, idx);
+                } else {
+                    self.compile_expression(annotation)?;
+                }
                 ann_count += 1;
             }
         }
         if let Some(ret) = returns {
             let key_idx = self.add_const(ConstantValue::Str("return".into()));
             self.emit_arg(Opcode::LoadConst, key_idx);
-            self.compile_expression(ret)?;
+            if self.future_annotations {
+                let ann_str = Self::annotation_to_string(ret);
+                let idx = self.add_const(ConstantValue::Str(CompactString::from(ann_str)));
+                self.emit_arg(Opcode::LoadConst, idx);
+            } else {
+                self.compile_expression(ret)?;
+            }
             ann_count += 1;
         }
         let has_annotations = ann_count > 0;
@@ -1766,6 +1784,91 @@ impl Compiler {
             | Pattern::MatchValue { .. } | Pattern::MatchStar { .. } => {}
         }
         Ok(())
+    }
+
+    /// Convert an annotation expression AST to its source-code string representation.
+    /// Used by PEP 563 (`from __future__ import annotations`) to store annotations as strings.
+    pub(super) fn annotation_to_string(expr: &Expression) -> String {
+        match &expr.node {
+            ExpressionKind::Name { id, .. } => id.to_string(),
+            ExpressionKind::Attribute { value, attr, .. } => {
+                format!("{}.{}", Self::annotation_to_string(value), attr)
+            }
+            ExpressionKind::Subscript { value, slice, .. } => {
+                format!("{}[{}]", Self::annotation_to_string(value), Self::annotation_to_string(slice))
+            }
+            ExpressionKind::Tuple { elts, .. } => {
+                let parts: Vec<String> = elts.iter().map(Self::annotation_to_string).collect();
+                parts.join(", ")
+            }
+            ExpressionKind::List { elts, .. } => {
+                let parts: Vec<String> = elts.iter().map(Self::annotation_to_string).collect();
+                format!("[{}]", parts.join(", "))
+            }
+            ExpressionKind::Constant { value } => match value {
+                Constant::Str(s) => format!("'{}'", s),
+                Constant::Int(n) => match n {
+                    BigInt::Small(v) => v.to_string(),
+                    BigInt::Big(v) => v.to_string(),
+                },
+                Constant::Float(f) => f.to_string(),
+                Constant::Complex { real, imag } => format!("{}+{}j", real, imag),
+                Constant::None => "None".to_string(),
+                Constant::Bool(true) => "True".to_string(),
+                Constant::Bool(false) => "False".to_string(),
+                Constant::Ellipsis => "...".to_string(),
+                Constant::Bytes(_) => "b'...'".to_string(),
+            },
+            ExpressionKind::BinOp { left, op, right } => {
+                let op_str = match op {
+                    Operator::BitOr => "|",
+                    Operator::Add => "+",
+                    Operator::Sub => "-",
+                    Operator::Mult => "*",
+                    Operator::Div => "/",
+                    _ => "|",
+                };
+                format!("{} {} {}", Self::annotation_to_string(left), op_str, Self::annotation_to_string(right))
+            }
+            ExpressionKind::Call { func, args, keywords } => {
+                let mut parts: Vec<String> = args.iter().map(Self::annotation_to_string).collect();
+                for kw in keywords {
+                    if let Some(ref key) = kw.arg {
+                        parts.push(format!("{}={}", key, Self::annotation_to_string(&kw.value)));
+                    } else {
+                        parts.push(format!("**{}", Self::annotation_to_string(&kw.value)));
+                    }
+                }
+                format!("{}({})", Self::annotation_to_string(func), parts.join(", "))
+            }
+            ExpressionKind::UnaryOp { op, operand } => {
+                let op_str = match op {
+                    UnaryOperator::Not => "not ",
+                    UnaryOperator::USub => "-",
+                    UnaryOperator::UAdd => "+",
+                    UnaryOperator::Invert => "~",
+                };
+                format!("{}{}", op_str, Self::annotation_to_string(operand))
+            }
+            ExpressionKind::BoolOp { op, values } => {
+                let op_str = match op {
+                    BoolOperator::And => " and ",
+                    BoolOperator::Or => " or ",
+                };
+                let parts: Vec<String> = values.iter().map(Self::annotation_to_string).collect();
+                parts.join(op_str)
+            }
+            ExpressionKind::IfExp { test, body, orelse } => {
+                format!("{} if {} else {}",
+                    Self::annotation_to_string(body),
+                    Self::annotation_to_string(test),
+                    Self::annotation_to_string(orelse))
+            }
+            ExpressionKind::Starred { value, .. } => {
+                format!("*{}", Self::annotation_to_string(value))
+            }
+            _ => "...".to_string(),  // Fallback for unsupported expression types
+        }
     }
 
 }

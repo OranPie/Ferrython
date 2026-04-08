@@ -758,6 +758,13 @@ pub fn create_os_module() -> PyObjectRef {
         ("cpu_count", make_builtin(os_cpu_count)),
         ("getpid", make_builtin(os_getpid)),
         ("fspath", PyObject::native_function("os.fspath", os_fspath)),
+        ("PathLike", PyObject::class(CompactString::from("PathLike"), vec![], {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("__fspath__"), make_builtin(|_args: &[PyObjectRef]| {
+                Err(PyException::not_implemented_error("PathLike.__fspath__() is abstract"))
+            }));
+            ns
+        })),
         ("walk", make_builtin(os_walk)),
         ("stat", make_builtin(os_stat)),
         ("chmod", make_builtin(os_chmod)),
@@ -2355,6 +2362,25 @@ pub fn create_errno_module() -> PyObjectRef {
         ("ENOTEMPTY", PyObject::int(39)),
         ("ECONNREFUSED", PyObject::int(111)),
         ("ETIMEDOUT", PyObject::int(110)),
+        ("EWOULDBLOCK", PyObject::int(11)),
+        ("EINPROGRESS", PyObject::int(115)),
+        ("EALREADY", PyObject::int(114)),
+        ("ECONNRESET", PyObject::int(104)),
+        ("ECONNABORTED", PyObject::int(103)),
+        ("ENETUNREACH", PyObject::int(101)),
+        ("EHOSTUNREACH", PyObject::int(113)),
+        ("ENOTCONN", PyObject::int(107)),
+        ("EADDRINUSE", PyObject::int(98)),
+        ("EADDRNOTAVAIL", PyObject::int(99)),
+        ("EISCONN", PyObject::int(106)),
+        ("EPFNOSUPPORT", PyObject::int(96)),
+        ("EAFNOSUPPORT", PyObject::int(97)),
+        ("ENOBUFS", PyObject::int(105)),
+        ("EPROTONOSUPPORT", PyObject::int(93)),
+        ("ESHUTDOWN", PyObject::int(108)),
+        ("EMSGSIZE", PyObject::int(90)),
+        ("ENOTSOCK", PyObject::int(88)),
+        ("EDESTADDRREQ", PyObject::int(89)),
         ("errorcode", make_builtin(|_| {
             let mut map = IndexMap::new();
             let codes: Vec<(i64, &str)> = vec![

@@ -825,10 +825,42 @@ pub fn create_email_utils_module() -> PyObjectRef {
 
 // ── email top-level package ────────────────────────────────────────────
 
+pub fn create_email_errors_module() -> PyObjectRef {
+    make_module("email.errors", vec![
+        ("MessageError", PyObject::builtin_type(CompactString::from("MessageError"))),
+        ("MessageDefect", PyObject::builtin_type(CompactString::from("MessageDefect"))),
+        ("MessageParseError", PyObject::builtin_type(CompactString::from("MessageParseError"))),
+        ("HeaderParseError", PyObject::builtin_type(CompactString::from("HeaderParseError"))),
+        ("BoundaryError", PyObject::builtin_type(CompactString::from("BoundaryError"))),
+        ("MultipartConversionError", PyObject::builtin_type(CompactString::from("MultipartConversionError"))),
+        ("CharsetError", PyObject::builtin_type(CompactString::from("CharsetError"))),
+        // Defect subclasses
+        ("NoBoundaryInMultipartDefect", PyObject::builtin_type(CompactString::from("NoBoundaryInMultipartDefect"))),
+        ("StartBoundaryNotFoundDefect", PyObject::builtin_type(CompactString::from("StartBoundaryNotFoundDefect"))),
+        ("CloseBoundaryNotFoundDefect", PyObject::builtin_type(CompactString::from("CloseBoundaryNotFoundDefect"))),
+        ("FirstHeaderLineIsContinuationDefect", PyObject::builtin_type(CompactString::from("FirstHeaderLineIsContinuationDefect"))),
+        ("MisplacedEnvelopeHeaderDefect", PyObject::builtin_type(CompactString::from("MisplacedEnvelopeHeaderDefect"))),
+        ("MissingHeaderBodySeparatorDefect", PyObject::builtin_type(CompactString::from("MissingHeaderBodySeparatorDefect"))),
+        ("MultipartInvariantViolationDefect", PyObject::builtin_type(CompactString::from("MultipartInvariantViolationDefect"))),
+        ("InvalidMultipartContentTransferEncodingDefect", PyObject::builtin_type(CompactString::from("InvalidMultipartContentTransferEncodingDefect"))),
+        ("UndecodableBytesDefect", PyObject::builtin_type(CompactString::from("UndecodableBytesDefect"))),
+        ("InvalidBase64PaddingDefect", PyObject::builtin_type(CompactString::from("InvalidBase64PaddingDefect"))),
+        ("InvalidBase64CharactersDefect", PyObject::builtin_type(CompactString::from("InvalidBase64CharactersDefect"))),
+        ("InvalidBase64LengthDefect", PyObject::builtin_type(CompactString::from("InvalidBase64LengthDefect"))),
+        ("HeaderDefect", PyObject::builtin_type(CompactString::from("HeaderDefect"))),
+        ("InvalidHeaderDefect", PyObject::builtin_type(CompactString::from("InvalidHeaderDefect"))),
+        ("HeaderMissingRequiredValue", PyObject::builtin_type(CompactString::from("HeaderMissingRequiredValue"))),
+        ("NonPrintableDefect", PyObject::builtin_type(CompactString::from("NonPrintableDefect"))),
+        ("ObsoleteHeaderDefect", PyObject::builtin_type(CompactString::from("ObsoleteHeaderDefect"))),
+        ("NonASCIILocalPartDefect", PyObject::builtin_type(CompactString::from("NonASCIILocalPartDefect"))),
+    ])
+}
+
 pub fn create_email_module() -> PyObjectRef {
     make_module("email", vec![
         ("message", create_email_message_module()),
         ("mime", create_email_mime_module()),
         ("utils", create_email_utils_module()),
+        ("errors", create_email_errors_module()),
     ])
 }

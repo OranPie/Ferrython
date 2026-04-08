@@ -142,6 +142,108 @@ pub fn create_urllib_module() -> PyObjectRef {
         vec![
             ("urlopen", make_builtin(urllib_urlopen)),
             ("Request", make_builtin(urllib_request_constructor)),
+            ("getproxies", make_builtin(|_args: &[PyObjectRef]| {
+                // Return proxy settings from environment variables
+                let mut proxies = IndexMap::new();
+                for (env_var, scheme) in &[
+                    ("http_proxy", "http"), ("https_proxy", "https"),
+                    ("HTTP_PROXY", "http"), ("HTTPS_PROXY", "https"),
+                    ("ftp_proxy", "ftp"), ("no_proxy", "no"),
+                ] {
+                    if let Ok(val) = std::env::var(env_var) {
+                        proxies.insert(
+                            HashableKey::Str(CompactString::from(*scheme)),
+                            PyObject::str_val(CompactString::from(val)),
+                        );
+                    }
+                }
+                Ok(PyObject::dict(proxies))
+            })),
+            ("getproxies_environment", make_builtin(|_args: &[PyObjectRef]| {
+                Ok(PyObject::dict(IndexMap::new()))
+            })),
+            ("proxy_bypass", make_builtin(|_args: &[PyObjectRef]| {
+                Ok(PyObject::bool_val(false))
+            })),
+            ("proxy_bypass_environment", make_builtin(|_args: &[PyObjectRef]| {
+                Ok(PyObject::bool_val(false))
+            })),
+            ("pathname2url", make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("pathname2url requires 1 argument"));
+                }
+                Ok(args[0].clone())
+            })),
+            ("url2pathname", make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() {
+                    return Err(PyException::type_error("url2pathname requires 1 argument"));
+                }
+                Ok(args[0].clone())
+            })),
+            ("parse_http_list", make_builtin(|args: &[PyObjectRef]| {
+                // Parse HTTP list header per RFC 2616 Section 2.1
+                if args.len() != 1 { return Err(PyException::type_error("parse_http_list() takes 1 argument")); }
+                let s = args[0].py_to_string();
+                let mut result = Vec::new();
+                let mut current = String::new();
+                let mut in_quote = false;
+                let mut escape = false;
+                for ch in s.chars() {
+                    if escape {
+                        current.push(ch);
+                        escape = false;
+                    } else if ch == '\\' && in_quote {
+                        escape = true;
+                        current.push(ch);
+                    } else if ch == '"' {
+                        in_quote = !in_quote;
+                        current.push(ch);
+                    } else if ch == ',' && !in_quote {
+                        let trimmed = current.trim().to_string();
+                        if !trimmed.is_empty() {
+                            result.push(PyObject::str_val(CompactString::from(trimmed)));
+                        }
+                        current.clear();
+                    } else {
+                        current.push(ch);
+                    }
+                }
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    result.push(PyObject::str_val(CompactString::from(trimmed)));
+                }
+                Ok(PyObject::list(result))
+            })),
+            ("parse_keqv_list", make_builtin(|args: &[PyObjectRef]| {
+                // Parse key=value HTTP list
+                if args.len() != 1 { return Err(PyException::type_error("parse_keqv_list() takes 1 argument")); }
+                let items = if let PyObjectPayload::List(ref ls) = args[0].payload {
+                    ls.read().clone()
+                } else {
+                    return Err(PyException::type_error("parse_keqv_list expects a list"));
+                };
+                let mut dict = IndexMap::new();
+                for item in &items {
+                    let s = item.py_to_string();
+                    if let Some(eq_pos) = s.find('=') {
+                        let key = s[..eq_pos].trim().to_string();
+                        let mut val = s[eq_pos+1..].trim().to_string();
+                        if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
+                            val = val[1..val.len()-1].to_string();
+                        }
+                        dict.insert(
+                            HashableKey::Str(CompactString::from(key)),
+                            PyObject::str_val(CompactString::from(val)),
+                        );
+                    } else {
+                        dict.insert(
+                            HashableKey::Str(CompactString::from(s.trim())),
+                            PyObject::none(),
+                        );
+                    }
+                }
+                Ok(PyObject::dict(dict))
+            })),
         ],
     )
 }
@@ -1057,6 +1159,40 @@ fn http_reason(code: u16) -> &'static str {
     }
 }
 
+pub fn create_http_client_module() -> PyObjectRef {
+    let http_connection_fn = make_builtin(http_connection_constructor);
+    let mut client_attrs = IndexMap::new();
+    client_attrs.insert(CompactString::from("HTTPConnection"), http_connection_fn);
+    client_attrs.insert(
+        CompactString::from("HTTPSConnection"),
+        make_builtin(|_args| {
+            Err(PyException::os_error("HTTPS is not supported (no TLS available)"))
+        }),
+    );
+    // Status code constants
+    client_attrs.insert(CompactString::from("OK"), PyObject::int(200));
+    client_attrs.insert(CompactString::from("NOT_FOUND"), PyObject::int(404));
+    client_attrs.insert(CompactString::from("INTERNAL_SERVER_ERROR"), PyObject::int(500));
+    // HTTPResponse class
+    client_attrs.insert(
+        CompactString::from("HTTPResponse"),
+        PyObject::class(CompactString::from("HTTPResponse"), vec![], IndexMap::new()),
+    );
+    // Exception classes
+    client_attrs.insert(CompactString::from("HTTPException"), PyObject::builtin_type(CompactString::from("HTTPException")));
+    client_attrs.insert(CompactString::from("RemoteDisconnected"), PyObject::builtin_type(CompactString::from("RemoteDisconnected")));
+    client_attrs.insert(CompactString::from("IncompleteRead"), PyObject::builtin_type(CompactString::from("IncompleteRead")));
+    client_attrs.insert(CompactString::from("ResponseNotReady"), PyObject::builtin_type(CompactString::from("ResponseNotReady")));
+    client_attrs.insert(CompactString::from("BadStatusLine"), PyObject::builtin_type(CompactString::from("BadStatusLine")));
+    client_attrs.insert(CompactString::from("CannotSendRequest"), PyObject::builtin_type(CompactString::from("CannotSendRequest")));
+    // HTTPMessage class
+    client_attrs.insert(
+        CompactString::from("HTTPMessage"),
+        PyObject::class(CompactString::from("HTTPMessage"), vec![], IndexMap::new()),
+    );
+    PyObject::module_with_attrs(CompactString::from("http.client"), client_attrs)
+}
+
 pub fn create_http_module() -> PyObjectRef {
     // Build HTTPStatus as an object with named constants
     let mut status_attrs = IndexMap::new();
@@ -1091,45 +1227,8 @@ pub fn create_http_module() -> PyObjectRef {
         "http",
         vec![
             ("HTTPStatus", http_status),
-            ("HTTPConnection", http_connection_fn.clone()),
-            // http.client sub-attributes
-            ("client", {
-                let mut client_attrs = IndexMap::new();
-                client_attrs.insert(
-                    CompactString::from("HTTPConnection"),
-                    http_connection_fn,
-                );
-                client_attrs.insert(
-                    CompactString::from("HTTPSConnection"),
-                    make_builtin(|_args| {
-                        Err(PyException::os_error(
-                            "HTTPS is not supported (no TLS available)",
-                        ))
-                    }),
-                );
-                // Status code constants on client module
-                client_attrs.insert(CompactString::from("OK"), PyObject::int(200));
-                client_attrs.insert(CompactString::from("NOT_FOUND"), PyObject::int(404));
-                client_attrs.insert(
-                    CompactString::from("INTERNAL_SERVER_ERROR"),
-                    PyObject::int(500),
-                );
-                // HTTPResponse class
-                client_attrs.insert(
-                    CompactString::from("HTTPResponse"),
-                    PyObject::class(CompactString::from("HTTPResponse"), vec![], IndexMap::new()),
-                );
-                // Common exception classes
-                client_attrs.insert(
-                    CompactString::from("HTTPException"),
-                    PyObject::builtin_type(CompactString::from("HTTPException")),
-                );
-                client_attrs.insert(
-                    CompactString::from("RemoteDisconnected"),
-                    PyObject::builtin_type(CompactString::from("RemoteDisconnected")),
-                );
-                PyObject::module_with_attrs(CompactString::from("http.client"), client_attrs)
-            }),
+            ("HTTPConnection", http_connection_fn),
+            ("client", create_http_client_module()),
             // Common status codes at top level
             ("OK", PyObject::int(200)),
             ("CREATED", PyObject::int(201)),
@@ -2535,12 +2634,71 @@ pub fn create_ssl_module() -> PyObjectRef {
         ("OP_NO_SSLv2", PyObject::int(0x01000000)),
         ("OP_NO_SSLv3", PyObject::int(0x02000000)),
         ("OP_NO_TLSv1", PyObject::int(0x04000000)),
+        ("OP_NO_TLSv1_1", PyObject::int(0x10000000)),
+        ("OP_NO_TLSv1_2", PyObject::int(0x08000000)),
+        ("OP_NO_TLSv1_3", PyObject::int(0x20000000)),
+        ("OP_NO_COMPRESSION", PyObject::int(0x00020000)),
+        ("OP_NO_TICKET", PyObject::int(0x00004000)),
+        ("OP_ALL", PyObject::int(0x80000BFF_u64 as i64)),
         ("HAS_SNI", PyObject::bool_val(true)),
         ("HAS_ECDH", PyObject::bool_val(true)),
         ("HAS_NPN", PyObject::bool_val(false)),
         ("HAS_ALPN", PyObject::bool_val(true)),
+        ("HAS_NEVER_CHECK_COMMON_NAME", PyObject::bool_val(false)),
+        ("HAS_SSLv2", PyObject::bool_val(false)),
+        ("HAS_SSLv3", PyObject::bool_val(false)),
+        ("HAS_TLSv1", PyObject::bool_val(true)),
+        ("HAS_TLSv1_1", PyObject::bool_val(true)),
+        ("HAS_TLSv1_2", PyObject::bool_val(true)),
+        ("HAS_TLSv1_3", PyObject::bool_val(true)),
         ("OPENSSL_VERSION", PyObject::str_val(CompactString::from("OpenSSL 3.0.0 (stub)"))),
         ("OPENSSL_VERSION_NUMBER", PyObject::int(0x30000000)),
+        ("OPENSSL_VERSION_INFO", {
+            let info = vec![
+                PyObject::int(3), PyObject::int(0), PyObject::int(0),
+                PyObject::int(0), PyObject::int(0),
+            ];
+            PyObject::tuple(info)
+        }),
+        // Verify flags
+        ("VERIFY_DEFAULT", PyObject::int(0)),
+        ("VERIFY_CRL_CHECK_LEAF", PyObject::int(0x4)),
+        ("VERIFY_CRL_CHECK_CHAIN", PyObject::int(0x0C)),
+        ("VERIFY_X509_STRICT", PyObject::int(0x20)),
+        ("VERIFY_X509_PARTIAL_CHAIN", PyObject::int(0x80000)),
+        ("VERIFY_X509_TRUSTED_FIRST", PyObject::int(0x8000)),
+        // Purpose
+        ("Purpose", {
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("SERVER_AUTH"), PyObject::str_val(CompactString::from("1.3.6.1.5.5.7.3.1")));
+            attrs.insert(CompactString::from("CLIENT_AUTH"), PyObject::str_val(CompactString::from("1.3.6.1.5.5.7.3.2")));
+            PyObject::module_with_attrs(CompactString::from("Purpose"), attrs)
+        }),
+        // TLSVersion enum
+        ("TLSVersion", {
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("MINIMUM_SUPPORTED"), PyObject::int(0x0300));
+            attrs.insert(CompactString::from("SSLv3"), PyObject::int(0x0300));
+            attrs.insert(CompactString::from("TLSv1"), PyObject::int(0x0301));
+            attrs.insert(CompactString::from("TLSv1_1"), PyObject::int(0x0302));
+            attrs.insert(CompactString::from("TLSv1_2"), PyObject::int(0x0303));
+            attrs.insert(CompactString::from("TLSv1_3"), PyObject::int(0x0304));
+            attrs.insert(CompactString::from("MAXIMUM_SUPPORTED"), PyObject::int(0x0304));
+            PyObject::module_with_attrs(CompactString::from("TLSVersion"), attrs)
+        }),
+        // VerifyMode enum
+        ("VerifyMode", PyObject::class(CompactString::from("VerifyMode"), vec![], IndexMap::new())),
+        // VerifyFlags enum
+        ("VerifyFlags", PyObject::class(CompactString::from("VerifyFlags"), vec![], IndexMap::new())),
+        // SSLSocket/SSLObject types
+        ("SSLSocket", PyObject::class(CompactString::from("SSLSocket"), vec![], IndexMap::new())),
+        ("SSLObject", PyObject::class(CompactString::from("SSLObject"), vec![], IndexMap::new())),
+        // AlertDescription
+        ("AlertDescription", PyObject::class(CompactString::from("AlertDescription"), vec![], IndexMap::new())),
+        // match_hostname (deprecated, removed in 3.12+)
+        ("match_hostname", make_builtin(|_args: &[PyObjectRef]| {
+            Ok(PyObject::none())
+        })),
     ])
 }
 

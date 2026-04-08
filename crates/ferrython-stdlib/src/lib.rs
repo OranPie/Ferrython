@@ -198,7 +198,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "urllib.request" => Some(network_modules::create_urllib_module()),
         "urllib.parse" => Some(network_modules::create_urllib_parse_module()),
         "http" => Some(network_modules::create_http_module()),
-        "http.client" => Some(network_modules::create_http_module()),
+        "http.client" => Some(network_modules::create_http_client_module()),
         // XML
         "xml" => Some(xml_modules::create_xml_module()),
         "xml.etree" => Some(xml_modules::create_xml_etree_module()),
@@ -207,6 +207,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "sqlite3" => Some(db_modules::create_sqlite3_module()),
         // Email
         "email" => Some(email_modules::create_email_module()),
+        "email.errors" => Some(email_modules::create_email_errors_module()),
         "email.message" => Some(email_modules::create_email_message_module()),
         "email.mime" => Some(email_modules::create_email_mime_module()),
         "email.mime.text" => Some(email_modules::create_email_mime_text_module()),
@@ -301,6 +302,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "encodings.utf_8" => Some(text_modules::create_encodings_module()),
         "encodings.ascii" => Some(text_modules::create_encodings_module()),
         "encodings.latin_1" => Some(text_modules::create_encodings_module()),
+        "encodings.aliases" => Some(text_modules::create_encodings_aliases_module()),
+        "encodings.idna" => Some(text_modules::create_encodings_idna_module()),
         // Unix user/group info
         "grp" => Some(sys_modules::create_grp_module()),
         "pwd" => Some(sys_modules::create_pwd_module()),

@@ -93,6 +93,9 @@ pub struct Compiler {
     pub(super) unit_stack: Vec<CompileUnit>,
     /// When true, top-level expression statements emit PrintExpr instead of PopTop.
     pub(super) interactive: bool,
+    /// When true (`from __future__ import annotations`), annotation expressions
+    /// are stored as string constants instead of being evaluated.
+    pub(super) future_annotations: bool,
 }
 
 
@@ -102,6 +105,7 @@ impl Compiler {
             filename: filename.into(),
             unit_stack: Vec::new(),
             interactive: false,
+            future_annotations: false,
         }
     }
 
@@ -345,6 +349,11 @@ impl Compiler {
 
     /// Compile an entire module AST into a `CodeObject`.
     pub fn compile_module(&mut self, module: &Module) -> Result<CodeObject> {
+        // Pre-scan for `from __future__ import annotations`
+        if let Module::Module { body, .. } | Module::Interactive { body } = module {
+            self.future_annotations = Self::has_future_annotations(body);
+        }
+
         let symtable = symbol_table::analyze(module);
         let unit = CompileUnit::new(
             "<module>",
@@ -380,6 +389,30 @@ impl Compiler {
         let mut code = unit.code;
         code.num_locals = code.varnames.len() as u32;
         Ok(code)
+    }
+
+    /// Check if body starts with `from __future__ import annotations`.
+    /// Per Python semantics, `__future__` imports must appear at the top of the module
+    /// (after docstrings and other `__future__` imports).
+    fn has_future_annotations(body: &[Statement]) -> bool {
+        for s in body {
+            match &s.node {
+                StatementKind::ImportFrom { module: Some(mod_name), names, .. }
+                    if mod_name == "__future__" =>
+                {
+                    for alias in names {
+                        if alias.name == "annotations" {
+                            return true;
+                        }
+                    }
+                }
+                // Skip docstrings (string expression statements)
+                StatementKind::Expr { value } if matches!(&value.node, ExpressionKind::Constant { value: Constant::Str(_) }) => {}
+                // Any other statement ends the __future__ import region
+                _ => break,
+            }
+        }
+        false
     }
 
     /// Check if a body contains any annotation assignments (recursively)
