@@ -495,7 +495,22 @@ fn fancy_captures(re: &fancy_regex::Regex, text: &str) -> Vec<Vec<Option<String>
     results
 }
 
-fn make_fancy_match_object(text: &str, start: usize, end: usize, full: &str, groups: Vec<Option<String>>) -> PyObjectRef {
+/// Extract named capture group index from a fancy_regex::Regex
+fn extract_fancy_group_names(re: &fancy_regex::Regex) -> IndexMap<HashableKey, PyObjectRef> {
+    let mut map = IndexMap::new();
+    // fancy_regex exposes capture_names()
+    for (idx, name_opt) in re.capture_names().enumerate() {
+        if let Some(name) = name_opt {
+            map.insert(
+                HashableKey::Str(CompactString::from(name)),
+                PyObject::int(idx as i64),
+            );
+        }
+    }
+    map
+}
+
+fn make_fancy_match_object(text: &str, start: usize, end: usize, full: &str, groups: Vec<Option<String>>, group_names: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
     let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("_match"), PyObject::str_val(CompactString::from(full)));
     attrs.insert(CompactString::from("_start"), PyObject::int(start as i64));
@@ -505,7 +520,7 @@ fn make_fancy_match_object(text: &str, start: usize, end: usize, full: &str, gro
         .map(|g| g.map(|s| PyObject::str_val(CompactString::from(s))).unwrap_or(PyObject::none()))
         .collect();
     attrs.insert(CompactString::from("_groups"), PyObject::tuple(group_objs));
-    attrs.insert(CompactString::from("_groupindex"), PyObject::dict(IndexMap::new()));
+    attrs.insert(CompactString::from("_groupindex"), PyObject::dict(group_names));
     attrs.insert(CompactString::from("group"), PyObject::native_function("Match.group", match_group));
     attrs.insert(CompactString::from("groups"), PyObject::native_function("Match.groups", match_groups));
     attrs.insert(CompactString::from("groupdict"), PyObject::native_function("Match.groupdict", match_groupdict));
@@ -673,20 +688,30 @@ pub fn match_start_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { match_sta
 pub fn match_end_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { match_end(args) }
 pub fn match_span_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> { match_span(args) }
 
+fn needs_fancy_regex_with_flags(pattern: &str, flags: i64) -> bool {
+    // Check both original and verbose-stripped pattern
+    if needs_fancy_regex(pattern) { return true; }
+    if flags & 64 != 0 {
+        let stripped = strip_verbose(pattern);
+        if needs_fancy_regex(&stripped) { return true; }
+    }
+    false
+}
+
 fn re_match(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("re.match() requires pattern and string")); }
     let pattern = args[0].py_to_string();
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
     let anchored = format!("^(?:{})", pattern);
-    if needs_fancy_regex(&pattern) {
+    if needs_fancy_regex_with_flags(&pattern, flags) {
         let re = build_fancy_regex(&anchored, flags)?;
         match re.captures(&text) {
             Ok(Some(caps)) => {
                 let whole = caps.get(0).unwrap();
                 let groups: Vec<Option<String>> = (1..caps.len())
                     .map(|i| caps.get(i).map(|m| m.as_str().to_string())).collect();
-                Ok(make_fancy_match_object(&text, whole.start(), whole.end(), whole.as_str(), groups))
+                Ok(make_fancy_match_object(&text, whole.start(), whole.end(), whole.as_str(), groups, extract_fancy_group_names(&re)))
             }
             _ => Ok(PyObject::none()),
         }
@@ -707,14 +732,14 @@ fn re_search(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pattern = args[0].py_to_string();
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
-    if needs_fancy_regex(&pattern) {
+    if needs_fancy_regex_with_flags(&pattern, flags) {
         let re = build_fancy_regex(&pattern, flags)?;
         match re.captures(&text) {
             Ok(Some(caps)) => {
                 let whole = caps.get(0).unwrap();
                 let groups: Vec<Option<String>> = (1..caps.len())
                     .map(|i| caps.get(i).map(|m| m.as_str().to_string())).collect();
-                Ok(make_fancy_match_object(&text, whole.start(), whole.end(), whole.as_str(), groups))
+                Ok(make_fancy_match_object(&text, whole.start(), whole.end(), whole.as_str(), groups, extract_fancy_group_names(&re)))
             }
             _ => Ok(PyObject::none()),
         }
@@ -733,11 +758,24 @@ fn re_fullmatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
     let anchored = format!("^(?:{})$", pattern);
-    let re = build_regex(&anchored, flags)?;
-    let orig_re = build_regex(&pattern, flags)?;
-    match re.find(&text) {
-        Some(m) => Ok(make_match_object(m, &text, &orig_re)),
-        None => Ok(PyObject::none()),
+    if needs_fancy_regex_with_flags(&pattern, flags) {
+        let re = build_fancy_regex(&anchored, flags)?;
+        match re.captures(&text) {
+            Ok(Some(caps)) => {
+                let whole = caps.get(0).unwrap();
+                let groups: Vec<Option<String>> = (1..caps.len())
+                    .map(|i| caps.get(i).map(|m| m.as_str().to_string())).collect();
+                Ok(make_fancy_match_object(&text, whole.start(), whole.end(), whole.as_str(), groups, extract_fancy_group_names(&re)))
+            }
+            _ => Ok(PyObject::none()),
+        }
+    } else {
+        let re = build_regex(&anchored, flags)?;
+        let orig_re = build_regex(&pattern, flags)?;
+        match re.find(&text) {
+            Some(m) => Ok(make_match_object(m, &text, &orig_re)),
+            None => Ok(PyObject::none()),
+        }
     }
 }
 
@@ -746,7 +784,7 @@ fn re_findall(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pattern = args[0].py_to_string();
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
-    if needs_fancy_regex(&pattern) {
+    if needs_fancy_regex_with_flags(&pattern, flags) {
         let re = build_fancy_regex(&pattern, flags)?;
         // Determine capture group count from first match
         let all_caps = fancy_captures(&re, &text);
@@ -850,7 +888,7 @@ fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let repl = repl_obj.py_to_string();
     let rust_repl = python_repl_to_rust(&repl);
-    if needs_fancy_regex(&pattern) {
+    if needs_fancy_regex_with_flags(&pattern, flags) {
         let re = build_fancy_regex(&pattern, flags)?;
         let mut result = String::new();
         let mut last = 0;
@@ -921,14 +959,42 @@ fn re_subn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let repl = args[1].py_to_string();
     let text = args[2].py_to_string();
     let flags = if args.len() > 3 { args[3].to_int().unwrap_or(0) } else { 0 };
-    let re = build_regex(&pattern, flags)?;
     let rust_repl = python_repl_to_rust(&repl);
-    let count = re.find_iter(&text).count();
-    let result = re.replace_all(&text, rust_repl.as_str()).to_string();
-    Ok(PyObject::tuple(vec![
-        PyObject::str_val(CompactString::from(result)),
-        PyObject::int(count as i64),
-    ]))
+    if needs_fancy_regex_with_flags(&pattern, flags) {
+        let re = build_fancy_regex(&pattern, flags)?;
+        let mut result = String::new();
+        let mut last = 0;
+        let mut n = 0;
+        let mut pos = 0;
+        while pos <= text.len() {
+            match re.find(&text[pos..]) {
+                Ok(Some(m)) => {
+                    if m.start() == m.end() { pos += 1; continue; }
+                    let abs_start = pos + m.start();
+                    let abs_end = pos + m.end();
+                    result.push_str(&text[last..abs_start]);
+                    result.push_str(&rust_repl);
+                    last = abs_end;
+                    pos = abs_end;
+                    n += 1;
+                }
+                _ => break,
+            }
+        }
+        result.push_str(&text[last..]);
+        Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from(result)),
+            PyObject::int(n as i64),
+        ]))
+    } else {
+        let re = build_regex(&pattern, flags)?;
+        let count = re.find_iter(&text).count();
+        let result = re.replace_all(&text, rust_repl.as_str()).to_string();
+        Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from(result)),
+            PyObject::int(count as i64),
+        ]))
+    }
 }
 
 fn re_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -937,7 +1003,7 @@ fn re_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let text = args[1].py_to_string();
     let maxsplit = if args.len() > 2 { args[2].to_int().unwrap_or(0) as usize } else { 0 };
     let flags = if args.len() > 3 { args[3].to_int().unwrap_or(0) } else { 0 };
-    if needs_fancy_regex(&pattern) {
+    if needs_fancy_regex_with_flags(&pattern, flags) {
         let re = build_fancy_regex(&pattern, flags)?;
         let mut result = Vec::new();
         let mut last = 0;
@@ -1006,7 +1072,7 @@ fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pattern = args[0].py_to_string();
     let flags = if args.len() > 1 { args[1].to_int().unwrap_or(0) } else { 0 };
     // Validate the pattern compiles (try fancy if needed)
-    if needs_fancy_regex(&pattern) {
+    if needs_fancy_regex_with_flags(&pattern, flags) {
         build_fancy_regex(&pattern, flags)?;
     } else {
         build_regex(&pattern, flags)?;
@@ -1036,7 +1102,7 @@ fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     }));
     // groups/groupindex: best-effort for standard regex
-    if !needs_fancy_regex(&pattern) {
+    if !needs_fancy_regex_with_flags(&pattern, flags) {
         if let Ok(re_obj) = build_regex(&pattern, flags) {
             let group_count = re_obj.captures_len() - 1;
             let mut groupindex_map = IndexMap::new();
