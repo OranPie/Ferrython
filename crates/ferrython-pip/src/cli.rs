@@ -248,12 +248,18 @@ pub fn run() {
                 std::process::exit(1);
             }
             let mut first = true;
+            let mut last_err = None;
             for pkg in &packages {
                 if !first { println!("---"); }
-                show_package(pkg, &site_packages, files).ok();
+                if let Err(e) = show_package(pkg, &site_packages, files) {
+                    last_err = Some(e);
+                }
                 first = false;
             }
-            Ok(())
+            match last_err {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
         }
         Commands::Search { query } => {
             search_pypi(&query)
