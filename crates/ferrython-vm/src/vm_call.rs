@@ -567,7 +567,12 @@ impl VirtualMachine {
                 };
                 let mut new_args = vec![cls.clone()];
                 new_args.extend(pos_args.clone());
-                self.call_object(new_fn, new_args)?
+                // Forward kwargs to __new__
+                if kwargs.is_empty() {
+                    self.call_object(new_fn, new_args)?
+                } else {
+                    self.call_object_kw(new_fn, new_args, kwargs.clone())?
+                }
             }
         } else {
             PyObject::instance(cls.clone())
