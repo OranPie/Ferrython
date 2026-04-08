@@ -432,6 +432,102 @@ pub fn create_typing_module() -> PyObjectRef {
         Ok(PyObject::bool_val(false))
     })));
 
+    // _GenericAlias — importable class used by typing internals (attrs, pydantic, etc.)
+    let generic_alias_cls = {
+        let mut ga_ns = IndexMap::new();
+        ga_ns.insert(CompactString::from("__new__"), PyObject::native_closure(
+            "_GenericAlias.__new__", |args: &[PyObjectRef]| {
+                // _GenericAlias(origin, params) → args[0]=cls, args[1]=origin, args[2]=params
+                let origin = if args.len() > 1 { args[1].clone() } else { PyObject::none() };
+                let type_args = if args.len() > 2 { args[2].clone() } else { PyObject::tuple(vec![]) };
+                let args_tuple = match &type_args.payload {
+                    PyObjectPayload::Tuple(_) => type_args.clone(),
+                    _ => PyObject::tuple(vec![type_args]),
+                };
+                let origin_name = match &origin.payload {
+                    PyObjectPayload::Class(cd) => cd.name.to_string(),
+                    PyObjectPayload::BuiltinType(n) => n.to_string(),
+                    PyObjectPayload::Str(s) => s.to_string(),
+                    _ => origin.py_to_string(),
+                };
+                let args_str = match &args_tuple.payload {
+                    PyObjectPayload::Tuple(items) => {
+                        items.iter().map(|i| match &i.payload {
+                            PyObjectPayload::Class(cd) => cd.name.to_string(),
+                            PyObjectPayload::BuiltinType(n) => n.to_string(),
+                            _ => i.py_to_string(),
+                        }).collect::<Vec<_>>().join(", ")
+                    }
+                    _ => args_tuple.py_to_string(),
+                };
+                let repr_str = format!("{}[{}]", origin_name, args_str);
+
+                let inst_cls = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
+                let mut iattrs = IndexMap::new();
+                iattrs.insert(CompactString::from("__origin__"), origin.clone());
+                iattrs.insert(CompactString::from("__args__"), args_tuple);
+                let rc1 = repr_str.clone();
+                iattrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+                    "__repr__", move |_| Ok(PyObject::str_val(CompactString::from(rc1.as_str()))),
+                ));
+                let rc2 = repr_str;
+                iattrs.insert(CompactString::from("__str__"), PyObject::native_closure(
+                    "__str__", move |_| Ok(PyObject::str_val(CompactString::from(rc2.as_str()))),
+                ));
+                // copy_with(new_args) — new alias with same origin but different args
+                let origin_cw = origin.clone();
+                iattrs.insert(CompactString::from("copy_with"), PyObject::native_closure(
+                    "copy_with", move |cw_args: &[PyObjectRef]| {
+                        let new_a = if cw_args.is_empty() { PyObject::tuple(vec![]) } else { cw_args[0].clone() };
+                        let new_at = match &new_a.payload {
+                            PyObjectPayload::Tuple(_) => new_a,
+                            _ => PyObject::tuple(vec![new_a]),
+                        };
+                        let c = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
+                        let mut a = IndexMap::new();
+                        a.insert(CompactString::from("__origin__"), origin_cw.clone());
+                        a.insert(CompactString::from("__args__"), new_at);
+                        Ok(PyObject::instance_with_attrs(c, a))
+                    },
+                ));
+                // __getitem__ for further parameterization
+                let origin_gi = origin;
+                iattrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+                    "__getitem__", move |gi_args: &[PyObjectRef]| {
+                        let params = if gi_args.is_empty() { PyObject::none() } else { gi_args[0].clone() };
+                        let new_at = match &params.payload {
+                            PyObjectPayload::Tuple(items) => PyObject::tuple(items.clone()),
+                            _ => PyObject::tuple(vec![params]),
+                        };
+                        let c = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
+                        let mut a = IndexMap::new();
+                        a.insert(CompactString::from("__origin__"), origin_gi.clone());
+                        a.insert(CompactString::from("__args__"), new_at);
+                        Ok(PyObject::instance_with_attrs(c, a))
+                    },
+                ));
+                Ok(PyObject::instance_with_attrs(inst_cls, iattrs))
+            }
+        ));
+        PyObject::class(CompactString::from("_GenericAlias"), vec![], ga_ns)
+    };
+    attrs.push(("_GenericAlias", generic_alias_cls));
+
+    // _SpecialForm — internal marker class used by typing
+    attrs.push(("_SpecialForm", PyObject::class(
+        CompactString::from("_SpecialForm"),
+        vec![],
+        IndexMap::new(),
+    )));
+
+    // assert_never — should always raise TypeError at runtime (PEP 782)
+    attrs.push(("assert_never", make_builtin(|args: &[PyObjectRef]| {
+        check_args("assert_never", args, 1)?;
+        Err(PyException::type_error(format!(
+            "Expected code to be unreachable, but got: {}", args[0].repr()
+        )))
+    })));
+
     make_module("typing", attrs)
 }
 
@@ -1265,6 +1361,7 @@ pub fn create_collections_abc_module() -> PyObjectRef {
         ("AsyncIterable",   make_abc("AsyncIterable", &[])),
         ("AsyncIterator",   make_abc("AsyncIterator", &[])),
         ("AsyncGenerator",  make_abc("AsyncGenerator", &[])),
+        ("Buffer",          make_abc("Buffer", &["bytes", "bytearray", "memoryview"])),
     ])
 }
 

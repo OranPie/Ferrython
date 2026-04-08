@@ -586,9 +586,28 @@ pub fn create_inspect_module() -> PyObjectRef {
                 Err(PyException::type_error("unsupported callable"))
             }
         })),
-        // Parameter and Signature classes (simplified placeholders for compatibility)
-        ("Parameter", PyObject::class(CompactString::from("Parameter"), vec![], IndexMap::new())),
-        ("Signature", PyObject::class(CompactString::from("Signature"), vec![], IndexMap::new())),
+        // Parameter and Signature classes with `empty` sentinel
+        ("Parameter", {
+            let empty_sentinel = PyObject::instance(
+                PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
+            );
+            let mut param_ns = IndexMap::new();
+            param_ns.insert(CompactString::from("empty"), empty_sentinel.clone());
+            param_ns.insert(CompactString::from("POSITIONAL_ONLY"), PyObject::int(0));
+            param_ns.insert(CompactString::from("POSITIONAL_OR_KEYWORD"), PyObject::int(1));
+            param_ns.insert(CompactString::from("VAR_POSITIONAL"), PyObject::int(2));
+            param_ns.insert(CompactString::from("KEYWORD_ONLY"), PyObject::int(3));
+            param_ns.insert(CompactString::from("VAR_KEYWORD"), PyObject::int(4));
+            PyObject::class(CompactString::from("Parameter"), vec![], param_ns)
+        }),
+        ("Signature", {
+            let empty_sentinel = PyObject::instance(
+                PyObject::class(CompactString::from("_empty"), vec![], IndexMap::new())
+            );
+            let mut sig_ns = IndexMap::new();
+            sig_ns.insert(CompactString::from("empty"), empty_sentinel);
+            PyObject::class(CompactString::from("Signature"), vec![], sig_ns)
+        }),
         ("getsource", make_builtin(|args| {
             check_args("inspect.getsource", args, 1)?;
             let filename = match &args[0].payload {
@@ -2963,6 +2982,7 @@ pub fn create_linecache_module() -> PyObjectRef {
         ("getlines", getlines_fn),
         ("clearcache", clearcache_fn),
         ("checkcache", checkcache_fn),
+        ("cache", PyObject::dict(IndexMap::new())),
     ])
 }
 

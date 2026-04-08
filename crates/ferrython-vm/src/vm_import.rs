@@ -128,13 +128,16 @@ impl VirtualMachine {
                         &current_name,
                         if level > 0 && i == 0 { level } else { 0 },
                         importer_file,
-                    )?
+                    ).map_err(|e| {
+                        e
+                    })?
                 }
             } else {
                 // Relative import: bypass bare-name cache, resolve from filesystem
                 let the_level = if i == 0 { level } else { 0 };
                 let resolved_mod = if the_level > 0 {
-                    ferrython_import::resolve_relative_import(&current_name, importer_file, the_level)?
+                    ferrython_import::resolve_relative_import(&current_name, importer_file, the_level)
+                        .map_err(|e| { e })?
                 } else {
                     // For i > 0 in a dotted relative import, resolve relative
                     // to the same base directory

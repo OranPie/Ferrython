@@ -23,6 +23,8 @@ struct ParsedUrl {
     query: String,
     fragment: String,
     netloc: String,
+    username: String,
+    password: String,
 }
 
 fn parse_url_string(url: &str) -> ParsedUrl {
@@ -51,19 +53,37 @@ fn parse_url_string(url: &str) -> ParsedUrl {
     };
 
     let netloc = host_port.to_string();
-    let (host, port) = if let Some(idx) = host_port.rfind(':') {
-        let port_str = &host_port[idx + 1..];
+
+    // Extract userinfo (username:password@)
+    let (userinfo, host_part) = if let Some(idx) = host_port.rfind('@') {
+        (&host_port[..idx], &host_port[idx + 1..])
+    } else {
+        ("", host_port)
+    };
+
+    let (username, password) = if !userinfo.is_empty() {
+        if let Some(idx) = userinfo.find(':') {
+            (userinfo[..idx].to_string(), userinfo[idx + 1..].to_string())
+        } else {
+            (userinfo.to_string(), String::new())
+        }
+    } else {
+        (String::new(), String::new())
+    };
+
+    let (host, port) = if let Some(idx) = host_part.rfind(':') {
+        let port_str = &host_part[idx + 1..];
         if let Ok(p) = port_str.parse::<u16>() {
-            (host_port[..idx].to_string(), p)
+            (host_part[..idx].to_string(), p)
         } else {
             (
-                host_port.to_string(),
+                host_part.to_string(),
                 if scheme == "https" { 443 } else { 80 },
             )
         }
     } else {
         (
-            host_port.to_string(),
+            host_part.to_string(),
             if scheme == "https" { 443 } else { 80 },
         )
     };
@@ -76,6 +96,8 @@ fn parse_url_string(url: &str) -> ParsedUrl {
         query,
         fragment,
         netloc,
+        username,
+        password,
     }
 }
 
@@ -807,8 +829,23 @@ fn urllib_parse_urlparse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     attrs.insert(CompactString::from("params"), params);
     attrs.insert(CompactString::from("query"), query);
     attrs.insert(CompactString::from("fragment"), fragment);
-    attrs.insert(CompactString::from("hostname"), PyObject::str_val(CompactString::from(&p.host)));
-    attrs.insert(CompactString::from("port"), PyObject::int(p.port as i64));
+    attrs.insert(CompactString::from("hostname"),
+        if p.host.is_empty() { PyObject::none() }
+        else { PyObject::str_val(CompactString::from(p.host.to_lowercase())) });
+    let has_explicit_port = {
+        let hp = if p.netloc.contains('@') {
+            p.netloc.rsplit('@').next().unwrap_or(&p.netloc)
+        } else { &p.netloc };
+        hp.contains(':') && hp.rsplit(':').next().and_then(|s| s.parse::<u16>().ok()).is_some()
+    };
+    attrs.insert(CompactString::from("port"),
+        if has_explicit_port { PyObject::int(p.port as i64) } else { PyObject::none() });
+    attrs.insert(CompactString::from("username"),
+        if p.username.is_empty() { PyObject::none() }
+        else { PyObject::str_val(CompactString::from(&p.username)) });
+    attrs.insert(CompactString::from("password"),
+        if p.password.is_empty() { PyObject::none() }
+        else { PyObject::str_val(CompactString::from(&p.password)) });
 
     // geturl()
     let url_c = url.clone();
@@ -937,8 +974,23 @@ fn urllib_parse_urlsplit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     attrs.insert(CompactString::from("path"), path);
     attrs.insert(CompactString::from("query"), query);
     attrs.insert(CompactString::from("fragment"), fragment);
-    attrs.insert(CompactString::from("hostname"), PyObject::str_val(CompactString::from(&p.host)));
-    attrs.insert(CompactString::from("port"), PyObject::int(p.port as i64));
+    attrs.insert(CompactString::from("hostname"),
+        if p.host.is_empty() { PyObject::none() }
+        else { PyObject::str_val(CompactString::from(p.host.to_lowercase())) });
+    let has_explicit_port2 = {
+        let hp = if p.netloc.contains('@') {
+            p.netloc.rsplit('@').next().unwrap_or(&p.netloc)
+        } else { &p.netloc };
+        hp.contains(':') && hp.rsplit(':').next().and_then(|s| s.parse::<u16>().ok()).is_some()
+    };
+    attrs.insert(CompactString::from("port"),
+        if has_explicit_port2 { PyObject::int(p.port as i64) } else { PyObject::none() });
+    attrs.insert(CompactString::from("username"),
+        if p.username.is_empty() { PyObject::none() }
+        else { PyObject::str_val(CompactString::from(&p.username)) });
+    attrs.insert(CompactString::from("password"),
+        if p.password.is_empty() { PyObject::none() }
+        else { PyObject::str_val(CompactString::from(&p.password)) });
 
     let url_c = url.clone();
     attrs.insert(CompactString::from("geturl"), PyObject::native_closure("geturl", move |_| {

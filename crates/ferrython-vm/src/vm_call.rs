@@ -1005,6 +1005,25 @@ impl VirtualMachine {
                                     }
                                     handled = true;
                                 }
+                                // Check for MappingProxy payload
+                                if !handled {
+                                    if let PyObjectPayload::MappingProxy(src) = &pos_args[0].payload {
+                                        for (k, v) in src.read().iter() {
+                                            map.insert(k.clone(), v.clone());
+                                        }
+                                        handled = true;
+                                    }
+                                }
+                                // Check for InstanceDict payload
+                                if !handled {
+                                    if let PyObjectPayload::InstanceDict(src) = &pos_args[0].payload {
+                                        let read = src.read();
+                                        for (k, v) in read.iter() {
+                                            map.insert(HashableKey::Str(k.clone()), v.clone());
+                                        }
+                                        handled = true;
+                                    }
+                                }
                                 // Check for Instance with dict_storage (e.g., defaultdict, OrderedDict)
                                 if !handled {
                                     if let PyObjectPayload::Instance(inst) = &pos_args[0].payload {
@@ -1696,6 +1715,19 @@ impl VirtualMachine {
                         // dict(mapping) — handle Dict payload
                         if let PyObjectPayload::Dict(_) = &args[0].payload {
                             return builtins::dispatch("dict", &args);
+                        }
+                        // dict(MappingProxy) — e.g., cls.__dict__
+                        if let PyObjectPayload::MappingProxy(src) = &args[0].payload {
+                            return Ok(PyObject::dict(src.read().clone()));
+                        }
+                        // dict(InstanceDict) — e.g., obj.__dict__
+                        if let PyObjectPayload::InstanceDict(src) = &args[0].payload {
+                            let read = src.read();
+                            let mut map = IndexMap::new();
+                            for (k, v) in read.iter() {
+                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                            }
+                            return Ok(PyObject::dict(map));
                         }
                         // dict(instance_with_dict_storage) — e.g., defaultdict, OrderedDict
                         if let PyObjectPayload::Instance(inst) = &args[0].payload {

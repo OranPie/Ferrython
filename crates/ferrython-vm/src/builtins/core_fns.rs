@@ -1049,6 +1049,19 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             new_map.shift_remove(&HashableKey::Str(CompactString::from("__counter__")));
             Ok(PyObject::dict(new_map))
         },
+        PyObjectPayload::MappingProxy(m) => {
+            Ok(PyObject::dict(m.read().clone()))
+        },
+        PyObjectPayload::InstanceDict(m) => {
+            let read = m.read();
+            let mut map = IndexMap::new();
+            for (k, v) in read.iter() {
+                if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
+                    map.insert(hk, v.clone());
+                }
+            }
+            Ok(PyObject::dict(map))
+        },
         // dict from iterable of (key, value) pairs
         PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::Set(_) => {
             let pairs = args[0].to_list()?;
@@ -1064,7 +1077,28 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
             Ok(PyObject::dict(map))
         }
-        _ => Err(PyException::type_error("dict() argument must be a mapping or iterable")),
+        _ => {
+            // Try to handle instances with dict_storage (OrderedDict, dict subclasses)
+            if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                if let Some(ref ds) = inst.dict_storage {
+                    let read = ds.read();
+                    return Ok(PyObject::dict(read.clone()));
+                }
+            }
+            // Fall back to iterating as pairs
+            let pairs = args[0].to_list()?;
+            let mut map: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+            for pair in &pairs {
+                let kv = pair.to_list()?;
+                if kv.len() != 2 {
+                    return Err(PyException::value_error(
+                        format!("dictionary update sequence element has length {}; 2 is required", kv.len())));
+                }
+                let key = kv[0].to_hashable_key()?;
+                map.insert(key, kv[1].clone());
+            }
+            Ok(PyObject::dict(map))
+        }
     }
 }
 

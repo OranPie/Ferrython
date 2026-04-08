@@ -1083,6 +1083,52 @@ fn make_user_dict_class() -> PyObjectRef {
         let data = get_user_data(&args[0], "data")?;
         data.get_iter()
     }));
+    ns.insert(CompactString::from("__eq__"), make_builtin(|args| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let data = get_user_data(&args[0], "data")?;
+        let other_data = if let Ok(od) = get_user_data(&args[1], "data") { od } else { args[1].clone() };
+        if let (PyObjectPayload::Dict(a), PyObjectPayload::Dict(b)) = (&data.payload, &other_data.payload) {
+            let ra = a.read();
+            let rb = b.read();
+            if ra.len() != rb.len() { return Ok(PyObject::bool_val(false)); }
+            for (k, v) in ra.iter() {
+                match rb.get(k) {
+                    Some(ov) if v.compare(ov, CompareOp::Eq).map_or(false, |r| r.is_truthy()) => {}
+                    _ => return Ok(PyObject::bool_val(false)),
+                }
+            }
+            Ok(PyObject::bool_val(true))
+        } else {
+            Ok(PyObject::bool_val(false))
+        }
+    }));
+    ns.insert(CompactString::from("__bool__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        Ok(PyObject::bool_val(data.py_len()? > 0))
+    }));
+    ns.insert(CompactString::from("__or__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected other")); }
+        let data = get_user_data(&args[0], "data")?;
+        let mut merged = IndexMap::new();
+        if let PyObjectPayload::Dict(d) = &data.payload {
+            for (k, v) in d.read().iter() { merged.insert(k.clone(), v.clone()); }
+        }
+        let other = if let Ok(od) = get_user_data(&args[1], "data") { od } else { args[1].clone() };
+        if let PyObjectPayload::Dict(d) = &other.payload {
+            for (k, v) in d.read().iter() { merged.insert(k.clone(), v.clone()); }
+        }
+        Ok(PyObject::dict(merged))
+    }));
+    ns.insert(CompactString::from("__ior__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected other")); }
+        let data = get_user_data(&args[0], "data")?;
+        let other = if let Ok(od) = get_user_data(&args[1], "data") { od } else { args[1].clone() };
+        if let (PyObjectPayload::Dict(dst), PyObjectPayload::Dict(src)) = (&data.payload, &other.payload) {
+            let mut w = dst.write();
+            for (k, v) in src.read().iter() { w.insert(k.clone(), v.clone()); }
+        }
+        Ok(args[0].clone())
+    }));
     PyObject::class(CompactString::from("UserDict"), vec![], ns)
 }
 
@@ -1209,6 +1255,72 @@ fn make_user_list_class() -> PyObjectRef {
     ns.insert(CompactString::from("__iter__"), make_builtin(|args| {
         let data = get_user_data(&args[0], "data")?;
         data.get_iter()
+    }));
+    ns.insert(CompactString::from("__delitem__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected index")); }
+        let data = get_user_data(&args[0], "data")?;
+        if let PyObjectPayload::List(l) = &data.payload {
+            let idx = args[1].to_int()? as i64;
+            let mut w = l.write();
+            let len = w.len() as i64;
+            let i = if idx < 0 { (len + idx).max(0) as usize } else { idx as usize };
+            if i < w.len() {
+                w.remove(i);
+                Ok(PyObject::none())
+            } else {
+                Err(PyException::index_error("list assignment index out of range"))
+            }
+        } else {
+            Err(PyException::type_error("expected list data"))
+        }
+    }));
+    ns.insert(CompactString::from("__add__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected other")); }
+        let data = get_user_data(&args[0], "data")?;
+        let other = if let Ok(od) = get_user_data(&args[1], "data") { od } else { args[1].clone() };
+        let mut items = data.to_list()?;
+        items.extend(other.to_list()?);
+        Ok(PyObject::list(items))
+    }));
+    ns.insert(CompactString::from("__iadd__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected other")); }
+        let data = get_user_data(&args[0], "data")?;
+        let other = if let Ok(od) = get_user_data(&args[1], "data") { od } else { args[1].clone() };
+        if let PyObjectPayload::List(l) = &data.payload {
+            l.write().extend(other.to_list()?);
+        }
+        Ok(args[0].clone())
+    }));
+    ns.insert(CompactString::from("__mul__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected int")); }
+        let data = get_user_data(&args[0], "data")?;
+        let n = args[1].to_int()?.max(0) as usize;
+        let items = data.to_list()?;
+        let mut result = Vec::with_capacity(items.len() * n);
+        for _ in 0..n { result.extend(items.iter().cloned()); }
+        Ok(PyObject::list(result))
+    }));
+    ns.insert(CompactString::from("__eq__"), make_builtin(|args| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let data = get_user_data(&args[0], "data")?;
+        let other = if let Ok(od) = get_user_data(&args[1], "data") { od } else { args[1].clone() };
+        if let (PyObjectPayload::List(a), PyObjectPayload::List(b)) = (&data.payload, &other.payload) {
+            let ra = a.read();
+            let rb = b.read();
+            if ra.len() != rb.len() { return Ok(PyObject::bool_val(false)); }
+            for (x, y) in ra.iter().zip(rb.iter()) {
+                if !x.compare(y, CompareOp::Eq).map_or(false, |v| v.is_truthy()) {
+                    return Ok(PyObject::bool_val(false));
+                }
+            }
+            Ok(PyObject::bool_val(true))
+        } else {
+            Ok(PyObject::bool_val(false))
+        }
+    }));
+    ns.insert(CompactString::from("__bool__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        Ok(PyObject::bool_val(data.py_len()? > 0))
     }));
     PyObject::class(CompactString::from("UserList"), vec![], ns)
 }
@@ -1352,6 +1464,47 @@ fn make_user_string_class() -> PyObjectRef {
         let s = data.as_str().unwrap_or("");
         let other = args[1].py_to_string();
         Ok(PyObject::bool_val(s == other.as_str()))
+    }));
+    ns.insert(CompactString::from("__getitem__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected index")); }
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("");
+        let idx = args[1].to_int()? as i64;
+        let len = s.chars().count() as i64;
+        let i = if idx < 0 { (len + idx).max(0) as usize } else { idx as usize };
+        match s.chars().nth(i) {
+            Some(c) => Ok(PyObject::str_val(CompactString::from(c.to_string()))),
+            None => Err(PyException::index_error("string index out of range")),
+        }
+    }));
+    ns.insert(CompactString::from("__iter__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("").to_string();
+        let chars: Vec<PyObjectRef> = s.chars()
+            .map(|c| PyObject::str_val(CompactString::from(c.to_string())))
+            .collect();
+        Ok(PyObject::list(chars))
+    }));
+    ns.insert(CompactString::from("__mul__"), make_builtin(|args| {
+        if args.len() < 2 { return Err(PyException::type_error("expected int")); }
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("");
+        let n = args[1].to_int()?.max(0) as usize;
+        Ok(PyObject::str_val(CompactString::from(s.repeat(n))))
+    }));
+    ns.insert(CompactString::from("__bool__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("");
+        Ok(PyObject::bool_val(!s.is_empty()))
+    }));
+    ns.insert(CompactString::from("__hash__"), make_builtin(|args| {
+        let data = get_user_data(&args[0], "data")?;
+        let s = data.as_str().unwrap_or("");
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        s.hash(&mut hasher);
+        Ok(PyObject::int(hasher.finish() as i64))
     }));
     PyObject::class(CompactString::from("UserString"), vec![], ns)
 }

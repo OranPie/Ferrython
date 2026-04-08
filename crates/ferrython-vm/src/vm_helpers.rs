@@ -1611,54 +1611,82 @@ impl VirtualMachine {
         };
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
         if args.len() >= 2 {
-            if let PyObjectPayload::Dict(ref map) = args[1].payload {
+            if let PyObjectPayload::Dict(ref globs_map) = args[1].payload {
                 let mut new_globals = IndexMap::new();
-                let m = map.read();
-                for (k, v) in m.iter() {
+                let gm = globs_map.read();
+                for (k, v) in gm.iter() {
                     let key_str = match k {
                         HashableKey::Str(s) => s.clone(),
                         _ => CompactString::from(format!("{:?}", k)),
                     };
                     new_globals.insert(key_str, v.clone());
                 }
-                drop(m);
-                // Merge locals dict (args[2]) — locals override globals for name resolution
-                if args.len() >= 3 {
-                    if let PyObjectPayload::Dict(ref locals_map) = args[2].payload {
-                        let lm = locals_map.read();
-                        for (k, v) in lm.iter() {
-                            let key_str = match k {
-                                HashableKey::Str(s) => s.clone(),
-                                _ => CompactString::from(format!("{:?}", k)),
-                            };
-                            new_globals.insert(key_str, v.clone());
-                        }
+                drop(gm);
+
+                // Check if we have a separate locals dict (args[2] that is not None)
+                let has_separate_locals = args.len() >= 3 && !matches!(&args[2].payload, PyObjectPayload::None);
+                let locals_dict = if has_separate_locals {
+                    if let PyObjectPayload::Dict(ref lm) = args[2].payload {
+                        Some(lm.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Merge locals entries into globals for name resolution
+                let original_global_keys: std::collections::HashSet<CompactString> =
+                    new_globals.keys().cloned().collect();
+                if let Some(ref locals_arc) = locals_dict {
+                    let lm = locals_arc.read();
+                    for (k, v) in lm.iter() {
+                        let key_str = match k {
+                            HashableKey::Str(s) => s.clone(),
+                            _ => CompactString::from(format!("{:?}", k)),
+                        };
+                        new_globals.insert(key_str, v.clone());
                     }
                 }
+
                 let shared = Arc::new(RwLock::new(new_globals));
                 let exec_result = self.execute_with_globals(code, shared.clone())?;
-                // Check for __eval_result__ in globals (set by compile(mode='eval'))
-                if let Some(val) = shared.read().get("__eval_result__").cloned() {
-                    if !is_code_obj {
-                        let results = shared.read();
-                        let mut m = map.write();
-                        for (k, v) in results.iter() {
-                            m.insert(HashableKey::Str(k.clone()), v.clone());
+
+                // Check for __eval_result__ (compile(mode='eval') wrapping)
+                let eval_result = shared.read().get("__eval_result__").cloned();
+
+                // Write results back to the appropriate dicts
+                let results = shared.read();
+                if let Some(ref locals_arc) = locals_dict {
+                    // Separate locals: new defs go to locals, existing globals updated in globals
+                    let mut gm = globs_map.write();
+                    let mut lm = locals_arc.write();
+                    for (k, v) in results.iter() {
+                        let hk = HashableKey::Str(k.clone());
+                        if original_global_keys.contains(k) {
+                            // Update existing global entry
+                            gm.insert(hk, v.clone());
+                        } else {
+                            // New definition goes to locals
+                            lm.insert(hk, v.clone());
                         }
                     }
+                } else {
+                    // No separate locals: write everything back to globals
+                    let mut gm = globs_map.write();
+                    for (k, v) in results.iter() {
+                        gm.insert(HashableKey::Str(k.clone()), v.clone());
+                    }
+                }
+                drop(results);
+
+                if let Some(val) = eval_result {
                     return Ok(val);
                 }
                 if is_code_obj {
                     return Ok(exec_result);
                 }
-                let result = shared.read().get("__eval_result__").cloned()
-                    .unwrap_or_else(PyObject::none);
-                let results = shared.read();
-                let mut m = map.write();
-                for (k, v) in results.iter() {
-                    m.insert(HashableKey::Str(k.clone()), v.clone());
-                }
-                Ok(result)
+                Ok(PyObject::none())
             } else {
                 Err(PyException::type_error("eval() globals must be a dict"))
             }

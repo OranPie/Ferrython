@@ -492,6 +492,81 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         Ok(PyObject::none())
                     }));
                 }
+                // Fallback: synthesize object-level dunder methods that all classes inherit
+                if name == "__setattr__" {
+                    return Some(PyObject::native_function("__setattr__", |args| {
+                        if args.len() < 3 {
+                            return Err(PyException::type_error("__setattr__ requires 3 arguments"));
+                        }
+                        let attr_name = args[1].py_to_string();
+                        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                            inst.attrs.write().insert(CompactString::from(attr_name.as_str()), args[2].clone());
+                        }
+                        Ok(PyObject::none())
+                    }));
+                }
+                if name == "__delattr__" {
+                    return Some(PyObject::native_function("__delattr__", |args| {
+                        if args.len() < 2 {
+                            return Err(PyException::type_error("__delattr__ requires 2 arguments"));
+                        }
+                        let attr_name = args[1].py_to_string();
+                        if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                            inst.attrs.write().shift_remove(attr_name.as_str());
+                        }
+                        Ok(PyObject::none())
+                    }));
+                }
+                if name == "__getattribute__" {
+                    return Some(PyObject::native_function("__getattribute__", |args| {
+                        if args.len() < 2 {
+                            return Err(PyException::type_error("__getattribute__ requires 2 arguments"));
+                        }
+                        let attr_name = args[1].py_to_string();
+                        args[0].get_attr(&attr_name).ok_or_else(||
+                            PyException::attribute_error(format!(
+                                "'{}' object has no attribute '{}'",
+                                args[0].type_name(), attr_name
+                            ))
+                        )
+                    }));
+                }
+                // Note: Do NOT add __init__ fallback here — it breaks
+                // dataclass auto-init detection (which checks cls.get_attr("__init__")).
+                if name == "__repr__" {
+                    let cls_name = cd.name.clone();
+                    return Some(PyObject::native_closure("__repr__", move |args| {
+                        if args.is_empty() {
+                            return Ok(PyObject::str_val(CompactString::from(format!("<class '{}'>", cls_name))));
+                        }
+                        let addr = Arc::as_ptr(&args[0]) as usize;
+                        Ok(PyObject::str_val(CompactString::from(format!("<{} object at 0x{:x}>", cls_name, addr))))
+                    }));
+                }
+                if name == "__hash__" {
+                    return Some(PyObject::native_function("__hash__", |args| {
+                        if args.is_empty() {
+                            return Err(PyException::type_error("__hash__ requires 1 argument"));
+                        }
+                        Ok(PyObject::int(Arc::as_ptr(&args[0]) as i64))
+                    }));
+                }
+                if name == "__eq__" {
+                    return Some(PyObject::native_function("__eq__", |args| {
+                        if args.len() < 2 {
+                            return Ok(PyObject::not_implemented());
+                        }
+                        Ok(PyObject::bool_val(Arc::ptr_eq(&args[0], &args[1])))
+                    }));
+                }
+                if name == "__ne__" {
+                    return Some(PyObject::native_function("__ne__", |args| {
+                        if args.len() < 2 {
+                            return Ok(PyObject::not_implemented());
+                        }
+                        Ok(PyObject::bool_val(!Arc::ptr_eq(&args[0], &args[1])))
+                    }));
+                }
                 None
             }
             PyObjectPayload::Module(m) => m.attrs.read().get(name).cloned(),
@@ -669,7 +744,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }))
                     }
                     // object.__setattr__(instance, name, value) — bypass custom __setattr__
-                    "__setattr__" if n.as_str() == "object" => {
+                    "__setattr__" => {
                         Some(PyObject::native_function("object.__setattr__", |args| {
                             if args.len() != 3 {
                                 return Err(PyException::type_error(
@@ -684,7 +759,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }))
                     }
                     // object.__getattribute__(instance, name) — bypass custom __getattribute__
-                    "__getattribute__" if n.as_str() == "object" => {
+                    "__getattribute__" => {
                         Some(PyObject::native_function("object.__getattribute__", |args| {
                             if args.len() != 2 {
                                 return Err(PyException::type_error(
@@ -703,7 +778,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }))
                     }
                     // object.__delattr__(instance, name) — bypass custom __delattr__
-                    "__delattr__" if n.as_str() == "object" => {
+                    "__delattr__" => {
                         Some(PyObject::native_function("object.__delattr__", |args| {
                             if args.len() != 2 {
                                 return Err(PyException::type_error(
@@ -1056,6 +1131,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 match name {
                     "__name__" => Some(PyObject::str_val(f.name.clone())),
                     "__qualname__" => Some(PyObject::str_val(f.qualname.clone())),
+                    "__class__" => Some(PyObject::builtin_type(CompactString::from("function"))),
                     "__defaults__" => {
                         if f.defaults.is_empty() { Some(PyObject::none()) }
                         else { Some(PyObject::tuple(f.defaults.clone())) }
@@ -1116,6 +1192,24 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }
                         Some(PyObject::dict(map))
                     }
+                    "__get__" => {
+                        let func = obj.clone();
+                        Some(PyObject::native_closure("__get__", move |args| {
+                            if args.is_empty() {
+                                return Err(PyException::type_error("__get__ requires at least 1 argument"));
+                            }
+                            let instance = &args[0];
+                            if matches!(&instance.payload, PyObjectPayload::None) {
+                                return Ok(func.clone());
+                            }
+                            Ok(Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: instance.clone(),
+                                    method: func.clone(),
+                                }
+                            }))
+                        }))
+                    }
                     _ => None,
                 }
             }
@@ -1125,7 +1219,58 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
                 "__doc__" => Some(PyObject::none()),
+                "__get__" => {
+                    let func = obj.clone();
+                    Some(PyObject::native_closure("__get__", move |args| {
+                        if args.is_empty() {
+                            return Err(PyException::type_error("__get__ requires at least 1 argument"));
+                        }
+                        let instance = &args[0];
+                        if matches!(&instance.payload, PyObjectPayload::None) {
+                            return Ok(func.clone());
+                        }
+                        Ok(Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: instance.clone(),
+                                method: func.clone(),
+                            }
+                        }))
+                    }))
+                }
                 _ => None,
+            }
+            PyObjectPayload::ClassMethod(func) => match name {
+                "__class__" => Some(PyObject::builtin_type(CompactString::from("classmethod"))),
+                "__func__" => Some(func.clone()),
+                "__wrapped__" => Some(func.clone()),
+                "__get__" => {
+                    let func = func.clone();
+                    Some(PyObject::native_closure("__get__", move |args| {
+                        if args.len() < 2 {
+                            return Err(PyException::type_error("__get__ requires 2 arguments"));
+                        }
+                        let owner = &args[1];
+                        Ok(Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: owner.clone(),
+                                method: func.clone(),
+                            }
+                        }))
+                    }))
+                }
+                _ => None,
+            }
+            PyObjectPayload::StaticMethod(func) => match name {
+                "__class__" => Some(PyObject::builtin_type(CompactString::from("staticmethod"))),
+                "__func__" => Some(func.clone()),
+                "__wrapped__" => Some(func.clone()),
+                "__get__" => {
+                    let func = func.clone();
+                    Some(PyObject::native_closure("__get__", move |_args| {
+                        Ok(func.clone())
+                    }))
+                }
+                _ => func.get_attr(name),
             }
             PyObjectPayload::BoundMethod { method, .. } => {
                 method.get_attr(name)
@@ -1826,6 +1971,32 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         if let PyObjectPayload::BuiltinBoundMethod { receiver, .. } = &obj.payload {
                             Some(receiver.clone())
                         } else { None }
+                    }
+                    _ => None,
+                }
+            }
+            PyObjectPayload::NativeClosure { name: nc_name, .. } => {
+                match name {
+                    "__name__" | "__qualname__" => Some(PyObject::str_val(nc_name.clone())),
+                    "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
+                    "__doc__" => Some(PyObject::none()),
+                    "__get__" => {
+                        let func = obj.clone();
+                        Some(PyObject::native_closure("__get__", move |args| {
+                            if args.is_empty() {
+                                return Err(PyException::type_error("__get__ requires at least 1 argument"));
+                            }
+                            let instance = &args[0];
+                            if matches!(&instance.payload, PyObjectPayload::None) {
+                                return Ok(func.clone());
+                            }
+                            Ok(Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: instance.clone(),
+                                    method: func.clone(),
+                                }
+                            }))
+                        }))
                     }
                     _ => None,
                 }
