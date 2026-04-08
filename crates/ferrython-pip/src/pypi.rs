@@ -192,18 +192,66 @@ fn make_client() -> Result<reqwest::blocking::Client, String> {
 /// Format a descriptive error message for PyPI HTTP errors.
 fn format_http_error(name: &str, status: u16) -> String {
     match status {
-        404 => format!(
-            "Package '{}' not found on PyPI (HTTP 404). Check the package name spelling.",
-            name
-        ),
+        404 => {
+            // Try common name variations to suggest alternatives
+            let suggestions = suggest_pypi_alternatives(name);
+            let mut msg = format!(
+                "Package '{}' not found on PyPI (HTTP 404).\n\
+                 Check the package name spelling.",
+                name
+            );
+            if !suggestions.is_empty() {
+                msg.push_str(&format!(
+                    "\nDid you mean one of these?\n  {}",
+                    suggestions.join("\n  ")
+                ));
+            }
+            msg
+        }
         403 => format!(
             "Access denied for '{}' on PyPI (HTTP 403). The package may be private or restricted.",
             name
         ),
         429 => "Rate limited by PyPI (HTTP 429). Please wait a moment and try again.".to_string(),
-        500..=599 => format!("PyPI server error (HTTP {}). Try again later.", status),
+        500..=599 => format!(
+            "PyPI server error (HTTP {}). Try again later.\n\
+             Hint: Check https://status.python.org/ for PyPI service status.",
+            status
+        ),
         _ => format!("Failed to fetch '{}' from PyPI (HTTP {})", name, status),
     }
+}
+
+/// Try common name variations to suggest alternatives on PyPI.
+fn suggest_pypi_alternatives(name: &str) -> Vec<String> {
+    let variations: Vec<String> = vec![
+        name.replace('_', "-"),
+        name.replace('-', "_"),
+        format!("python-{}", name),
+        format!("py{}", name),
+    ]
+    .into_iter()
+    .filter(|v| v.to_lowercase() != name.to_lowercase())
+    .collect();
+
+    let client = match make_client() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let mut found = Vec::new();
+    for variant in &variations {
+        let url = format!("https://pypi.org/pypi/{}/json", variant);
+        if let Ok(resp) = client.get(&url).send() {
+            if resp.status().is_success() {
+                if let Ok(data) = resp.json::<PyPIResponse>() {
+                    found.push(format!("{} ({})", data.info.name, data.info.version));
+                    if found.len() >= 3 { break; }
+                }
+            }
+        }
+    }
+    found
 }
 
 /// GET request with retry logic (exponential backoff, 3 attempts).
@@ -217,20 +265,35 @@ fn get_with_retry(client: &reqwest::blocking::Client, url: &str) -> Result<reqwe
             Ok(resp) => return Ok(resp),
             Err(e) => {
                 if e.is_timeout() {
-                    last_err = format!("Connection timed out: {}", e);
+                    last_err = format!(
+                        "Connection timed out after 30s.\n\
+                         URL: {}\n\
+                         Hint: Check if you're behind a slow proxy or firewall.",
+                        url
+                    );
                     continue;
                 }
                 if e.is_connect() {
-                    last_err = format!("Connection failed (check network): {}", e);
+                    last_err = format!(
+                        "Connection failed: {}\n\
+                         Hint: Check your internet connection and DNS settings.",
+                        e
+                    );
                     continue;
                 }
-                return Err(format!("Network error: {}\nHint: Check your internet connection and proxy settings.", e));
+                return Err(format!(
+                    "Network error: {}\n\
+                     Hint: Check your internet connection and proxy settings.\n\
+                     URL: {}",
+                    e, url
+                ));
             }
         }
     }
     Err(format!(
         "Network error after 3 retries: {}\n\
-         Hint: Check your internet connection, DNS, or try again later.",
+         Hint: Check your internet connection, DNS, or try again later.\n\
+         If behind a corporate firewall, ensure HTTPS traffic to pypi.org is allowed.",
         last_err
     ))
 }

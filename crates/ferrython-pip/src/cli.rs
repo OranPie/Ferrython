@@ -82,11 +82,28 @@ enum Commands {
         /// Show outdated packages
         #[arg(short, long)]
         outdated: bool,
+
+        /// Output format: columns (default), freeze, json
+        #[arg(long, default_value = "columns")]
+        format: String,
+
+        /// Only show packages not required by other packages
+        #[arg(long)]
+        not_required: bool,
+
+        /// Exclude editable packages
+        #[arg(long)]
+        exclude_editable: bool,
     },
 
     /// Show package information
     Show {
-        package: String,
+        /// Package name(s) to show
+        packages: Vec<String>,
+
+        /// Show installed files
+        #[arg(short, long)]
+        files: bool,
     },
 
     /// Search PyPI for packages
@@ -104,7 +121,15 @@ enum Commands {
     },
 
     /// Freeze installed packages into requirements format
-    Freeze,
+    Freeze {
+        /// Exclude editable packages from output
+        #[arg(long)]
+        exclude_editable: bool,
+
+        /// Only output packages matching these names
+        #[arg(short, long)]
+        local: bool,
+    },
 
     /// Verify installed packages have compatible dependencies
     Check,
@@ -214,11 +239,21 @@ pub fn run() {
         Commands::Uninstall { packages, yes } => {
             uninstall_packages(&packages, &site_packages, yes, quiet)
         }
-        Commands::List { outdated } => {
-            list_packages(&site_packages, outdated)
+        Commands::List { outdated, format, not_required, exclude_editable } => {
+            list_packages(&site_packages, outdated, &format, not_required, exclude_editable)
         }
-        Commands::Show { package } => {
-            show_package(&package, &site_packages)
+        Commands::Show { packages, files } => {
+            if packages.is_empty() {
+                eprintln!("Error: Missing required argument <PACKAGE>");
+                std::process::exit(1);
+            }
+            let mut first = true;
+            for pkg in &packages {
+                if !first { println!("---"); }
+                show_package(pkg, &site_packages, files).ok();
+                first = false;
+            }
+            Ok(())
         }
         Commands::Search { query } => {
             search_pypi(&query)
@@ -226,8 +261,8 @@ pub fn run() {
         Commands::Download { packages, dest } => {
             download_packages(&packages, &dest, quiet)
         }
-        Commands::Freeze => {
-            freeze_packages(&site_packages)
+        Commands::Freeze { exclude_editable, local: _ } => {
+            freeze_packages(&site_packages, exclude_editable)
         }
         Commands::Check => {
             check_packages(&site_packages)
@@ -709,67 +744,145 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
 }
 
 fn uninstall_packages(names: &[String], site_packages: &str, yes: bool, quiet: bool) -> Result<(), String> {
+    if names.is_empty() {
+        return Err("You must give at least one package to uninstall (see 'ferryip uninstall --help')".to_string());
+    }
     for name in names {
         let installed = registry::get_installed(name, site_packages);
         if installed.is_none() {
+            // Try to suggest similar installed packages
+            let all = registry::list_installed(site_packages);
+            let suggestion = find_closest_name(name, &all.iter().map(|p| p.name.as_str()).collect::<Vec<_>>());
+            let hint = if let Some(ref similar) = suggestion {
+                format!("\nDid you mean: {}?", similar)
+            } else {
+                String::new()
+            };
             if !quiet {
-                println!("WARNING: Skipping {} as it is not installed.", name);
+                println!("WARNING: Skipping {} as it is not installed.{}", name, hint);
             }
             continue;
         }
         let info = installed.unwrap();
         if !yes {
-            println!("Found existing installation: {}-{}", name, info.version);
-            println!("  Would remove:");
-            for f in &info.files {
+            println!("Found existing installation: {}-{}", info.name, info.version);
+            let file_count = info.files.len();
+            println!("  Would remove {} file(s):", file_count);
+            // Show up to 10 files, then summarize
+            for (i, f) in info.files.iter().enumerate() {
+                if i >= 10 {
+                    println!("    ... and {} more", file_count - 10);
+                    break;
+                }
                 println!("    {}", f);
             }
             print!("Proceed (Y/n)? ");
+            use std::io::Write;
+            std::io::stdout().flush().ok();
             let mut input = String::new();
             if std::io::stdin().read_line(&mut input).is_ok() && input.trim().to_lowercase() == "n" {
+                println!("Skipping {}.", name);
                 continue;
             }
         }
         registry::uninstall(name, site_packages)
             .map_err(|e| format!("Uninstall failed: {}", e))?;
         if !quiet {
-            println!("Successfully uninstalled {}-{}", name, info.version);
+            println!("Successfully uninstalled {}-{}", info.name, info.version);
         }
     }
     Ok(())
 }
 
-fn list_packages(site_packages: &str, outdated: bool) -> Result<(), String> {
-    let packages = registry::list_installed(site_packages);
+fn list_packages(site_packages: &str, outdated: bool, format: &str, not_required: bool, exclude_editable: bool) -> Result<(), String> {
+    let mut packages = registry::list_installed(site_packages);
     if packages.is_empty() {
         println!("No packages installed.");
         return Ok(());
     }
 
-    if outdated {
-        println!("{:<30} {:<15} {}", "Package", "Version", "Latest");
-        println!("{:<30} {:<15} {}", "-------", "-------", "------");
-        for pkg in &packages {
-            match pypi::fetch_package_info(&pkg.name, None) {
-                Ok(latest) => {
-                    if latest.version != pkg.version {
-                        println!("{:<30} {:<15} {}", pkg.name, pkg.version, latest.version);
-                    }
-                }
-                Err(_) => {} // skip packages that can't be checked
+    // Filter editable packages if requested
+    if exclude_editable {
+        let site = std::path::Path::new(site_packages);
+        packages.retain(|pkg| {
+            let normalized = pkg.name.to_lowercase().replace('-', "_").replace('.', "_");
+            !site.join(format!("__{}.pth", normalized)).exists()
+        });
+    }
+
+    // Filter to packages not required by others
+    if not_required {
+        let all_deps: std::collections::HashSet<String> = packages.iter()
+            .filter_map(|p| p.requires.as_ref())
+            .flat_map(|reqs| reqs.iter())
+            .map(|r| {
+                let name = r.split_whitespace().next().unwrap_or(r);
+                let name = name.split(&['>', '<', '=', '!', '~', ';', '(', '['][..]).next()
+                    .unwrap_or(name);
+                name.to_lowercase().replace('-', "_").replace('.', "_")
+            })
+            .collect();
+        packages.retain(|p| {
+            let normalized = p.name.to_lowercase().replace('-', "_").replace('.', "_");
+            !all_deps.contains(&normalized)
+        });
+    }
+
+    match format {
+        "freeze" => {
+            for pkg in &packages {
+                println!("{}=={}", pkg.name, pkg.version);
             }
         }
-    } else {
-        println!("{:<30} {}", "Package", "Version");
-        println!("{:<30} {}", "-------", "-------");
-        for pkg in &packages {
-            println!("{:<30} {}", pkg.name, pkg.version);
+        "json" => {
+            println!("[");
+            for (i, pkg) in packages.iter().enumerate() {
+                let comma = if i + 1 < packages.len() { "," } else { "" };
+                println!("  {{\"name\": \"{}\", \"version\": \"{}\"}}{}", pkg.name, pkg.version, comma);
+            }
+            println!("]");
+        }
+        _ => { // "columns" (default)
+            if outdated {
+                // Calculate dynamic column widths
+                let name_width = packages.iter().map(|p| p.name.len()).max().unwrap_or(7).max(7);
+                let ver_width = packages.iter().map(|p| p.version.len()).max().unwrap_or(7).max(7);
+                println!("{:<name_w$} {:<ver_w$} {}", "Package", "Version", "Latest",
+                         name_w = name_width, ver_w = ver_width);
+                println!("{:<name_w$} {:<ver_w$} {}", "-".repeat(name_width), "-".repeat(ver_width), "------",
+                         name_w = name_width, ver_w = ver_width);
+                let mut outdated_count = 0;
+                for pkg in &packages {
+                    match pypi::fetch_package_info(&pkg.name, None) {
+                        Ok(latest) => {
+                            if latest.version != pkg.version {
+                                println!("{:<name_w$} {:<ver_w$} {}", pkg.name, pkg.version, latest.version,
+                                         name_w = name_width, ver_w = ver_width);
+                                outdated_count += 1;
+                            }
+                        }
+                        Err(_) => {} // skip packages that can't be checked
+                    }
+                }
+                if outdated_count == 0 {
+                    println!("All packages are up to date.");
+                }
+            } else {
+                // Calculate dynamic column widths
+                let name_width = packages.iter().map(|p| p.name.len()).max().unwrap_or(7).max(7);
+                println!("{:<width$} {}", "Package", "Version", width = name_width);
+                println!("{:<width$} {}", "-".repeat(name_width), "-------", width = name_width);
+                for pkg in &packages {
+                    println!("{:<width$} {}", pkg.name, pkg.version, width = name_width);
+                }
+                println!("\n[{} package(s) installed]", packages.len());
+            }
         }
     }
     Ok(())
 }
 
-fn show_package(name: &str, site_packages: &str) -> Result<(), String> {
+fn show_package(name: &str, site_packages: &str, show_files: bool) -> Result<(), String> {
     // Try installed first
     if let Some(info) = registry::get_installed(name, site_packages) {
         println!("Name: {}", info.name);
@@ -789,14 +902,50 @@ fn show_package(name: &str, site_packages: &str) -> Result<(), String> {
         if let Some(ref requires_python) = info.requires_python {
             println!("Requires-Python: {}", requires_python);
         }
-        if let Some(ref requires) = info.requires {
-            println!("Requires: {}", requires.join(", "));
-        }
         println!("Location: {}", site_packages);
+        if let Some(ref requires) = info.requires {
+            // Strip markers for display; show clean dependency names
+            let dep_names: Vec<String> = requires.iter()
+                .map(|r| {
+                    let clean = if let Some(semi) = r.find(';') { &r[..semi] } else { r };
+                    clean.trim().to_string()
+                })
+                .collect();
+            println!("Requires: {}", dep_names.join(", "));
+        } else {
+            println!("Requires: (none)");
+        }
+
+        // Compute "Required-by": which installed packages depend on this one
+        let normalized_name = info.name.to_lowercase().replace('-', "_").replace('.', "_");
+        let all_installed = registry::list_installed(site_packages);
+        let required_by: Vec<String> = all_installed.iter()
+            .filter(|p| {
+                p.requires.as_ref().map_or(false, |reqs| {
+                    reqs.iter().any(|r| {
+                        let dep = r.split_whitespace().next().unwrap_or(r);
+                        let dep = dep.split(&['>', '<', '=', '!', '~', ';', '(', '['][..])
+                            .next().unwrap_or(dep);
+                        dep.to_lowercase().replace('-', "_").replace('.', "_") == normalized_name
+                    })
+                })
+            })
+            .map(|p| p.name.clone())
+            .collect();
+        if required_by.is_empty() {
+            println!("Required-by: (none)");
+        } else {
+            println!("Required-by: {}", required_by.join(", "));
+        }
+
         println!("Installer: ferryip");
-        println!("Files:");
-        for f in &info.files {
-            println!("  {}", f);
+
+        if show_files {
+            println!("Files:");
+            for f in &info.files {
+                println!("  {}", f);
+            }
+            println!("  ({} file(s))", info.files.len());
         }
         return Ok(());
     }
@@ -821,11 +970,19 @@ fn show_package(name: &str, site_packages: &str) -> Result<(), String> {
             println!("\nTo install: ferryip install {}", name);
             Ok(())
         }
-        Err(_) => Err(format!(
-            "Package '{}' is not installed and was not found on PyPI.\n\
-             Hint: Check the package name spelling or search with: ferryip search {}",
-            name, name
-        )),
+        Err(_e) => {
+            let suggestion = suggest_similar_package(name);
+            let hint = if let Some(ref similar) = suggestion {
+                format!("\nDid you mean: {}?\n", similar)
+            } else {
+                String::new()
+            };
+            Err(format!(
+                "Package '{}' is not installed and was not found on PyPI.\n\
+                 {}Hint: Check the package name spelling or search with: ferryip search {}",
+                name, hint, name
+            ))
+        }
     }
 }
 
@@ -895,10 +1052,27 @@ fn download_packages(specs: &[String], dest: &str, quiet: bool) -> Result<(), St
     Ok(())
 }
 
-fn freeze_packages(site_packages: &str) -> Result<(), String> {
+fn freeze_packages(site_packages: &str, exclude_editable: bool) -> Result<(), String> {
     let packages = registry::list_installed(site_packages);
+    let site = std::path::Path::new(site_packages);
     for pkg in &packages {
-        println!("{}=={}", pkg.name, pkg.version);
+        let normalized = pkg.name.to_lowercase().replace('-', "_").replace('.', "_");
+        let is_editable = site.join(format!("__{}.pth", normalized)).exists();
+        if exclude_editable && is_editable {
+            continue;
+        }
+        if is_editable {
+            // Show editable installs in -e format like pip does
+            let pth_path = site.join(format!("__{}.pth", normalized));
+            if let Ok(content) = std::fs::read_to_string(&pth_path) {
+                let source = content.trim();
+                println!("-e {}", source);
+            } else {
+                println!("# Editable install: {}=={}", pkg.name, pkg.version);
+            }
+        } else {
+            println!("{}=={}", pkg.name, pkg.version);
+        }
     }
     Ok(())
 }
@@ -1726,4 +1900,65 @@ fn generate_lock_file(site_packages: &str, output_file: &str, requirement_file: 
 
     println!("Locked {} packages to {}", locked_packages.len(), output_file);
     Ok(())
+}
+
+// ── Similar package suggestion helpers ───────────────────────────────────────
+
+/// Suggest a similar package name from PyPI using common variations.
+fn suggest_similar_package(name: &str) -> Option<String> {
+    let variations = vec![
+        name.replace('_', "-"),
+        name.replace('-', "_"),
+        format!("python-{}", name),
+        format!("py{}", name),
+        format!("{}3", name),
+    ];
+
+    for variant in &variations {
+        if variant == name { continue; }
+        if let Ok(results) = pypi::search(variant) {
+            if !results.is_empty() {
+                return Some(results[0].0.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Find the closest matching name from a list using edit distance.
+fn find_closest_name(needle: &str, haystack: &[&str]) -> Option<String> {
+    let needle_lower = needle.to_lowercase();
+    let mut best: Option<(usize, String)> = None;
+    for &candidate in haystack {
+        let dist = edit_distance(&needle_lower, &candidate.to_lowercase());
+        // Only suggest if reasonably close (max 3 edits or half the length)
+        let threshold = (needle.len() / 2).max(3);
+        if dist <= threshold {
+            if best.is_none() || dist < best.as_ref().unwrap().0 {
+                best = Some((dist, candidate.to_string()));
+            }
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+/// Simple Levenshtein edit distance.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let m = a_bytes.len();
+    let n = b_bytes.len();
+    let mut prev = (0..=n).collect::<Vec<_>>();
+    let mut curr = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a_bytes[i - 1] == b_bytes[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
 }

@@ -395,6 +395,15 @@ impl VirtualMachine {
                         return Ok(None);
                     }
                 }
+                // PEP 562: module-level __getattr__
+                if let PyObjectPayload::Module(_) = &obj.payload {
+                    if let Some(ga) = obj.get_attr("__getattr__") {
+                        let name_arg = PyObject::str_val(intern::intern_or_new(name.as_str()));
+                        let result = self.call_object(ga, vec![name_arg])?;
+                        self.vm_push(result);
+                        return Ok(None);
+                    }
+                }
                 return Err(PyException::attribute_error(format!(
                     "'{}' object has no attribute '{}'", obj.type_name(), name
                 )));

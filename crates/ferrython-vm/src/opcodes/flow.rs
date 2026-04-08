@@ -844,6 +844,16 @@ impl VirtualMachine {
                 match module.get_attr(&name) {
                     Some(v) => { self.vm_frame().push(v); }
                     None => {
+                        // PEP 562: module-level __getattr__ for ImportFrom
+                        if let PyObjectPayload::Module(_) = &module.payload {
+                            if let Some(ga) = module.get_attr("__getattr__") {
+                                let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
+                                if let Ok(result) = self.call_object(ga, vec![name_arg]) {
+                                    self.vm_frame().push(result);
+                                    return Ok(None);
+                                }
+                            }
+                        }
                         // CPython fallback: try importing package.submodule
                         if !mod_name.is_empty() {
                             let submod_name = format!("{}.{}", mod_name, name);
