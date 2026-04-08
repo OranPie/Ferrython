@@ -775,6 +775,10 @@ pub fn create_inspect_module() -> PyObjectRef {
             kw_dict.insert(k.clone(), v.clone());
         }
         ba_attrs.insert(CompactString::from("kwargs"), PyObject::dict(kw_dict));
+        ba_attrs.insert(CompactString::from("apply_defaults"), PyObject::native_function(
+            "apply_defaults", |_: &[PyObjectRef]| Ok(PyObject::none())
+        ));
+        ba_attrs.insert(CompactString::from("signature"), PyObject::none());
         Ok(PyObject::instance_with_attrs(ba_cls, ba_attrs))
     }
 
