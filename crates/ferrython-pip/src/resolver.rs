@@ -1,7 +1,38 @@
 //! Dependency resolution — recursive install of package requirements.
 
 use crate::{pypi, installer, registry, version};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+/// Tracks resolved package versions for conflict detection.
+struct ResolutionState {
+    /// Map from normalized package name to (resolved version, who required it)
+    resolved: HashMap<String, (String, String)>,
+}
+
+impl ResolutionState {
+    fn new() -> Self {
+        Self { resolved: HashMap::new() }
+    }
+
+    /// Record a resolved version; returns Err if conflicting with a previous resolution.
+    fn record(&mut self, name: &str, version: &str, required_by: &str) -> Result<(), String> {
+        let key = normalize(name);
+        if let Some((prev_ver, prev_by)) = self.resolved.get(&key) {
+            if prev_ver != version {
+                return Err(format!(
+                    "Dependency conflict: {} {} (required by {}) conflicts with {} (required by {})",
+                    name, version, required_by, prev_ver, prev_by
+                ));
+            }
+        }
+        self.resolved.insert(key, (version.to_string(), required_by.to_string()));
+        Ok(())
+    }
+}
+
+fn normalize(name: &str) -> String {
+    name.to_lowercase().replace('-', "_").replace('.', "_")
+}
 
 /// Install a package and all its transitive dependencies.
 pub fn install_with_deps(
@@ -13,7 +44,22 @@ pub fn install_with_deps(
     quiet: bool,
     visited: &mut HashSet<String>,
 ) -> Result<(), String> {
-    let normalized = name.to_lowercase().replace('-', "_").replace('.', "_");
+    let mut state = ResolutionState::new();
+    install_with_deps_inner(name, version_req, site_packages, upgrade, no_deps, quiet, visited, &mut state, "user")
+}
+
+fn install_with_deps_inner(
+    name: &str,
+    version_req: Option<&str>,
+    site_packages: &str,
+    upgrade: bool,
+    no_deps: bool,
+    quiet: bool,
+    visited: &mut HashSet<String>,
+    state: &mut ResolutionState,
+    required_by: &str,
+) -> Result<(), String> {
+    let normalized = normalize(name);
 
     // Avoid cycles
     if !visited.insert(normalized.clone()) {
@@ -28,6 +74,7 @@ pub fn install_with_deps(
                     if !quiet {
                         println!("Requirement already satisfied: {} ({})", name, installed.version);
                     }
+                    state.record(name, &installed.version, required_by).ok();
                     return Ok(());
                 }
                 // Installed version doesn't match — need to upgrade
@@ -35,6 +82,7 @@ pub fn install_with_deps(
                 if !quiet {
                     println!("Requirement already satisfied: {} ({})", name, installed.version);
                 }
+                state.record(name, &installed.version, required_by).ok();
                 return Ok(());
             }
         }
@@ -47,11 +95,15 @@ pub fn install_with_deps(
     if let Some(spec) = version_req {
         if !version::version_matches(&release.version, spec) {
             return Err(format!(
-                "No compatible version found for {} (need {}, best available is {})",
-                name, spec, release.version
+                "ERROR: Could not find a version that satisfies the requirement {} (from versions: {})\n\
+                 No matching distribution found for {} {}",
+                spec, release.version, name, spec
             ));
         }
     }
+
+    // Conflict detection
+    state.record(name, &release.version, required_by)?;
 
     if !quiet {
         println!("Collecting {} ({})", release.name, release.version);
@@ -70,13 +122,54 @@ pub fn install_with_deps(
 
     // Process dependencies (unless --no-deps)
     if !no_deps {
+        let parent_name = release.name.clone();
         for dep_str in &release.requires_dist {
-            if let Some((dep_name, dep_spec)) = parse_dependency(dep_str) {
-                install_with_deps(&dep_name, dep_spec.as_deref(), site_packages, false, false, quiet, visited)?;
+            if let Some((dep_name, dep_spec, dep_extras)) = parse_dependency(dep_str) {
+                install_with_deps_inner(
+                    &dep_name, dep_spec.as_deref(), site_packages,
+                    false, false, quiet, visited, state, &parent_name,
+                )?;
+                // If the dependency itself has extras requested, install those too
+                if !dep_extras.is_empty() {
+                    install_extras_deps(&dep_name, &dep_extras, site_packages, quiet, visited, state, &parent_name)?;
+                }
             }
         }
     }
 
+    Ok(())
+}
+
+/// Install extra dependency groups for an already-installed package.
+fn install_extras_deps(
+    pkg_name: &str,
+    extras: &[String],
+    site_packages: &str,
+    quiet: bool,
+    visited: &mut HashSet<String>,
+    state: &mut ResolutionState,
+    required_by: &str,
+) -> Result<(), String> {
+    if let Some(info) = registry::get_installed(pkg_name, site_packages) {
+        if let Some(ref requires) = info.requires {
+            for req in requires {
+                if let Some(semicolon) = req.find(';') {
+                    let marker = req[semicolon + 1..].trim();
+                    for extra in extras {
+                        if marker.contains("extra") && marker.contains(extra) {
+                            let dep_spec = req[..semicolon].trim();
+                            if let Some((dep_name, dep_ver, _)) = parse_dependency_raw(dep_spec) {
+                                install_with_deps_inner(
+                                    &dep_name, dep_ver.as_deref(), site_packages,
+                                    false, false, quiet, visited, state, required_by,
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -108,7 +201,8 @@ fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::Releas
 }
 
 /// Parse a Requires-Dist entry like "requests (>=2.20)" or "typing-extensions; python_version < '3.8'".
-fn parse_dependency(dep: &str) -> Option<(String, Option<String>)> {
+/// Returns (name, version_spec, extras).
+fn parse_dependency(dep: &str) -> Option<(String, Option<String>, Vec<String>)> {
     let dep = dep.trim();
 
     // Evaluate environment markers (PEP 508)
@@ -120,35 +214,59 @@ fn parse_dependency(dep: &str) -> Option<(String, Option<String>)> {
         return parse_dependency(&dep[..semicolon]);
     }
 
+    parse_dependency_raw(dep)
+}
+
+/// Parse a dependency spec without evaluating markers.
+/// Returns (name, version_spec, extras).
+fn parse_dependency_raw(dep: &str) -> Option<(String, Option<String>, Vec<String>)> {
+    let dep = dep.trim();
+
+    // Extract extras: name[extra1,extra2]
+    let (dep_clean, extras) = extract_extras(dep);
+    let dep = &dep_clean;
+
     // Handle version specifiers in parentheses: "requests (>=2.20,<3.0)"
     if let Some(paren_start) = dep.find('(') {
         if let Some(paren_end) = dep.find(')') {
             let name = dep[..paren_start].trim();
             let spec = dep[paren_start + 1..paren_end].trim();
-            return Some((name.to_string(), Some(spec.to_string())));
+            return Some((normalize(name), Some(spec.to_string()), extras));
         }
     }
 
     // Handle inline specifiers: "requests>=2.20" or "charset_normalizer<4,>=2"
-    // Find the earliest version operator to correctly split name from spec
     let mut earliest_pos = None;
-    let mut earliest_len = 0;
     for op in &[">=", "<=", "!=", "~=", "==", ">", "<"] {
         if let Some(pos) = dep.find(op) {
             if earliest_pos.is_none() || pos < earliest_pos.unwrap() {
                 earliest_pos = Some(pos);
-                earliest_len = op.len();
             }
         }
     }
     if let Some(pos) = earliest_pos {
-        let name = dep[..pos].trim().to_lowercase().replace('-', "_").replace('.', "_");
+        let name = normalize(&dep[..pos]);
         let spec = dep[pos..].trim().to_string();
-        return Some((name, Some(spec)));
+        return Some((name, Some(spec), extras));
     }
     // No version constraint — just a bare name
-    let name = dep.trim().to_lowercase().replace('-', "_").replace('.', "_");
-    Some((name, None))
+    Some((normalize(dep), None, extras))
+}
+
+/// Extract extras from a dependency name, e.g. "requests[security,socks]" → ("requests", ["security", "socks"])
+fn extract_extras(dep: &str) -> (String, Vec<String>) {
+    if let Some(bracket_start) = dep.find('[') {
+        if let Some(bracket_end) = dep.find(']') {
+            let extras_str = &dep[bracket_start + 1..bracket_end];
+            let extras: Vec<String> = extras_str.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let clean = format!("{}{}", &dep[..bracket_start], &dep[bracket_end + 1..]);
+            return (clean, extras);
+        }
+    }
+    (dep.to_string(), vec![])
 }
 
 /// Evaluate a PEP 508 environment marker expression.

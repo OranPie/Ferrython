@@ -18,6 +18,69 @@ pub fn install_wheel(wheel_path: &Path, site_packages: &str, name: &str, version
     }
 }
 
+/// Install a package in editable mode by writing a .pth file.
+pub fn install_editable(source_dir: &Path, site_packages: &str, name: &str, version: &str) -> Result<(), String> {
+    let site = Path::new(site_packages);
+    fs::create_dir_all(site).map_err(|e| format!("mkdir: {}", e))?;
+
+    let package_name = normalize_name(name);
+    let source_dir = source_dir.canonicalize()
+        .map_err(|e| format!("Cannot resolve path '{}': {}", source_dir.display(), e))?;
+
+    // Determine source root: prefer src/ layout, then top-level
+    let source_root = if source_dir.join("src").exists() {
+        source_dir.join("src")
+    } else {
+        source_dir.clone()
+    };
+
+    // Write .pth file — each line is a path added to sys.path
+    let pth_file = site.join(format!("__{}.pth", package_name));
+    fs::write(&pth_file, format!("{}\n", source_root.display()))
+        .map_err(|e| format!("Write .pth file: {}", e))?;
+
+    // Write dist-info for pip/ferryip compatibility
+    let dist_info_name = format!("{}-{}.dist-info", package_name, version);
+    let dist_info_path = site.join(&dist_info_name);
+    fs::create_dir_all(&dist_info_path)
+        .map_err(|e| format!("mkdir dist-info: {}", e))?;
+
+    // METADATA
+    let metadata = format!(
+        "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
+        name, version
+    );
+    fs::write(dist_info_path.join("METADATA"), &metadata)
+        .map_err(|e| format!("Write METADATA: {}", e))?;
+
+    // INSTALLER
+    fs::write(dist_info_path.join("INSTALLER"), "ferryip\n")
+        .map_err(|e| format!("Write INSTALLER: {}", e))?;
+
+    // PEP 610 direct_url.json
+    let direct_url = format!(
+        "{{\"url\": \"file://{}\", \"dir_info\": {{\"editable\": true}}}}",
+        source_dir.display()
+    );
+    fs::write(dist_info_path.join("direct_url.json"), &direct_url)
+        .map_err(|e| format!("Write direct_url.json: {}", e))?;
+
+    // top_level.txt
+    fs::write(dist_info_path.join("top_level.txt"), format!("{}\n", package_name))
+        .map_err(|e| format!("Write top_level.txt: {}", e))?;
+
+    // RECORD
+    let record = format!(
+        "{pth},\n{di}/METADATA,\n{di}/INSTALLER,\n{di}/direct_url.json,\n{di}/top_level.txt,\n{di}/RECORD,,\n",
+        pth = pth_file.file_name().unwrap().to_string_lossy(),
+        di = dist_info_name,
+    );
+    fs::write(dist_info_path.join("RECORD"), &record)
+        .map_err(|e| format!("Write RECORD: {}", e))?;
+
+    Ok(())
+}
+
 /// Extract a .whl (zip) file into site-packages
 fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str) -> Result<(), String> {
     let file = fs::File::open(wheel_path)
@@ -26,8 +89,37 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
         .map_err(|e| format!("Invalid wheel: {}", e))?;
 
     let mut installed_files = Vec::new();
-    let dist_info_dir = format!("{}-{}.dist-info", normalize_name(name), version);
-    let data_dir = format!("{}-{}.data", normalize_name(name), version);
+    let norm_name = normalize_name(name);
+    let dist_info_dir = format!("{}-{}.dist-info", norm_name, version);
+    let data_dir = format!("{}-{}.data", norm_name, version);
+
+    // Detect the actual dist-info directory name from the wheel (may differ in casing)
+    let mut actual_dist_info_dir = dist_info_dir.clone();
+    let mut actual_data_dir = data_dir.clone();
+    for i in 0..archive.len() {
+        if let Ok(entry) = archive.by_index(i) {
+            let ename = entry.name().to_string();
+            if ename.ends_with(".dist-info/") || ename.contains(".dist-info/") {
+                let prefix = ename.split(".dist-info/").next().unwrap_or("");
+                if !prefix.is_empty() && !prefix.contains('/') {
+                    actual_dist_info_dir = format!("{}.dist-info", prefix);
+                    break;
+                }
+            }
+        }
+    }
+    for i in 0..archive.len() {
+        if let Ok(entry) = archive.by_index(i) {
+            let ename = entry.name().to_string();
+            if ename.ends_with(".data/") || ename.contains(".data/") {
+                let prefix = ename.split(".data/").next().unwrap_or("");
+                if !prefix.is_empty() && !prefix.contains('/') {
+                    actual_data_dir = format!("{}.data", prefix);
+                    break;
+                }
+            }
+        }
+    }
 
     // Compute install layout paths for .data directory handling
     let bin_dir = site.parent()
@@ -38,6 +130,34 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
         .and_then(|p| p.parent())
         .map(|p| p.join("include"))
         .unwrap_or_else(|| site.join("..").join("include"));
+
+    // Track which files came from the wheel's RECORD (if present)
+    let mut wheel_record_entries: Vec<String> = Vec::new();
+    let mut has_wheel_entry_points = false;
+
+    // First pass: check for entry_points.txt and existing RECORD
+    for i in 0..archive.len() {
+        if let Ok(entry) = archive.by_index(i) {
+            let ename = entry.name().to_string();
+            if ename.ends_with("/entry_points.txt") && ename.contains(".dist-info") {
+                has_wheel_entry_points = true;
+            }
+            if ename.ends_with("/RECORD") && ename.contains(".dist-info") {
+                // Read the wheel's RECORD to preserve it
+                let content = std::io::read_to_string(entry).unwrap_or_default();
+                wheel_record_entries = content.lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|l| l.to_string())
+                    .collect();
+            }
+        }
+    }
+
+    // Re-open archive for extraction
+    let file = fs::File::open(wheel_path)
+        .map_err(|e| format!("Open wheel: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| format!("Invalid wheel: {}", e))?;
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)
@@ -50,12 +170,13 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
         }
 
         // Handle .data directory: remap to correct install locations
-        let dest_path = if entry_name.starts_with(&data_dir) {
-            let relative = &entry_name[data_dir.len()..].trim_start_matches('/');
+        let dest_path = if entry_name.starts_with(&actual_data_dir) {
+            let relative = &entry_name[actual_data_dir.len()..].trim_start_matches('/');
             if relative.starts_with("scripts/") {
                 bin_dir.join(&relative["scripts/".len()..])
-            } else if relative.starts_with("headers/") {
-                include_dir.join(&relative["headers/".len()..])
+            } else if relative.starts_with("headers/") || relative.starts_with("include/") {
+                let prefix_len = relative.find('/').map(|p| p + 1).unwrap_or(0);
+                include_dir.join(&relative[prefix_len..])
             } else if relative.starts_with("data/") {
                 site.parent()
                     .and_then(|p| p.parent())
@@ -77,7 +198,6 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
         let canonical_dest = if dest_path.exists() {
             dest_path.canonicalize().unwrap_or_else(|_| dest_path.to_path_buf())
         } else {
-            // For new files, canonicalize the existing parent and append the rest
             let mut base = dest_path.clone();
             while !base.exists() {
                 if !base.pop() { break; }
@@ -106,7 +226,7 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
 
             // Make scripts executable
             #[cfg(unix)]
-            if entry_name.starts_with(&data_dir) && entry_name.contains("scripts/") {
+            if entry_name.starts_with(&actual_data_dir) && entry_name.contains("scripts/") {
                 use std::os::unix::fs::PermissionsExt;
                 let _ = fs::set_permissions(&dest_path, fs::Permissions::from_mode(0o755));
             }
@@ -115,11 +235,13 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
         }
     }
 
-    // Write RECORD file for tracking
-    write_record(site, &dist_info_dir, name, version, &installed_files)?;
+    // Write RECORD and metadata files, preserving original wheel RECORD entries when available
+    write_record(site, &actual_dist_info_dir, name, version, &installed_files, &wheel_record_entries)?;
 
     // Generate console_scripts from entry_points.txt if present
-    generate_console_scripts(site, &dist_info_dir)?;
+    if has_wheel_entry_points {
+        generate_console_scripts(site, &actual_dist_info_dir)?;
+    }
 
     Ok(())
 }
@@ -183,57 +305,94 @@ fn install_from_sdist(sdist_path: &Path, site: &Path, name: &str, version: &str)
         installed_files.push(relative.to_string_lossy().to_string());
     }
 
-    write_record(site, &dist_info_dir, name, version, &installed_files)?;
+    write_record(site, &dist_info_dir, name, version, &installed_files, &[])?;
     Ok(())
 }
 
-/// Write dist-info METADATA, WHEEL, INSTALLER, RECORD, and top_level.txt for pip compatibility
-fn write_record(site: &Path, dist_info_dir: &str, name: &str, version: &str, files: &[String]) -> Result<(), String> {
+/// Write dist-info METADATA, WHEEL, INSTALLER, RECORD, and top_level.txt for pip compatibility.
+///
+/// If `wheel_record` is non-empty, it contains the original RECORD entries from the wheel
+/// and we merge them instead of recomputing hashes for every file.
+fn write_record(
+    site: &Path,
+    dist_info_dir: &str,
+    name: &str,
+    version: &str,
+    files: &[String],
+    wheel_record: &[String],
+) -> Result<(), String> {
     let dist_info_path = site.join(dist_info_dir);
     fs::create_dir_all(&dist_info_path)
         .map_err(|e| format!("mkdir dist-info: {}", e))?;
 
-    // METADATA
-    let metadata = format!(
-        "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
-        name, version
-    );
-    fs::write(dist_info_path.join("METADATA"), metadata)
-        .map_err(|e| format!("Write METADATA: {}", e))?;
+    // Only write METADATA if it doesn't already exist (wheel may have provided a richer one)
+    let metadata_path = dist_info_path.join("METADATA");
+    if !metadata_path.exists() {
+        let metadata = format!(
+            "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
+            name, version
+        );
+        fs::write(&metadata_path, metadata)
+            .map_err(|e| format!("Write METADATA: {}", e))?;
+    }
 
-    // WHEEL (PEP 427)
-    let wheel_meta = "Wheel-Version: 1.0\nGenerator: ferryip 0.1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
-    fs::write(dist_info_path.join("WHEEL"), wheel_meta)
-        .map_err(|e| format!("Write WHEEL: {}", e))?;
+    // Only write WHEEL if it doesn't already exist
+    let wheel_path = dist_info_path.join("WHEEL");
+    if !wheel_path.exists() {
+        let wheel_meta = "Wheel-Version: 1.0\nGenerator: ferryip 0.1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n";
+        fs::write(&wheel_path, wheel_meta)
+            .map_err(|e| format!("Write WHEEL: {}", e))?;
+    }
 
-    // INSTALLER
+    // INSTALLER (always overwrite — we installed it)
     fs::write(dist_info_path.join("INSTALLER"), "ferryip\n")
         .map_err(|e| format!("Write INSTALLER: {}", e))?;
 
-    // top_level.txt — infer top-level package names from installed files
-    let mut top_level = std::collections::BTreeSet::new();
-    for f in files {
-        // A top-level module is either `foo/__init__.py` → "foo" or `bar.py` → "bar"
-        let components: Vec<&str> = f.split('/').collect();
-        if components.len() >= 2 && !components[0].contains('.') && !components[0].ends_with(".dist-info") && !components[0].ends_with(".data") {
-            top_level.insert(components[0].to_string());
-        } else if components.len() == 1 && f.ends_with(".py") {
-            if let Some(stem) = f.strip_suffix(".py") {
-                if stem != "__init__" {
-                    top_level.insert(stem.to_string());
+    // top_level.txt — infer top-level package names if not already present
+    let top_level_path = dist_info_path.join("top_level.txt");
+    if !top_level_path.exists() {
+        let mut top_level = std::collections::BTreeSet::new();
+        for f in files {
+            let components: Vec<&str> = f.split('/').collect();
+            if components.len() >= 2 && !components[0].contains('.')
+                && !components[0].ends_with("dist-info") && !components[0].ends_with("data")
+            {
+                top_level.insert(components[0].to_string());
+            } else if components.len() == 1 && f.ends_with(".py") {
+                if let Some(stem) = f.strip_suffix(".py") {
+                    if stem != "__init__" {
+                        top_level.insert(stem.to_string());
+                    }
                 }
             }
         }
-    }
-    if !top_level.is_empty() {
-        let content = top_level.into_iter().collect::<Vec<_>>().join("\n") + "\n";
-        fs::write(dist_info_path.join("top_level.txt"), content)
-            .map_err(|e| format!("Write top_level.txt: {}", e))?;
+        if !top_level.is_empty() {
+            let content = top_level.into_iter().collect::<Vec<_>>().join("\n") + "\n";
+            fs::write(&top_level_path, content)
+                .map_err(|e| format!("Write top_level.txt: {}", e))?;
+        }
     }
 
-    // RECORD (with SHA256 hashes)
+    // Build RECORD: prefer original wheel record entries, supplement with our own
     let mut record_lines: Vec<String> = Vec::new();
+    let mut seen_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Use original wheel RECORD entries when available
+    if !wheel_record.is_empty() {
+        for entry in wheel_record {
+            let file_name = entry.split(',').next().unwrap_or("").to_string();
+            if !file_name.is_empty() && !file_name.ends_with("/RECORD") {
+                seen_files.insert(file_name);
+                record_lines.push(entry.clone());
+            }
+        }
+    }
+
+    // Add entries for files not in the original RECORD
     for f in files {
+        if seen_files.contains(f.as_str()) {
+            continue;
+        }
         let file_path = site.join(f);
         let hash_entry = if file_path.exists() {
             if let Ok(data) = fs::read(&file_path) {
@@ -250,11 +409,13 @@ fn write_record(site: &Path, dist_info_dir: &str, name: &str, version: &str, fil
         };
         record_lines.push(hash_entry);
     }
-    record_lines.push(format!("{}/METADATA,", dist_info_dir));
-    record_lines.push(format!("{}/WHEEL,", dist_info_dir));
-    record_lines.push(format!("{}/INSTALLER,", dist_info_dir));
-    if site.join(dist_info_dir).join("top_level.txt").exists() {
-        record_lines.push(format!("{}/top_level.txt,", dist_info_dir));
+
+    // Ensure dist-info metadata files are tracked
+    for meta_file in &["METADATA", "WHEEL", "INSTALLER", "top_level.txt", "entry_points.txt"] {
+        let entry_path = format!("{}/{}", dist_info_dir, meta_file);
+        if dist_info_path.join(meta_file).exists() && !seen_files.contains(&entry_path) {
+            record_lines.push(format!("{},", entry_path));
+        }
     }
     record_lines.push(format!("{}/RECORD,,", dist_info_dir));
 

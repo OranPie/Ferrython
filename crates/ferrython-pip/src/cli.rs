@@ -266,6 +266,7 @@ fn default_site_packages() -> String {
 /// Parse a requirements file supporting:
 ///  - `-r <file>` recursive includes
 ///  - `-c <file>` constraints (pinned versions applied as upper bounds)
+///  - `-e <path>` editable installs (returned as `editable:<path>`)
 ///  - `--index-url`, `--extra-index-url`, `--trusted-host` (acknowledged, ignored)
 ///  - `--hash=sha256:...` inline hashes (stripped, stored for verification)
 ///  - environment markers after `;`
@@ -332,17 +333,44 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
             continue;
         }
 
+        // Handle -e / --editable installs in requirements files
+        if line.starts_with("-e ") || line.starts_with("--editable ") || line.starts_with("--editable=") {
+            let edit_path = if line.starts_with("--editable=") {
+                line.strip_prefix("--editable=").unwrap().trim()
+            } else {
+                line.split_whitespace().nth(1).unwrap_or("")
+            };
+            if !edit_path.is_empty() {
+                let full = base_dir.join(edit_path);
+                result.push(format!("editable:{}", full.to_string_lossy()));
+            }
+            continue;
+        }
+
         // Skip pip option flags (--index-url, --extra-index-url, --trusted-host, etc.)
         if line.starts_with("--") || line.starts_with("-f ") || line.starts_with("-i ") {
             continue;
         }
 
-        // Strip inline --hash options
-        let spec = if let Some(hash_pos) = line.find(" --hash=") {
-            line[..hash_pos].trim()
+        // Strip inline comments (after ` #`)
+        let spec = if let Some(comment_pos) = line.find(" #") {
+            line[..comment_pos].trim()
         } else {
             line
         };
+
+        // Strip inline --hash options (may be multiple)
+        let spec = {
+            let mut s = spec;
+            while let Some(hash_pos) = s.find(" --hash=") {
+                s = s[..hash_pos].trim();
+            }
+            s
+        };
+
+        // Strip environment markers: handle `; marker` at end
+        // Keep the full spec including markers — the resolver's parse_dependency handles them
+        let spec = spec.trim();
 
         if spec.is_empty() {
             continue;
@@ -356,8 +384,21 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
 
 fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_deps: bool, _pre: bool, quiet: bool) -> Result<(), String> {
     let mut visited = std::collections::HashSet::new();
-    for spec in specs {
+    let total = specs.len();
+    let mut installed_count = 0;
+
+    for (idx, spec) in specs.iter().enumerate() {
         let trimmed = spec.trim();
+
+        // Handle editable entries from requirements files (editable:<path>)
+        if let Some(edit_path) = trimmed.strip_prefix("editable:") {
+            if !quiet {
+                println!("[{}/{}] Installing {} (editable)", idx + 1, total, edit_path);
+            }
+            install_editable(edit_path, site_packages, quiet)?;
+            installed_count += 1;
+            continue;
+        }
 
         // Handle `ferryip install .` or `ferryip install ./path`
         if trimmed == "." || trimmed.starts_with("./") || trimmed.starts_with("../")
@@ -366,16 +407,22 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
             || std::path::Path::new(trimmed).join("setup.py").exists()
         {
             install_project(trimmed, site_packages, quiet)?;
+            installed_count += 1;
             continue;
         }
 
         // Handle local wheel/sdist file paths
         if trimmed.ends_with(".whl") || trimmed.ends_with(".tar.gz") {
             install_local_archive(trimmed, site_packages, quiet)?;
+            installed_count += 1;
             continue;
         }
 
         let (name, version_spec, extras) = parse_version_specifier_with_extras(spec);
+        if !quiet && total > 1 {
+            let ver_display = version_spec.as_deref().unwrap_or("");
+            println!("[{}/{}] Processing {}{}", idx + 1, total, name, ver_display);
+        }
         resolver::install_with_deps(
             &name,
             version_spec.as_deref(),
@@ -385,11 +432,16 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
             quiet,
             &mut visited,
         )?;
+        installed_count += 1;
 
         // Install extras if requested (e.g., package[security,socks])
         if !extras.is_empty() && !no_deps {
             install_extras(&name, &extras, site_packages, quiet, &mut visited)?;
         }
+    }
+
+    if !quiet && installed_count > 1 {
+        println!("\nProcessed {} package(s).", installed_count);
     }
     Ok(())
 }
@@ -581,56 +633,14 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
         (name, "0.0.0".to_string())
     };
 
-    let site = std::path::Path::new(site_packages);
-    std::fs::create_dir_all(site)
-        .map_err(|e| format!("Cannot create site-packages: {}", e))?;
-
-    // Determine the source root: prefer src/<package> layout, then top-level
-    let package_name = name.replace('-', "_");
-    let source_root = if proj_dir.join("src").exists() {
-        proj_dir.join("src")
-    } else {
-        proj_dir.clone()
-    };
-
-    // Write .pth file — each line is a path added to sys.path
-    let pth_file = site.join(format!("__{}.pth", package_name));
-    std::fs::write(&pth_file, format!("{}\n", source_root.display()))
-        .map_err(|e| format!("Write .pth file: {}", e))?;
-
-    // Write a minimal .dist-info for pip/ferryip compatibility
-    let dist_info_name = format!("{}-{}.dist-info", package_name, version);
-    let dist_info_path = site.join(&dist_info_name);
-    std::fs::create_dir_all(&dist_info_path)
-        .map_err(|e| format!("mkdir dist-info: {}", e))?;
-
-    let metadata = format!(
-        "Metadata-Version: 2.1\nName: {}\nVersion: {}\nInstaller: ferryip\n",
-        name, version
-    );
-    std::fs::write(dist_info_path.join("METADATA"), &metadata)
-        .map_err(|e| format!("Write METADATA: {}", e))?;
-    std::fs::write(dist_info_path.join("INSTALLER"), "ferryip\n")
-        .map_err(|e| format!("Write INSTALLER: {}", e))?;
-
-    // Mark as direct_url.json for PEP 610 compliance
-    let direct_url = format!(
-        "{{\"url\": \"file://{}\", \"dir_info\": {{\"editable\": true}}}}",
-        proj_dir.display()
-    );
-    std::fs::write(dist_info_path.join("direct_url.json"), &direct_url)
-        .map_err(|e| format!("Write direct_url.json: {}", e))?;
-
-    // RECORD
-    let record = format!(
-        "{pth},\n{di}/METADATA,\n{di}/INSTALLER,\n{di}/direct_url.json,\n{di}/RECORD,,\n",
-        pth = pth_file.file_name().unwrap().to_string_lossy(),
-        di = dist_info_name,
-    );
-    std::fs::write(dist_info_path.join("RECORD"), &record)
-        .map_err(|e| format!("Write RECORD: {}", e))?;
+    crate::installer::install_editable(&proj_dir, site_packages, &name, &version)?;
 
     if !quiet {
+        let source_root = if proj_dir.join("src").exists() {
+            proj_dir.join("src")
+        } else {
+            proj_dir.clone()
+        };
         println!("Successfully installed {} (editable, {})", name, source_root.display());
     }
 
@@ -640,9 +650,18 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
         let deps = pyproj.dependencies();
         if !deps.is_empty() {
             if !quiet {
-                println!("Installing project dependencies...");
+                println!("Installing {} project dependencies...", deps.len());
             }
             install_packages(&deps, site_packages, false, false, false, quiet)?;
+        }
+
+        // Install build-system requirements too
+        let build_reqs = pyproj.build_requires();
+        if !build_reqs.is_empty() {
+            if !quiet {
+                println!("Installing {} build dependencies...", build_reqs.len());
+            }
+            install_packages(&build_reqs, site_packages, false, false, false, quiet)?;
         }
     }
 
@@ -780,19 +799,46 @@ fn freeze_packages(site_packages: &str) -> Result<(), String> {
 fn check_packages(site_packages: &str) -> Result<(), String> {
     let packages = registry::list_installed(site_packages);
     let mut has_errors = false;
+    let mut checked = 0;
+
     for pkg in &packages {
         if let Some(ref requires) = pkg.requires {
             for req in requires {
-                let (req_name, _) = pypi::parse_requirement(req);
-                if registry::get_installed(&req_name, site_packages).is_none() {
-                    println!("{} {} requires {}, which is not installed.", pkg.name, pkg.version, req);
-                    has_errors = true;
+                // Strip environment markers for the check
+                let req_clean = if let Some(semi) = req.find(';') {
+                    req[..semi].trim()
+                } else {
+                    req.trim()
+                };
+
+                let (req_name, req_spec) = parse_version_specifier(req_clean);
+                match registry::get_installed(&req_name, site_packages) {
+                    None => {
+                        println!("{} {} requires {}, which is not installed.",
+                                 pkg.name, pkg.version, req);
+                        has_errors = true;
+                    }
+                    Some(installed) => {
+                        if let Some(ref spec) = req_spec {
+                            if !crate::version::version_matches(&installed.version, spec) {
+                                println!(
+                                    "{} {} requires {} {}, but {} {} is installed.",
+                                    pkg.name, pkg.version, req_name, spec,
+                                    installed.name, installed.version
+                                );
+                                has_errors = true;
+                            }
+                        }
+                    }
                 }
+                checked += 1;
             }
         }
     }
+
     if !has_errors {
-        println!("No broken requirements found.");
+        println!("No broken requirements found ({} packages checked, {} dependencies verified).",
+                 packages.len(), checked);
     }
     Ok(())
 }
@@ -809,13 +855,18 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
             if let Some(name) = pyproj.name() {
                 let version = pyproj.version().unwrap_or("0.0.0");
                 println!("Installing project: {} ({})", name, version);
+                if let Some(desc) = pyproj.description() {
+                    println!("  {}", desc);
+                }
             }
         }
 
         // Install build-system requirements
         let build_reqs = pyproj.build_requires();
-        if !build_reqs.is_empty() && !quiet {
-            println!("Installing build dependencies...");
+        if !build_reqs.is_empty() {
+            if !quiet {
+                println!("Installing {} build dependencies...", build_reqs.len());
+            }
         }
         let mut visited = std::collections::HashSet::new();
         for req in &build_reqs {
@@ -827,11 +878,55 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
         let deps = pyproj.dependencies();
         if !deps.is_empty() {
             if !quiet {
-                println!("Installing project dependencies...");
+                println!("Installing {} project dependencies...", deps.len());
             }
             for dep in &deps {
                 let (name, spec) = parse_version_specifier(dep);
                 resolver::install_with_deps(&name, spec.as_deref(), site_packages, false, false, quiet, &mut visited)?;
+            }
+        }
+
+        // Install optional-dependencies if any extras are requested via [tool.setuptools] or similar
+        let extras = pyproj.extras();
+        if !extras.is_empty() && !quiet {
+            println!("  Available extras: {}", extras.join(", "));
+        }
+
+        // Check for [tool.setuptools] packages configuration
+        if let Some(ref tool) = pyproj.tool {
+            if let Some(setuptools) = tool.get("setuptools") {
+                if !quiet {
+                    if let Some(packages) = setuptools.get("packages") {
+                        if let Some(pkgs) = packages.as_array() {
+                            let pkg_names: Vec<&str> = pkgs.iter()
+                                .filter_map(|v| v.as_str())
+                                .collect();
+                            if !pkg_names.is_empty() {
+                                println!("  Setuptools packages: {}", pkg_names.join(", "));
+                            }
+                        }
+                    }
+                    if let Some(pkg_dir) = setuptools.get("package-dir") {
+                        if let Some(table) = pkg_dir.as_table() {
+                            for (key, val) in table {
+                                if let Some(dir) = val.as_str() {
+                                    let label = if key.is_empty() { "(root)" } else { key.as_str() };
+                                    println!("  Package dir: {} → {}", label, dir);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check python_requires compatibility
+        if let Some(requires_python) = pyproj.requires_python() {
+            if !crate::version::version_matches("3.12", requires_python) {
+                return Err(format!(
+                    "This project requires Python {} but Ferrython provides 3.12",
+                    requires_python
+                ));
             }
         }
 
