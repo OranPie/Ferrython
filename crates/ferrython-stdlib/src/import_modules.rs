@@ -445,6 +445,15 @@ fn metadata_metadata(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 HashableKey::Str(k.clone()),
                 PyObject::str_val(v.clone()),
             );
+            // Also store lowercase key for case-insensitive access
+            // (CPython's metadata returns email.Message which is case-insensitive)
+            let lower = CompactString::from(k.to_lowercase());
+            if lower != *k {
+                dict_map.insert(
+                    HashableKey::Str(lower),
+                    PyObject::str_val(v.clone()),
+                );
+            }
         }
         return Ok(PyObject::dict(dict_map));
     }
