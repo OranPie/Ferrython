@@ -721,7 +721,9 @@ pub fn create_shutil_module() -> PyObjectRef {
             Ok(PyObject::instance_with_attrs(cls, attrs))
         })),
         ("get_terminal_size", make_builtin(|_| {
-            Ok(PyObject::tuple(vec![PyObject::int(80), PyObject::int(24)]))
+            let cols = std::env::var("COLUMNS").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(80);
+            let lines = std::env::var("LINES").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(24);
+            Ok(crate::sys_modules::make_terminal_size_instance(cols, lines))
         })),
         ("copytree", make_builtin(|args| {
             if args.len() < 2 { return Err(PyException::type_error("copytree requires src and dst")); }

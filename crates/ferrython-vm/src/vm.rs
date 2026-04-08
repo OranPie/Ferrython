@@ -100,8 +100,8 @@ impl VirtualMachine {
     /// Execute a code object as a function call with arguments.
     pub(crate) fn run_frame(&mut self) -> PyResult<PyObjectRef> {
         let profiling = self.profiler.is_enabled();
-        let has_trace = ferrython_stdlib::get_trace_func().is_some();
-        let has_profile = ferrython_stdlib::get_profile_func().is_some();
+        let mut has_trace = ferrython_stdlib::get_trace_func().is_some();
+        let mut has_profile = ferrython_stdlib::get_profile_func().is_some();
 
         // Fire "call" event at frame entry
         if has_trace {
@@ -116,6 +116,14 @@ impl VirtualMachine {
 
         let mut last_line: u32 = 0;
         loop {
+            // Re-check trace/profile in case settrace/setprofile was called mid-frame
+            if !has_trace {
+                has_trace = ferrython_stdlib::get_trace_func().is_some();
+            }
+            if !has_profile {
+                has_profile = ferrython_stdlib::get_profile_func().is_some();
+            }
+
             let frame = self.call_stack.last().unwrap();
             if frame.ip >= frame.code.instructions.len() {
                 return Ok(PyObject::none());
