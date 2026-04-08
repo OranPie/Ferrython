@@ -1387,6 +1387,13 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::ExceptionInstance { attrs, .. } => {
             attrs.write().insert(CompactString::from(name), args[2].clone());
         }
+        PyObjectPayload::Function(f) => {
+            f.attrs.write().insert(CompactString::from(name), args[2].clone());
+        }
+        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } |
+        PyObjectPayload::BuiltinFunction(_) => {
+            // Silently accept — native functions don't have persistent attrs
+        }
         _ => return Err(PyException::attribute_error(format!(
             "'{}' object does not support attribute assignment", args[0].type_name()
         ))),

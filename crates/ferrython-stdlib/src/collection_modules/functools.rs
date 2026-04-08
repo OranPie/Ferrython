@@ -204,6 +204,28 @@ pub fn create_functools_module() -> PyObjectRef {
             }
             Ok(inst)
         })),
+        ("_CacheInfo", {
+            // namedtuple-like class: _CacheInfo(hits, misses, maxsize, currsize)
+            let cls = PyObject::class(CompactString::from("_CacheInfo"), vec![], IndexMap::new());
+            if let PyObjectPayload::Class(ref cd) = cls.payload {
+                cd.namespace.write().insert(
+                    CompactString::from("__init__"),
+                    make_builtin(|args: &[PyObjectRef]| {
+                        if args.is_empty() { return Ok(PyObject::none()); }
+                        let inst = &args[0];
+                        if let PyObjectPayload::Instance(ref d) = inst.payload {
+                            let mut w = d.attrs.write();
+                            w.insert(CompactString::from("hits"), args.get(1).cloned().unwrap_or_else(|| PyObject::int(0)));
+                            w.insert(CompactString::from("misses"), args.get(2).cloned().unwrap_or_else(|| PyObject::int(0)));
+                            w.insert(CompactString::from("maxsize"), args.get(3).cloned().unwrap_or_else(|| PyObject::none()));
+                            w.insert(CompactString::from("currsize"), args.get(4).cloned().unwrap_or_else(|| PyObject::int(0)));
+                        }
+                        Ok(PyObject::none())
+                    }),
+                );
+            }
+            cls
+        }),
     ])
 }
 

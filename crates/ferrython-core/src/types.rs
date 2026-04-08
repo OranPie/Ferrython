@@ -353,6 +353,7 @@ impl HashableKey {
             }
             // Functions/methods are hashable by identity in CPython
             PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } |
+            PyObjectPayload::NativeClosure { .. } | PyObjectPayload::BuiltinFunction(_) |
             PyObjectPayload::BoundMethod { .. } | PyObjectPayload::BuiltinBoundMethod { .. } => {
                 let ptr = std::sync::Arc::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr, obj.clone()))
@@ -365,6 +366,19 @@ impl HashableKey {
             // BuiltinType: hash by type name so type(42) matches int as dict key
             PyObjectPayload::BuiltinType(name) => {
                 Ok(HashableKey::Str(CompactString::from(format!("<type:{}>", name))))
+            }
+            // Module objects: hashable if they have __hash__ (e.g. re.Pattern objects),
+            // otherwise use identity (CPython modules are hashable by identity)
+            PyObjectPayload::Module(_) => {
+                if let Some(hash_val) = call_hash_dispatch(obj) {
+                    Ok(HashableKey::Custom {
+                        hash_value: hash_val,
+                        object: obj.clone(),
+                    })
+                } else {
+                    let ptr = std::sync::Arc::as_ptr(obj) as usize;
+                    Ok(HashableKey::Identity(ptr, obj.clone()))
+                }
             }
             _ => Err(PyException::type_error(format!("unhashable type: '{}'", obj.type_name()))),
         }

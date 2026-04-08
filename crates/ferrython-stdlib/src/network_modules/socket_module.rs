@@ -224,6 +224,27 @@ pub fn create_socket_module() -> PyObjectRef {
             ("MSG_OOB", PyObject::int(1)),
             ("MSG_WAITALL", PyObject::int(256)),
             ("MSG_DONTWAIT", PyObject::int(64)),
+            // AddressFamily and SocketKind IntEnum classes
+            ("AddressFamily", {
+                let cls = PyObject::class(CompactString::from("AddressFamily"), vec![], IndexMap::new());
+                if let PyObjectPayload::Class(ref cd) = cls.payload {
+                    let mut ns = cd.namespace.write();
+                    ns.insert(CompactString::from("AF_INET"), PyObject::int(2));
+                    ns.insert(CompactString::from("AF_INET6"), PyObject::int(10));
+                    ns.insert(CompactString::from("AF_UNIX"), PyObject::int(1));
+                }
+                cls
+            }),
+            ("SocketKind", {
+                let cls = PyObject::class(CompactString::from("SocketKind"), vec![], IndexMap::new());
+                if let PyObjectPayload::Class(ref cd) = cls.payload {
+                    let mut ns = cd.namespace.write();
+                    ns.insert(CompactString::from("SOCK_STREAM"), PyObject::int(1));
+                    ns.insert(CompactString::from("SOCK_DGRAM"), PyObject::int(2));
+                    ns.insert(CompactString::from("SOCK_RAW"), PyObject::int(3));
+                }
+                cls
+            }),
         ],
     )
 }

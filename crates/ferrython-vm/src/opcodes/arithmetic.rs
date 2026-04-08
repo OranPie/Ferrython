@@ -385,11 +385,14 @@ impl VirtualMachine {
                         self.vm_push(result);
                         return Ok(None);
                     }
-                    // Enum-style __getitem__: Color["RED"]
-                    if let Some(gi) = obj.get_attr("__getitem__") {
-                        let result = self.call_object(gi, vec![obj.clone(), key])?;
-                        self.vm_push(result);
-                        return Ok(None);
+                    // Enum-style __getitem__: Color["RED"] — only if key is a string
+                    // (not for generic subscript like MyClass[int])
+                    if matches!(&key.payload, PyObjectPayload::Str(_)) {
+                        if let Some(gi) = obj.get_attr("__getitem__") {
+                            let result = self.call_object(gi, vec![obj.clone(), key])?;
+                            self.vm_push(result);
+                            return Ok(None);
+                        }
                     }
                     // typing generic alias: List[int] → _GenericAlias with str
                     if let Some(typing_name) = obj.get_attr("__typing_name__") {

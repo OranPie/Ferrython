@@ -283,6 +283,7 @@ pub fn create_typing_module() -> PyObjectRef {
     attrs.push(("SupportsBytes", make_typing_alias("SupportsBytes")));
     attrs.push(("SupportsAbs", make_typing_alias("SupportsAbs")));
     attrs.push(("SupportsRound", make_typing_alias("SupportsRound")));
+    attrs.push(("SupportsIndex", make_typing_alias("SupportsIndex")));
     attrs.push(("Reversible", make_typing_alias("Reversible")));
     attrs.push(("Container", make_typing_alias("Container")));
     attrs.push(("Collection", make_typing_alias("Collection")));
@@ -538,6 +539,39 @@ pub fn create_typing_module() -> PyObjectRef {
         )))
     })));
 
+    // _type_check — internal helper used by mypy_extensions, typing_extensions
+    attrs.push(("_type_check", make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        Ok(args[0].clone())
+    })));
+    attrs.push(("_GenericForm", make_typing_alias("_GenericForm")));
+    attrs.push(("_AnnotatedAlias", make_typing_alias("_AnnotatedAlias")));
+    attrs.push(("_collect_parameters", make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::tuple(vec![]))
+    })));
+
+    // Sentinel — Python 3.13+ typing.Sentinel (PEP 661)
+    let sentinel_cls = PyObject::class(CompactString::from("Sentinel"), vec![], IndexMap::new());
+    if let PyObjectPayload::Class(ref cd) = sentinel_cls.payload {
+        let mut ns = cd.namespace.write();
+        ns.insert(CompactString::from("__init__"), make_builtin(|args: &[PyObjectRef]| {
+            if args.len() >= 2 {
+                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    inst.attrs.write().insert(CompactString::from("_name"), args[1].clone());
+                }
+            }
+            Ok(PyObject::none())
+        }));
+        ns.insert(CompactString::from("__repr__"), make_builtin(|args: &[PyObjectRef]| {
+            let name = args[0].get_attr("_name").map(|v| v.py_to_string()).unwrap_or_else(|| "Sentinel".to_string());
+            Ok(PyObject::str_val(CompactString::from(name)))
+        }));
+        ns.insert(CompactString::from("__bool__"), make_builtin(|_args: &[PyObjectRef]| {
+            Ok(PyObject::bool_val(false))
+        }));
+    }
+    attrs.push(("Sentinel", sentinel_cls));
+
     make_module("typing", attrs)
 }
 
@@ -575,12 +609,56 @@ pub fn create_enum_module() -> PyObjectRef {
         }
     ));
 
-    // __call__ on class — Color(1) looks up member by value
+    // __call__ on class — Color(1) looks up member by value,
+    // OR functional API: Enum("Name", "member1 member2") creates a new enum
     enum_ns.insert(CompactString::from("__call__"), PyObject::native_function(
         "Enum.__call__", |args: &[PyObjectRef]| {
             check_args_min("Enum.__call__", args, 2)?;
             let cls = &args[0];
             let value = &args[1];
+
+            // Functional API: Enum("Name", "member1 member2") or Enum("Name", ["m1", "m2"])
+            if args.len() >= 3 {
+                let class_name = value.py_to_string();
+                let names_arg = &args[2];
+                let member_names: Vec<String> = match &names_arg.payload {
+                    PyObjectPayload::Str(s) => {
+                        // "member1 member2" or "member1, member2"
+                        s.replace(',', " ").split_whitespace().map(|s| s.to_string()).collect()
+                    }
+                    PyObjectPayload::Tuple(items) => {
+                        items.iter().map(|i: &PyObjectRef| i.py_to_string()).collect()
+                    }
+                    PyObjectPayload::List(items) => {
+                        items.read().iter().map(|i: &PyObjectRef| i.py_to_string()).collect()
+                    }
+                    _ => vec![names_arg.py_to_string()],
+                };
+                // Create a new class with members
+                let mut members_map: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+                let new_cls = PyObject::class(CompactString::from(class_name.as_str()), vec![cls.clone()], IndexMap::new());
+                if let PyObjectPayload::Class(ref cd) = new_cls.payload {
+                    let mut ns = cd.namespace.write();
+                    for (i, mname) in member_names.iter().enumerate() {
+                        let cs_name = CompactString::from(mname.as_str());
+                        let mut member_attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+                        member_attrs.insert(CompactString::from("name"), PyObject::str_val(cs_name.clone()));
+                        member_attrs.insert(CompactString::from("_name_"), PyObject::str_val(cs_name.clone()));
+                        member_attrs.insert(CompactString::from("value"), PyObject::int(i as i64 + 1));
+                        member_attrs.insert(CompactString::from("_value_"), PyObject::int(i as i64 + 1));
+                        let member = PyObject::instance_with_attrs(new_cls.clone(), member_attrs);
+                        ns.insert(cs_name.clone(), member.clone());
+                        members_map.insert(
+                            HashableKey::Str(cs_name),
+                            member,
+                        );
+                    }
+                    ns.insert(CompactString::from("__members__"), PyObject::dict(members_map));
+                }
+                return Ok(new_cls);
+            }
+
+            // Normal call: Color(1) looks up member by value
             if let PyObjectPayload::Class(cd) = &cls.payload {
                 let ns = cd.namespace.read();
                 if let Some(members) = ns.get("__members__") {
@@ -1137,6 +1215,20 @@ pub fn create_enum_module() -> PyObjectRef {
             ]))
         })),
         ("unique", unique_fn),
+        // sentinel — creates a unique sentinel value (Python 3.13+)
+        ("sentinel", make_builtin(|args: &[PyObjectRef]| {
+            let name = if !args.is_empty() { args[0].py_to_string() } else { "MISSING".to_string() };
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("_name"), PyObject::str_val(CompactString::from(name.clone())));
+            attrs.insert(CompactString::from("__repr__"), PyObject::native_closure("sentinel.__repr__", {
+                let n = name.clone();
+                move |_| Ok(PyObject::str_val(CompactString::from(format!("<{}>", n))))
+            }));
+            attrs.insert(CompactString::from("__bool__"), make_builtin(|_: &[PyObjectRef]| {
+                Ok(PyObject::bool_val(false))
+            }));
+            Ok(PyObject::module_with_attrs(CompactString::from(name), attrs))
+        })),
     ])
 }
 

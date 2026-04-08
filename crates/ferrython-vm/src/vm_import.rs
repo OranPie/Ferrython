@@ -124,13 +124,26 @@ impl VirtualMachine {
                 if let Some(cached) = self.modules.get(current_name.as_str()) {
                     cached.clone()
                 } else {
-                    self.resolve_single_module_with_filename(
+                    match self.resolve_single_module_with_filename(
                         &current_name,
                         if level > 0 && i == 0 { level } else { 0 },
                         importer_file,
-                    ).map_err(|e| {
-                        e
-                    })?
+                    ) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            // Fallback: check if parent has this attribute (e.g., six.moves)
+                            if let Some(ref p) = parent {
+                                if let Some(attr) = p.get_attr(part) {
+                                    self.cache_module(&fq_name, &attr);
+                                    attr
+                                } else {
+                                    return Err(e);
+                                }
+                            } else {
+                                return Err(e);
+                            }
+                        }
+                    }
                 }
             } else {
                 // Relative import: bypass bare-name cache, resolve from filesystem

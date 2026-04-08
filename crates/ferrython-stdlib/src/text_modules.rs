@@ -273,37 +273,89 @@ pub fn create_re_module() -> PyObjectRef {
     ])
 }
 
+/// Extract regex pattern string from either a str or bytes object.
+/// For bytes, decodes as Latin-1 to preserve all byte values as chars.
+fn extract_re_pattern(obj: &PyObjectRef) -> String {
+    match &obj.payload {
+        PyObjectPayload::Bytes(b) => {
+            b.iter().map(|&byte| byte as char).collect()
+        }
+        _ => obj.py_to_string(),
+    }
+}
+
 fn convert_python_regex(pattern: &str) -> String {
     // Convert Python regex syntax to Rust regex syntax
     let chars: Vec<char> = pattern.chars().collect();
     let mut result = String::with_capacity(pattern.len());
     let mut i = 0;
+    let mut in_char_class = false;
     while i < chars.len() {
         if chars[i] == '\\' && i + 1 < chars.len() {
-            match chars[i + 1] {
-                'Z' => { result.push_str("\\z"); i += 2; }
-                'a' => { result.push_str("\\x07"); i += 2; } // Python \a = bell (BEL)
-                // Octal escapes: \0, \033, \177, etc.
-                '0'..='3' => {
-                    // Collect up to 3 octal digits
-                    let start = i + 1;
-                    let mut end = start + 1;
-                    while end < chars.len() && end < start + 3
-                        && chars[end] >= '0' && chars[end] <= '7' {
-                        end += 1;
+            if !in_char_class {
+                match chars[i + 1] {
+                    'Z' => { result.push_str("\\z"); i += 2; continue; }
+                    'a' => { result.push_str("\\x07"); i += 2; continue; } // Python \a = bell (BEL)
+                    // Octal escapes: \0, \033, \177, etc.
+                    '0'..='3' => {
+                        let start = i + 1;
+                        let mut end = start + 1;
+                        while end < chars.len() && end < start + 3
+                            && chars[end] >= '0' && chars[end] <= '7' {
+                            end += 1;
+                        }
+                        let oct_str: String = chars[start..end].iter().collect();
+                        if let Ok(val) = u8::from_str_radix(&oct_str, 8) {
+                            result.push_str(&format!("\\x{:02x}", val));
+                        } else {
+                            result.push(chars[i]);
+                            result.push(chars[i + 1]);
+                        }
+                        i = end;
+                        continue;
                     }
-                    let oct_str: String = chars[start..end].iter().collect();
-                    if let Ok(val) = u8::from_str_radix(&oct_str, 8) {
-                        result.push_str(&format!("\\x{:02x}", val));
-                    } else {
-                        // Fallback: pass through
-                        result.push(chars[i]);
-                        result.push(chars[i + 1]);
-                    }
-                    i = end;
+                    _ => {}
                 }
-                _ => { result.push(chars[i]); result.push(chars[i + 1]); i += 2; }
             }
+            // Pass through escaped chars (including inside char class)
+            result.push(chars[i]);
+            result.push(chars[i + 1]);
+            i += 2;
+        } else if !in_char_class && chars[i] == '[' {
+            in_char_class = true;
+            result.push('[');
+            i += 1;
+            // Handle negation and ] as first char
+            if i < chars.len() && chars[i] == '^' {
+                result.push('^');
+                i += 1;
+            }
+            // ] as first char in class is literal
+            if i < chars.len() && chars[i] == ']' {
+                result.push(']');
+                i += 1;
+            }
+        } else if in_char_class && chars[i] == ']' {
+            in_char_class = false;
+            result.push(']');
+            i += 1;
+        } else if in_char_class && chars[i] == '[' {
+            // Escape bare [ inside character class (Rust regex treats it as nested class)
+            result.push_str("\\[");
+            i += 1;
+        } else if !in_char_class && chars[i] == '(' && i + 1 < chars.len() && chars[i + 1] == '?' {
+            // Convert conditional groups (?(N)yes|no) → (?:yes|no)
+            if i + 2 < chars.len() && chars[i + 2] == '(' {
+                let mut j = i + 3;
+                while j < chars.len() && chars[j] != ')' { j += 1; }
+                if j < chars.len() {
+                    result.push_str("(?:");
+                    i = j + 1;
+                    continue;
+                }
+            }
+            result.push(chars[i]);
+            i += 1;
         } else {
             result.push(chars[i]);
             i += 1;
@@ -752,7 +804,7 @@ fn needs_fancy_regex_with_flags(pattern: &str, flags: i64) -> bool {
 
 fn re_match(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("re.match() requires pattern and string")); }
-    let pattern = args[0].py_to_string();
+    let pattern = extract_re_pattern(&args[0]);
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
     let anchored = format!("^(?:{})", pattern);
@@ -781,7 +833,7 @@ fn re_match(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn re_search(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("re.search() requires pattern and string")); }
-    let pattern = args[0].py_to_string();
+    let pattern = extract_re_pattern(&args[0]);
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
     if needs_fancy_regex_with_flags(&pattern, flags) {
@@ -806,7 +858,7 @@ fn re_search(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn re_fullmatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("re.fullmatch() requires pattern and string")); }
-    let pattern = args[0].py_to_string();
+    let pattern = extract_re_pattern(&args[0]);
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
     let anchored = format!("^(?:{})$", pattern);
@@ -833,7 +885,7 @@ fn re_fullmatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn re_findall(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("re.findall() requires pattern and string")); }
-    let pattern = args[0].py_to_string();
+    let pattern = extract_re_pattern(&args[0]);
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
     if needs_fancy_regex_with_flags(&pattern, flags) {
@@ -892,7 +944,7 @@ fn re_findall(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn re_finditer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("re.finditer() requires pattern and string")); }
-    let pattern = args[0].py_to_string();
+    let pattern = extract_re_pattern(&args[0]);
     let text = args[1].py_to_string();
     let flags = if args.len() > 2 { args[2].to_int().unwrap_or(0) } else { 0 };
     if needs_fancy_regex_with_flags(&pattern, flags) {
@@ -933,7 +985,7 @@ fn re_finditer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 3 { return Err(PyException::type_error("re.sub() requires pattern, repl, and string")); }
-    let pattern = args[0].py_to_string();
+    let pattern = extract_re_pattern(&args[0]);
     let repl_obj = &args[1];
     let text = args[2].py_to_string();
     // count and flags can be positional or in trailing kwargs dict
@@ -1004,37 +1056,66 @@ fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 /// re.sub with a callable replacement function
 fn re_sub_callable(pattern: &str, repl_fn: &PyObjectRef, text: &str, count: usize, flags: i64) -> PyResult<PyObjectRef> {
-    let re = build_regex(pattern, flags)?;
-    let mut result = String::new();
-    let mut last = 0;
-    let mut n = 0;
-    for caps in re.captures_iter(text) {
-        if count > 0 && n >= count { break; }
-        let whole = caps.get(0).unwrap();
-        result.push_str(&text[last..whole.start()]);
-        let match_obj = make_match_object_from_captures(&caps, text, &re);
-        // Call the replacement function with the match object
-        let replacement = match &repl_fn.payload {
-            PyObjectPayload::NativeFunction { func, .. } => func(&[match_obj])?,
-            PyObjectPayload::NativeClosure { func, .. } => func(&[match_obj])?,
-            _ => {
-                // For Python functions, we can't call them directly from here;
-                // fall back to using group(0)
-                let full_match = whole.as_str();
-                PyObject::str_val(CompactString::from(full_match))
+    if needs_fancy_regex_with_flags(pattern, flags) {
+        let re = build_fancy_regex(pattern, flags)?;
+        let mut result = String::new();
+        let mut last = 0;
+        let mut n = 0;
+        let mut pos = 0;
+        while pos <= text.len() {
+            if count > 0 && n >= count { break; }
+            match re.captures(&text[pos..]) {
+                Ok(Some(caps)) => {
+                    let whole = caps.get(0).unwrap();
+                    if whole.start() == whole.end() { pos += 1; continue; }
+                    let abs_start = pos + whole.start();
+                    let abs_end = pos + whole.end();
+                    result.push_str(&text[last..abs_start]);
+                    let groups: Vec<Option<String>> = (1..caps.len())
+                        .map(|i| caps.get(i).map(|m| m.as_str().to_string())).collect();
+                    let match_obj = make_fancy_match_object(text, abs_start, abs_end, whole.as_str(), groups, extract_fancy_group_names(&re));
+                    let replacement = match &repl_fn.payload {
+                        PyObjectPayload::NativeFunction { func, .. } => func(&[match_obj])?,
+                        PyObjectPayload::NativeClosure { func, .. } => func(&[match_obj])?,
+                        _ => PyObject::str_val(CompactString::from(whole.as_str())),
+                    };
+                    result.push_str(&replacement.py_to_string());
+                    last = abs_end;
+                    pos = abs_end;
+                    n += 1;
+                }
+                _ => break,
             }
-        };
-        result.push_str(&replacement.py_to_string());
-        last = whole.end();
-        n += 1;
+        }
+        result.push_str(&text[last..]);
+        Ok(PyObject::str_val(CompactString::from(result)))
+    } else {
+        let re = build_regex(pattern, flags)?;
+        let mut result = String::new();
+        let mut last = 0;
+        let mut n = 0;
+        for caps in re.captures_iter(text) {
+            if count > 0 && n >= count { break; }
+            let whole = caps.get(0).unwrap();
+            result.push_str(&text[last..whole.start()]);
+            let match_obj = make_match_object_from_captures(&caps, text, &re);
+            let replacement = match &repl_fn.payload {
+                PyObjectPayload::NativeFunction { func, .. } => func(&[match_obj])?,
+                PyObjectPayload::NativeClosure { func, .. } => func(&[match_obj])?,
+                _ => PyObject::str_val(CompactString::from(whole.as_str())),
+            };
+            result.push_str(&replacement.py_to_string());
+            last = whole.end();
+            n += 1;
+        }
+        result.push_str(&text[last..]);
+        Ok(PyObject::str_val(CompactString::from(result)))
     }
-    result.push_str(&text[last..]);
-    Ok(PyObject::str_val(CompactString::from(result)))
 }
 
 fn re_subn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 3 { return Err(PyException::type_error("re.subn() requires pattern, repl, and string")); }
-    let pattern = args[0].py_to_string();
+    let pattern = extract_re_pattern(&args[0]);
     let repl = args[1].py_to_string();
     let text = args[2].py_to_string();
     let flags = if args.len() > 3 { args[3].to_int().unwrap_or(0) } else { 0 };
@@ -1078,7 +1159,7 @@ fn re_subn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn re_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("re.split() requires pattern and string")); }
-    let pattern = args[0].py_to_string();
+    let pattern = extract_re_pattern(&args[0]);
     let text = args[1].py_to_string();
     let maxsplit = if args.len() > 2 { args[2].to_int().unwrap_or(0) as usize } else { 0 };
     let flags = if args.len() > 3 { args[3].to_int().unwrap_or(0) } else { 0 };
@@ -1148,7 +1229,7 @@ fn re_split(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("re.compile() requires a pattern")); }
-    let pattern = args[0].py_to_string();
+    let pattern = extract_re_pattern(&args[0]);
     let flags = if args.len() > 1 { args[1].to_int().unwrap_or(0) } else { 0 };
     // Validate the pattern compiles (try fancy if needed)
     if needs_fancy_regex_with_flags(&pattern, flags) {
@@ -1179,6 +1260,27 @@ fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 Ok(PyObject::str_val(CompactString::from(format!("re.compile('{}', re.{})", p, f))))
             }
         }
+    }));
+    // __hash__ and __eq__ for Pattern objects (CPython patterns are hashable)
+    attrs.insert(CompactString::from("__hash__"), PyObject::native_closure("Pattern.__hash__", {
+        let p = pattern.clone();
+        let f = flags;
+        move |_| {
+            use std::hash::{Hash, Hasher};
+            use std::collections::hash_map::DefaultHasher;
+            let mut hasher = DefaultHasher::new();
+            p.hash(&mut hasher);
+            f.hash(&mut hasher);
+            Ok(PyObject::int(hasher.finish() as i64))
+        }
+    }));
+    attrs.insert(CompactString::from("__eq__"), PyObject::native_function("Pattern.__eq__", |args: &[PyObjectRef]| {
+        if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
+        let a_pat = args[0].get_attr("pattern").map(|v| v.py_to_string());
+        let a_flags = args[0].get_attr("flags").and_then(|v| v.to_int().ok()).unwrap_or(0);
+        let b_pat = args[1].get_attr("pattern").map(|v| v.py_to_string());
+        let b_flags = args[1].get_attr("flags").and_then(|v| v.to_int().ok()).unwrap_or(0);
+        Ok(PyObject::bool_val(a_pat == b_pat && a_flags == b_flags))
     }));
     // groups/groupindex: best-effort for standard regex
     if !needs_fancy_regex_with_flags(&pattern, flags) {

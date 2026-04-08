@@ -287,6 +287,16 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
         ("HelpFormatter", make_builtin(|_| Ok(PyObject::none()))),
         ("RawDescriptionHelpFormatter", make_builtin(|_| Ok(PyObject::none()))),
         ("RawTextHelpFormatter", make_builtin(|_| Ok(PyObject::none()))),
+        ("ArgumentDefaultsHelpFormatter", make_builtin(|_| Ok(PyObject::none()))),
+        ("SUPPRESS", PyObject::str_val(CompactString::from("==SUPPRESS=="))),
+        ("OPTIONAL", PyObject::str_val(CompactString::from("?"))),
+        ("ZERO_OR_MORE", PyObject::str_val(CompactString::from("*"))),
+        ("ONE_OR_MORE", PyObject::str_val(CompactString::from("+"))),
+        ("REMAINDER", PyObject::str_val(CompactString::from("..."))),
+        ("FileType", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            Ok(args[0].clone())
+        })),
     ])
 }
 

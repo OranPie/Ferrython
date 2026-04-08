@@ -963,6 +963,12 @@ pub(super) fn builtin_object_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectR
     } else if let PyObjectPayload::ExceptionInstance { attrs, .. } = &obj.payload {
         attrs.write().insert(CompactString::from(name), value);
         Ok(PyObject::none())
+    } else if let PyObjectPayload::Function(f) = &obj.payload {
+        f.attrs.write().insert(CompactString::from(name), value);
+        Ok(PyObject::none())
+    } else if matches!(&obj.payload, PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } | PyObjectPayload::BuiltinFunction(_)) {
+        // Silently accept for native functions
+        Ok(PyObject::none())
     } else {
         Err(PyException::attribute_error(format!(
             "'{}' object does not support attribute assignment", obj.type_name()

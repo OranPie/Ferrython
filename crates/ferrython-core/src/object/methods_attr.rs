@@ -660,6 +660,12 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             PyObjectPayload::BuiltinType(n) => {
                 match name {
                     "__name__" | "__qualname__" => Some(PyObject::str_val(n.clone())),
+                    "__dict__" => {
+                        // Return an empty mappingproxy for builtin types
+                        Some(PyObject::wrap(PyObjectPayload::MappingProxy(
+                            Arc::new(RwLock::new(IndexMap::new())),
+                        )))
+                    }
                     "__bases__" => {
                         let parent = match n.as_str() {
                             "object" => vec![],

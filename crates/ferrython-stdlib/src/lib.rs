@@ -110,6 +110,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "array" => Some(collection_modules::create_array_module()),
         // Serialization
         "json" => Some(serial_modules::create_json_module()),
+        "json.decoder" => Some(serial_modules::create_json_decoder_module()),
+        "json.encoder" => Some(serial_modules::create_json_encoder_module()),
         "csv" => Some(serial_modules::create_csv_module()),
         "base64" => Some(serial_modules::create_base64_module()),
         "struct" => Some(serial_modules::create_struct_module()),
@@ -194,6 +196,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "importlib.metadata" => Some(import_modules::create_importlib_metadata_module()),
         // Networking
         "socket" => Some(network_modules::create_socket_module()),
+        "socketserver" => Some(network_modules::create_socketserver_module()),
         "urllib" => Some(network_modules::create_urllib_module()),
         "urllib.request" => Some(network_modules::create_urllib_module()),
         "urllib.parse" => Some(network_modules::create_urllib_parse_module()),
@@ -207,6 +210,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "xml.parsers.expat" => Some(xml_modules::create_xml_parsers_expat_module()),
         "xml.sax" => Some(xml_modules::create_xml_sax_module()),
         "xml.sax.handler" => Some(xml_modules::create_xml_sax_handler_module()),
+        "xml.sax.saxutils" => Some(xml_modules::create_xml_sax_saxutils_module()),
+        "xml.sax.xmlreader" => Some(xml_modules::create_xml_sax_xmlreader_module()),
         // Database
         "sqlite3" => Some(db_modules::create_sqlite3_module()),
         // Email
@@ -263,7 +268,6 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         // XML DOM & SAX
         "xml.dom" => Some(xml_modules::create_xml_dom_module()),
         "xml.dom.minidom" => Some(xml_modules::create_xml_dom_minidom_module()),
-        "xml.sax" => Some(xml_modules::create_xml_sax_module()),
         // Testing & debugging
         "unittest.mock" => Some(testing_modules::create_unittest_mock_module()),
         // doctest: pure Python module (stdlib/Lib/doctest.py)

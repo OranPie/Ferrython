@@ -2548,6 +2548,37 @@ pub fn create_codecs_module() -> PyObjectRef {
         ("lookup", make_builtin(codecs_lookup)),
         ("getencoder", make_builtin(codecs_getencoder)),
         ("getdecoder", make_builtin(codecs_getdecoder)),
+        ("getincrementaldecoder", {
+            let idc = inc_decoder_cls.clone();
+            PyObject::native_closure("getincrementaldecoder", move |args: &[PyObjectRef]| {
+                check_args("codecs.getincrementaldecoder", args, 1)?;
+                let _encoding = args[0].py_to_string();
+                // Return the IncrementalDecoder class (simplified — always returns base class)
+                Ok(idc.clone())
+            })
+        }),
+        ("getincrementalencoder", {
+            let iec = inc_encoder_cls.clone();
+            PyObject::native_closure("getincrementalencoder", move |args: &[PyObjectRef]| {
+                check_args("codecs.getincrementalencoder", args, 1)?;
+                let _encoding = args[0].py_to_string();
+                Ok(iec.clone())
+            })
+        }),
+        ("getreader", {
+            let sr = stream_reader_cls.clone();
+            PyObject::native_closure("getreader", move |args: &[PyObjectRef]| {
+                check_args("codecs.getreader", args, 1)?;
+                Ok(sr.clone())
+            })
+        }),
+        ("getwriter", {
+            let sw = stream_writer_cls.clone();
+            PyObject::native_closure("getwriter", move |args: &[PyObjectRef]| {
+                check_args("codecs.getwriter", args, 1)?;
+                Ok(sw.clone())
+            })
+        }),
         ("utf_8_encode", make_builtin(codecs_utf8_encode)),
         ("utf_8_decode", make_builtin(codecs_utf8_decode)),
         ("IncrementalDecoder", inc_decoder_cls),
@@ -2669,6 +2700,75 @@ pub fn create_codecs_module() -> PyObjectRef {
         ("BOM_UTF32", PyObject::bytes(vec![0xFF, 0xFE, 0x00, 0x00])),
         ("BOM_UTF32_LE", PyObject::bytes(vec![0xFF, 0xFE, 0x00, 0x00])),
         ("BOM_UTF32_BE", PyObject::bytes(vec![0x00, 0x00, 0xFE, 0xFF])),
+        // Error handlers (CPython exposes these as module-level functions)
+        ("strict_errors", PyObject::native_function("codecs.strict_errors", |args: &[PyObjectRef]| {
+            let exc = if args.is_empty() { PyException::runtime_error("strict_errors") } else {
+                PyException::runtime_error(args[0].py_to_string())
+            };
+            Err(exc)
+        })),
+        ("ignore_errors", PyObject::native_function("codecs.ignore_errors", |args: &[PyObjectRef]| {
+            // Returns (replacement, position) tuple
+            let end = if !args.is_empty() {
+                args[0].get_attr("end").and_then(|v| v.to_int().ok()).unwrap_or(0)
+            } else { 0 };
+            Ok(PyObject::tuple(vec![PyObject::str_val(CompactString::from("")), PyObject::int(end)]))
+        })),
+        ("replace_errors", PyObject::native_function("codecs.replace_errors", |args: &[PyObjectRef]| {
+            let end = if !args.is_empty() {
+                args[0].get_attr("end").and_then(|v| v.to_int().ok()).unwrap_or(0)
+            } else { 0 };
+            Ok(PyObject::tuple(vec![PyObject::str_val(CompactString::from("?")), PyObject::int(end)]))
+        })),
+        ("xmlcharrefreplace_errors", PyObject::native_function("codecs.xmlcharrefreplace_errors", |args: &[PyObjectRef]| {
+            // Replace unencodable characters with XML character references
+            let (obj_str, start, end) = if !args.is_empty() {
+                let exc = &args[0];
+                let o = exc.get_attr("object").map(|v| v.py_to_string()).unwrap_or_default();
+                let s = exc.get_attr("start").and_then(|v| v.to_int().ok()).unwrap_or(0) as usize;
+                let e = exc.get_attr("end").and_then(|v| v.to_int().ok()).unwrap_or(0) as usize;
+                (o, s, e)
+            } else { (String::new(), 0, 0) };
+            let chars: Vec<char> = obj_str.chars().collect();
+            let mut replacement = String::new();
+            for i in start..end.min(chars.len()) {
+                replacement.push_str(&format!("&#{};", chars[i] as u32));
+            }
+            Ok(PyObject::tuple(vec![PyObject::str_val(CompactString::from(replacement)), PyObject::int(end as i64)]))
+        })),
+        ("backslashreplace_errors", PyObject::native_function("codecs.backslashreplace_errors", |args: &[PyObjectRef]| {
+            let (obj_str, start, end) = if !args.is_empty() {
+                let exc = &args[0];
+                let o = exc.get_attr("object").map(|v| v.py_to_string()).unwrap_or_default();
+                let s = exc.get_attr("start").and_then(|v| v.to_int().ok()).unwrap_or(0) as usize;
+                let e = exc.get_attr("end").and_then(|v| v.to_int().ok()).unwrap_or(0) as usize;
+                (o, s, e)
+            } else { (String::new(), 0, 0) };
+            let chars: Vec<char> = obj_str.chars().collect();
+            let mut replacement = String::new();
+            for i in start..end.min(chars.len()) {
+                let c = chars[i] as u32;
+                if c <= 0xFF { replacement.push_str(&format!("\\x{:02x}", c)); }
+                else if c <= 0xFFFF { replacement.push_str(&format!("\\u{:04x}", c)); }
+                else { replacement.push_str(&format!("\\U{:08x}", c)); }
+            }
+            Ok(PyObject::tuple(vec![PyObject::str_val(CompactString::from(replacement)), PyObject::int(end as i64)]))
+        })),
+        ("namereplace_errors", PyObject::native_function("codecs.namereplace_errors", |args: &[PyObjectRef]| {
+            let (obj_str, start, end) = if !args.is_empty() {
+                let exc = &args[0];
+                let o = exc.get_attr("object").map(|v| v.py_to_string()).unwrap_or_default();
+                let s = exc.get_attr("start").and_then(|v| v.to_int().ok()).unwrap_or(0) as usize;
+                let e = exc.get_attr("end").and_then(|v| v.to_int().ok()).unwrap_or(0) as usize;
+                (o, s, e)
+            } else { (String::new(), 0, 0) };
+            let chars: Vec<char> = obj_str.chars().collect();
+            let mut replacement = String::new();
+            for i in start..end.min(chars.len()) {
+                replacement.push_str(&format!("\\N{{{:04X}}}", chars[i] as u32));
+            }
+            Ok(PyObject::tuple(vec![PyObject::str_val(CompactString::from(replacement)), PyObject::int(end as i64)]))
+        })),
     ])
 }
 

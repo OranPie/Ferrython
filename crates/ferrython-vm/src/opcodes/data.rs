@@ -503,6 +503,11 @@ impl VirtualMachine {
             PyObjectPayload::Function(f) => {
                 f.attrs.write().insert(name.clone(), value);
             }
+            // Native functions: silently accept attribute assignment (common in decorators)
+            PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } |
+            PyObjectPayload::BuiltinFunction(_) => {
+                // No persistent storage, but don't error — many decorators set __wrapped__ etc.
+            }
             PyObjectPayload::ExceptionInstance { attrs, .. } => {
                 attrs.write().insert(name.clone(), value);
             }

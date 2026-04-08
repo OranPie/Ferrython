@@ -879,6 +879,19 @@ impl VirtualMachine {
                         }
                     }
                 }
+                // If class has __call__ in its own namespace (e.g. Enum functional API),
+                // and args look like a functional call (2+ string args), use __call__
+                if pos_args.len() >= 2 {
+                    if let Some(call_method) = cd.namespace.read().get("__call__").cloned() {
+                        let mut call_args = vec![func.clone()];
+                        call_args.extend(pos_args);
+                        if kwargs.is_empty() {
+                            return self.call_object(call_method, call_args);
+                        } else {
+                            return self.call_object_kw(call_method, call_args, kwargs);
+                        }
+                    }
+                }
                 self.instantiate_class(&func, pos_args, kwargs)
             }
             _ => {
@@ -2380,6 +2393,14 @@ impl VirtualMachine {
                 // If class has a metaclass with __call__, dispatch through it
                 if let Some(meta) = &cd.metaclass {
                     if let Some(call_method) = meta.get_attr("__call__") {
+                        let mut call_args = vec![func.clone()];
+                        call_args.extend(args);
+                        return self.call_object(call_method, call_args);
+                    }
+                }
+                // If class has __call__ in its own namespace (e.g. Enum functional API)
+                if args.len() >= 2 {
+                    if let Some(call_method) = cd.namespace.read().get("__call__").cloned() {
                         let mut call_args = vec![func.clone()];
                         call_args.extend(args);
                         return self.call_object(call_method, call_args);

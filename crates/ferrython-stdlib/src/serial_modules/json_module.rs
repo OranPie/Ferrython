@@ -790,3 +790,58 @@ fn parse_json_object(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
     }
     Err(PyException::json_decode_error("Invalid JSON object"))
 }
+
+/// json.decoder submodule — exposes JSONDecoder and JSONDecodeError
+pub fn create_json_decoder_module() -> PyObjectRef {
+    let mut dec_ns = indexmap::IndexMap::new();
+    dec_ns.insert(CompactString::from("decode"), PyObject::native_closure("decode", |args| {
+        if args.is_empty() { return Err(PyException::type_error("JSONDecoder.decode() missing argument")); }
+        let s = args[0].py_to_string();
+        parse_json_value(&s, &mut 0)
+    }));
+    dec_ns.insert(CompactString::from("raw_decode"), PyObject::native_closure("raw_decode", |args| {
+        if args.is_empty() { return Err(PyException::type_error("raw_decode() missing argument")); }
+        let s = args[0].py_to_string();
+        let mut pos = 0;
+        let val = parse_json_value(&s, &mut pos)?;
+        Ok(PyObject::tuple(vec![val, PyObject::int(pos as i64)]))
+    }));
+    let json_decoder_cls = PyObject::class(CompactString::from("JSONDecoder"), vec![], dec_ns);
+    let json_decode_error = PyObject::class(CompactString::from("JSONDecodeError"), vec![], indexmap::IndexMap::new());
+
+    make_module("json.decoder", vec![
+        ("JSONDecoder", json_decoder_cls),
+        ("JSONDecodeError", json_decode_error),
+    ])
+}
+
+/// json.encoder submodule — exposes JSONEncoder
+pub fn create_json_encoder_module() -> PyObjectRef {
+    let mut enc_ns = indexmap::IndexMap::new();
+    enc_ns.insert(CompactString::from("encode"), PyObject::native_closure("encode", |args| {
+        if args.is_empty() { return Err(PyException::type_error("JSONEncoder.encode() missing argument")); }
+        let s = py_to_json(&args[0])?;
+        Ok(PyObject::str_val(CompactString::from(s)))
+    }));
+    enc_ns.insert(CompactString::from("default"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() { return Ok(PyObject::none()); }
+        Err(PyException::type_error(format!("Object of type {} is not JSON serializable", args[0].type_name())))
+    }));
+    let json_encoder_cls = PyObject::class(CompactString::from("JSONEncoder"), vec![], enc_ns);
+
+    // ESCAPE_DCT — mapping of control characters to escape sequences
+    let mut escape_dct = indexmap::IndexMap::new();
+    for i in 0u8..0x20 {
+        let key = HashableKey::Str(CompactString::from(String::from(i as char)));
+        let val = PyObject::str_val(CompactString::from(format!("\\u{:04x}", i)));
+        escape_dct.insert(key, val);
+    }
+    escape_dct.insert(HashableKey::Str(CompactString::from("\\")), PyObject::str_val(CompactString::from("\\\\")));
+    escape_dct.insert(HashableKey::Str(CompactString::from("\"")), PyObject::str_val(CompactString::from("\\\"")));
+
+    make_module("json.encoder", vec![
+        ("JSONEncoder", json_encoder_cls),
+        ("ESCAPE_DCT", PyObject::dict(escape_dct)),
+        ("INFINITY", PyObject::float(f64::INFINITY)),
+    ])
+}

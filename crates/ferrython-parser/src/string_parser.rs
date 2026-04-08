@@ -325,6 +325,17 @@ fn unicode_name_to_char(name: &str) -> Option<char> {
         "CHARACTER TABULATION" | "HORIZONTAL TABULATION" => Some('\t'),
         "NULL" => Some('\0'),
         "REPLACEMENT CHARACTER" => Some('\u{FFFD}'),
+        "BYTE ORDER MARK" | "ZERO WIDTH NO-BREAK SPACE" => Some('\u{FEFF}'),
+        "FORM FEED" | "FORM FEED (FF)" => Some('\u{000C}'),
+        "NEXT LINE" | "NEXT LINE (NEL)" => Some('\u{0085}'),
+        "SOFT HYPHEN" => Some('\u{00AD}'),
+        "ZERO WIDTH SPACE" => Some('\u{200B}'),
+        "ZERO WIDTH JOINER" => Some('\u{200D}'),
+        "ZERO WIDTH NON-JOINER" => Some('\u{200C}'),
+        "LEFT-TO-RIGHT MARK" => Some('\u{200E}'),
+        "RIGHT-TO-LEFT MARK" => Some('\u{200F}'),
+        "WORD JOINER" => Some('\u{2060}'),
+        "OBJECT REPLACEMENT CHARACTER" => Some('\u{FFFC}'),
         _ => None,
     }
 }

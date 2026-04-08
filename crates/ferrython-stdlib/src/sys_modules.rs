@@ -822,6 +822,7 @@ pub fn create_os_module() -> PyObjectRef {
             ));
             PyObject::module_with_attrs(CompactString::from("_Environ"), attrs)
         }),
+        ("_Environ", PyObject::class(CompactString::from("_Environ"), vec![], IndexMap::new())),
         ("cpu_count", make_builtin(os_cpu_count)),
         ("getpid", make_builtin(os_getpid)),
         ("fspath", PyObject::native_function("os.fspath", os_fspath)),
@@ -1321,6 +1322,21 @@ pub fn create_os_module() -> PyObjectRef {
             check_args("os.WSTOPSIG", args, 1)?;
             let status = args[0].as_int().unwrap_or(0) as i32;
             Ok(PyObject::int(libc::WSTOPSIG(status) as i64))
+        })),
+        ("fsencode", make_builtin(|args| {
+            check_args("os.fsencode", args, 1)?;
+            let s = args[0].py_to_string();
+            Ok(PyObject::bytes(s.into_bytes()))
+        })),
+        ("fsdecode", make_builtin(|args| {
+            check_args("os.fsdecode", args, 1)?;
+            match &args[0].payload {
+                PyObjectPayload::Bytes(b) => {
+                    let s = String::from_utf8_lossy(b).to_string();
+                    Ok(PyObject::str_val(CompactString::from(s)))
+                }
+                _ => Ok(PyObject::str_val(CompactString::from(args[0].py_to_string()))),
+            }
         })),
     ])
 }
@@ -1847,6 +1863,13 @@ pub fn create_os_path_module() -> PyObjectRef {
         ("commonpath", make_builtin(os_path_commonpath)),
         ("commonprefix", make_builtin(os_path_commonprefix)),
         ("samefile", make_builtin(os_path_samefile)),
+        ("pardir", PyObject::str_val(CompactString::from(".."))),
+        ("curdir", PyObject::str_val(CompactString::from("."))),
+        ("extsep", PyObject::str_val(CompactString::from("."))),
+        ("altsep", PyObject::none()),
+        ("pathsep", PyObject::str_val(CompactString::from(if cfg!(windows) { ";" } else { ":" }))),
+        ("defpath", PyObject::str_val(CompactString::from(if cfg!(windows) { ".;C:\\bin" } else { "/bin:/usr/bin" }))),
+        ("devnull", PyObject::str_val(CompactString::from(if cfg!(windows) { "nul" } else { "/dev/null" }))),
     ])
 }
 
