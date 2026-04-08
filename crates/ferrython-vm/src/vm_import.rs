@@ -258,7 +258,8 @@ impl VirtualMachine {
             return Ok(module);
         }
 
-        // 3. Try filesystem
+        // 3. Try filesystem — sync sys.path to import search paths first
+        self.sync_sys_path_to_import();
         let resolved = if level > 0 {
             ferrython_import::resolve_relative_import(name, importer_file, level)?
         } else {
@@ -396,6 +397,30 @@ impl VirtualMachine {
                     HashableKey::Str(CompactString::from(name)),
                     module.clone(),
                 );
+            }
+        }
+    }
+
+    /// Sync sys.path entries to the import system's search paths.
+    /// This allows runtime modifications to sys.path (e.g. sys.path.insert(0, '/foo'))
+    /// to be picked up by the import resolver.
+    fn sync_sys_path_to_import(&self) {
+        let sys_mod = if let Some(m) = self.modules.get("sys") {
+            m.clone()
+        } else {
+            return;
+        };
+        if let Some(path_list) = sys_mod.get_attr("path") {
+            if let PyObjectPayload::List(ref items) = path_list.payload {
+                let items = items.read();
+                let mut paths = Vec::with_capacity(items.len());
+                for item in items.iter() {
+                    let s = item.py_to_string();
+                    if !s.is_empty() {
+                        paths.push(std::path::PathBuf::from(s));
+                    }
+                }
+                ferrython_import::set_search_paths(paths);
             }
         }
     }

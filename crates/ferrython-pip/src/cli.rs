@@ -670,8 +670,8 @@ fn dry_run_install(packages: &[String], requirement_files: &[String], quiet: boo
     println!("Would install:");
     for spec in &specs {
         let (name, version_spec, extras) = parse_version_specifier_with_extras(spec);
-        match pypi::fetch_package_info(&name, None) {
-            Ok(info) => {
+        match resolver::resolve_package_info(&name, version_spec.as_deref(), "") {
+            Ok((info, transitive_deps)) => {
                 let extras_str = if extras.is_empty() {
                     String::new()
                 } else {
@@ -679,6 +679,21 @@ fn dry_run_install(packages: &[String], requirement_files: &[String], quiet: boo
                 };
                 let ver_str = version_spec.as_deref().unwrap_or("");
                 println!("  {}{} {} (latest: {})", name, extras_str, ver_str, info.version);
+
+                // Show transitive dependencies
+                if !transitive_deps.is_empty() {
+                    for (dep_name, dep_ver) in &transitive_deps {
+                        let dep_ver_str = dep_ver.as_deref().unwrap_or("");
+                        match pypi::fetch_package_info(&dep_name, None) {
+                            Ok(dep_info) => {
+                                println!("    └─ {} {} (latest: {})", dep_name, dep_ver_str, dep_info.version);
+                            }
+                            Err(_) => {
+                                println!("    └─ {} {}", dep_name, dep_ver_str);
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 if !quiet {

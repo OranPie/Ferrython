@@ -267,9 +267,10 @@ fn install_from_wheel(wheel_path: &Path, site: &Path, name: &str, version: &str)
     // Write RECORD and metadata files, preserving original wheel RECORD entries when available
     write_record(site, &actual_dist_info_dir, name, version, &installed_files, &wheel_record_entries, None)?;
 
-    // Generate console_scripts from entry_points.txt if present
+    // Generate console_scripts and gui_scripts from entry_points.txt if present
     if has_wheel_entry_points {
         generate_console_scripts(site, &actual_dist_info_dir)?;
+        generate_gui_scripts(site, &actual_dist_info_dir)?;
     }
 
     Ok(())
@@ -516,6 +517,16 @@ fn normalize_name(name: &str) -> String {
 
 /// Generate console_scripts from entry_points.txt in a dist-info directory.
 fn generate_console_scripts(site: &Path, dist_info_dir: &str) -> Result<(), String> {
+    generate_scripts_from_section(site, dist_info_dir, "[console_scripts]")
+}
+
+/// Generate gui_scripts from entry_points.txt in a dist-info directory.
+fn generate_gui_scripts(site: &Path, dist_info_dir: &str) -> Result<(), String> {
+    generate_scripts_from_section(site, dist_info_dir, "[gui_scripts]")
+}
+
+/// Generate executable scripts from a named section in entry_points.txt.
+fn generate_scripts_from_section(site: &Path, dist_info_dir: &str, section: &str) -> Result<(), String> {
     let entry_points_path = site.join(dist_info_dir).join("entry_points.txt");
     if !entry_points_path.exists() {
         return Ok(());
@@ -524,7 +535,7 @@ fn generate_console_scripts(site: &Path, dist_info_dir: &str) -> Result<(), Stri
     let content = fs::read_to_string(&entry_points_path)
         .map_err(|e| format!("Read entry_points.txt: {}", e))?;
 
-    let mut in_console_scripts = false;
+    let mut in_target_section = false;
     let bin_dir = site.parent()
         .and_then(|p| p.parent())
         .map(|p| p.join("bin"))
@@ -532,24 +543,30 @@ fn generate_console_scripts(site: &Path, dist_info_dir: &str) -> Result<(), Stri
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed == "[console_scripts]" {
-            in_console_scripts = true;
+        if trimmed == section {
+            in_target_section = true;
             continue;
         }
         if trimmed.starts_with('[') {
-            in_console_scripts = false;
+            in_target_section = false;
             continue;
         }
-        if !in_console_scripts || trimmed.is_empty() || trimmed.starts_with('#') {
+        if !in_target_section || trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
-        // Parse: script_name = module:function
+        // Parse: script_name = module:function [extras]
         if let Some((script_name, entry)) = trimmed.split_once('=') {
             let script_name = script_name.trim();
             let entry = entry.trim();
+            // Strip optional extras specifier like [extra1,extra2]
+            let entry_clean = if let Some(bracket) = entry.find('[') {
+                entry[..bracket].trim()
+            } else {
+                entry
+            };
 
-            if let Some((module, func)) = entry.split_once(':') {
+            if let Some((module, func)) = entry_clean.split_once(':') {
                 let module = module.trim();
                 let func = func.trim();
 
@@ -577,4 +594,42 @@ fn generate_console_scripts(site: &Path, dist_info_dir: &str) -> Result<(), Stri
     }
 
     Ok(())
+}
+
+/// Read Requires-Dist from an installed package's METADATA file.
+///
+/// Returns the list of dependency specifiers found in the installed metadata.
+/// This is used by the resolver to get accurate dependency info from the wheel
+/// (which may differ from what the PyPI JSON API reports).
+pub fn read_requires_dist_from_installed(site_packages: &str, name: &str) -> Vec<String> {
+    let site = Path::new(site_packages);
+    let normalized = normalize_name(name);
+
+    // Search for the dist-info directory
+    let entries = match fs::read_dir(site) {
+        Ok(e) => e,
+        Err(_) => return vec![],
+    };
+
+    for entry in entries.flatten() {
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if fname.ends_with(".dist-info") {
+            let pkg_part = match fname.strip_suffix(".dist-info") {
+                Some(p) => p,
+                None => continue,
+            };
+            let pkg_name = pkg_part.split('-').next().unwrap_or("");
+            if normalize_name(pkg_name) == normalized {
+                let metadata_path = entry.path().join("METADATA");
+                if let Ok(content) = fs::read_to_string(&metadata_path) {
+                    return content.lines()
+                        .filter_map(|line| line.strip_prefix("Requires-Dist: "))
+                        .map(|s| s.trim().to_string())
+                        .collect();
+                }
+            }
+        }
+    }
+
+    vec![]
 }

@@ -189,8 +189,25 @@ fn install_with_deps_inner(
 
     // Process dependencies (unless --no-deps)
     if !no_deps {
+        // Merge dependency info: prefer installed METADATA (more accurate for wheels)
+        // over PyPI API metadata (which may be incomplete)
+        let mut deps = release.requires_dist.clone();
+        let installed_deps = read_installed_requires_dist(site_packages, &release.name);
+        for dep in installed_deps {
+            let norm_dep = dep.split_whitespace().next().unwrap_or("").to_lowercase()
+                .replace('-', "_").replace('.', "_");
+            let already = deps.iter().any(|d| {
+                let n = d.split_whitespace().next().unwrap_or("").to_lowercase()
+                    .replace('-', "_").replace('.', "_");
+                n == norm_dep
+            });
+            if !already {
+                deps.push(dep);
+            }
+        }
+
         let parent_name = release.name.clone();
-        for dep_str in &release.requires_dist {
+        for dep_str in &deps {
             if let Some((dep_name, dep_spec, dep_extras)) = parse_dependency(dep_str) {
                 install_with_deps_inner(
                     &dep_name, dep_spec.as_deref(), site_packages,
@@ -513,4 +530,44 @@ fn marker_lt(a: &str, b: &str) -> bool {
 fn marker_compat(a: &str, b: &str) -> bool {
     // ~= for markers: treat as >= with prefix match
     marker_ge(a, b)
+}
+
+/// Read Requires-Dist lines from an installed package's METADATA file.
+///
+/// This supplements PyPI API metadata with what's actually in the wheel,
+/// which can be more accurate for some packages.
+fn read_installed_requires_dist(site_packages: &str, name: &str) -> Vec<String> {
+    if let Some(info) = registry::get_installed(name, site_packages) {
+        info.requires.unwrap_or_default()
+    } else {
+        vec![]
+    }
+}
+
+/// Resolve a package and return its info plus transitive dependency names (for dry-run).
+pub fn resolve_package_info(
+    name: &str,
+    version_req: Option<&str>,
+    site_packages: &str,
+) -> Result<(pypi::ReleaseInfo, Vec<(String, Option<String>)>), String> {
+    let release = resolve_version(name, version_req)?;
+    let mut transitive = Vec::new();
+    collect_transitive_deps(&release.requires_dist, &mut transitive, &mut std::collections::HashSet::new());
+    Ok((release, transitive))
+}
+
+/// Recursively collect transitive dependency names from Requires-Dist.
+fn collect_transitive_deps(
+    requires_dist: &[String],
+    out: &mut Vec<(String, Option<String>)>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    for dep_str in requires_dist {
+        if let Some((dep_name, dep_spec, _extras)) = parse_dependency(dep_str) {
+            let norm = normalize(&dep_name);
+            if seen.insert(norm) {
+                out.push((dep_name.clone(), dep_spec));
+            }
+        }
+    }
 }

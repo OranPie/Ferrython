@@ -20,7 +20,7 @@ pub enum PreRelease {
 impl Version {
     /// Parse a version string like "1.2.3", "2.0.0a1", "3.1.0.post1".
     pub fn parse(s: &str) -> Option<Self> {
-        let s = s.trim();
+        let s = s.trim().trim_start_matches('v');
         if s.is_empty() {
             return None;
         }
@@ -46,26 +46,45 @@ impl Version {
         Some(Version { epoch, release, pre, post, dev })
     }
 
-    /// Compare two versions. Returns Ordering.
-    fn cmp_tuple(&self) -> (u32, &[u32], i32, u32, i32, u32) {
-        let pre_order = match &self.pre {
-            Some(PreRelease::Alpha(n)) => (-3, *n),
-            Some(PreRelease::Beta(n)) => (-2, *n),
-            Some(PreRelease::Rc(n)) => (-1, *n),
-            None => (0, 0),
-        };
-        let dev_order = match self.dev {
-            Some(n) => (-1, n),
-            None => (0, 0),
-        };
-        (
-            self.epoch,
-            &self.release,
-            pre_order.0,
-            pre_order.1,
-            dev_order.0,
-            dev_order.1,
-        )
+    /// PEP 440 pre-release comparison key.
+    ///
+    /// Dev-only releases (no pre, no post, has dev) sort below all pre-releases.
+    /// Pre-releases sort below final. Final is the highest pre-phase.
+    fn pre_cmp_key(&self) -> (i32, u32) {
+        match (&self.pre, &self.post, &self.dev) {
+            // dev-only release (e.g. 1.0.dev0): below all pre-releases
+            (None, None, Some(_)) => (-4, 0),
+            (Some(PreRelease::Alpha(n)), _, _) => (-3, *n),
+            (Some(PreRelease::Beta(n)), _, _) => (-2, *n),
+            (Some(PreRelease::Rc(n)), _, _) => (-1, *n),
+            // final release (no pre-release tag)
+            (None, _, _) => (0, 0),
+        }
+    }
+
+    /// PEP 440 post-release comparison key.
+    ///
+    /// No post-release sorts below post0.
+    fn post_cmp_key(&self) -> i64 {
+        match self.post {
+            None => -1,
+            Some(n) => n as i64,
+        }
+    }
+
+    /// PEP 440 dev-release comparison key.
+    ///
+    /// Dev versions sort below their non-dev counterpart. No dev = final.
+    fn dev_cmp_key(&self) -> i64 {
+        match self.dev {
+            Some(n) => n as i64,
+            None => i64::MAX,
+        }
+    }
+
+    /// Check if this is a pre-release or dev version.
+    pub fn is_prerelease(&self) -> bool {
+        self.pre.is_some() || self.dev.is_some()
     }
 }
 
@@ -77,15 +96,11 @@ impl PartialOrd for Version {
 
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let a = self.cmp_tuple();
-        let b = other.cmp_tuple();
-        a.0.cmp(&b.0)
-            .then_with(|| cmp_release(a.1, b.1))
-            .then_with(|| a.2.cmp(&b.2))
-            .then_with(|| a.3.cmp(&b.3))
-            .then_with(|| a.4.cmp(&b.4))
-            .then_with(|| a.5.cmp(&b.5))
-            .then_with(|| self.post.unwrap_or(0).cmp(&other.post.unwrap_or(0)))
+        self.epoch.cmp(&other.epoch)
+            .then_with(|| cmp_release(&self.release, &other.release))
+            .then_with(|| self.pre_cmp_key().cmp(&other.pre_cmp_key()))
+            .then_with(|| self.post_cmp_key().cmp(&other.post_cmp_key()))
+            .then_with(|| self.dev_cmp_key().cmp(&other.dev_cmp_key()))
     }
 }
 
@@ -322,7 +337,7 @@ pub fn find_best_version<'a>(versions: &[&'a str], specs_str: &str) -> Option<&'
         .filter_map(|v| Version::parse(v).map(|parsed| (*v, parsed)))
         .filter(|(_, parsed)| {
             // Skip pre-release/dev versions unless explicitly requested
-            if !allow_pre && (parsed.pre.is_some() || parsed.dev.is_some()) {
+            if !allow_pre && parsed.is_prerelease() {
                 return false;
             }
             specs.is_empty() || specs.iter().all(|s| s.matches(parsed))
@@ -474,5 +489,88 @@ mod tests {
     fn test_post_release() {
         assert!(Version::parse("1.0.post1").unwrap() > Version::parse("1.0").unwrap());
         assert!(Version::parse("1.0.post2").unwrap() > Version::parse("1.0.post1").unwrap());
+    }
+
+    #[test]
+    fn test_dev_release_ordering() {
+        // dev releases are below their final counterparts
+        assert!(Version::parse("1.0.dev0").unwrap() < Version::parse("1.0").unwrap());
+        assert!(Version::parse("1.0.dev0").unwrap() < Version::parse("1.0a1").unwrap());
+        assert!(Version::parse("1.0.dev1").unwrap() < Version::parse("1.0.dev2").unwrap());
+    }
+
+    #[test]
+    fn test_pep440_full_ordering() {
+        // PEP 440 full ordering:
+        // 1.0.dev0 < 1.0a1 < 1.0a2 < 1.0b1 < 1.0rc1 < 1.0 < 1.0.post1.dev0 < 1.0.post1
+        let versions = vec![
+            "1.0.post1",
+            "1.0.post1.dev0",
+            "1.0",
+            "1.0rc1",
+            "1.0b1",
+            "1.0a2",
+            "1.0a1",
+            "1.0.dev0",
+        ];
+        let mut parsed: Vec<Version> = versions.iter()
+            .map(|v| Version::parse(v).unwrap())
+            .collect();
+        parsed.sort();
+        let sorted: Vec<String> = parsed.iter().map(|v| format!("{}", v)).collect();
+        assert_eq!(sorted, vec![
+            "1.0.dev0", "1.0a1", "1.0a2", "1.0b1", "1.0rc1",
+            "1.0", "1.0.post1.dev0", "1.0.post1"
+        ]);
+    }
+
+    #[test]
+    fn test_post_dev_ordering() {
+        // post1.dev0 is between final and post1
+        assert!(Version::parse("1.0").unwrap() < Version::parse("1.0.post1.dev0").unwrap());
+        assert!(Version::parse("1.0.post1.dev0").unwrap() < Version::parse("1.0.post1").unwrap());
+    }
+
+    #[test]
+    fn test_compat_release_operator() {
+        // ~=1.4.2 means >=1.4.2, ==1.4.*
+        assert!(version_matches("1.4.2", "~=1.4.2"));
+        assert!(version_matches("1.4.5", "~=1.4.2"));
+        assert!(!version_matches("1.5.0", "~=1.4.2"));
+        assert!(!version_matches("1.3.9", "~=1.4.2"));
+
+        // ~=2.2 means >=2.2, ==2.*
+        assert!(version_matches("2.2", "~=2.2"));
+        assert!(version_matches("2.9", "~=2.2"));
+        assert!(!version_matches("3.0", "~=2.2"));
+        assert!(!version_matches("2.1", "~=2.2"));
+    }
+
+    #[test]
+    fn test_wildcard_matching() {
+        assert!(version_matches("1.0.0", "==1.0.*"));
+        assert!(version_matches("1.0.99", "==1.0.*"));
+        assert!(!version_matches("1.1.0", "==1.0.*"));
+
+        // !=1.5.* excludes all 1.5.x
+        assert!(!version_matches("1.5.0", "!=1.5.*"));
+        assert!(!version_matches("1.5.9", "!=1.5.*"));
+        assert!(version_matches("1.6.0", "!=1.5.*"));
+    }
+
+    #[test]
+    fn test_version_with_v_prefix() {
+        let v = Version::parse("v1.2.3").unwrap();
+        assert_eq!(v.release, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_is_prerelease() {
+        assert!(Version::parse("1.0a1").unwrap().is_prerelease());
+        assert!(Version::parse("1.0.dev0").unwrap().is_prerelease());
+        assert!(Version::parse("1.0b1").unwrap().is_prerelease());
+        assert!(Version::parse("1.0rc1").unwrap().is_prerelease());
+        assert!(!Version::parse("1.0").unwrap().is_prerelease());
+        assert!(!Version::parse("1.0.post1").unwrap().is_prerelease());
     }
 }
