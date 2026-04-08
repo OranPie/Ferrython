@@ -548,7 +548,7 @@ fn read_installed_requires_dist(site_packages: &str, name: &str) -> Vec<String> 
 pub fn resolve_package_info(
     name: &str,
     version_req: Option<&str>,
-    site_packages: &str,
+    _site_packages: &str,
 ) -> Result<(pypi::ReleaseInfo, Vec<(String, Option<String>)>), String> {
     let release = resolve_version(name, version_req)?;
     let mut transitive = Vec::new();

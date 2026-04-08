@@ -601,6 +601,7 @@ fn generate_scripts_from_section(site: &Path, dist_info_dir: &str, section: &str
 /// Returns the list of dependency specifiers found in the installed metadata.
 /// This is used by the resolver to get accurate dependency info from the wheel
 /// (which may differ from what the PyPI JSON API reports).
+#[allow(dead_code)]
 pub fn read_requires_dist_from_installed(site_packages: &str, name: &str) -> Vec<String> {
     let site = Path::new(site_packages);
     let normalized = normalize_name(name);
