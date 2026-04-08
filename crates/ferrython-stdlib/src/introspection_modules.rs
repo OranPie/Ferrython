@@ -475,6 +475,11 @@ pub fn create_inspect_module() -> PyObjectRef {
             w.insert(CompactString::from("kind"), PyObject::int(kind));
             w.insert(CompactString::from("default"), default);
             w.insert(CompactString::from("annotation"), annotation.unwrap_or_else(|| empty.clone()));
+            // replace() → return self copy (simplified)
+            let p_ref = p.clone();
+            w.insert(CompactString::from("replace"), PyObject::native_closure("Parameter.replace", move |_args: &[PyObjectRef]| {
+                Ok(p_ref.clone())
+            }));
         }
         p
     }
@@ -659,6 +664,14 @@ pub fn create_inspect_module() -> PyObjectRef {
             let keys_bp = keys.clone();
             w.insert(CompactString::from("bind_partial"), PyObject::native_closure("Signature.bind_partial", move |call_args: &[PyObjectRef]| {
                 do_bind(&pm_bp, &keys_bp, call_args, true)
+            }));
+
+            // replace(**kwargs) → new Signature (returns self with updated attrs)
+            let sig_ref = sig.clone();
+            w.insert(CompactString::from("replace"), PyObject::native_closure("Signature.replace", move |args: &[PyObjectRef]| {
+                // For now, return a copy of self — full kwarg handling would need
+                // parameters= and return_annotation= support
+                Ok(sig_ref.clone())
             }));
         }
         Ok(sig)

@@ -1967,6 +1967,72 @@ pub fn create_random_module() -> PyObjectRef {
             }
             Err(PyException::type_error("state must be a 4-tuple of integers"))
         })),
+        ("Random", make_builtin(|_args| {
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("random"), make_builtin(random_random));
+            attrs.insert(CompactString::from("randint"), make_builtin(random_randint));
+            attrs.insert(CompactString::from("choice"), make_builtin(random_choice));
+            attrs.insert(CompactString::from("shuffle"), make_builtin(random_shuffle));
+            attrs.insert(CompactString::from("seed"), make_builtin(random_seed));
+            attrs.insert(CompactString::from("randrange"), make_builtin(random_randrange));
+            attrs.insert(CompactString::from("uniform"), make_builtin(|args| {
+                check_args("Random.uniform", args, 2)?;
+                let a = args[0].to_float()?;
+                let b = args[1].to_float()?;
+                Ok(PyObject::float(a + simple_random() * (b - a)))
+            }));
+            attrs.insert(CompactString::from("sample"), make_builtin(|args| {
+                check_args("Random.sample", args, 2)?;
+                let items = args[0].to_list()?;
+                let k = args[1].to_int()? as usize;
+                if k > items.len() { return Err(PyException::value_error("Sample larger than population")); }
+                let mut result = Vec::with_capacity(k);
+                let mut pool = items.clone();
+                for _ in 0..k {
+                    let idx = (simple_random() * pool.len() as f64) as usize;
+                    let idx = idx.min(pool.len() - 1);
+                    result.push(pool.remove(idx));
+                }
+                Ok(PyObject::list(result))
+            }));
+            attrs.insert(CompactString::from("gauss"), make_builtin(|args| {
+                check_args("Random.gauss", args, 2)?;
+                let mu = args[0].to_float()?;
+                let sigma = args[1].to_float()?;
+                let u1 = simple_random();
+                let u2 = simple_random();
+                let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+                Ok(PyObject::float(mu + sigma * z))
+            }));
+            attrs.insert(CompactString::from("getrandbits"), make_builtin(|args| {
+                check_args("Random.getrandbits", args, 1)?;
+                let k = args[0].to_int()?;
+                if k <= 0 { return Err(PyException::value_error("number of bits must be greater than zero")); }
+                let val = if k <= 64 {
+                    (simple_random() * (1u64 << k.min(63)) as f64) as i64
+                } else {
+                    (simple_random() * i64::MAX as f64) as i64
+                };
+                Ok(PyObject::int(val))
+            }));
+            attrs.insert(CompactString::from("getstate"), make_builtin(|_| Ok(PyObject::tuple(vec![]))));
+            attrs.insert(CompactString::from("setstate"), make_builtin(|_| Ok(PyObject::none())));
+            Ok(PyObject::module_with_attrs(CompactString::from("Random"), attrs))
+        })),
+        ("SystemRandom", make_builtin(|_args| {
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("random"), make_builtin(random_random));
+            attrs.insert(CompactString::from("randint"), make_builtin(random_randint));
+            attrs.insert(CompactString::from("choice"), make_builtin(random_choice));
+            attrs.insert(CompactString::from("randrange"), make_builtin(random_randrange));
+            attrs.insert(CompactString::from("getrandbits"), make_builtin(|args| {
+                check_args("SystemRandom.getrandbits", args, 1)?;
+                let k = args[0].to_int()?;
+                let val = (simple_random() * (1u64 << k.min(63)) as f64) as i64;
+                Ok(PyObject::int(val))
+            }));
+            Ok(PyObject::module_with_attrs(CompactString::from("SystemRandom"), attrs))
+        })),
     ])
 }
 

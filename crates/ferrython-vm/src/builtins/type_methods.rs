@@ -1750,14 +1750,24 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
         }
         "index" => {
             if args.is_empty() { return Err(PyException::type_error("index requires an argument")); }
-            if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) = &args[0].payload {
-                let pos = b.windows(needle.len()).position(|w| w == needle.as_slice());
+            let start = if args.len() > 1 { args[1].to_int().unwrap_or(0).max(0) as usize } else { 0 };
+            let stop = if args.len() > 2 { args[2].to_int().unwrap_or(b.len() as i64).min(b.len() as i64).max(0) as usize } else { b.len() };
+            let slice = if start < b.len() && start < stop { &b[start..stop.min(b.len())] } else { &b[0..0] };
+            if let Some(val) = args[0].as_int() {
+                // int arg: search for single byte value
+                let byte_val = val as u8;
+                match slice.iter().position(|&x| x == byte_val) {
+                    Some(p) => Ok(PyObject::int((start + p) as i64)),
+                    None => Err(PyException::value_error("subsection not found")),
+                }
+            } else if let PyObjectPayload::Bytes(needle) | PyObjectPayload::ByteArray(needle) = &args[0].payload {
+                let pos = slice.windows(needle.len()).position(|w| w == needle.as_slice());
                 match pos {
-                    Some(p) => Ok(PyObject::int(p as i64)),
+                    Some(p) => Ok(PyObject::int((start + p) as i64)),
                     None => Err(PyException::value_error("subsection not found")),
                 }
             } else {
-                Err(PyException::type_error("a bytes-like object is required"))
+                Err(PyException::type_error("a bytes-like object or int is required"))
             }
         }
         "rindex" => {
