@@ -774,7 +774,26 @@ pub(super) fn builtin_input(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_ord(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("ord", args, 1)?;
-    let s = args[0].as_str().ok_or_else(|| PyException::type_error("ord() expected string"))?;
+    // Accept both str and bytes (CPython: ord('a') == ord(b'a') == 97)
+    match &args[0].payload {
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+            if b.len() != 1 {
+                return Err(PyException::type_error(format!(
+                    "ord() expected a character, but bytes of length {} found", b.len()
+                )));
+            }
+            return Ok(PyObject::int(b[0] as i64));
+        }
+        PyObjectPayload::Int(n) => {
+            // bytearray indexing returns int in Python 3
+            let v = n.to_i64().unwrap_or(0);
+            return Ok(PyObject::int(v));
+        }
+        _ => {}
+    }
+    let s = args[0].as_str().ok_or_else(|| PyException::type_error(
+        "ord() expected string of length 1, but found non-string"
+    ))?;
     let mut chars = s.chars();
     let c = chars.next().ok_or_else(|| PyException::type_error("ord() expected a character"))?;
     if chars.next().is_some() {

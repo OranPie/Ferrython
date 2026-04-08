@@ -646,6 +646,15 @@ fn urllib_parse_urlencode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "urlencode() requires a mapping argument",
         ));
     }
+    // Helper: convert a value to string, decoding bytes as UTF-8 (like CPython)
+    let val_to_str = |v: &PyObjectRef| -> String {
+        match &v.payload {
+            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+                String::from_utf8_lossy(b).into_owned()
+            }
+            _ => v.py_to_string(),
+        }
+    };
     let mut pairs = Vec::new();
     match &args[0].payload {
         PyObjectPayload::Dict(d) => {
@@ -659,7 +668,7 @@ fn urllib_parse_urlencode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 pairs.push(format!(
                     "{}={}",
                     quote_plus_encode(&ks),
-                    quote_plus_encode(&v.py_to_string())
+                    quote_plus_encode(&val_to_str(&v))
                 ));
             }
         }
@@ -670,8 +679,8 @@ fn urllib_parse_urlencode(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     if pair.len() >= 2 {
                         pairs.push(format!(
                             "{}={}",
-                            quote_plus_encode(&pair[0].py_to_string()),
-                            quote_plus_encode(&pair[1].py_to_string())
+                            quote_plus_encode(&val_to_str(&pair[0])),
+                            quote_plus_encode(&val_to_str(&pair[1]))
                         ));
                     }
                 }
@@ -692,7 +701,13 @@ fn urllib_parse_quote(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "quote() requires a string argument",
         ));
     }
-    let s = args[0].py_to_string();
+    // Accept both str and bytes (CPython does)
+    let s = match &args[0].payload {
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
+            String::from_utf8_lossy(b).into_owned()
+        }
+        _ => args[0].py_to_string(),
+    };
     let safe = if args.len() > 1 {
         args[1].py_to_string()
     } else {
