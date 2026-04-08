@@ -278,31 +278,51 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
         }
         "startswith" => {
             check_args_min("startswith", args, 1)?;
+            // startswith(prefix[, start[, end]])
+            let start = if args.len() > 1 { args[1].as_int().unwrap_or(0).max(0) as usize } else { 0 };
+            let end = if args.len() > 2 { args[2].as_int().unwrap_or(s.len() as i64).max(0) as usize } else { s.len() };
+            let slice = if start <= s.len() && end <= s.len() && start <= end {
+                &s[start..end]
+            } else if start <= s.len() {
+                &s[start..]
+            } else {
+                ""
+            };
             match &args[0].payload {
                 PyObjectPayload::Tuple(prefixes) => {
                     let result = prefixes.iter().any(|p| {
-                        p.as_str().map(|ps| s.starts_with(ps)).unwrap_or(false)
+                        p.as_str().map(|ps| slice.starts_with(ps)).unwrap_or(false)
                     });
                     Ok(PyObject::bool_val(result))
                 }
                 _ => {
                     let prefix = args[0].as_str().ok_or_else(|| PyException::type_error("startswith() argument must be str or tuple"))?;
-                    Ok(PyObject::bool_val(s.starts_with(prefix)))
+                    Ok(PyObject::bool_val(slice.starts_with(prefix)))
                 }
             }
         }
         "endswith" => {
             check_args_min("endswith", args, 1)?;
+            // endswith(suffix[, start[, end]])
+            let start = if args.len() > 1 { args[1].as_int().unwrap_or(0).max(0) as usize } else { 0 };
+            let end = if args.len() > 2 { args[2].as_int().unwrap_or(s.len() as i64).max(0) as usize } else { s.len() };
+            let slice = if start <= s.len() && end <= s.len() && start <= end {
+                &s[start..end]
+            } else if start <= s.len() {
+                &s[start..]
+            } else {
+                ""
+            };
             match &args[0].payload {
                 PyObjectPayload::Tuple(suffixes) => {
                     let result = suffixes.iter().any(|p| {
-                        p.as_str().map(|ps| s.ends_with(ps)).unwrap_or(false)
+                        p.as_str().map(|ps| slice.ends_with(ps)).unwrap_or(false)
                     });
                     Ok(PyObject::bool_val(result))
                 }
                 _ => {
                     let suffix = args[0].as_str().ok_or_else(|| PyException::type_error("endswith() argument must be str or tuple"))?;
-                    Ok(PyObject::bool_val(s.ends_with(suffix)))
+                    Ok(PyObject::bool_val(slice.ends_with(suffix)))
                 }
             }
         }

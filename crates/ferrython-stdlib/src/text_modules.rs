@@ -1215,7 +1215,21 @@ fn compiled_match(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pos = if args.len() > 2 { args[2].to_int().unwrap_or(0) as usize } else { 0 };
     let endpos = if args.len() > 3 { args[3].to_int().unwrap_or(text.len() as i64) as usize } else { text.len() };
     let sliced = &text[pos.min(text.len())..endpos.min(text.len())];
-    re_match(&[PyObject::str_val(CompactString::from(pattern)), PyObject::str_val(CompactString::from(sliced)), PyObject::int(flags)])
+    let result = re_match(&[PyObject::str_val(CompactString::from(pattern)), PyObject::str_val(CompactString::from(sliced)), PyObject::int(flags)])?;
+    // Adjust match positions by pos offset
+    if pos > 0 && !matches!(result.payload, PyObjectPayload::None) {
+        if let PyObjectPayload::Module(md) = &result.payload {
+            let mut w = md.attrs.write();
+            if let Some(s) = w.get("_start").and_then(|v| v.to_int().ok()) {
+                w.insert(CompactString::from("_start"), PyObject::int(s + pos as i64));
+            }
+            if let Some(e) = w.get("_end").and_then(|v| v.to_int().ok()) {
+                w.insert(CompactString::from("_end"), PyObject::int(e + pos as i64));
+            }
+            w.insert(CompactString::from("_text"), PyObject::str_val(CompactString::from(text.as_str())));
+        }
+    }
+    Ok(result)
 }
 
 fn compiled_search(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1227,7 +1241,21 @@ fn compiled_search(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let pos = if args.len() > 2 { args[2].to_int().unwrap_or(0) as usize } else { 0 };
     let endpos = if args.len() > 3 { args[3].to_int().unwrap_or(text.len() as i64) as usize } else { text.len() };
     let sliced = &text[pos.min(text.len())..endpos.min(text.len())];
-    re_search(&[PyObject::str_val(CompactString::from(pattern)), PyObject::str_val(CompactString::from(sliced)), PyObject::int(flags)])
+    let result = re_search(&[PyObject::str_val(CompactString::from(pattern)), PyObject::str_val(CompactString::from(sliced)), PyObject::int(flags)])?;
+    // Adjust match positions by pos offset
+    if pos > 0 && !matches!(result.payload, PyObjectPayload::None) {
+        if let PyObjectPayload::Module(md) = &result.payload {
+            let mut w = md.attrs.write();
+            if let Some(s) = w.get("_start").and_then(|v| v.to_int().ok()) {
+                w.insert(CompactString::from("_start"), PyObject::int(s + pos as i64));
+            }
+            if let Some(e) = w.get("_end").and_then(|v| v.to_int().ok()) {
+                w.insert(CompactString::from("_end"), PyObject::int(e + pos as i64));
+            }
+            w.insert(CompactString::from("_text"), PyObject::str_val(CompactString::from(text.as_str())));
+        }
+    }
+    Ok(result)
 }
 
 fn compiled_findall(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

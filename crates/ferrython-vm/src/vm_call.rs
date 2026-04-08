@@ -1205,6 +1205,19 @@ impl VirtualMachine {
                                 return self.re_sub_with_callable(&merged, name.as_str() == "re.subn");
                             }
                         }
+                        // re.compile(pattern, flags=...) / re.match/search/findall/sub with flags kwarg
+                        if name.starts_with("re.") {
+                            if let Some((_, flags_val)) = kwargs.iter().find(|(k, _)| k.as_str() == "flags") {
+                                let mut all = pos_args.clone();
+                                // Insert flags as second positional arg
+                                if all.len() < 2 {
+                                    all.push(flags_val.clone());
+                                } else {
+                                    all[1] = flags_val.clone();
+                                }
+                                return nf(&all);
+                            }
+                        }
                         // itertools.groupby with key function
                         if name.as_str() == "itertools.groupby" {
                             let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone())
