@@ -37,11 +37,11 @@ pub(crate) fn store_asyncio_run_coro(coro: PyObjectRef) {
     ASYNCIO_RUN_CORO.with(|c| *c.borrow_mut() = Some(coro));
 }
 
-fn set_wait_for_deadline(deadline: Option<std::time::Instant>) {
+pub fn set_wait_for_deadline(deadline: Option<std::time::Instant>) {
     WAIT_FOR_DEADLINE.with(|d| *d.borrow_mut() = deadline);
 }
 
-fn get_wait_for_deadline() -> Option<std::time::Instant> {
+pub fn get_wait_for_deadline() -> Option<std::time::Instant> {
     WAIT_FOR_DEADLINE.with(|d| *d.borrow())
 }
 
@@ -136,6 +136,7 @@ fn asyncio_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 /// `asyncio.sleep(delay, result=None)` — sleep for delay seconds.
+/// Returns a DeferredSleep so the VM can enforce wait_for deadlines.
 fn asyncio_sleep(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let secs = if args.is_empty() {
         0.0
@@ -147,37 +148,16 @@ fn asyncio_sleep(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     };
 
-    // Check if there's an active wait_for deadline
-    if secs > 0.0 {
-        if let Some(deadline) = get_wait_for_deadline() {
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                // Already past deadline — raise TimeoutError
-                set_wait_for_deadline(None);
-                return Err(PyException::new(
-                    ferrython_core::error::ExceptionKind::TimeoutError,
-                    "",
-                ));
-            }
-            let remaining = deadline.duration_since(now).as_secs_f64();
-            if secs > remaining {
-                // Sleep would exceed deadline — sleep remaining, then raise
-                std::thread::sleep(std::time::Duration::from_secs_f64(remaining));
-                set_wait_for_deadline(None);
-                return Err(PyException::new(
-                    ferrython_core::error::ExceptionKind::TimeoutError,
-                    "",
-                ));
-            }
-            std::thread::sleep(std::time::Duration::from_secs_f64(secs));
-        } else {
-            std::thread::sleep(std::time::Duration::from_secs_f64(secs));
-        }
+    let result = args.get(1).cloned().unwrap_or_else(PyObject::none);
+
+    if secs <= 0.0 {
+        // Zero or negative sleep resolves immediately
+        return Ok(PyObject::builtin_awaitable(result));
     }
 
-    // Return value is the second argument, or None
-    let result = args.get(1).cloned().unwrap_or_else(PyObject::none);
-    Ok(PyObject::builtin_awaitable(result))
+    // Return a deferred sleep — the VM will perform the actual thread::sleep
+    // during YIELD_FROM, where it can also check wait_for deadlines.
+    Ok(PyObject::deferred_sleep(secs, result))
 }
 
 /// `asyncio.gather(*coros_or_futures, return_exceptions=False)`

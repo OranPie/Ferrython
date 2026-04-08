@@ -17,4 +17,4 @@ mod primitives;
 
 pub use event_loop::{EventLoop, EventLoopState};
 pub use task::{TaskState, TaskHandle};
-pub use module::{create_asyncio_module, take_asyncio_run_coro};
+pub use module::{create_asyncio_module, take_asyncio_run_coro, get_wait_for_deadline, set_wait_for_deadline};

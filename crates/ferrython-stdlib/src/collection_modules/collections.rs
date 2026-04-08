@@ -35,12 +35,11 @@ pub fn create_collections_module() -> PyObjectRef {
 }
 
 fn collections_ordered_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // OrderedDict is just a regular dict in Python 3.7+
-    if args.is_empty() {
-        Ok(PyObject::dict_from_pairs(vec![]))
-    } else {
+    // OrderedDict — same as dict but __eq__ compares order when both are OrderedDict
+    let marker_key = HashableKey::Str(CompactString::from("__ordered_dict__"));
+    let mut pairs = Vec::new();
+    if !args.is_empty() {
         let items = args[0].to_list()?;
-        let mut pairs = Vec::new();
         for item in items {
             if let PyObjectPayload::Tuple(t) = &item.payload {
                 if t.len() == 2 {
@@ -48,8 +47,45 @@ fn collections_ordered_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 }
             }
         }
-        Ok(PyObject::dict_from_pairs(pairs))
     }
+    let mut map = IndexMap::new();
+    map.insert(marker_key, PyObject::bool_val(true));
+    for (k, v) in pairs {
+        let hk = k.to_hashable_key()?;
+        map.insert(hk, v);
+    }
+    let od = PyObject::dict(map);
+
+    // Install move_to_end method
+    if let PyObjectPayload::Dict(dict_arc) = &od.payload {
+        let d = dict_arc.clone();
+        let move_fn = PyObject::native_closure("OrderedDict.move_to_end", move |args| {
+            if args.is_empty() {
+                return Err(PyException::type_error("move_to_end() requires a key argument"));
+            }
+            let key = args[0].to_hashable_key()?;
+            let last = if args.len() > 1 {
+                args[1].is_truthy()
+            } else {
+                true
+            };
+            let mut map = d.write();
+            if let Some(idx) = map.get_index_of(&key) {
+                let target = if last { map.len() - 1 } else { 0 };
+                map.move_index(idx, target);
+                Ok(PyObject::none())
+            } else {
+                Err(PyException::key_error(format!("{:?}", args[0])))
+            }
+        });
+        // Store move_to_end as a hidden dict key since dicts don't have instance attrs
+        dict_arc.write().insert(
+            HashableKey::Str(CompactString::from("__move_to_end_fn__")),
+            move_fn,
+        );
+    }
+
+    Ok(od)
 }
 
 fn collections_defaultdict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

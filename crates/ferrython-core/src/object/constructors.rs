@@ -393,5 +393,11 @@ impl PyObject {
     pub fn builtin_awaitable(value: PyObjectRef) -> PyObjectRef {
         Self::wrap(PyObjectPayload::BuiltinAwaitable(value))
     }
+
+    /// Create a deferred sleep awaitable. The actual sleep happens in the VM's
+    /// YIELD_FROM handler, so wait_for can enforce its deadline before the sleep.
+    pub fn deferred_sleep(secs: f64, result: PyObjectRef) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::DeferredSleep { secs, result })
+    }
 }
 

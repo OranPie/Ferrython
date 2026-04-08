@@ -19,6 +19,18 @@ thread_local! {
     static REPR_ACTIVE: std::cell::RefCell<HashSet<usize>> = std::cell::RefCell::new(HashSet::new());
 }
 
+/// Check if a dict key is a hidden internal marker (should be excluded from iteration).
+/// Used by defaultdict (__defaultdict_factory__), Counter (__counter__), and OrderedDict (__ordered_dict__, __move_to_end_fn__).
+#[inline]
+pub fn is_hidden_dict_key(k: &HashableKey) -> bool {
+    matches!(k, HashableKey::Str(s) if
+        s.as_str() == "__defaultdict_factory__"
+        || s.as_str() == "__counter__"
+        || s.as_str() == "__ordered_dict__"
+        || s.as_str() == "__move_to_end_fn__"
+    )
+}
+
 /// Enter repr for an object identified by its pointer. Returns true if this is
 /// a new entry (safe to proceed). Returns false if already active (cycle detected).
 pub fn repr_enter(ptr: usize) -> bool {
@@ -161,14 +173,37 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
         }
         (PyObjectPayload::Dict(a), PyObjectPayload::Dict(b)) => {
             let a = a.read(); let b = b.read();
-            if a.len() != b.len() { return None; }
-            for (k, v1) in a.iter() {
-                match b.get(k) {
-                    Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
-                    _ => return None,
+            // OrderedDict-vs-OrderedDict: compare key order too
+            let od_key = crate::types::HashableKey::Str(CompactString::from("__ordered_dict__"));
+            let a_is_od = a.contains_key(&od_key);
+            let b_is_od = b.contains_key(&od_key);
+            if a_is_od && b_is_od {
+                // Both OrderedDicts: filter hidden keys, then compare in order
+                let a_items: Vec<_> = a.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+                let b_items: Vec<_> = b.iter().filter(|(k, _)| !is_hidden_dict_key(k)).collect();
+                if a_items.len() != b_items.len() { return None; }
+                for ((ak, av), (bk, bv)) in a_items.iter().zip(b_items.iter()) {
+                    if ak != bk { return None; }
+                    if partial_cmp_objects(av, bv) != Some(std::cmp::Ordering::Equal) { return None; }
                 }
+                Some(std::cmp::Ordering::Equal)
+            } else {
+                // Regular dict equality (order-insensitive); skip hidden markers
+                let a_effective: Vec<_> = a.iter()
+                    .filter(|(k, _)| !is_hidden_dict_key(k))
+                    .collect();
+                let b_effective: Vec<_> = b.iter()
+                    .filter(|(k, _)| !is_hidden_dict_key(k))
+                    .collect();
+                if a_effective.len() != b_effective.len() { return None; }
+                for (k, v1) in &a_effective {
+                    match b.get(*k) {
+                        Some(v2) if partial_cmp_objects(v1, v2) == Some(std::cmp::Ordering::Equal) => {}
+                        _ => return None,
+                    }
+                }
+                Some(std::cmp::Ordering::Equal)
             }
-            Some(std::cmp::Ordering::Equal)
         }
         // Class identity comparison (same Arc pointer = same class)
         (PyObjectPayload::Class(a), PyObjectPayload::Class(b)) => {
@@ -890,16 +925,7 @@ pub(super) fn format_set(open: &str, close: &str, map: &IndexMap<HashableKey, Py
 
 pub(super) fn format_dict(map: &IndexMap<HashableKey, PyObjectRef>) -> String {
     let inner: Vec<String> = map.iter()
-        .filter(|(k, _)| {
-            // Hide internal defaultdict/counter marker keys
-            match k {
-                HashableKey::Str(s) => {
-                    let key = s.as_str();
-                    key != "__defaultdict_factory__" && key != "__counter__"
-                }
-                _ => true,
-            }
-        })
+        .filter(|(k, _)| !is_hidden_dict_key(k))
         .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr())).collect();
     format!("{{{}}}", inner.join(", "))
 }

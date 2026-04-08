@@ -512,11 +512,7 @@ impl VirtualMachine {
                 let m = m.read().clone();
                 let mut parts = Vec::new();
                 for (k, v) in &m {
-                    // Hide internal marker keys
-                    if let HashableKey::Str(s) = k {
-                        let key = s.as_str();
-                        if key == "__defaultdict_factory__" || key == "__counter__" { continue; }
-                    }
+                    if ferrython_core::object::is_hidden_dict_key(k) { continue; }
                     let kr = self.vm_repr(&k.to_object())?;
                     let vr = self.vm_repr(v)?;
                     parts.push(format!("{}: {}", kr, vr));
@@ -1144,6 +1140,29 @@ impl VirtualMachine {
                         Err(e) => return Err(e),
                     }
                 }
+            }
+            PyObjectPayload::DeferredSleep { secs, result: sleep_result } => {
+                // Perform the deferred sleep now, respecting wait_for deadline
+                let secs = *secs;
+                let sleep_result = sleep_result.clone();
+                let deadline = ferrython_async::get_wait_for_deadline();
+                if let Some(dl) = deadline {
+                    let now = std::time::Instant::now();
+                    if now >= dl {
+                        ferrython_async::set_wait_for_deadline(None);
+                        return Err(PyException::new(ExceptionKind::TimeoutError, ""));
+                    }
+                    let remaining = dl.duration_since(now).as_secs_f64();
+                    if secs > remaining {
+                        std::thread::sleep(std::time::Duration::from_secs_f64(remaining));
+                        ferrython_async::set_wait_for_deadline(None);
+                        return Err(PyException::new(ExceptionKind::TimeoutError, ""));
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+                } else {
+                    std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+                }
+                Ok(sleep_result)
             }
             _ => Ok(result),
         }

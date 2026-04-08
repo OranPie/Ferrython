@@ -21,9 +21,7 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             PyObjectPayload::FrozenSet(m) => Ok(m.len()),
             PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
                 let map = m.read();
-                let mut hidden = 0;
-                if map.contains_key(&HashableKey::Str(CompactString::from("__defaultdict_factory__"))) { hidden += 1; }
-                if map.contains_key(&HashableKey::Str(CompactString::from("__counter__"))) { hidden += 1; }
+                let hidden = map.keys().filter(|k| is_hidden_dict_key(k)).count();
                 Ok(map.len() - hidden)
             },
             PyObjectPayload::Instance(inst) => {
@@ -94,9 +92,7 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
             }
             PyObjectPayload::DictKeys(m) | PyObjectPayload::DictValues(m) | PyObjectPayload::DictItems(m) => {
                 let map = m.read();
-                let mut hidden = 0;
-                if map.contains_key(&HashableKey::Str(intern_or_new("__defaultdict_factory__"))) { hidden += 1; }
-                if map.contains_key(&HashableKey::Str(intern_or_new("__counter__"))) { hidden += 1; }
+                let hidden = map.keys().filter(|k| is_hidden_dict_key(k)).count();
                 Ok(map.len() - hidden)
             },
             PyObjectPayload::InstanceDict(attrs) => Ok(attrs.read().len()),
@@ -127,6 +123,9 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
             }
             PyObjectPayload::Dict(map) => {
                 let hk = key.to_hashable_key()?;
+                if is_hidden_dict_key(&hk) {
+                    return Err(PyException::key_error(key.repr()));
+                }
                 let map_r = map.read();
                 if let Some(val) = map_r.get(&hk) {
                     return Ok(val.clone());
@@ -237,6 +236,7 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
             }
             PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
                 let hk = item.to_hashable_key()?;
+                if is_hidden_dict_key(&hk) { return Ok(false); }
                 Ok(m.read().contains_key(&hk))
             }
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
@@ -327,7 +327,7 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
             PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
                 let keys: Vec<PyObjectRef> = m.read().keys()
-                    .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .filter(|k| !is_hidden_dict_key(k))
                     .map(|k| k.to_object()).collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
             }
@@ -368,19 +368,19 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             }
             PyObjectPayload::DictKeys(m) => {
                 let keys: Vec<PyObjectRef> = m.read().keys()
-                    .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .filter(|k| !is_hidden_dict_key(k))
                     .map(|k| k.to_object()).collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
             }
             PyObjectPayload::DictValues(m) => {
                 let vals: Vec<PyObjectRef> = m.read().iter()
-                    .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .filter(|(k, _)| !is_hidden_dict_key(k))
                     .map(|(_, v)| v.clone()).collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: vals, index: 0 })))))
             }
             PyObjectPayload::DictItems(m) => {
                 let items: Vec<PyObjectRef> = m.read().iter()
-                    .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .filter(|(k, _)| !is_hidden_dict_key(k))
                     .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()])).collect();
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items, index: 0 })))))
             }

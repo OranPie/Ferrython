@@ -209,6 +209,32 @@ impl VirtualMachine {
                     let frame = self.vm_frame();
                     frame.pop();
                     frame.push(result);
+                } else if let PyObjectPayload::DeferredSleep { secs, result } = &sub_iter.payload {
+                    // DeferredSleep: perform the actual sleep here (lazy),
+                    // respecting any wait_for deadline.
+                    let secs = *secs;
+                    let result = result.clone();
+                    let deadline = ferrython_async::get_wait_for_deadline();
+                    if let Some(dl) = deadline {
+                        let now = std::time::Instant::now();
+                        if now >= dl {
+                            ferrython_async::set_wait_for_deadline(None);
+                            return Err(PyException::new(ExceptionKind::TimeoutError, ""));
+                        }
+                        let remaining = dl.duration_since(now).as_secs_f64();
+                        if secs > remaining {
+                            // Sleep would exceed deadline — sleep remaining, then timeout
+                            std::thread::sleep(std::time::Duration::from_secs_f64(remaining));
+                            ferrython_async::set_wait_for_deadline(None);
+                            return Err(PyException::new(ExceptionKind::TimeoutError, ""));
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+                    }
+                    let frame = self.vm_frame();
+                    frame.pop();
+                    frame.push(result);
                 } else if matches!(&sub_iter.payload, PyObjectPayload::Instance(_)) {
                     if let Some(next_method) = sub_iter.get_attr("__next__") {
                         match self.call_object(next_method, vec![]) {
@@ -267,6 +293,10 @@ impl VirtualMachine {
                     }
                     // BuiltinAwaitable — native awaitable from asyncio.sleep(), gather(), etc.
                     PyObjectPayload::BuiltinAwaitable(_) => {
+                        self.vm_push(obj);
+                    }
+                    // DeferredSleep — deferred sleep from asyncio.sleep()
+                    PyObjectPayload::DeferredSleep { .. } => {
                         self.vm_push(obj);
                     }
                     _ => {

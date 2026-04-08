@@ -609,6 +609,7 @@ version = "0.1.0"
 dependencies = [
  "compact_str",
  "digest",
+ "ferrython-async",
  "ferrython-bytecode",
  "ferrython-compiler",
  "ferrython-core",

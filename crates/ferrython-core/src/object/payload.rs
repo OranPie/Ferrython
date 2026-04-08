@@ -101,6 +101,10 @@ pub enum PyObjectPayload {
     /// Used by asyncio.sleep(), asyncio.gather(), etc. to return proper awaitables
     /// from native functions that don't have their own coroutine frame.
     BuiltinAwaitable(PyObjectRef),
+    /// Deferred sleep awaitable — carries sleep duration (secs) and result value.
+    /// The actual thread::sleep happens when the VM drives this in YIELD_FROM,
+    /// allowing asyncio.wait_for to enforce timeouts via a deadline.
+    DeferredSleep { secs: f64, result: PyObjectRef },
     /// Dict view objects — live views backed by the underlying dict's Arc
     DictKeys(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     DictValues(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
@@ -154,6 +158,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::Super { .. } => write!(f, "Super(...)"),
             Self::Range { start, stop, step } => write!(f, "Range({start}, {stop}, {step})"),
             Self::BuiltinAwaitable(_) => write!(f, "BuiltinAwaitable(...)"),
+            Self::DeferredSleep { secs, .. } => write!(f, "DeferredSleep({secs}s)"),
             Self::DictKeys(_) => write!(f, "dict_keys(...)"),
             Self::DictValues(_) => write!(f, "dict_values(...)"),
             Self::DictItems(_) => write!(f, "dict_items(...)"),

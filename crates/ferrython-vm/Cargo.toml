@@ -6,6 +6,7 @@ license.workspace = true
 description = "Stack-based bytecode virtual machine for Ferrython"
 
 [dependencies]
+ferrython-async = { workspace = true }
 ferrython-bytecode = { workspace = true }
 ferrython-core = { workspace = true }
 ferrython-compiler = { workspace = true }

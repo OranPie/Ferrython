@@ -74,6 +74,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
             PyObjectPayload::Partial { .. } => "functools.partial",
             PyObjectPayload::InstanceDict(_) => "dict",
             PyObjectPayload::BuiltinAwaitable(_) => "coroutine",
+            PyObjectPayload::DeferredSleep { .. } => "coroutine",
             PyObjectPayload::DictKeys(_) => "dict_keys",
             PyObjectPayload::DictValues(_) => "dict_values",
             PyObjectPayload::DictItems(_) => "dict_items",
@@ -393,19 +394,19 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             }
             PyObjectPayload::DictKeys(map) => {
                 let keys: Vec<String> = map.read().keys()
-                    .filter(|k| !matches!(k, HashableKey::Str(s) if s.starts_with("__") && (s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__")))
+                    .filter(|k| !is_hidden_dict_key(k))
                     .map(|k| k.to_object().repr()).collect();
                 format!("dict_keys([{}])", keys.join(", "))
             }
             PyObjectPayload::DictValues(map) => {
                 let vals: Vec<String> = map.read().iter()
-                    .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .filter(|(k, _)| !is_hidden_dict_key(k))
                     .map(|(_, v)| v.repr()).collect();
                 format!("dict_values([{}])", vals.join(", "))
             }
             PyObjectPayload::DictItems(map) => {
                 let items: Vec<String> = map.read().iter()
-                    .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                    .filter(|(k, _)| !is_hidden_dict_key(k))
                     .map(|(k, v)| format!("({}, {})", k.to_object().repr(), v.repr())).collect();
                 format!("dict_items([{}])", items.join(", "))
             }
@@ -527,7 +528,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
             PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => Ok(m.read().keys()
-                .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                .filter(|k| !is_hidden_dict_key(k))
                 .map(|k| k.to_object()).collect()),
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
                 Ok(inst.dict_storage.as_ref().unwrap().read().keys().map(|k| k.to_object()).collect())
@@ -584,13 +585,13 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 Ok(vec![])
             }
             PyObjectPayload::DictKeys(m) => Ok(m.read().keys()
-                .filter(|k| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                .filter(|k| !is_hidden_dict_key(k))
                 .map(|k| k.to_object()).collect()),
             PyObjectPayload::DictValues(m) => Ok(m.read().iter()
-                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                .filter(|(k, _)| !is_hidden_dict_key(k))
                 .map(|(_, v)| v.clone()).collect()),
             PyObjectPayload::DictItems(m) => Ok(m.read().iter()
-                .filter(|(k, _)| !matches!(k, HashableKey::Str(s) if s.as_str() == "__defaultdict_factory__" || s.as_str() == "__counter__"))
+                .filter(|(k, _)| !is_hidden_dict_key(k))
                 .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()])).collect()),
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name()))),
         }
