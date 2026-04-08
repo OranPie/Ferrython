@@ -355,27 +355,188 @@ fn do_http_request(url: &str, method: &str, headers: &IndexMap<String, String>, 
     Ok((status_code, headers, body))
 }
 
+/// Build the HTTPResponse *class* (used by http.client and urllib).
+fn make_http_response_class() -> PyObjectRef {
+    let mut ns = IndexMap::new();
+
+    // __init__(self, status=200, reason="", headers=None, body=b"", url="")
+    ns.insert(CompactString::from("__init__"), PyObject::native_closure(
+        "HTTPResponse.__init__", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            let self_obj = &args[0];
+            if let PyObjectPayload::Instance(ref d) = self_obj.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("status"), PyObject::int(200));
+                w.insert(CompactString::from("code"), PyObject::int(200));
+                w.insert(CompactString::from("reason"), PyObject::str_val(CompactString::from("OK")));
+                w.insert(CompactString::from("headers"), PyObject::dict(IndexMap::new()));
+                w.insert(CompactString::from("_body"), PyObject::bytes(vec![]));
+                w.insert(CompactString::from("_read_pos"), PyObject::int(0));
+                w.insert(CompactString::from("url"), PyObject::str_val(CompactString::from("")));
+                w.insert(CompactString::from("__urllib_response__"), PyObject::bool_val(true));
+            }
+            Ok(PyObject::none())
+        }
+    ));
+
+    // read(self, n=-1) → bytes
+    ns.insert(CompactString::from("read"), PyObject::native_closure(
+        "HTTPResponse.read", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bytes(vec![])); }
+            let self_obj = &args[0];
+            let n = if args.len() > 1 { args[1].as_int().unwrap_or(-1) } else { -1 };
+            let body_bytes = self_obj.get_attr("_body")
+                .map(|b| match &b.payload {
+                    PyObjectPayload::Bytes(v) => v.clone(),
+                    _ => vec![],
+                })
+                .unwrap_or_default();
+            let pos = self_obj.get_attr("_read_pos")
+                .and_then(|p| p.as_int())
+                .unwrap_or(0) as usize;
+            let pos = std::cmp::min(pos, body_bytes.len());
+            let remaining = &body_bytes[pos..];
+            let chunk = if n < 0 {
+                remaining.to_vec()
+            } else {
+                let end = std::cmp::min(n as usize, remaining.len());
+                remaining[..end].to_vec()
+            };
+            let new_pos = pos + chunk.len();
+            if let PyObjectPayload::Instance(ref d) = self_obj.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("_read_pos"), PyObject::int(new_pos as i64));
+            }
+            Ok(PyObject::bytes(chunk))
+        }
+    ));
+
+    // readline(self) → bytes
+    ns.insert(CompactString::from("readline"), PyObject::native_closure(
+        "HTTPResponse.readline", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bytes(vec![])); }
+            let self_obj = &args[0];
+            let body_bytes = self_obj.get_attr("_body")
+                .map(|b| match &b.payload {
+                    PyObjectPayload::Bytes(v) => v.clone(),
+                    _ => vec![],
+                })
+                .unwrap_or_default();
+            let pos = self_obj.get_attr("_read_pos")
+                .and_then(|p| p.as_int())
+                .unwrap_or(0) as usize;
+            let pos = std::cmp::min(pos, body_bytes.len());
+            let remaining = &body_bytes[pos..];
+            let end = remaining.iter().position(|&c| c == b'\n')
+                .map(|i| i + 1)
+                .unwrap_or(remaining.len());
+            let line = remaining[..end].to_vec();
+            let new_pos = pos + line.len();
+            if let PyObjectPayload::Instance(ref d) = self_obj.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("_read_pos"), PyObject::int(new_pos as i64));
+            }
+            Ok(PyObject::bytes(line))
+        }
+    ));
+
+    // getheader(self, name, default=None) → str or default
+    ns.insert(CompactString::from("getheader"), PyObject::native_closure(
+        "HTTPResponse.getheader", |args: &[PyObjectRef]| {
+            if args.len() < 2 { return Ok(PyObject::none()); }
+            let self_obj = &args[0];
+            let name = args[1].py_to_string();
+            let default = args.get(2).cloned().unwrap_or_else(PyObject::none);
+            let headers = self_obj.get_attr("headers").unwrap_or_else(|| PyObject::dict(IndexMap::new()));
+            if let PyObjectPayload::Dict(d) = &headers.payload {
+                let map = d.read();
+                let name_lower = name.to_lowercase();
+                for (k, v) in map.iter() {
+                    let ks = match k {
+                        HashableKey::Str(s) => s.to_string(),
+                        _ => continue,
+                    };
+                    if ks.to_lowercase() == name_lower {
+                        return Ok(v.clone());
+                    }
+                }
+            }
+            Ok(default)
+        }
+    ));
+
+    // getheaders() → list of (name, value) tuples
+    ns.insert(CompactString::from("getheaders"), PyObject::native_closure(
+        "HTTPResponse.getheaders", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::list(vec![])); }
+            let self_obj = &args[0];
+            let headers = self_obj.get_attr("headers").unwrap_or_else(|| PyObject::dict(IndexMap::new()));
+            let mut result = Vec::new();
+            if let PyObjectPayload::Dict(d) = &headers.payload {
+                let map = d.read();
+                for (k, v) in map.iter() {
+                    let ks = match k {
+                        HashableKey::Str(s) => PyObject::str_val(s.clone()),
+                        _ => continue,
+                    };
+                    result.push(PyObject::tuple(vec![ks, v.clone()]));
+                }
+            }
+            Ok(PyObject::list(result))
+        }
+    ));
+
+    // getcode(self) → int
+    ns.insert(CompactString::from("getcode"), PyObject::native_closure(
+        "HTTPResponse.getcode", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::int(0)); }
+            Ok(args[0].get_attr("status").unwrap_or_else(|| PyObject::int(0)))
+        }
+    ));
+
+    // geturl(self) → str
+    ns.insert(CompactString::from("geturl"), PyObject::native_closure(
+        "HTTPResponse.geturl", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+            Ok(args[0].get_attr("url").unwrap_or_else(|| PyObject::str_val(CompactString::from(""))))
+        }
+    ));
+
+    // close(self) — no-op
+    ns.insert(CompactString::from("close"), PyObject::native_closure(
+        "HTTPResponse.close", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    // __enter__(self) → self
+    ns.insert(CompactString::from("__enter__"), PyObject::native_closure(
+        "HTTPResponse.__enter__", |args: &[PyObjectRef]| {
+            if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
+        }
+    ));
+
+    // __exit__(self, *args) → False
+    ns.insert(CompactString::from("__exit__"), PyObject::native_closure(
+        "HTTPResponse.__exit__", |_args: &[PyObjectRef]| Ok(PyObject::bool_val(false))
+    ));
+
+    PyObject::class(CompactString::from("HTTPResponse"), vec![], ns)
+}
+
+/// Build an HTTPResponse *instance* with pre-populated data.
 fn build_response_object(
     url: &str,
     status: u16,
     headers: IndexMap<String, String>,
     body: Vec<u8>,
 ) -> PyObjectRef {
-    let mut attrs = IndexMap::new();
-    attrs.insert(
-        CompactString::from("__urllib_response__"),
-        PyObject::bool_val(true),
-    );
-    attrs.insert(
-        CompactString::from("url"),
-        PyObject::str_val(CompactString::from(url)),
-    );
-    attrs.insert(CompactString::from("status"), PyObject::int(status as i64));
-    attrs.insert(CompactString::from("code"), PyObject::int(status as i64));
-    attrs.insert(
-        CompactString::from("reason"),
-        PyObject::str_val(CompactString::from(http_reason(status))),
-    );
+    let cls = make_http_response_class();
+
+    let mut inst_attrs = IndexMap::new();
+    inst_attrs.insert(CompactString::from("__urllib_response__"), PyObject::bool_val(true));
+    inst_attrs.insert(CompactString::from("url"), PyObject::str_val(CompactString::from(url)));
+    inst_attrs.insert(CompactString::from("status"), PyObject::int(status as i64));
+    inst_attrs.insert(CompactString::from("code"), PyObject::int(status as i64));
+    inst_attrs.insert(CompactString::from("reason"), PyObject::str_val(CompactString::from(http_reason(status))));
 
     // Build headers dict
     let mut hdr_map = IndexMap::new();
@@ -385,98 +546,11 @@ fn build_response_object(
             PyObject::str_val(CompactString::from(v.as_str())),
         );
     }
-    attrs.insert(CompactString::from("headers"), PyObject::dict(hdr_map));
+    inst_attrs.insert(CompactString::from("headers"), PyObject::dict(hdr_map));
+    inst_attrs.insert(CompactString::from("_body"), PyObject::bytes(body));
+    inst_attrs.insert(CompactString::from("_read_pos"), PyObject::int(0));
 
-    let body_arc = Arc::new(body);
-    let body_pos = Arc::new(Mutex::new(0usize));
-
-    // read(n=-1) → bytes
-    let b = body_arc.clone();
-    let pos = body_pos.clone();
-    attrs.insert(
-        CompactString::from("read"),
-        PyObject::native_closure("read", move |args| {
-            let n = if !args.is_empty() {
-                args[0].as_int().unwrap_or(-1)
-            } else {
-                -1
-            };
-            let mut p = pos.lock().unwrap();
-            let remaining = &b[*p..];
-            let chunk = if n < 0 {
-                remaining.to_vec()
-            } else {
-                let end = std::cmp::min(n as usize, remaining.len());
-                remaining[..end].to_vec()
-            };
-            *p += chunk.len();
-            Ok(PyObject::bytes(chunk))
-        }),
-    );
-
-    // readline() → bytes
-    let b = body_arc.clone();
-    let pos = body_pos.clone();
-    attrs.insert(
-        CompactString::from("readline"),
-        PyObject::native_closure("readline", move |_args| {
-            let mut p = pos.lock().unwrap();
-            let remaining = &b[*p..];
-            let end = remaining
-                .iter()
-                .position(|&c| c == b'\n')
-                .map(|i| i + 1)
-                .unwrap_or(remaining.len());
-            let line = remaining[..end].to_vec();
-            *p += line.len();
-            Ok(PyObject::bytes(line))
-        }),
-    );
-
-    // getcode() → int
-    let sc = status;
-    attrs.insert(
-        CompactString::from("getcode"),
-        PyObject::native_closure("getcode", move |_args| Ok(PyObject::int(sc as i64))),
-    );
-
-    // geturl() → str
-    let u = url.to_string();
-    attrs.insert(
-        CompactString::from("geturl"),
-        PyObject::native_closure("geturl", move |_args| {
-            Ok(PyObject::str_val(CompactString::from(u.as_str())))
-        }),
-    );
-
-    // close() — no-op
-    attrs.insert(
-        CompactString::from("close"),
-        PyObject::native_closure("close", |_args| Ok(PyObject::none())),
-    );
-
-    // __enter__ / __exit__
-    attrs.insert(
-        CompactString::from("__enter__"),
-        PyObject::native_function("__enter__", |args| {
-            if !args.is_empty() {
-                Ok(args[0].clone())
-            } else {
-                Ok(PyObject::none())
-            }
-        }),
-    );
-    attrs.insert(
-        CompactString::from("__exit__"),
-        PyObject::native_closure("__exit__", |_args| Ok(PyObject::bool_val(false))),
-    );
-
-    attrs.insert(
-        CompactString::from("_bind_methods"),
-        PyObject::bool_val(true),
-    );
-
-    PyObject::module_with_attrs(CompactString::from("http.client.HTTPResponse"), attrs)
+    PyObject::instance_with_attrs(cls, inst_attrs)
 }
 
 fn urllib_urlopen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1235,25 +1309,288 @@ fn http_reason(code: u16) -> &'static str {
     }
 }
 
+/// Build the HTTPConnection *class* (proper class, supports isinstance/subclassing).
+fn make_http_connection_class(default_port: u16, class_name: &str, is_https: bool) -> PyObjectRef {
+    let mut ns = IndexMap::new();
+    let https_flag = is_https;
+    let def_port = default_port;
+
+    // __init__(self, host, port=None, timeout=30)
+    ns.insert(CompactString::from("__init__"), {
+        let class_name_str = class_name.to_string();
+        PyObject::native_closure(
+        &format!("{}.__init__", class_name_str), move |args: &[PyObjectRef]| {
+            if args.len() < 2 {
+                return Err(PyException::type_error(
+                    &format!("{}() requires a host argument", class_name_str),
+                ));
+            }
+            let self_obj = &args[0];
+            let host = args[1].py_to_string();
+            let port: u16 = if args.len() > 2 && !matches!(&args[2].payload, PyObjectPayload::None) {
+                args[2].as_int().unwrap_or(def_port as i64) as u16
+            } else if let Some(idx) = host.rfind(':') {
+                host[idx + 1..].parse().unwrap_or(def_port)
+            } else {
+                def_port
+            };
+            let host_only = if let Some(idx) = host.rfind(':') {
+                if host[idx + 1..].parse::<u16>().is_ok() {
+                    host[..idx].to_string()
+                } else {
+                    host.clone()
+                }
+            } else {
+                host.clone()
+            };
+            let timeout_secs: i64 = if args.len() > 3 && !matches!(&args[3].payload, PyObjectPayload::None) {
+                args[3].as_int().unwrap_or(30)
+            } else {
+                30
+            };
+
+            if let PyObjectPayload::Instance(ref d) = self_obj.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("host"), PyObject::str_val(CompactString::from(host_only.as_str())));
+                w.insert(CompactString::from("port"), PyObject::int(port as i64));
+                w.insert(CompactString::from("timeout"), PyObject::int(timeout_secs));
+                w.insert(CompactString::from("debuglevel"), PyObject::int(0));
+                w.insert(CompactString::from("_https"), PyObject::bool_val(https_flag));
+                w.insert(CompactString::from("_response_data"), PyObject::none());
+            }
+            Ok(PyObject::none())
+        })
+    });
+
+    // request(self, method, url, body=None, headers=None)
+    ns.insert(CompactString::from("request"), PyObject::native_closure(
+        "HTTPConnection.request", |args: &[PyObjectRef]| {
+            if args.len() < 3 {
+                return Err(PyException::type_error(
+                    "request() requires method and url arguments",
+                ));
+            }
+            let self_obj = &args[0];
+            let method = args[1].py_to_string();
+            let url = args[2].py_to_string();
+            let body = if args.len() > 3 && !matches!(&args[3].payload, PyObjectPayload::None) {
+                Some(args[3].py_to_string())
+            } else {
+                None
+            };
+
+            let mut extra_headers = IndexMap::new();
+            if args.len() > 4 {
+                if let PyObjectPayload::Dict(d) = &args[4].payload {
+                    let d = d.read();
+                    for (k, v) in d.iter() {
+                        let ks = match k {
+                            HashableKey::Str(s) => s.to_string(),
+                            HashableKey::Int(i) => i.to_string(),
+                            _ => format!("{:?}", k),
+                        };
+                        extra_headers.insert(ks, v.py_to_string());
+                    }
+                }
+            }
+
+            let host = self_obj.get_attr("host").map(|h| h.py_to_string()).unwrap_or_default();
+            let port = self_obj.get_attr("port").and_then(|p| p.as_int()).unwrap_or(80) as u16;
+            let timeout_secs = self_obj.get_attr("timeout").and_then(|t| t.as_int()).unwrap_or(30) as u64;
+
+            let addr = format!("{}:{}", host, port);
+            let timeout = Duration::from_secs(timeout_secs);
+            let socket_addr: std::net::SocketAddr = addr.parse()
+                .or_else(|_| {
+                    use std::net::ToSocketAddrs;
+                    addr.to_socket_addrs()
+                        .map_err(|e| PyException::os_error(format!("HTTPConnection DNS: {}", e)))
+                        .and_then(|mut addrs| addrs.next().ok_or_else(|| {
+                            PyException::os_error(format!("HTTPConnection: could not resolve {}", addr))
+                        }))
+                })?;
+            let mut stream = TcpStream::connect_timeout(&socket_addr, timeout)
+                .map_err(|e| PyException::os_error(format!("HTTPConnection: {}", e)))?;
+            stream.set_read_timeout(Some(timeout)).ok();
+            stream.set_write_timeout(Some(timeout)).ok();
+
+            let mut req = format!(
+                "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+                method, url, host
+            );
+            for (k, v) in &extra_headers {
+                req.push_str(&format!("{}: {}\r\n", k, v));
+            }
+            if let Some(ref b) = body {
+                req.push_str(&format!("Content-Length: {}\r\n", b.len()));
+            }
+            req.push_str("\r\n");
+            if let Some(ref b) = body {
+                req.push_str(b);
+            }
+
+            stream
+                .write_all(req.as_bytes())
+                .map_err(|e| PyException::os_error(format!("HTTPConnection write: {}", e)))?;
+
+            let mut raw = Vec::new();
+            stream
+                .read_to_end(&mut raw)
+                .map_err(|e| PyException::os_error(format!("HTTPConnection read: {}", e)))?;
+
+            // Store response data on self
+            if let PyObjectPayload::Instance(ref d) = self_obj.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("_response_data"), PyObject::bytes(raw));
+            }
+            Ok(PyObject::none())
+        }
+    ));
+
+    // getresponse(self) → HTTPResponse instance
+    ns.insert(CompactString::from("getresponse"), PyObject::native_closure(
+        "HTTPConnection.getresponse", |args: &[PyObjectRef]| {
+            if args.is_empty() {
+                return Err(PyException::runtime_error("no response available"));
+            }
+            let self_obj = &args[0];
+            let raw_obj = self_obj.get_attr("_response_data")
+                .ok_or_else(|| PyException::runtime_error("no response available"))?;
+            let raw = match &raw_obj.payload {
+                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::None => return Err(PyException::runtime_error("no response available")),
+                _ => vec![],
+            };
+
+            // Clear stored data
+            if let PyObjectPayload::Instance(ref d) = self_obj.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("_response_data"), PyObject::none());
+            }
+
+            let raw_str = String::from_utf8_lossy(&raw);
+            let header_end = raw_str.find("\r\n\r\n").unwrap_or(raw_str.len());
+            let header_section = &raw_str[..header_end];
+            let body_start = if header_end + 4 <= raw.len() {
+                header_end + 4
+            } else {
+                raw.len()
+            };
+            let body = raw[body_start..].to_vec();
+
+            let mut lines = header_section.lines();
+            let status_line = lines.next().unwrap_or("HTTP/1.1 200 OK");
+            let status_code: u16 = status_line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(200);
+
+            let mut headers = IndexMap::new();
+            for line in lines {
+                if let Some(idx) = line.find(':') {
+                    let key = line[..idx].trim().to_string();
+                    let val = line[idx + 1..].trim().to_string();
+                    headers.insert(key, val);
+                }
+            }
+
+            let host = self_obj.get_attr("host").map(|h| h.py_to_string()).unwrap_or_default();
+            let port = self_obj.get_attr("port").and_then(|p| p.as_int()).unwrap_or(80);
+            let url_str = format!("http://{}:{}/", host, port);
+            Ok(build_response_object(&url_str, status_code, headers, body))
+        }
+    ));
+
+    // connect(self) — no-op (connection is done lazily in request())
+    ns.insert(CompactString::from("connect"), PyObject::native_closure(
+        "HTTPConnection.connect", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    // close(self)
+    ns.insert(CompactString::from("close"), PyObject::native_closure(
+        "HTTPConnection.close", |args: &[PyObjectRef]| {
+            if !args.is_empty() {
+                if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                    let mut w = d.attrs.write();
+                    w.insert(CompactString::from("_response_data"), PyObject::none());
+                }
+            }
+            Ok(PyObject::none())
+        }
+    ));
+
+    // set_debuglevel(self, level)
+    ns.insert(CompactString::from("set_debuglevel"), PyObject::native_closure(
+        "HTTPConnection.set_debuglevel", |args: &[PyObjectRef]| {
+            if args.len() >= 2 {
+                if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                    let mut w = d.attrs.write();
+                    w.insert(CompactString::from("debuglevel"), args[1].clone());
+                }
+            }
+            Ok(PyObject::none())
+        }
+    ));
+
+    // set_tunnel(self, host, port=None, headers=None)
+    ns.insert(CompactString::from("set_tunnel"), PyObject::native_closure(
+        "HTTPConnection.set_tunnel", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    // putheader(self, header, *values)
+    ns.insert(CompactString::from("putheader"), PyObject::native_closure(
+        "HTTPConnection.putheader", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    // putrequest(self, method, url, skip_host=False, skip_accept_encoding=False)
+    ns.insert(CompactString::from("putrequest"), PyObject::native_closure(
+        "HTTPConnection.putrequest", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    // endheaders(self, message_body=None)
+    ns.insert(CompactString::from("endheaders"), PyObject::native_closure(
+        "HTTPConnection.endheaders", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    // __enter__(self) → self
+    ns.insert(CompactString::from("__enter__"), PyObject::native_closure(
+        "HTTPConnection.__enter__", |args: &[PyObjectRef]| {
+            if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
+        }
+    ));
+
+    // __exit__(self, *args) → False
+    ns.insert(CompactString::from("__exit__"), PyObject::native_closure(
+        "HTTPConnection.__exit__", |args: &[PyObjectRef]| {
+            // call close
+            if !args.is_empty() {
+                if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                    let mut w = d.attrs.write();
+                    w.insert(CompactString::from("_response_data"), PyObject::none());
+                }
+            }
+            Ok(PyObject::bool_val(false))
+        }
+    ));
+
+    PyObject::class(CompactString::from(class_name), vec![], ns)
+}
+
 pub fn create_http_client_module() -> PyObjectRef {
-    let http_connection_fn = make_builtin(http_connection_constructor);
+    let http_connection_cls = make_http_connection_class(80, "HTTPConnection", false);
+    let https_connection_cls = make_http_connection_class(443, "HTTPSConnection", true);
+    let http_response_cls = make_http_response_class();
+
     let mut client_attrs = IndexMap::new();
-    client_attrs.insert(CompactString::from("HTTPConnection"), http_connection_fn);
-    client_attrs.insert(
-        CompactString::from("HTTPSConnection"),
-        make_builtin(|_args| {
-            Err(PyException::os_error("HTTPS is not supported (no TLS available)"))
-        }),
-    );
+    client_attrs.insert(CompactString::from("HTTPConnection"), http_connection_cls);
+    client_attrs.insert(CompactString::from("HTTPSConnection"), https_connection_cls);
     // Status code constants
     client_attrs.insert(CompactString::from("OK"), PyObject::int(200));
     client_attrs.insert(CompactString::from("NOT_FOUND"), PyObject::int(404));
     client_attrs.insert(CompactString::from("INTERNAL_SERVER_ERROR"), PyObject::int(500));
     // HTTPResponse class
-    client_attrs.insert(
-        CompactString::from("HTTPResponse"),
-        PyObject::class(CompactString::from("HTTPResponse"), vec![], IndexMap::new()),
-    );
+    client_attrs.insert(CompactString::from("HTTPResponse"), http_response_cls);
     // Exception classes
     client_attrs.insert(CompactString::from("HTTPException"), PyObject::builtin_type(CompactString::from("HTTPException")));
     client_attrs.insert(CompactString::from("RemoteDisconnected"), PyObject::builtin_type(CompactString::from("RemoteDisconnected")));
@@ -1296,14 +1633,13 @@ pub fn create_http_module() -> PyObjectRef {
     }
     let http_status = PyObject::module_with_attrs(CompactString::from("HTTPStatus"), status_attrs);
 
-    // HTTPConnection class
-    let http_connection_fn = make_builtin(http_connection_constructor);
+    let http_connection_cls = make_http_connection_class(80, "HTTPConnection", false);
 
     make_module(
         "http",
         vec![
             ("HTTPStatus", http_status),
-            ("HTTPConnection", http_connection_fn),
+            ("HTTPConnection", http_connection_cls),
             ("client", create_http_client_module()),
             // Common status codes at top level
             ("OK", PyObject::int(200)),
@@ -1321,215 +1657,6 @@ pub fn create_http_module() -> PyObjectRef {
             ("SERVICE_UNAVAILABLE", PyObject::int(503)),
         ],
     )
-}
-
-fn http_connection_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() {
-        return Err(PyException::type_error(
-            "HTTPConnection() requires a host argument",
-        ));
-    }
-    let host = args[0].py_to_string();
-    let port: u16 = if args.len() > 1 {
-        args[1].as_int().unwrap_or(80) as u16
-    } else {
-        // Check if host contains port
-        if let Some(idx) = host.rfind(':') {
-            host[idx + 1..].parse().unwrap_or(80)
-        } else {
-            80
-        }
-    };
-    let host_only = if let Some(idx) = host.rfind(':') {
-        if host[idx + 1..].parse::<u16>().is_ok() {
-            host[..idx].to_string()
-        } else {
-            host.clone()
-        }
-    } else {
-        host.clone()
-    };
-
-    // Extract timeout kwarg (positional arg 2 or keyword)
-    let timeout_secs: u64 = if args.len() > 2 {
-        args[2].as_int().unwrap_or(30) as u64
-    } else {
-        30
-    };
-
-    let conn_state: Arc<Mutex<HttpConnState>> =
-        Arc::new(Mutex::new(HttpConnState {
-            host: host_only,
-            port,
-            timeout_secs,
-            stream: None,
-            response_data: None,
-        }));
-
-    let mut attrs = IndexMap::new();
-    attrs.insert(
-        CompactString::from("host"),
-        PyObject::str_val(CompactString::from(host.as_str())),
-    );
-    attrs.insert(CompactString::from("port"), PyObject::int(port as i64));
-
-    // request(method, url, body=None, headers=None)
-    let cs = conn_state.clone();
-    attrs.insert(
-        CompactString::from("request"),
-        PyObject::native_closure("request", move |args| {
-            if args.len() < 2 {
-                return Err(PyException::type_error(
-                    "request() requires method and url arguments",
-                ));
-            }
-            let method = args[0].py_to_string();
-            let url = args[1].py_to_string();
-            let body = if args.len() > 2 && !matches!(&args[2].payload, PyObjectPayload::None) {
-                Some(args[2].py_to_string())
-            } else {
-                None
-            };
-
-            let mut extra_headers = IndexMap::new();
-            if args.len() > 3 {
-                if let PyObjectPayload::Dict(d) = &args[3].payload {
-                    let d = d.read();
-                    for (k, v) in d.iter() {
-                        let ks = match k {
-                            HashableKey::Str(s) => s.to_string(),
-                            HashableKey::Int(i) => i.to_string(),
-                            _ => format!("{:?}", k),
-                        };
-                        extra_headers.insert(ks, v.py_to_string());
-                    }
-                }
-            }
-
-            let mut guard = cs
-                .lock()
-                .map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
-
-            let addr = format!("{}:{}", guard.host, guard.port);
-            let timeout = Duration::from_secs(guard.timeout_secs);
-            let socket_addr: std::net::SocketAddr = addr.parse()
-                .or_else(|_| {
-                    // DNS resolution
-                    use std::net::ToSocketAddrs;
-                    addr.to_socket_addrs()
-                        .map_err(|e| PyException::os_error(format!("HTTPConnection DNS: {}", e)))
-                        .and_then(|mut addrs| addrs.next().ok_or_else(|| {
-                            PyException::os_error(format!("HTTPConnection: could not resolve {}", addr))
-                        }))
-                })?;
-            let mut stream = TcpStream::connect_timeout(&socket_addr, timeout)
-                .map_err(|e| PyException::os_error(format!("HTTPConnection: {}", e)))?;
-            stream.set_read_timeout(Some(timeout)).ok();
-            stream.set_write_timeout(Some(timeout)).ok();
-
-            let mut req = format!(
-                "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
-                method, url, guard.host
-            );
-            for (k, v) in &extra_headers {
-                req.push_str(&format!("{}: {}\r\n", k, v));
-            }
-            if let Some(ref b) = body {
-                req.push_str(&format!("Content-Length: {}\r\n", b.len()));
-            }
-            req.push_str("\r\n");
-            if let Some(ref b) = body {
-                req.push_str(b);
-            }
-
-            stream
-                .write_all(req.as_bytes())
-                .map_err(|e| PyException::os_error(format!("HTTPConnection write: {}", e)))?;
-
-            let mut raw = Vec::new();
-            stream
-                .read_to_end(&mut raw)
-                .map_err(|e| PyException::os_error(format!("HTTPConnection read: {}", e)))?;
-
-            guard.response_data = Some(raw);
-            guard.stream = None;
-            Ok(PyObject::none())
-        }),
-    );
-
-    // getresponse() → response object
-    let cs = conn_state.clone();
-    attrs.insert(
-        CompactString::from("getresponse"),
-        PyObject::native_closure("getresponse", move |_args| {
-            let mut guard = cs
-                .lock()
-                .map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
-            let raw = guard
-                .response_data
-                .take()
-                .ok_or_else(|| PyException::runtime_error("no response available"))?;
-
-            let raw_str = String::from_utf8_lossy(&raw);
-            let header_end = raw_str.find("\r\n\r\n").unwrap_or(raw_str.len());
-            let header_section = &raw_str[..header_end];
-            let body_start = if header_end + 4 <= raw.len() {
-                header_end + 4
-            } else {
-                raw.len()
-            };
-            let body = raw[body_start..].to_vec();
-
-            let mut lines = header_section.lines();
-            let status_line = lines.next().unwrap_or("HTTP/1.1 200 OK");
-            let status_code: u16 = status_line
-                .split_whitespace()
-                .nth(1)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(200);
-
-            let mut headers = IndexMap::new();
-            for line in lines {
-                if let Some(idx) = line.find(':') {
-                    let key = line[..idx].trim().to_string();
-                    let val = line[idx + 1..].trim().to_string();
-                    headers.insert(key, val);
-                }
-            }
-
-            let url_str = format!("http://{}:{}/", guard.host, guard.port);
-            Ok(build_response_object(&url_str, status_code, headers, body))
-        }),
-    );
-
-    // close()
-    let cs = conn_state.clone();
-    attrs.insert(
-        CompactString::from("close"),
-        PyObject::native_closure("close", move |_args| {
-            let mut guard = cs
-                .lock()
-                .map_err(|e| PyException::runtime_error(format!("lock: {}", e)))?;
-            guard.stream = None;
-            guard.response_data = None;
-            Ok(PyObject::none())
-        }),
-    );
-
-    attrs.insert(
-        CompactString::from("_bind_methods"),
-        PyObject::bool_val(true),
-    );
-
-    Ok(PyObject::module_with_attrs(CompactString::from("http.client.HTTPConnection"), attrs))
-}
-
-struct HttpConnState {
-    host: String,
-    port: u16,
-    timeout_secs: u64,
-    stream: Option<TcpStream>,
-    response_data: Option<Vec<u8>>,
 }
 
 // ── http.server module ──
@@ -3032,6 +3159,293 @@ pub fn create_http_cookies_module() -> PyObjectRef {
 
 // ── ssl module ──
 
+/// Helper: invoke a callable PyObject (NativeFunction, NativeClosure, or BoundMethod).
+fn ssl_call_fn(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    match &func.payload {
+        PyObjectPayload::NativeFunction { func: f, .. } => f(args),
+        PyObjectPayload::NativeClosure { func: f, .. } => f(args),
+        PyObjectPayload::BoundMethod { receiver, method } => {
+            let mut full_args = vec![receiver.clone()];
+            full_args.extend_from_slice(args);
+            match &method.payload {
+                PyObjectPayload::NativeFunction { func: f, .. } => f(&full_args),
+                PyObjectPayload::NativeClosure { func: f, .. } => f(&full_args),
+                _ => Ok(PyObject::none()),
+            }
+        }
+        _ => Ok(PyObject::none()),
+    }
+}
+
+/// Build the SSLSocket class — wraps an underlying socket and delegates I/O.
+fn make_ssl_socket_class() -> PyObjectRef {
+    let mut ns = IndexMap::new();
+
+    // __init__(self, sock=None, server_hostname=None)
+    ns.insert(CompactString::from("__init__"), PyObject::native_closure(
+        "SSLSocket.__init__", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            let self_obj = &args[0];
+            if let PyObjectPayload::Instance(ref d) = self_obj.payload {
+                let mut w = d.attrs.write();
+                let sock = args.get(1).cloned().unwrap_or_else(PyObject::none);
+                let hostname = args.get(2).cloned().unwrap_or_else(PyObject::none);
+                w.insert(CompactString::from("_socket"), sock);
+                w.insert(CompactString::from("server_hostname"), hostname);
+                w.insert(CompactString::from("_closed"), PyObject::bool_val(false));
+            }
+            Ok(PyObject::none())
+        }
+    ));
+
+    // read(self, nbytes=4096) → bytes  (delegates to underlying socket recv)
+    ns.insert(CompactString::from("read"), PyObject::native_closure(
+        "SSLSocket.read", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bytes(vec![])); }
+            let self_obj = &args[0];
+            let nbytes = if args.len() > 1 { args[1].as_int().unwrap_or(4096) } else { 4096 };
+            if let Some(sock) = self_obj.get_attr("_socket") {
+                if let Some(recv_fn) = sock.get_attr("recv") {
+                    return ssl_call_fn(&recv_fn, &[PyObject::int(nbytes)]);
+                }
+            }
+            Ok(PyObject::bytes(vec![]))
+        }
+    ));
+
+    // write(self, data) → int  (delegates to underlying socket send)
+    ns.insert(CompactString::from("write"), PyObject::native_closure(
+        "SSLSocket.write", |args: &[PyObjectRef]| {
+            if args.len() < 2 { return Ok(PyObject::int(0)); }
+            let self_obj = &args[0];
+            if let Some(sock) = self_obj.get_attr("_socket") {
+                if let Some(send_fn) = sock.get_attr("send") {
+                    return ssl_call_fn(&send_fn, &[args[1].clone()]);
+                }
+            }
+            Ok(PyObject::int(0))
+        }
+    ));
+
+    // recv(self, bufsize) → bytes
+    ns.insert(CompactString::from("recv"), PyObject::native_closure(
+        "SSLSocket.recv", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::bytes(vec![])); }
+            let self_obj = &args[0];
+            let bufsize = if args.len() > 1 { args[1].as_int().unwrap_or(4096) } else { 4096 };
+            if let Some(sock) = self_obj.get_attr("_socket") {
+                if let Some(recv_fn) = sock.get_attr("recv") {
+                    return ssl_call_fn(&recv_fn, &[PyObject::int(bufsize)]);
+                }
+            }
+            Ok(PyObject::bytes(vec![]))
+        }
+    ));
+
+    // send(self, data) → int
+    ns.insert(CompactString::from("send"), PyObject::native_closure(
+        "SSLSocket.send", |args: &[PyObjectRef]| {
+            if args.len() < 2 { return Ok(PyObject::int(0)); }
+            let self_obj = &args[0];
+            if let Some(sock) = self_obj.get_attr("_socket") {
+                if let Some(send_fn) = sock.get_attr("send") {
+                    return ssl_call_fn(&send_fn, &[args[1].clone()]);
+                }
+            }
+            Ok(PyObject::int(0))
+        }
+    ));
+
+    // sendall(self, data)
+    ns.insert(CompactString::from("sendall"), PyObject::native_closure(
+        "SSLSocket.sendall", |args: &[PyObjectRef]| {
+            if args.len() < 2 { return Ok(PyObject::none()); }
+            let self_obj = &args[0];
+            if let Some(sock) = self_obj.get_attr("_socket") {
+                if let Some(send_fn) = sock.get_attr("sendall") {
+                    return ssl_call_fn(&send_fn, &[args[1].clone()]);
+                } else if let Some(send_fn) = sock.get_attr("send") {
+                    let _ = ssl_call_fn(&send_fn, &[args[1].clone()]);
+                }
+            }
+            Ok(PyObject::none())
+        }
+    ));
+
+    // close(self)
+    ns.insert(CompactString::from("close"), PyObject::native_closure(
+        "SSLSocket.close", |args: &[PyObjectRef]| {
+            if !args.is_empty() {
+                let self_obj = &args[0];
+                if let PyObjectPayload::Instance(ref d) = self_obj.payload {
+                    let mut w = d.attrs.write();
+                    w.insert(CompactString::from("_closed"), PyObject::bool_val(true));
+                }
+                if let Some(sock) = self_obj.get_attr("_socket") {
+                    if let Some(close_fn) = sock.get_attr("close") {
+                        let _ = ssl_call_fn(&close_fn, &[]);
+                    }
+                }
+            }
+            Ok(PyObject::none())
+        }
+    ));
+
+    // getpeername(self)
+    ns.insert(CompactString::from("getpeername"), PyObject::native_closure(
+        "SSLSocket.getpeername", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            if let Some(sock) = args[0].get_attr("_socket") {
+                if let Some(f) = sock.get_attr("getpeername") {
+                    return ssl_call_fn(&f, &[]);
+                }
+            }
+            Ok(PyObject::none())
+        }
+    ));
+
+    // settimeout(self, timeout)
+    ns.insert(CompactString::from("settimeout"), PyObject::native_closure(
+        "SSLSocket.settimeout", |args: &[PyObjectRef]| {
+            if args.len() < 2 { return Ok(PyObject::none()); }
+            if let Some(sock) = args[0].get_attr("_socket") {
+                if let Some(f) = sock.get_attr("settimeout") {
+                    return ssl_call_fn(&f, &[args[1].clone()]);
+                }
+            }
+            Ok(PyObject::none())
+        }
+    ));
+
+    // fileno(self)
+    ns.insert(CompactString::from("fileno"), PyObject::native_closure(
+        "SSLSocket.fileno", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::int(-1)); }
+            if let Some(sock) = args[0].get_attr("_socket") {
+                if let Some(f) = sock.get_attr("fileno") {
+                    return ssl_call_fn(&f, &[]);
+                }
+            }
+            Ok(PyObject::int(-1))
+        }
+    ));
+
+    // __enter__(self) → self
+    ns.insert(CompactString::from("__enter__"), PyObject::native_closure(
+        "SSLSocket.__enter__", |args: &[PyObjectRef]| {
+            if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
+        }
+    ));
+
+    // __exit__(self, *args)
+    ns.insert(CompactString::from("__exit__"), PyObject::native_closure(
+        "SSLSocket.__exit__", |args: &[PyObjectRef]| {
+            if !args.is_empty() {
+                if let Some(sock) = args[0].get_attr("_socket") {
+                    if let Some(close_fn) = sock.get_attr("close") {
+                        let _ = ssl_call_fn(&close_fn, &[]);
+                    }
+                }
+            }
+            Ok(PyObject::bool_val(false))
+        }
+    ));
+
+    PyObject::class(CompactString::from("SSLSocket"), vec![], ns)
+}
+
+/// Helper: create an SSLSocket instance wrapping the given socket object.
+fn build_ssl_socket_instance(sock: PyObjectRef, server_hostname: Option<String>) -> PyObjectRef {
+    let cls = make_ssl_socket_class();
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("_socket"), sock);
+    attrs.insert(CompactString::from("server_hostname"),
+        server_hostname.map(|h| PyObject::str_val(CompactString::from(h)))
+            .unwrap_or_else(PyObject::none));
+    attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
+    PyObject::instance_with_attrs(cls, attrs)
+}
+
+/// Helper: create an SSLContext instance with given protocol.
+fn build_ssl_context_instance(protocol: i64) -> PyObjectRef {
+    let mut ctx_ns = IndexMap::new();
+
+    // __init__
+    ctx_ns.insert(CompactString::from("__init__"), PyObject::native_closure(
+        "SSLContext.__init__", |args: &[PyObjectRef]| {
+            if args.is_empty() { return Ok(PyObject::none()); }
+            let proto = if args.len() > 1 { args[1].as_int().unwrap_or(2) } else { 2 };
+            if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("protocol"), PyObject::int(proto));
+                w.insert(CompactString::from("check_hostname"), PyObject::bool_val(true));
+                w.insert(CompactString::from("verify_mode"), PyObject::int(2));
+            }
+            Ok(PyObject::none())
+        }
+    ));
+
+    // wrap_socket(self, sock, server_side=False, do_handshake_on_connect=True,
+    //             suppress_ragged_eofs=True, server_hostname=None)
+    ctx_ns.insert(CompactString::from("wrap_socket"), PyObject::native_closure(
+        "SSLContext.wrap_socket", |args: &[PyObjectRef]| {
+            // args[0]=self, args[1]=sock, remaining are optional kwargs
+            if args.len() < 2 {
+                return Err(PyException::type_error("wrap_socket() requires a socket argument"));
+            }
+            let sock = args[1].clone();
+            // Extract server_hostname from positional or keyword args
+            let hostname = if args.len() > 5 && !matches!(&args[5].payload, PyObjectPayload::None) {
+                Some(args[5].py_to_string())
+            } else {
+                // Check trailing dict for server_hostname kwarg
+                args.last().and_then(|last| {
+                    if let PyObjectPayload::Dict(d) = &last.payload {
+                        let map = d.read();
+                        map.get(&HashableKey::Str(CompactString::from("server_hostname")))
+                            .map(|v| v.py_to_string())
+                    } else {
+                        None
+                    }
+                })
+            };
+            Ok(build_ssl_socket_instance(sock, hostname))
+        }
+    ));
+
+    // load_cert_chain(self, certfile, keyfile=None, password=None)
+    ctx_ns.insert(CompactString::from("load_cert_chain"), PyObject::native_closure(
+        "SSLContext.load_cert_chain", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    // load_verify_locations(self, cafile=None, capath=None, cadata=None)
+    ctx_ns.insert(CompactString::from("load_verify_locations"), PyObject::native_closure(
+        "SSLContext.load_verify_locations", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    // set_ciphers(self, ciphers)
+    ctx_ns.insert(CompactString::from("set_ciphers"), PyObject::native_closure(
+        "SSLContext.set_ciphers", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    // set_default_verify_paths(self)
+    ctx_ns.insert(CompactString::from("set_default_verify_paths"), PyObject::native_closure(
+        "SSLContext.set_default_verify_paths", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    // load_default_certs(self, purpose=None)
+    ctx_ns.insert(CompactString::from("load_default_certs"), PyObject::native_closure(
+        "SSLContext.load_default_certs", |_args: &[PyObjectRef]| Ok(PyObject::none())
+    ));
+
+    let ctx_cls = PyObject::class(CompactString::from("SSLContext"), vec![], ctx_ns);
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("protocol"), PyObject::int(protocol));
+    attrs.insert(CompactString::from("check_hostname"), PyObject::bool_val(true));
+    attrs.insert(CompactString::from("verify_mode"), PyObject::int(2));
+    PyObject::instance_with_attrs(ctx_cls, attrs)
+}
+
 pub fn create_ssl_module() -> PyObjectRef {
     let ssl_context_fn = make_builtin(|args: &[PyObjectRef]| {
         let protocol = if !args.is_empty() {
@@ -3039,64 +3453,42 @@ pub fn create_ssl_module() -> PyObjectRef {
         } else {
             2
         };
-        let cls = PyObject::class(CompactString::from("SSLContext"), vec![], IndexMap::new());
-        let inst = PyObject::instance(cls);
-        if let PyObjectPayload::Instance(ref d) = inst.payload {
-            let mut w = d.attrs.write();
-            w.insert(CompactString::from("protocol"), PyObject::int(protocol));
-
-            w.insert(CompactString::from("wrap_socket"), make_builtin(|args: &[PyObjectRef]| {
-                if !args.is_empty() {
-                    Ok(args[0].clone())
-                } else {
-                    Ok(PyObject::none())
-                }
-            }));
-
-            w.insert(CompactString::from("load_cert_chain"), make_builtin(|_args: &[PyObjectRef]| {
-                Ok(PyObject::none())
-            }));
-
-            w.insert(CompactString::from("load_verify_locations"), make_builtin(|_args: &[PyObjectRef]| {
-                Ok(PyObject::none())
-            }));
-
-            w.insert(CompactString::from("set_ciphers"), make_builtin(|_args: &[PyObjectRef]| {
-                Ok(PyObject::none())
-            }));
-
-            w.insert(CompactString::from("set_default_verify_paths"), make_builtin(|_args: &[PyObjectRef]| {
-                Ok(PyObject::none())
-            }));
-
-            w.insert(CompactString::from("check_hostname"), PyObject::bool_val(true));
-            w.insert(CompactString::from("verify_mode"), PyObject::int(2));
-        }
-        Ok(inst)
+        Ok(build_ssl_context_instance(protocol))
     });
 
     let create_default_context_fn = make_builtin(|_args: &[PyObjectRef]| {
-        let cls = PyObject::class(CompactString::from("SSLContext"), vec![], IndexMap::new());
-        let inst = PyObject::instance(cls);
-        if let PyObjectPayload::Instance(ref d) = inst.payload {
-            let mut w = d.attrs.write();
-            w.insert(CompactString::from("protocol"), PyObject::int(2));
-            w.insert(CompactString::from("check_hostname"), PyObject::bool_val(true));
-            w.insert(CompactString::from("verify_mode"), PyObject::int(2));
-            w.insert(CompactString::from("wrap_socket"), make_builtin(|args: &[PyObjectRef]| {
-                if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
-            }));
-            w.insert(CompactString::from("load_cert_chain"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("load_verify_locations"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("set_ciphers"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-            w.insert(CompactString::from("set_default_verify_paths"), make_builtin(|_: &[PyObjectRef]| Ok(PyObject::none())));
-        }
-        Ok(inst)
+        Ok(build_ssl_context_instance(2))
     });
+
+    // wrap_socket module-level convenience function
+    let wrap_socket_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("wrap_socket() requires a socket argument"));
+        }
+        let sock = args[0].clone();
+        let hostname = if args.len() > 1 {
+            // Check trailing dict for server_hostname kwarg
+            args.last().and_then(|last| {
+                if let PyObjectPayload::Dict(d) = &last.payload {
+                    let map = d.read();
+                    map.get(&HashableKey::Str(CompactString::from("server_hostname")))
+                        .map(|v| v.py_to_string())
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+        Ok(build_ssl_socket_instance(sock, hostname))
+    });
+
+    let ssl_socket_cls = make_ssl_socket_class();
 
     make_module("ssl", vec![
         ("SSLContext", ssl_context_fn),
         ("create_default_context", create_default_context_fn),
+        ("wrap_socket", wrap_socket_fn),
         ("SSLError", PyObject::exception_type(ExceptionKind::OSError)),
         ("SSLCertVerificationError", PyObject::exception_type(ExceptionKind::OSError)),
         ("PROTOCOL_TLS", PyObject::int(2)),
@@ -3165,8 +3557,9 @@ pub fn create_ssl_module() -> PyObjectRef {
         ("VerifyMode", PyObject::class(CompactString::from("VerifyMode"), vec![], IndexMap::new())),
         // VerifyFlags enum
         ("VerifyFlags", PyObject::class(CompactString::from("VerifyFlags"), vec![], IndexMap::new())),
-        // SSLSocket/SSLObject types
-        ("SSLSocket", PyObject::class(CompactString::from("SSLSocket"), vec![], IndexMap::new())),
+        // SSLSocket class
+        ("SSLSocket", ssl_socket_cls),
+        // SSLObject
         ("SSLObject", PyObject::class(CompactString::from("SSLObject"), vec![], IndexMap::new())),
         // AlertDescription
         ("AlertDescription", PyObject::class(CompactString::from("AlertDescription"), vec![], IndexMap::new())),
