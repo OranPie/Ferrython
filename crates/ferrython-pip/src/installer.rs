@@ -5,6 +5,195 @@ use std::fs;
 
 use crate::metadata::PackageMetadata;
 
+/// Metadata extracted from inside a wheel archive.
+#[derive(Debug, Clone, Default)]
+pub struct WheelMetadata {
+    pub name: String,
+    pub version: String,
+    pub requires_dist: Vec<String>,
+    pub summary: String,
+}
+
+/// Parse METADATA from inside a .whl file without extracting it.
+/// Returns structured metadata for use by the resolver and CLI.
+pub fn read_wheel_metadata(wheel_path: &Path) -> Result<WheelMetadata, String> {
+    let file = fs::File::open(wheel_path)
+        .map_err(|e| format!("Open wheel: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| format!("Invalid wheel: {}", e))?;
+
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(|e| format!("Zip entry: {}", e))?;
+        let ename = entry.name().to_string();
+        if ename.ends_with(".dist-info/METADATA") && !ename.contains('/') == false {
+            let content = std::io::read_to_string(entry).unwrap_or_default();
+            return Ok(parse_metadata_content(&content));
+        }
+    }
+    Err("No METADATA found in wheel".to_string())
+}
+
+fn parse_metadata_content(content: &str) -> WheelMetadata {
+    let mut meta = WheelMetadata::default();
+    for line in content.lines() {
+        if line.is_empty() || line.starts_with(' ') {
+            break; // end of headers
+        }
+        if let Some(val) = line.strip_prefix("Name: ") {
+            meta.name = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("Version: ") {
+            meta.version = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("Requires-Dist: ") {
+            meta.requires_dist.push(val.trim().to_string());
+        } else if let Some(val) = line.strip_prefix("Summary: ") {
+            meta.summary = val.trim().to_string();
+        }
+    }
+    meta
+}
+
+/// Check whether a wheel's platform tags are compatible with the current system.
+/// Returns Ok(()) if compatible, Err with explanation if not.
+pub fn check_wheel_compatibility(wheel_path: &Path) -> Result<(), String> {
+    let filename = wheel_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if !filename.ends_with(".whl") {
+        return Ok(()); // not a wheel, skip check
+    }
+    let stem = filename.strip_suffix(".whl").unwrap_or(filename);
+    let parts: Vec<&str> = stem.rsplitn(4, '-').collect();
+    if parts.len() < 3 {
+        return Ok(()); // can't parse tags, allow
+    }
+    let platform_str = parts[0].to_lowercase();
+    let abi_str = parts[1].to_lowercase();
+    let python_str = parts[2].to_lowercase();
+
+    // Check python tag
+    let python_tags: Vec<&str> = python_str.split('.').collect();
+    let compat_py = ["py3", "cp312", "cp311", "cp310", "cp39", "cp38", "py2.py3"];
+    let py_ok = python_tags.iter().any(|t| compat_py.contains(&t.as_ref()));
+
+    // Check ABI tag
+    let abi_tags: Vec<&str> = abi_str.split('.').collect();
+    let compat_abi = ["none", "abi3", "cp312", "cp311", "cp310"];
+    let abi_ok = abi_tags.iter().any(|t| compat_abi.contains(&t.as_ref()));
+
+    // Check platform tag
+    let plat_tags: Vec<&str> = platform_str.split('.').collect();
+    let arch = std::env::consts::ARCH;
+    let os = std::env::consts::OS;
+    let mut compat_plat = vec!["any"];
+    let mut owned_plat = Vec::new();
+    match os {
+        "linux" => {
+            owned_plat.push(format!("linux_{}", arch));
+            for ml in &["manylinux_2_17", "manylinux_2_28", "manylinux_2_34",
+                        "manylinux2014", "manylinux2010", "manylinux1"] {
+                owned_plat.push(format!("{}_{}", ml, arch));
+            }
+        }
+        "macos" => {
+            let mac_arch = if arch == "aarch64" { "arm64" } else { arch };
+            owned_plat.push(format!("macosx_10_9_{}", mac_arch));
+            owned_plat.push(format!("macosx_11_0_{}", mac_arch));
+            owned_plat.push("macosx_10_9_universal2".to_string());
+            owned_plat.push("macosx_11_0_universal2".to_string());
+        }
+        "windows" => {
+            if arch == "x86_64" {
+                owned_plat.push("win_amd64".to_string());
+            } else if arch == "x86" {
+                owned_plat.push("win32".to_string());
+            }
+        }
+        _ => {}
+    }
+    for p in &owned_plat {
+        compat_plat.push(p.as_str());
+    }
+    let plat_ok = plat_tags.iter().any(|t| compat_plat.contains(&t.as_ref()));
+
+    if !py_ok {
+        return Err(format!(
+            "Wheel {} has incompatible Python tag '{}'. \
+             Compatible: py3, cp312, cp311, cp310, cp39, cp38",
+            filename, python_str
+        ));
+    }
+    if !abi_ok {
+        return Err(format!(
+            "Wheel {} has incompatible ABI tag '{}'. \
+             Compatible: none, abi3, cp312, cp311, cp310",
+            filename, abi_str
+        ));
+    }
+    if !plat_ok {
+        return Err(format!(
+            "Wheel {} has incompatible platform tag '{}'. \
+             Current platform: {}-{}",
+            filename, platform_str, os, arch
+        ));
+    }
+    Ok(())
+}
+
+/// Verify the RECORD file hashes of an installed package.
+/// Returns a list of files that failed hash verification.
+pub fn verify_installed_record(site_packages: &str, name: &str) -> Vec<String> {
+    let site = Path::new(site_packages);
+    let normalized = normalize_name(name);
+    let mut failures = Vec::new();
+
+    let entries = match fs::read_dir(site) {
+        Ok(e) => e,
+        Err(_) => return failures,
+    };
+
+    for entry in entries.flatten() {
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if !fname.ends_with(".dist-info") { continue; }
+        let pkg_part = match fname.strip_suffix(".dist-info") {
+            Some(p) => p,
+            None => continue,
+        };
+        let pkg_name = pkg_part.split('-').next().unwrap_or("");
+        if normalize_name(pkg_name) != normalized { continue; }
+
+        let record_path = entry.path().join("RECORD");
+        let content = match fs::read_to_string(&record_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        for line in content.lines() {
+            let parts: Vec<&str> = line.splitn(3, ',').collect();
+            if parts.len() < 2 { continue; }
+            let file_path_str = parts[0];
+            let hash_spec = parts[1];
+            if hash_spec.is_empty() || file_path_str.is_empty() { continue; }
+            if file_path_str.ends_with("/RECORD") { continue; }
+
+            if let Some(expected) = hash_spec.strip_prefix("sha256=") {
+                let full_path = site.join(file_path_str);
+                if let Ok(data) = fs::read(&full_path) {
+                    use sha2::{Sha256, Digest};
+                    let mut hasher = Sha256::new();
+                    hasher.update(&data);
+                    let actual = format!("{:x}", hasher.finalize());
+                    if actual != expected {
+                        failures.push(file_path_str.to_string());
+                    }
+                }
+            }
+        }
+        break;
+    }
+
+    failures
+}
+
 /// Install a wheel file into site-packages
 pub fn install_wheel(wheel_path: &Path, site_packages: &str, name: &str, version: &str) -> Result<(), String> {
     install_wheel_with_metadata(wheel_path, site_packages, name, version, None)

@@ -319,7 +319,8 @@ fn default_site_packages() -> String {
 ///  - `-c <file>` constraints (pinned versions applied as upper bounds)
 ///  - `-e <path>` editable installs (returned as `editable:<path>`)
 ///  - `--index-url`, `--extra-index-url`, `--trusted-host` (acknowledged, ignored)
-///  - `--hash=sha256:...` inline hashes (stripped, stored for verification)
+///  - `--hash=sha256:...` inline hashes (preserved for verification)
+///  - `--no-deps` (returned as flag prefix `nodeps:`)
 ///  - environment markers after `;`
 ///  - line continuations with `\`
 fn parse_requirements_file(path: &str) -> Vec<String> {
@@ -398,6 +399,13 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
             continue;
         }
 
+        // Handle --no-deps as a line-level flag (applies to next package)
+        if line == "--no-deps" {
+            // Mark next package as no-deps (handled by install pipeline)
+            result.push("flag:no-deps".to_string());
+            continue;
+        }
+
         // Skip pip option flags (--index-url, --extra-index-url, --trusted-host, etc.)
         if line.starts_with("--") || line.starts_with("-f ") || line.starts_with("-i ") {
             continue;
@@ -410,10 +418,15 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
             line
         };
 
-        // Strip inline --hash options (may be multiple)
+        // Extract and preserve inline --hash options for verification
+        let mut hashes: Vec<String> = Vec::new();
         let spec = {
             let mut s = spec;
             while let Some(hash_pos) = s.find(" --hash=") {
+                let hash_val = s[hash_pos + 8..].split_whitespace().next().unwrap_or("");
+                if !hash_val.is_empty() {
+                    hashes.push(hash_val.to_string());
+                }
                 s = s[..hash_pos].trim();
             }
             s
@@ -427,7 +440,12 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
             continue;
         }
 
-        result.push(spec.to_string());
+        // If hashes were specified, encode them in the spec for downstream verification
+        if !hashes.is_empty() {
+            result.push(format!("hash:{}:{}", hashes.join(","), spec));
+        } else {
+            result.push(spec.to_string());
+        }
     }
 
     result
@@ -534,19 +552,31 @@ fn install_local_archive(path: &str, site_packages: &str, quiet: bool) -> Result
         return Err(format!("File not found: {}", path));
     }
 
-    // Extract name and version from filename
     let filename = file_path.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
 
+    // For .whl files, prefer reading metadata from inside the wheel
     let (name, version) = if filename.ends_with(".whl") {
-        // Wheel filename: {name}-{version}-{tags}.whl
-        let stem = filename.strip_suffix(".whl").unwrap_or(filename);
-        let parts: Vec<&str> = stem.splitn(3, '-').collect();
-        if parts.len() >= 2 {
-            (parts[0].to_string(), parts[1].to_string())
-        } else {
-            ("unknown".to_string(), "0.0.0".to_string())
+        // Check platform compatibility first
+        if let Err(e) = crate::installer::check_wheel_compatibility(file_path) {
+            return Err(format!("Incompatible wheel: {}", e));
+        }
+        // Try to read metadata from inside the wheel
+        match crate::installer::read_wheel_metadata(file_path) {
+            Ok(meta) if !meta.name.is_empty() && !meta.version.is_empty() => {
+                (meta.name, meta.version)
+            }
+            _ => {
+                // Fallback: parse from filename
+                let stem = filename.strip_suffix(".whl").unwrap_or(filename);
+                let parts: Vec<&str> = stem.splitn(3, '-').collect();
+                if parts.len() >= 2 {
+                    (parts[0].to_string(), parts[1].to_string())
+                } else {
+                    ("unknown".to_string(), "0.0.0".to_string())
+                }
+            }
         }
     } else {
         // sdist: {name}-{version}.tar.gz
@@ -564,6 +594,18 @@ fn install_local_archive(path: &str, site_packages: &str, quiet: bool) -> Result
     }
 
     crate::installer::install_wheel(file_path, site_packages, &name, &version)?;
+
+    // Verify RECORD hashes after install
+    let failures = crate::installer::verify_installed_record(site_packages, &name);
+    if !failures.is_empty() {
+        eprintln!("WARNING: {} file(s) failed RECORD hash verification:", failures.len());
+        for f in failures.iter().take(5) {
+            eprintln!("  {}", f);
+        }
+        if failures.len() > 5 {
+            eprintln!("  ... and {} more", failures.len() - 5);
+        }
+    }
 
     if !quiet {
         println!("  Successfully installed {}-{}", name, version);

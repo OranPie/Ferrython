@@ -2932,9 +2932,9 @@ impl VirtualMachine {
                         }
                     }
                 }
-                // Resolve generators to lists for unnamed stdlib NativeFunctions
-                // that expect iterables (e.g. Counter, deque, OrderedDict)
-                if name.is_empty() && !args.is_empty()
+                // Resolve generators to lists for stdlib NativeFunctions
+                // that expect iterables (e.g. Counter, deque, OrderedDict, set)
+                if !args.is_empty()
                     && matches!(&args[0].payload, PyObjectPayload::Generator(_))
                 {
                     let mut resolved = Vec::with_capacity(args.len());
@@ -2969,6 +2969,15 @@ impl VirtualMachine {
                 Ok(result)
             }
             PyObjectPayload::NativeClosure { func, .. } => {
+                // Resolve generators to lists for NativeClosure functions
+                let args = if !args.is_empty() && matches!(&args[0].payload, PyObjectPayload::Generator(_)) {
+                    let mut resolved = Vec::with_capacity(args.len());
+                    resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
+                    resolved.extend_from_slice(&args[1..]);
+                    resolved
+                } else {
+                    args
+                };
                 let result = func(&args)?;
                 // Check if stdlib requested VM method calls (loop for multiple)
                 let collect_mode = ferrython_core::error::take_collect_vm_call_results();
