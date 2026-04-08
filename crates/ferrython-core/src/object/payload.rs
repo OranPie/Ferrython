@@ -277,6 +277,11 @@ impl ClassData {
         let mut all_slots: Vec<CompactString> = Vec::new();
         let mut found_any = false;
 
+        // CPython rule: if ANY class in the MRO lacks __slots__, instances
+        // get __dict__ and arbitrary attribute access is allowed.
+        // Check that the class itself AND every base in MRO define __slots__.
+        let mut all_have_slots = self.slots.is_some();
+
         if let Some(ref s) = self.slots {
             found_any = true;
             for name in s {
@@ -294,8 +299,21 @@ impl ClassData {
                             all_slots.push(name.clone());
                         }
                     }
+                } else {
+                    all_have_slots = false;
+                }
+            } else if let PyObjectPayload::BuiltinType(n) = &cls.payload {
+                // object has no __slots__ → allows __dict__
+                if n.as_str() == "object" {
+                    // object is special: it doesn't restrict __dict__
+                    // (only restrict if ALL user classes in MRO have __slots__)
                 }
             }
+        }
+
+        // If any non-object class in MRO lacks __slots__, allow __dict__
+        if !all_have_slots {
+            return None;
         }
         if found_any { Some(all_slots) } else { None }
     }
