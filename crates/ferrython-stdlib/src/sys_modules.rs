@@ -2198,6 +2198,33 @@ pub fn create_platform_module() -> PyObjectRef {
             PyObject::str_val(CompactString::from("default")),
             PyObject::str_val(CompactString::from("")),
         ])))),
+        ("platform", make_builtin(|_| {
+            let system = match std::env::consts::OS {
+                "linux" => "Linux", "macos" => "Darwin", "windows" => "Windows", o => o,
+            };
+            let machine = std::env::consts::ARCH;
+            #[cfg(unix)]
+            {
+                let mut utsname = unsafe { std::mem::zeroed::<libc::utsname>() };
+                unsafe { libc::uname(&mut utsname); }
+                let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
+                Ok(PyObject::str_val(CompactString::from(format!("{}-{}-{}", system, release.to_str().unwrap_or(""), machine))))
+            }
+            #[cfg(not(unix))]
+            Ok(PyObject::str_val(CompactString::from(format!("{}-{}", system, machine))))
+        })),
+        ("python_branch", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(""))))),
+        ("python_revision", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(""))))),
+        ("mac_ver", make_builtin(|_| Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("")),
+            PyObject::tuple(vec![PyObject::str_val(CompactString::from("")), PyObject::str_val(CompactString::from("")), PyObject::str_val(CompactString::from(""))]),
+            PyObject::str_val(CompactString::from("")),
+        ])))),
+        ("linux_distribution", make_builtin(|_| Ok(PyObject::tuple(vec![
+            PyObject::str_val(CompactString::from("")),
+            PyObject::str_val(CompactString::from("")),
+            PyObject::str_val(CompactString::from("")),
+        ])))),
         ("uname", make_builtin(|_| {
             let system = match std::env::consts::OS {
                 "linux" => "Linux", "macos" => "Darwin", "windows" => "Windows", o => o,

@@ -132,6 +132,11 @@ def wait(fs, timeout=None, return_when=ALL_COMPLETED):
         def __init__(self, done, not_done):
             self.done = done
             self.not_done = not_done
+        def __iter__(self):
+            yield self.done
+            yield self.not_done
+        def __repr__(self):
+            return f"WaitResult(done={self.done}, not_done={self.not_done})"
     return WaitResult(done, not_done)
 
 
