@@ -123,8 +123,23 @@ static SEARCH_PATHS: LazyLock<RwLock<Vec<PathBuf>>> = LazyLock::new(|| {
     // Current directory is always searched last
     paths.push(PathBuf::from("."));
 
+    // Sync search paths to ferrython-core so sys.path can pick them up
+    ferrython_core::set_extra_sys_paths(
+        paths.iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|s| s != "." && !s.is_empty())
+            .collect()
+    );
+
     RwLock::new(paths)
 });
+
+/// Force initialization of search paths (call early in startup).
+/// This ensures site-packages and stdlib paths are discovered before
+/// any module is imported, so sys.path reflects them.
+pub fn init() {
+    let _ = SEARCH_PATHS.read();
+}
 
 /// Get a copy of the current search paths (sys.path equivalent).
 pub fn get_search_paths() -> Vec<PathBuf> {
@@ -133,6 +148,12 @@ pub fn get_search_paths() -> Vec<PathBuf> {
 
 /// Set the search paths (called when sys.path is modified).
 pub fn set_search_paths(paths: Vec<PathBuf>) {
+    ferrython_core::set_extra_sys_paths(
+        paths.iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|s| s != "." && !s.is_empty())
+            .collect()
+    );
     *SEARCH_PATHS.write() = paths;
 }
 
@@ -140,7 +161,10 @@ pub fn set_search_paths(paths: Vec<PathBuf>) {
 pub fn prepend_search_path(path: PathBuf) {
     let mut paths = SEARCH_PATHS.write();
     if !paths.contains(&path) {
-        paths.insert(0, path);
+        paths.insert(0, path.clone());
+        // Also update core's extra paths
+        drop(paths);
+        sync_paths_to_core();
     }
 }
 
@@ -148,8 +172,20 @@ pub fn prepend_search_path(path: PathBuf) {
 pub fn append_search_path(path: PathBuf) {
     let mut paths = SEARCH_PATHS.write();
     if !paths.contains(&path) {
-        paths.push(path);
+        paths.push(path.clone());
+        drop(paths);
+        sync_paths_to_core();
     }
+}
+
+fn sync_paths_to_core() {
+    let paths = SEARCH_PATHS.read();
+    ferrython_core::set_extra_sys_paths(
+        paths.iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|s| s != "." && !s.is_empty())
+            .collect()
+    );
 }
 
 /// Resolve a module by name.
@@ -163,6 +199,10 @@ pub fn append_search_path(path: PathBuf) {
 pub fn resolve_module(name: &str, importer_filename: &str) -> PyResult<ResolvedModule> {
     // Process .pth files on first module resolution
     process_pth_files_once();
+
+    // Force SEARCH_PATHS initialization so extra sys paths are synced to core
+    // before any builtin module (like sys) reads them.
+    let _ = SEARCH_PATHS.read();
 
     // 1. Check builtin modules
     if let Some(module) = ferrython_stdlib::load_module(name) {

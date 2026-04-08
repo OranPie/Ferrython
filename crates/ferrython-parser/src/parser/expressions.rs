@@ -461,15 +461,48 @@ impl Parser {
             TokenKind::String(s) => {
                 let mut result = s.to_string();
                 self.advance();
-                // Concatenate adjacent strings
+                // Consume adjacent plain strings
                 while let TokenKind::String(s2) = &self.peek().kind {
                     result.push_str(s2.as_str());
                     self.advance();
                 }
-                Ok(Expression::constant(
-                    Constant::Str(CompactString::from(result)),
-                    loc,
-                ))
+                // Check if next token is an f-string — need JoinedStr
+                if matches!(self.peek().kind, TokenKind::FString(_)) {
+                    let mut values: Vec<Expression> = Vec::new();
+                    if !result.is_empty() {
+                        values.push(Expression::constant(
+                            Constant::Str(CompactString::from(&result)), loc,
+                        ));
+                    }
+                    loop {
+                        match &self.peek().kind {
+                            TokenKind::FString(raw) => {
+                                let raw = raw.clone();
+                                self.advance();
+                                let fexpr = self.parse_fstring_content(&raw, loc)?;
+                                self.merge_into_joined_str(&mut values, fexpr);
+                            }
+                            TokenKind::String(s2) => {
+                                let mut plain = s2.to_string();
+                                self.advance();
+                                while let TokenKind::String(s3) = &self.peek().kind {
+                                    plain.push_str(s3.as_str());
+                                    self.advance();
+                                }
+                                values.push(Expression::constant(
+                                    Constant::Str(CompactString::from(&plain)), loc,
+                                ));
+                            }
+                            _ => break,
+                        }
+                    }
+                    Ok(Expression::new(ExpressionKind::JoinedStr { values }, loc))
+                } else {
+                    Ok(Expression::constant(
+                        Constant::Str(CompactString::from(result)),
+                        loc,
+                    ))
+                }
             }
             TokenKind::Bytes(b) => {
                 let mut result = b.clone();
@@ -483,7 +516,37 @@ impl Parser {
             TokenKind::FString(raw) => {
                 let raw = raw.clone();
                 self.advance();
-                self.parse_fstring_content(&raw, loc)
+                let fexpr = self.parse_fstring_content(&raw, loc)?;
+                // Check for adjacent strings/fstrings — concatenate into single JoinedStr
+                if matches!(self.peek().kind, TokenKind::String(_) | TokenKind::FString(_)) {
+                    let mut values: Vec<Expression> = Vec::new();
+                    self.merge_into_joined_str(&mut values, fexpr);
+                    loop {
+                        match &self.peek().kind {
+                            TokenKind::FString(raw2) => {
+                                let raw2 = raw2.clone();
+                                self.advance();
+                                let fexpr2 = self.parse_fstring_content(&raw2, loc)?;
+                                self.merge_into_joined_str(&mut values, fexpr2);
+                            }
+                            TokenKind::String(s) => {
+                                let mut plain = s.to_string();
+                                self.advance();
+                                while let TokenKind::String(s2) = &self.peek().kind {
+                                    plain.push_str(s2.as_str());
+                                    self.advance();
+                                }
+                                values.push(Expression::constant(
+                                    Constant::Str(CompactString::from(&plain)), loc,
+                                ));
+                            }
+                            _ => break,
+                        }
+                    }
+                    Ok(Expression::new(ExpressionKind::JoinedStr { values }, loc))
+                } else {
+                    Ok(fexpr)
+                }
             }
             TokenKind::True => {
                 self.advance();
@@ -914,6 +977,19 @@ impl Parser {
         }
 
         Ok(Expression::new(ExpressionKind::JoinedStr { values }, loc))
+    }
+
+    /// Merge an expression (either JoinedStr or plain) into a JoinedStr values list.
+    /// Flattens nested JoinedStr nodes so the resulting list is flat.
+    fn merge_into_joined_str(&self, values: &mut Vec<Expression>, expr: Expression) {
+        match expr.node {
+            ExpressionKind::JoinedStr { values: inner } => {
+                values.extend(inner);
+            }
+            _ => {
+                values.push(expr);
+            }
+        }
     }
 
     fn parse_lambda(&mut self) -> Result<Expression, ParseError> {

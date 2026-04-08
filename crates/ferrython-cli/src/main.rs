@@ -45,6 +45,9 @@ impl PipelineError {
 fn main() {
     // Initialize GC cycle detection
     ferrython_core::object::init_gc();
+    // Initialize import search paths (discovers stdlib, site-packages)
+    // Must happen before any module is imported so sys.path reflects them.
+    ferrython_import::init();
     
     let args: Vec<String> = env::args().collect();
 

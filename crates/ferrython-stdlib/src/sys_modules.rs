@@ -167,7 +167,7 @@ pub fn create_sys_module() -> PyObjectRef {
         ("executable", PyObject::str_val(CompactString::from("ferrython"))),
         ("argv", PyObject::list(vec![PyObject::str_val(CompactString::from(""))])),
         ("path", {
-            // Build sys.path from PYTHONPATH env + cwd
+            // Build sys.path from PYTHONPATH env + import search paths + cwd
             let mut path_items: Vec<PyObjectRef> = Vec::new();
             path_items.push(PyObject::str_val(CompactString::from("")));
             if let Ok(pypath) = std::env::var("PYTHONPATH") {
@@ -175,6 +175,15 @@ pub fn create_sys_module() -> PyObjectRef {
                     path_items.push(PyObject::str_val(
                         CompactString::from(p.to_string_lossy().as_ref()),
                     ));
+                }
+            }
+            // Include import system search paths (stdlib, site-packages)
+            let mut seen = std::collections::HashSet::new();
+            seen.insert(String::new());
+            seen.insert(".".to_string());
+            for s in ferrython_core::get_extra_sys_paths() {
+                if seen.insert(s.clone()) {
+                    path_items.push(PyObject::str_val(CompactString::from(&s)));
                 }
             }
             path_items.push(PyObject::str_val(CompactString::from(".")));
