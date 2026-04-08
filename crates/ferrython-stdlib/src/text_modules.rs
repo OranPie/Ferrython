@@ -1164,7 +1164,7 @@ fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     attrs.insert(CompactString::from("match"), PyObject::native_function("Pattern.match", compiled_match));
     attrs.insert(CompactString::from("search"), PyObject::native_function("Pattern.search", compiled_search));
     attrs.insert(CompactString::from("findall"), PyObject::native_function("Pattern.findall", compiled_findall));
-    attrs.insert(CompactString::from("finditer"), PyObject::native_function("Pattern.finditer", compiled_findall));
+    attrs.insert(CompactString::from("finditer"), PyObject::native_function("Pattern.finditer", compiled_finditer));
     attrs.insert(CompactString::from("sub"), PyObject::native_function("Pattern.sub", compiled_sub));
     attrs.insert(CompactString::from("split"), PyObject::native_function("Pattern.split", compiled_split));
     attrs.insert(CompactString::from("fullmatch"), PyObject::native_function("Pattern.fullmatch", compiled_fullmatch));
@@ -1211,7 +1211,11 @@ fn compiled_match(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let self_obj = &args[0];
     let pattern = self_obj.get_attr("pattern").ok_or(PyException::attribute_error("pattern"))?.py_to_string();
     let flags = self_obj.get_attr("flags").and_then(|f| f.to_int().ok()).unwrap_or(0);
-    re_match(&[PyObject::str_val(CompactString::from(pattern)), args[1].clone(), PyObject::int(flags)])
+    let text = args[1].py_to_string();
+    let pos = if args.len() > 2 { args[2].to_int().unwrap_or(0) as usize } else { 0 };
+    let endpos = if args.len() > 3 { args[3].to_int().unwrap_or(text.len() as i64) as usize } else { text.len() };
+    let sliced = &text[pos.min(text.len())..endpos.min(text.len())];
+    re_match(&[PyObject::str_val(CompactString::from(pattern)), PyObject::str_val(CompactString::from(sliced)), PyObject::int(flags)])
 }
 
 fn compiled_search(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1219,7 +1223,11 @@ fn compiled_search(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let self_obj = &args[0];
     let pattern = self_obj.get_attr("pattern").ok_or(PyException::attribute_error("pattern"))?.py_to_string();
     let flags = self_obj.get_attr("flags").and_then(|f| f.to_int().ok()).unwrap_or(0);
-    re_search(&[PyObject::str_val(CompactString::from(pattern)), args[1].clone(), PyObject::int(flags)])
+    let text = args[1].py_to_string();
+    let pos = if args.len() > 2 { args[2].to_int().unwrap_or(0) as usize } else { 0 };
+    let endpos = if args.len() > 3 { args[3].to_int().unwrap_or(text.len() as i64) as usize } else { text.len() };
+    let sliced = &text[pos.min(text.len())..endpos.min(text.len())];
+    re_search(&[PyObject::str_val(CompactString::from(pattern)), PyObject::str_val(CompactString::from(sliced)), PyObject::int(flags)])
 }
 
 fn compiled_findall(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -1227,7 +1235,23 @@ fn compiled_findall(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let self_obj = &args[0];
     let pattern = self_obj.get_attr("pattern").ok_or(PyException::attribute_error("pattern"))?.py_to_string();
     let flags = self_obj.get_attr("flags").and_then(|f| f.to_int().ok()).unwrap_or(0);
-    re_findall(&[PyObject::str_val(CompactString::from(pattern)), args[1].clone(), PyObject::int(flags)])
+    let text = args[1].py_to_string();
+    let pos = if args.len() > 2 { args[2].to_int().unwrap_or(0) as usize } else { 0 };
+    let endpos = if args.len() > 3 { args[3].to_int().unwrap_or(text.len() as i64) as usize } else { text.len() };
+    let sliced = &text[pos.min(text.len())..endpos.min(text.len())];
+    re_findall(&[PyObject::str_val(CompactString::from(pattern)), PyObject::str_val(CompactString::from(sliced)), PyObject::int(flags)])
+}
+
+fn compiled_finditer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.len() < 2 { return Err(PyException::type_error("Pattern.finditer() requires self and string")); }
+    let self_obj = &args[0];
+    let pattern = self_obj.get_attr("pattern").ok_or(PyException::attribute_error("pattern"))?.py_to_string();
+    let flags = self_obj.get_attr("flags").and_then(|f| f.to_int().ok()).unwrap_or(0);
+    let text = args[1].py_to_string();
+    let pos = if args.len() > 2 { args[2].to_int().unwrap_or(0) as usize } else { 0 };
+    let endpos = if args.len() > 3 { args[3].to_int().unwrap_or(text.len() as i64) as usize } else { text.len() };
+    let sliced = &text[pos.min(text.len())..endpos.min(text.len())];
+    re_finditer(&[PyObject::str_val(CompactString::from(pattern)), PyObject::str_val(CompactString::from(sliced)), PyObject::int(flags)])
 }
 
 fn compiled_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

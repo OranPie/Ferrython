@@ -863,6 +863,7 @@ pub fn create_email_module() -> PyObjectRef {
         ("utils", create_email_utils_module()),
         ("errors", create_email_errors_module()),
         ("message_from_string", PyObject::native_function("email.message_from_string", email_message_from_string)),
+        ("message_from_bytes", PyObject::native_function("email.message_from_bytes", email_message_from_bytes)),
     ])
 }
 
@@ -916,4 +917,17 @@ fn email_message_from_string(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
 
     Ok(msg)
+}
+
+fn email_message_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("message_from_bytes() requires a bytes argument"));
+    }
+    // Convert bytes to string, then delegate to message_from_string
+    let text = match &args[0].payload {
+        PyObjectPayload::Bytes(b) => String::from_utf8_lossy(b).to_string(),
+        _ => args[0].py_to_string(),
+    };
+    let str_arg = PyObject::str_val(CompactString::from(text));
+    email_message_from_string(&[str_arg])
 }
