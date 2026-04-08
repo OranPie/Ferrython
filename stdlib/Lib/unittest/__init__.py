@@ -61,9 +61,13 @@ class TestResult:
 class TestCase:
     """Base class for test cases."""
 
+    maxDiff = 640
+
     def __init__(self, methodName='runTest'):
         self._testMethodName = methodName
         self._skip_reason = None
+        self._cleanups = []
+        self._outcome = None
 
     def setUp(self):
         pass
@@ -85,6 +89,37 @@ class TestCase:
 
     def __repr__(self):
         return "<%s testMethod=%s>" % (type(self).__name__, self._testMethodName)
+
+    def shortDescription(self):
+        """Returns first line of test method's docstring, or None."""
+        method = getattr(self, self._testMethodName, None)
+        if method is not None:
+            doc = getattr(method, '__doc__', None)
+            if doc:
+                return doc.strip().split('\n')[0].strip()
+        return None
+
+    def addCleanup(self, function, *args, **kwargs):
+        """Register a cleanup function to be called after tearDown."""
+        self._cleanups.append((function, args, kwargs))
+
+    def doCleanups(self):
+        """Execute all cleanup functions registered via addCleanup."""
+        result = True
+        while self._cleanups:
+            function, args, kwargs = self._cleanups.pop()
+            try:
+                function(*args, **kwargs)
+            except Exception:
+                result = False
+        return result
+
+    def debug(self):
+        """Run the test without collecting errors in a TestResult."""
+        self.setUp()
+        getattr(self, self._testMethodName)()
+        self.tearDown()
+        self.doCleanups()
 
     def run(self, result=None):
         if result is None:
@@ -118,6 +153,8 @@ class TestCase:
             self.tearDown()
         except Exception as e:
             result.addError(self, e)
+
+        self.doCleanups()
 
         return result
 
@@ -281,6 +318,10 @@ class TestCase:
             callable_obj(*args, **kwargs)
         return _NullContext()
 
+    def assertLogs(self, logger=None, level=None):
+        """Context manager to assert that log messages are emitted."""
+        return _AssertLogsContext(self, logger, level)
+
     def fail(self, msg=None):
         raise AssertionError(msg or "Test failed")
 
@@ -288,7 +329,7 @@ class TestCase:
         raise SkipTest(reason)
 
     def subTest(self, msg=None, **params):
-        return _NullContext()
+        return _SubTest(self, msg, params)
 
 
 class _NullContext:

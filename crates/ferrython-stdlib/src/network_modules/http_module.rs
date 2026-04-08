@@ -2006,6 +2006,127 @@ fn build_handler_instance(
             CompactString::from("log_message"),
             PyObject::native_closure("log_message", |_args| Ok(PyObject::none())),
         );
+        // log_request — no-op for now
+        w.insert(
+            CompactString::from("log_request"),
+            PyObject::native_closure("log_request", |_args| Ok(PyObject::none())),
+        );
+
+        // responses — dict mapping status code to (shortmsg, longmsg)
+        let mut responses_map = IndexMap::new();
+        let status_data: Vec<(i64, &str, &str)> = vec![
+            (100, "Continue", "Request received, please continue"),
+            (200, "OK", "Request fulfilled, document follows"),
+            (201, "Created", "Document created, URL follows"),
+            (204, "No Content", "Request fulfilled, nothing follows"),
+            (301, "Moved Permanently", "Object moved permanently"),
+            (302, "Found", "Object moved temporarily"),
+            (304, "Not Modified", "Document has not changed since given time"),
+            (400, "Bad Request", "Bad request syntax or unsupported method"),
+            (401, "Unauthorized", "No permission -- see authorization schemes"),
+            (403, "Forbidden", "Request forbidden -- authorization will not help"),
+            (404, "Not Found", "Nothing matches the given URI"),
+            (405, "Method Not Allowed", "Specified method is invalid for this resource"),
+            (500, "Internal Server Error", "Server got itself in trouble"),
+            (501, "Not Implemented", "Server does not support this operation"),
+            (502, "Bad Gateway", "Invalid responses from another gateway"),
+            (503, "Service Unavailable", "The server cannot process the request due to load"),
+        ];
+        for (code, short, long) in &status_data {
+            responses_map.insert(
+                ferrython_core::types::HashableKey::Int((*code).into()),
+                PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from(*short)),
+                    PyObject::str_val(CompactString::from(*long)),
+                ]),
+            );
+        }
+        w.insert(CompactString::from("responses"), PyObject::dict(responses_map));
+
+        // server_version — identifies the server software
+        w.insert(
+            CompactString::from("server_version"),
+            PyObject::str_val(CompactString::from("BaseHTTP/0.6")),
+        );
+        w.insert(
+            CompactString::from("sys_version"),
+            PyObject::str_val(CompactString::from("Ferrython/0.1")),
+        );
+        w.insert(
+            CompactString::from("protocol_version"),
+            PyObject::str_val(CompactString::from("HTTP/1.0")),
+        );
+
+        // version_string() — return server version string
+        w.insert(
+            CompactString::from("version_string"),
+            PyObject::native_closure("version_string", |_args| {
+                Ok(PyObject::str_val(CompactString::from("BaseHTTP/0.6 Ferrython/0.1")))
+            }),
+        );
+
+        // date_time_string(timestamp=None) — return HTTP date string
+        w.insert(
+            CompactString::from("date_time_string"),
+            PyObject::native_closure("date_time_string", |args| {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let ts = if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::None) {
+                    args[0].as_int().unwrap_or(0) as u64
+                } else {
+                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+                };
+                // Simple RFC 1123 date
+                let secs = ts;
+                let sec = secs % 60;
+                let mins = secs / 60;
+                let min = mins % 60;
+                let hrs = mins / 60;
+                let hour = hrs % 24;
+                let mut days = (hrs / 24) as i64;
+                let mut year = 1970i64;
+                loop {
+                    let dy = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+                    if days < dy { break; }
+                    days -= dy;
+                    year += 1;
+                }
+                let month_days = [31, if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 29 } else { 28 },
+                    31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+                let mut month = 0;
+                while month < 12 && days >= month_days[month] {
+                    days -= month_days[month];
+                    month += 1;
+                }
+                let day = days + 1;
+                let weekdays = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+                let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                let wday = ((ts / 86400 + 3) % 7) as usize; // Jan 1 1970 was Thursday
+                let formatted = format!("{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
+                    weekdays[wday], day, months[month], year, hour, min, sec);
+                Ok(PyObject::str_val(CompactString::from(formatted)))
+            }),
+        );
+
+        // translate_path(path) — translate URL path to filesystem path
+        w.insert(
+            CompactString::from("translate_path"),
+            PyObject::native_closure("translate_path", |args| {
+                let request_path = if !args.is_empty() { args[0].py_to_string() } else { "/".to_string() };
+                let path = if let Some(idx) = request_path.find('?') {
+                    &request_path[..idx]
+                } else {
+                    request_path.as_str()
+                };
+                let decoded = percent_decode(path);
+                let rel_path = decoded.trim_start_matches('/');
+                if rel_path.is_empty() {
+                    Ok(PyObject::str_val(CompactString::from(".")))
+                } else {
+                    Ok(PyObject::str_val(CompactString::from(rel_path)))
+                }
+            }),
+        );
     }
 
     (inst, wfile_buf)
@@ -2427,6 +2548,37 @@ pub fn create_http_server_module() -> PyObjectRef {
         ("HTTPServer", http_server_fn),
         ("BaseHTTPRequestHandler", base_handler_fn),
         ("SimpleHTTPRequestHandler", simple_handler_fn),
+        // CGIHTTPRequestHandler — stub that inherits from SimpleHTTPRequestHandler
+        ("CGIHTTPRequestHandler", make_builtin(|args: &[PyObjectRef]| {
+            let req = HttpRequest {
+                method: "GET".to_string(),
+                path: "/".to_string(),
+                version: "HTTP/1.1".to_string(),
+                headers: IndexMap::new(),
+                body: Vec::new(),
+            };
+            let cls = PyObject::class(CompactString::from("CGIHTTPRequestHandler"), vec![], IndexMap::new());
+            let (inst, wbuf) = build_handler_instance(&req, &cls);
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("do_GET"), simple_handler_do_get(wbuf.clone(), false));
+                w.insert(CompactString::from("do_HEAD"), simple_handler_do_get(wbuf.clone(), true));
+                w.insert(CompactString::from("cgi_directories"), PyObject::list(vec![
+                    PyObject::str_val(CompactString::from("/cgi-bin")),
+                    PyObject::str_val(CompactString::from("/htbin")),
+                ]));
+                if args.len() > 1 {
+                    w.insert(CompactString::from("client_address"), args[1].clone());
+                }
+            }
+            Ok(inst)
+        })),
+        // DEFAULT_ERROR_MESSAGE constant
+        ("DEFAULT_ERROR_MESSAGE", PyObject::str_val(CompactString::from(
+            "<html><head><title>Error</title></head><body><h1>%(code)d %(message)s</h1></body></html>"
+        ))),
+        // DEFAULT_ERROR_CONTENT_TYPE
+        ("DEFAULT_ERROR_CONTENT_TYPE", PyObject::str_val(CompactString::from("text/html;charset=utf-8"))),
     ])
 }
 
