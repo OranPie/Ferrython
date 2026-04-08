@@ -1475,7 +1475,7 @@ pub fn create_abc_module() -> PyObjectRef {
                 Ok(subclass.clone())
             },
         ));
-        PyObject::class(CompactString::from("ABCMeta"), vec![], ns)
+        PyObject::class(CompactString::from("ABCMeta"), vec![PyObject::builtin_type(CompactString::from("type"))], ns)
     };
 
     let abstractclassmethod_fn = make_builtin(|args: &[PyObjectRef]| {

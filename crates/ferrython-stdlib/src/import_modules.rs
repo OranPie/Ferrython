@@ -575,11 +575,8 @@ fn metadata_files(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub fn create_importlib_resources_module() -> PyObjectRef {
     use std::path::PathBuf;
 
-    // files(package) — return a Traversable for the package directory
-    let files_fn = make_builtin(|args: &[PyObjectRef]| {
-        let pkg_name = if !args.is_empty() { args[0].py_to_string() } else { String::new() };
-        // Convert package name to path
-        let pkg_path = pkg_name.replace('.', "/");
+    // Helper: create a Traversable path object with read_bytes, read_text, joinpath
+    fn make_traversable(pkg_path: String) -> PyObjectRef {
         let cls = PyObject::class(CompactString::from("Path"), vec![], IndexMap::new());
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -590,17 +587,71 @@ pub fn create_importlib_resources_module() -> PyObjectRef {
             w.insert(CompactString::from("joinpath"), PyObject::native_closure("joinpath", move |a| {
                 let child = if !a.is_empty() { a[0].py_to_string() } else { String::new() };
                 let full = format!("{}/{}", pp, child);
-                Ok(PyObject::str_val(CompactString::from(&full)))
+                Ok(make_traversable(full))
             }));
 
             let pp2 = pkg_path.clone();
             w.insert(CompactString::from("__truediv__"), PyObject::native_closure("__truediv__", move |a| {
                 let child = if a.len() > 1 { a[1].py_to_string() } else if !a.is_empty() { a[0].py_to_string() } else { String::new() };
                 let full = format!("{}/{}", pp2, child);
-                Ok(PyObject::str_val(CompactString::from(&full)))
+                Ok(make_traversable(full))
             }));
+
+            let pp3 = pkg_path.clone();
+            w.insert(CompactString::from("read_bytes"), PyObject::native_closure("read_bytes", move |_| {
+                // Search site-packages for the path
+                let search = [
+                    PathBuf::from(&pp3),
+                    PathBuf::from(format!("target/release/lib/ferrython/site-packages/{}", pp3)),
+                ];
+                for p in &search {
+                    if p.exists() {
+                        match std::fs::read(p) {
+                            Ok(data) => return Ok(PyObject::bytes(data)),
+                            Err(e) => return Err(PyException::os_error(format!("cannot read {}: {}", p.display(), e))),
+                        }
+                    }
+                }
+                Err(PyException::file_not_found_error(format!("resource not found: {}", pp3)))
+            }));
+
+            let pp4 = pkg_path.clone();
+            w.insert(CompactString::from("read_text"), PyObject::native_closure("read_text", move |args| {
+                let encoding = if !args.is_empty() { args[0].py_to_string() } else { "utf-8".to_string() };
+                let _ = encoding; // always UTF-8 for now
+                let search = [
+                    PathBuf::from(&pp4),
+                    PathBuf::from(format!("target/release/lib/ferrython/site-packages/{}", pp4)),
+                ];
+                for p in &search {
+                    if p.exists() {
+                        match std::fs::read_to_string(p) {
+                            Ok(data) => return Ok(PyObject::str_val(CompactString::from(&data))),
+                            Err(e) => return Err(PyException::os_error(format!("cannot read {}: {}", p.display(), e))),
+                        }
+                    }
+                }
+                Err(PyException::file_not_found_error(format!("resource not found: {}", pp4)))
+            }));
+
+            let pp5 = pkg_path.clone();
+            w.insert(CompactString::from("__str__"), PyObject::native_closure("__str__", move |_| {
+                Ok(PyObject::str_val(CompactString::from(&pp5)))
+            }));
+
+            let pp6 = pkg_path;
+            w.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(
+                pp6.rsplit('/').next().unwrap_or(&pp6)
+            )));
         }
-        Ok(inst)
+        inst
+    }
+
+    // files(package) — return a Traversable for the package directory
+    let files_fn = make_builtin(|args: &[PyObjectRef]| {
+        let pkg_name = if !args.is_empty() { args[0].py_to_string() } else { String::new() };
+        let pkg_path = pkg_name.replace('.', "/");
+        Ok(make_traversable(pkg_path))
     });
 
     // read_text(package, resource, encoding='utf-8', errors='strict')

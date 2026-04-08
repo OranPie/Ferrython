@@ -12,6 +12,7 @@ use ferrython_core::object::{
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
+use std::sync::Mutex;
 use std::sync::Arc;
 
 impl VirtualMachine {
@@ -1881,7 +1882,9 @@ impl VirtualMachine {
         }
         let items = args[0].to_list()?;
         if items.is_empty() {
-            return Ok(PyObject::list(vec![]));
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+                IteratorData::List { items: vec![], index: 0 }
+            )))));
         }
 
         let mut result = Vec::new();
@@ -1902,19 +1905,21 @@ impl VirtualMachine {
             if k.py_to_string() == current_key.py_to_string() {
                 current_group.push(item.clone());
             } else {
-                result.push(PyObject::tuple(vec![
-                    current_key,
-                    PyObject::list(current_group),
-                ]));
+                let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+                    IteratorData::List { items: current_group, index: 0 }
+                ))));
+                result.push(PyObject::tuple(vec![current_key, group_iter]));
                 current_key = k;
                 current_group = vec![item.clone()];
             }
         }
-        result.push(PyObject::tuple(vec![
-            current_key,
-            PyObject::list(current_group),
-        ]));
-        Ok(PyObject::list(result))
+        let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            IteratorData::List { items: current_group, index: 0 }
+        ))));
+        result.push(PyObject::tuple(vec![current_key, group_iter]));
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            IteratorData::List { items: result, index: 0 }
+        )))))
     }
 
     pub(crate) fn vm_itertools_filterfalse(&mut self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

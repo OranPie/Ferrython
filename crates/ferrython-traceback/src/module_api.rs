@@ -26,7 +26,7 @@ pub fn create_traceback_module() -> PyObjectRef {
         ("print_exception", make_builtin(traceback_print_exception)),
         ("format_exception_only", make_builtin(traceback_format_exception_only)),
         ("print_tb", make_builtin(traceback_print_tb)),
-        ("TracebackException", make_builtin(traceback_exception_cls)),
+        ("TracebackException", create_traceback_exception_class()),
         ("FrameSummary", make_builtin(frame_summary_cls)),
         ("StackSummary", make_builtin(stack_summary_cls)),
         ("linecache", make_linecache_module()),
@@ -189,8 +189,70 @@ fn traceback_print_tb(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 // ── TracebackException class ────────────────────────────────────────────
 
-/// `traceback.TracebackException(exc_type, exc_value, exc_tb, ...)`
-/// Constructor that creates a structured exception representation.
+/// Create the TracebackException class with `format` and `format_exception_only`
+/// as proper class methods so `TracebackException.format` resolves.
+fn create_traceback_exception_class() -> PyObjectRef {
+    let mut ns = IndexMap::new();
+
+    // __init__(self, exc_type, exc_value, exc_tb, ...)
+    ns.insert(CompactString::from("__init__"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("TracebackException.__init__ requires self"));
+        }
+        let self_obj = &args[0];
+        let rest = &args[1..];
+        let (kind_str, msg) = extract_exc_type_msg(rest);
+        let entries = extract_tb_from_arg(rest.get(2));
+        let formatted = if msg.is_empty() { kind_str.clone() } else { format!("{}: {}", kind_str, msg) };
+
+        if let PyObjectPayload::Instance(inst) = &self_obj.payload {
+            let mut attrs = inst.attrs.write();
+            if !rest.is_empty() {
+                attrs.insert(CompactString::from("exc_type"), rest[0].clone());
+            }
+            attrs.insert(CompactString::from("_str"), PyObject::str_val(CompactString::from(&formatted)));
+            if rest.len() > 1 {
+                attrs.insert(CompactString::from("exc_value"), rest[1].clone());
+            }
+            let fmt_lines: Vec<PyObjectRef> = entries.iter()
+                .map(|e| PyObject::str_val(CompactString::from(crate::formatting::format_entry(e))))
+                .collect();
+            attrs.insert(CompactString::from("stack"), PyObject::list(fmt_lines));
+        }
+        Ok(PyObject::none())
+    }));
+
+    // format(self) → list of str
+    ns.insert(CompactString::from("format"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("format requires self"));
+        }
+        let s = args[0].get_attr("_str").map(|v| v.py_to_string()).unwrap_or_default();
+        Ok(PyObject::list(vec![PyObject::str_val(CompactString::from(&s))]))
+    }));
+
+    // format_exception_only(self) → list of str
+    ns.insert(CompactString::from("format_exception_only"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("format_exception_only requires self"));
+        }
+        let s = args[0].get_attr("_str").map(|v| v.py_to_string()).unwrap_or_default();
+        Ok(PyObject::list(vec![PyObject::str_val(CompactString::from(format!("{}\n", s)))]))
+    }));
+
+    // __str__(self)
+    ns.insert(CompactString::from("__str__"), make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("__str__ requires self"));
+        }
+        let s = args[0].get_attr("_str").map(|v| v.py_to_string()).unwrap_or_default();
+        Ok(PyObject::str_val(CompactString::from(&s)))
+    }));
+
+    PyObject::class(CompactString::from("TracebackException"), vec![], ns)
+}
+
+/// Legacy function form kept for direct calls (no longer in module table)
 fn traceback_exception_cls(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("TracebackException", args, 1)?;
     let (kind_str, msg) = extract_exc_type_msg(args);

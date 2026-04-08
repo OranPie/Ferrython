@@ -782,6 +782,12 @@ impl VirtualMachine {
     fn is_type_like(obj: &PyObjectRef) -> bool {
         matches!(&obj.payload, PyObjectPayload::BuiltinType(_) | PyObjectPayload::Class(_) | PyObjectPayload::None)
             || obj.get_attr("__union_params__").map_or(false, |f| f.is_truthy())
+            // PEP 604: GenericAlias (e.g. tuple[str, str]) supports | for union types
+            || if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    cd.name.contains("GenericAlias") || cd.name.contains("_GenericAlias")
+                } else { false }
+            } else { false }
     }
 
     fn make_union_type(&self, a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {

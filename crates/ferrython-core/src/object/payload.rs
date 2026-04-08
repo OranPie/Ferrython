@@ -258,6 +258,25 @@ impl ClassData {
                 false
             }
         });
+        // If MRO is empty but we have bases, build a simple linearization
+        let mro = if mro.is_empty() && !bases.is_empty() {
+            let mut result = Vec::new();
+            for base in &bases {
+                if !result.iter().any(|r: &PyObjectRef| std::sync::Arc::ptr_eq(r, base)) {
+                    result.push(base.clone());
+                }
+                if let PyObjectPayload::Class(cd) = &base.payload {
+                    for m in &cd.mro {
+                        if !result.iter().any(|r: &PyObjectRef| std::sync::Arc::ptr_eq(r, m)) {
+                            result.push(m.clone());
+                        }
+                    }
+                }
+            }
+            result
+        } else {
+            mro
+        };
         Self {
             name,
             bases,

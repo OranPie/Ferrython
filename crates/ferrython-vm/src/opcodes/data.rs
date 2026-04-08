@@ -318,7 +318,14 @@ impl VirtualMachine {
                         self.vm_push(v);
                     } else if let Some(getter) = fget {
                         let getter = getter.clone();
-                        let result = self.call_object(getter, vec![obj])?;
+                        // When property is accessed via super() proxy, pass the
+                        // underlying instance to fget, not the Super wrapper.
+                        let receiver = if let PyObjectPayload::Super { instance, .. } = &obj.payload {
+                            instance.clone()
+                        } else {
+                            obj
+                        };
+                        let result = self.call_object(getter, vec![receiver])?;
                         self.vm_push(result);
                     } else {
                         return Err(PyException::attribute_error(format!(

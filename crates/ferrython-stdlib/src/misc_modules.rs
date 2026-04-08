@@ -439,6 +439,13 @@ pub fn create_contextlib_module() -> PyObjectRef {
         Ok(PyObject::instance_with_attrs(cls, attrs))
     });
 
+    // ContextDecorator: mixin class for context managers that can also be used as decorators
+    let context_decorator_cls = PyObject::class(
+        CompactString::from("ContextDecorator"),
+        vec![],
+        IndexMap::new(),
+    );
+
     make_module("contextlib", vec![
         ("contextmanager", make_builtin(contextlib_contextmanager)),
         ("asynccontextmanager", asynccontextmanager_fn),
@@ -449,8 +456,9 @@ pub fn create_contextlib_module() -> PyObjectRef {
         ("nullcontext", nullcontext_fn),
         ("redirect_stdout", redirect_stdout_fn),
         ("redirect_stderr", redirect_stderr_fn),
-        ("AbstractContextManager", acm_cls),
+        ("AbstractContextManager", acm_cls.clone()),
         ("AbstractAsyncContextManager", aacm_cls),
+        ("ContextDecorator", context_decorator_cls),
     ])
 }
 
@@ -862,14 +870,40 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                     return Err(PyException::type_error("__init__ requires self"));
                 }
                 let self_obj = &args[0];
+                // Detect trailing kwargs dict (VM packs kwargs as last arg for NativeClosure)
+                let trailing_kwargs: Option<IndexMap<HashableKey, PyObjectRef>> =
+                    if args.len() >= 2 {
+                        if let PyObjectPayload::Dict(map) = &args[args.len() - 1].payload {
+                            Some(map.read().clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                let pos_end = if trailing_kwargs.is_some() { args.len() - 1 } else { args.len() };
                 if let PyObjectPayload::Instance(inst) = &self_obj.payload {
                     let mut attrs = inst.attrs.write();
                     let mut pos = 1; // skip self
                     for fname in &init_field_names {
-                        let value = if pos < args.len() {
+                        // Try positional arg first, then kwargs, then defaults
+                        let value = if pos < pos_end {
                             args[pos].clone()
+                        } else if let Some(ref kw) = trailing_kwargs {
+                            if let Some(v) = kw.get(&HashableKey::Str(fname.clone())) {
+                                v.clone()
+                            } else if let Some(default) = init_field_defaults.get(fname.as_str()) {
+                                match &default.payload {
+                                    PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
+                                    PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+                                    _ => default.clone(),
+                                }
+                            } else {
+                                return Err(PyException::type_error(format!(
+                                    "__init__() missing required argument: '{}'", fname
+                                )));
+                            }
                         } else if let Some(default) = init_field_defaults.get(fname.as_str()) {
-                            // Check if it's a factory (callable)
                             match &default.payload {
                                 PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
                                 PyObjectPayload::NativeClosure { func, .. } => func(&[])?,

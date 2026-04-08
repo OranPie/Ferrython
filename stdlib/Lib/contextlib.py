@@ -188,6 +188,21 @@ class nullcontext:
         pass
 
 
+class ContextDecorator:
+    """A base class that enables context managers to work as decorators."""
+
+    def _recreate_cm(self):
+        return self
+
+    def __call__(self, func):
+        from functools import wraps
+        @wraps(func)
+        def inner(*args, **kwds):
+            with self._recreate_cm():
+                return func(*args, **kwds)
+        return inner
+
+
 class AbstractContextManager:
     """An abstract base class for context managers."""
 

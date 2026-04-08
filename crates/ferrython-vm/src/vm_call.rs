@@ -799,6 +799,14 @@ impl VirtualMachine {
                             (self_obj.clone(), self_obj.clone())
                         }
                     }
+                    // Unwrap Super proxy — can happen if property getter receives
+                    // a super proxy as self (shouldn't normally, but be defensive)
+                    PyObjectPayload::Super { instance, .. } => {
+                        match &instance.payload {
+                            PyObjectPayload::Instance(inst) => (inst.class.clone(), instance.clone()),
+                            _ => (instance.clone(), instance.clone()),
+                        }
+                    }
                     _ => return Err(PyException::runtime_error("super(): no current class")),
                 };
 

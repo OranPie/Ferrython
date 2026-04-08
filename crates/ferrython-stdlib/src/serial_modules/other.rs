@@ -2386,7 +2386,7 @@ fn resolve_encoding(norm: &str) -> &str {
     match norm {
         "utf_8" | "utf8" => "utf_8",
         "ascii" | "us_ascii" => "ascii",
-        "latin_1" | "latin1" | "iso_8859_1" | "iso8859_1" => "latin_1",
+        "latin_1" | "latin1" | "iso_8859_1" | "iso8859_1" | "8859" | "cp819" | "l1" => "latin_1",
         "utf_16" | "utf16" => "utf_16",
         "utf_16_le" | "utf16_le" => "utf_16_le",
         "utf_16_be" | "utf16_be" => "utf_16_be",
@@ -2397,6 +2397,66 @@ fn resolve_encoding(norm: &str) -> &str {
         "rot_13" | "rot13" => "rot_13",
         "punycode" => "punycode",
         "idna" => "idna",
+        // ISO-8859 family
+        "iso8859_2" | "iso_8859_2" | "latin2" | "l2" => "iso8859_2",
+        "iso8859_3" | "iso_8859_3" | "latin3" | "l3" => "iso8859_3",
+        "iso8859_4" | "iso_8859_4" | "latin4" | "l4" => "iso8859_4",
+        "iso8859_5" | "iso_8859_5" | "cyrillic" => "iso8859_5",
+        "iso8859_6" | "iso_8859_6" | "arabic" => "iso8859_6",
+        "iso8859_7" | "iso_8859_7" | "greek" => "iso8859_7",
+        "iso8859_8" | "iso_8859_8" | "hebrew" => "iso8859_8",
+        "iso8859_9" | "iso_8859_9" | "latin5" | "l5" => "iso8859_9",
+        "iso8859_10" | "iso_8859_10" | "latin6" | "l6" => "iso8859_10",
+        "iso8859_11" | "iso_8859_11" | "thai" => "iso8859_11",
+        "iso8859_13" | "iso_8859_13" | "latin7" | "l7" => "iso8859_13",
+        "iso8859_14" | "iso_8859_14" | "latin8" | "l8" => "iso8859_14",
+        "iso8859_15" | "iso_8859_15" | "latin9" | "l9" => "iso8859_15",
+        "iso8859_16" | "iso_8859_16" | "latin10" | "l10" => "iso8859_16",
+        // Windows code pages
+        "cp437" => "cp437",
+        "cp850" => "cp850",
+        "cp866" => "cp866",
+        "cp874" | "windows_874" => "cp874",
+        "cp932" | "ms932" | "mskanji" | "ms_kanji" => "cp932",
+        "cp949" | "ms949" | "uhc" => "cp949",
+        "cp950" | "ms950" => "cp950",
+        "cp1250" | "windows_1250" => "cp1250",
+        "cp1251" | "windows_1251" => "cp1251",
+        "cp1253" | "windows_1253" => "cp1253",
+        "cp1254" | "windows_1254" => "cp1254",
+        "cp1255" | "windows_1255" => "cp1255",
+        "cp1256" | "windows_1256" => "cp1256",
+        "cp1257" | "windows_1257" => "cp1257",
+        "cp1258" | "windows_1258" => "cp1258",
+        // CJK encodings
+        "big5" | "big5_tw" | "csbig5" => "big5",
+        "big5hkscs" | "big5_hkscs" => "big5hkscs",
+        "euc_jp" | "eucjp" | "ujis" | "u_jis" => "euc_jp",
+        "euc_kr" | "euckr" | "korean" => "euc_kr",
+        "euc_cn" | "gb2312" | "chinese" | "csiso58gb231280" => "gb2312",
+        "gbk" | "cp936" | "ms936" => "gbk",
+        "gb18030" => "gb18030",
+        "hz" | "hzgb" | "hz_gb" | "hz_gb_2312" => "hz",
+        "shift_jis" | "shiftjis" | "sjis" | "s_jis" | "csshiftjis" => "shift_jis",
+        "shift_jis_2004" | "shiftjis2004" | "sjis_2004" => "shift_jis_2004",
+        "shift_jisx0213" | "shiftjisx0213" | "sjisx0213" => "shift_jisx0213",
+        "iso2022_jp" | "iso_2022_jp" | "csiso2022jp" => "iso2022_jp",
+        "iso2022_jp_2" | "iso_2022_jp_2" => "iso2022_jp_2",
+        "iso2022_kr" | "iso_2022_kr" | "csiso2022kr" => "iso2022_kr",
+        "iso2022_cn" | "iso_2022_cn" => "iso2022_cn",
+        // Russian/Ukrainian
+        "koi8_r" | "koi8r" => "koi8_r",
+        "koi8_u" | "koi8u" => "koi8_u",
+        "koi8_t" => "koi8_t",
+        // Mac encodings
+        "mac_roman" | "macroman" | "macintosh" => "mac_roman",
+        "mac_cyrillic" | "maccyrillic" => "mac_cyrillic",
+        "mac_greek" | "macgreek" => "mac_greek",
+        "mac_latin2" | "maclatin2" | "maccentraleurope" => "mac_latin2",
+        // Other
+        "johab" => "johab",
+        "tis_620" | "tis620" => "tis_620",
+        "viscii" => "viscii",
         other => other,
     }
 }
@@ -2894,6 +2954,20 @@ fn codecs_lookup(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         | "utf_16" | "utf_16_le" | "utf_16_be"
         | "utf_32" | "utf_32_le" | "utf_32_be"
         | "cp1252" | "rot_13"
+        | "iso8859_2" | "iso8859_3" | "iso8859_4" | "iso8859_5"
+        | "iso8859_6" | "iso8859_7" | "iso8859_8" | "iso8859_9"
+        | "iso8859_10" | "iso8859_11" | "iso8859_13" | "iso8859_14"
+        | "iso8859_15" | "iso8859_16"
+        | "cp437" | "cp850" | "cp866" | "cp874" | "cp932"
+        | "cp949" | "cp950" | "cp1250" | "cp1251" | "cp1253"
+        | "cp1254" | "cp1255" | "cp1256" | "cp1257" | "cp1258"
+        | "big5" | "big5hkscs" | "euc_jp" | "euc_kr" | "euc_cn"
+        | "gb2312" | "gbk" | "gb18030" | "hz"
+        | "shift_jis" | "shift_jis_2004" | "shift_jisx0213"
+        | "iso2022_jp" | "iso2022_jp_2" | "iso2022_kr" | "iso2022_cn"
+        | "koi8_r" | "koi8_u" | "koi8_t"
+        | "mac_roman" | "mac_cyrillic" | "mac_greek" | "mac_latin2"
+        | "johab" | "tis_620" | "viscii"
     );
     if known {
         // Return a CodecInfo-like object with .name attribute (CPython compat)
@@ -2930,7 +3004,7 @@ fn codecs_lookup(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ));
         Ok(PyObject::instance_with_attrs(cls, attrs))
     } else {
-        Err(PyException::value_error(format!("unknown encoding: {}", norm)))
+        Err(PyException::lookup_error(format!("unknown encoding: {}", norm)))
     }
 }
 
