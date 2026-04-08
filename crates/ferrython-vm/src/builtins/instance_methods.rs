@@ -960,6 +960,9 @@ pub(super) fn builtin_object_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectR
     if let PyObjectPayload::Instance(inst) = &obj.payload {
         inst.attrs.write().insert(CompactString::from(name), value);
         Ok(PyObject::none())
+    } else if let PyObjectPayload::ExceptionInstance { attrs, .. } = &obj.payload {
+        attrs.write().insert(CompactString::from(name), value);
+        Ok(PyObject::none())
     } else {
         Err(PyException::attribute_error(format!(
             "'{}' object does not support attribute assignment", obj.type_name()

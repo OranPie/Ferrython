@@ -1024,12 +1024,82 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         mro.push(PyObject::builtin_type(CompactString::from("object")));
                         Some(PyObject::tuple(mro))
                     }
+                    "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
+                    "__class__" => Some(PyObject::builtin_type(CompactString::from("type"))),
+                    "__init__" => {
+                        // Unbound __init__: ExcType.__init__(self, *args)
+                        Some(PyObject::native_function("__init__", |args| {
+                            if args.is_empty() { return Ok(PyObject::none()); }
+                            let target = &args[0];
+                            let init_args: Vec<PyObjectRef> = args[1..].to_vec();
+                            match &target.payload {
+                                PyObjectPayload::Instance(idata) => {
+                                    idata.attrs.write().insert(
+                                        CompactString::from("args"),
+                                        PyObject::tuple(init_args),
+                                    );
+                                }
+                                PyObjectPayload::ExceptionInstance { attrs, .. } => {
+                                    attrs.write().insert(
+                                        CompactString::from("args"),
+                                        PyObject::tuple(init_args),
+                                    );
+                                }
+                                _ => {}
+                            }
+                            Ok(PyObject::none())
+                        }))
+                    }
+                    "__new__" => {
+                        // Only return __new__ for direct ExceptionType calls (ValueError()),
+                        // not for user-defined subclasses (handled by normal Class instantiation)
+                        None
+                    }
+                    "__str__" => {
+                        Some(PyObject::native_function("__str__", |args| {
+                            if args.is_empty() { return Ok(PyObject::str_val(CompactString::from(""))); }
+                            Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
+                        }))
+                    }
+                    "__repr__" => {
+                        let kind_clone = kind.clone();
+                        Some(PyObject::native_closure("__repr__", move |args| {
+                            if args.is_empty() {
+                                return Ok(PyObject::str_val(CompactString::from(
+                                    format!("{:?}()", kind_clone))));
+                            }
+                            let s = args[0].py_to_string();
+                            Ok(PyObject::str_val(CompactString::from(
+                                format!("{:?}({})", kind_clone, s))))
+                        }))
+                    }
+                    "mro" => {
+                        // mro() method: returns __mro__ as a list
+                        let mro_val = obj.get_attr("__mro__");
+                        Some(PyObject::native_closure("mro", move |_args| {
+                            if let Some(ref mro_tuple) = mro_val {
+                                if let PyObjectPayload::Tuple(items) = &mro_tuple.payload {
+                                    return Ok(PyObject::list(items.clone()));
+                                }
+                            }
+                            Ok(PyObject::list(vec![]))
+                        }))
+                    }
+                    "__subclasses__" => {
+                        Some(PyObject::native_function("__subclasses__", |_args| {
+                            Ok(PyObject::list(vec![]))
+                        }))
+                    }
                     _ => None,
                 }
             }
             PyObjectPayload::ExceptionInstance { kind, message, args, attrs } => {
                 match name {
                     "args" => {
+                        // Check attrs first (may be overwritten by __init__)
+                        if let Some(v) = attrs.read().get("args").cloned() {
+                            return Some(v);
+                        }
                         if args.is_empty() {
                             if message.is_empty() {
                                 Some(PyObject::tuple(vec![]))

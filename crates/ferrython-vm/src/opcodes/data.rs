@@ -496,6 +496,9 @@ impl VirtualMachine {
             PyObjectPayload::Function(f) => {
                 f.attrs.write().insert(name.clone(), value);
             }
+            PyObjectPayload::ExceptionInstance { attrs, .. } => {
+                attrs.write().insert(name.clone(), value);
+            }
             _ => {
                 return Err(PyException::attribute_error(format!(
                     "'{}' object does not support attribute assignment", obj.type_name()

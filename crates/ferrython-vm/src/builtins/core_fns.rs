@@ -1384,6 +1384,9 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Module(m) => {
             m.attrs.write().insert(CompactString::from(name), args[2].clone());
         }
+        PyObjectPayload::ExceptionInstance { attrs, .. } => {
+            attrs.write().insert(CompactString::from(name), args[2].clone());
+        }
         _ => return Err(PyException::attribute_error(format!(
             "'{}' object does not support attribute assignment", args[0].type_name()
         ))),
