@@ -2034,7 +2034,7 @@ fn build_handler_instance(
         ];
         for (code, short, long) in &status_data {
             responses_map.insert(
-                ferrython_core::types::HashableKey::Int((*code).into()),
+                ferrython_core::types::HashableKey::Int(ferrython_core::types::PyInt::Small(*code)),
                 PyObject::tuple(vec![
                     PyObject::str_val(CompactString::from(*short)),
                     PyObject::str_val(CompactString::from(*long)),
@@ -3112,6 +3112,50 @@ pub fn create_http_cookiejar_module() -> PyObjectRef {
 
 // ── http.cookies module ──
 
+/// Create a Morsel instance with full __setitem__/__getitem__ for cookie attributes
+fn make_full_morsel(key: PyObjectRef, value: PyObjectRef, coded_value: PyObjectRef) -> PyObjectRef {
+    let cls = PyObject::class(CompactString::from("Morsel"), vec![], IndexMap::new());
+    let inst = PyObject::instance(cls);
+    if let PyObjectPayload::Instance(ref d) = inst.payload {
+        let mut w = d.attrs.write();
+        w.insert(CompactString::from("key"), key);
+        w.insert(CompactString::from("value"), value);
+        w.insert(CompactString::from("coded_value"), coded_value);
+
+        let attrs: Arc<Mutex<IndexMap<CompactString, PyObjectRef>>> = Arc::new(Mutex::new({
+            let mut m = IndexMap::new();
+            for k in &["expires", "path", "comment", "domain", "max-age", "secure", "httponly", "version", "samesite"] {
+                m.insert(CompactString::from(*k), PyObject::str_val(CompactString::from("")));
+            }
+            m
+        }));
+
+        let a = attrs.clone();
+        w.insert(CompactString::from("__setitem__"), PyObject::native_closure(
+            "Morsel.__setitem__", move |args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    let key = CompactString::from(args[0].py_to_string().to_lowercase());
+                    a.lock().unwrap().insert(key, args[1].clone());
+                }
+                Ok(PyObject::none())
+            }
+        ));
+        let a2 = attrs.clone();
+        w.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+            "Morsel.__getitem__", move |args: &[PyObjectRef]| {
+                if let Some(key) = args.first() {
+                    let k = CompactString::from(key.py_to_string().to_lowercase());
+                    if let Some(val) = a2.lock().unwrap().get(&k) {
+                        return Ok(val.clone());
+                    }
+                }
+                Ok(PyObject::str_val(CompactString::from("")))
+            }
+        ));
+    }
+    inst
+}
+
 pub fn create_http_cookies_module() -> PyObjectRef {
     // Morsel class — represents a single cookie key/value with attributes
     let morsel_fn = make_builtin(|_args: &[PyObjectRef]| {
@@ -3205,15 +3249,10 @@ pub fn create_http_cookies_module() -> PyObjectRef {
                 "SimpleCookie.__setitem__", move |args: &[PyObjectRef]| {
                     if args.len() >= 2 {
                         let key = CompactString::from(args[0].py_to_string());
-                        // Create a Morsel for the value
-                        let morsel_cls = PyObject::class(CompactString::from("Morsel"), vec![], IndexMap::new());
-                        let morsel = PyObject::instance(morsel_cls);
-                        if let PyObjectPayload::Instance(ref md) = morsel.payload {
-                            let mut mw = md.attrs.write();
-                            mw.insert(CompactString::from("key"), args[0].clone());
-                            mw.insert(CompactString::from("value"), args[1].clone());
-                            mw.insert(CompactString::from("coded_value"), args[1].clone());
-                        }
+                        // Create a full Morsel with __setitem__/__getitem__ for cookie attrs
+                        let morsel = make_full_morsel(
+                            args[0].clone(), args[1].clone(), args[1].clone(),
+                        );
                         c.lock().unwrap().insert(key, morsel);
                     }
                     Ok(PyObject::none())
@@ -3253,14 +3292,11 @@ pub fn create_http_cookies_module() -> PyObjectRef {
                             if let Some(eq) = pair.find('=') {
                                 let key = CompactString::from(pair[..eq].trim());
                                 let value = pair[eq+1..].trim().to_string();
-                                let morsel_cls = PyObject::class(CompactString::from("Morsel"), vec![], IndexMap::new());
-                                let morsel = PyObject::instance(morsel_cls);
-                                if let PyObjectPayload::Instance(ref md) = morsel.payload {
-                                    let mut mw = md.attrs.write();
-                                    mw.insert(CompactString::from("key"), PyObject::str_val(key.clone()));
-                                    mw.insert(CompactString::from("value"), PyObject::str_val(CompactString::from(&value)));
-                                    mw.insert(CompactString::from("coded_value"), PyObject::str_val(CompactString::from(&value)));
-                                }
+                                let morsel = make_full_morsel(
+                                    PyObject::str_val(key.clone()),
+                                    PyObject::str_val(CompactString::from(&value)),
+                                    PyObject::str_val(CompactString::from(&value)),
+                                );
                                 c4.lock().unwrap().insert(key, morsel);
                             }
                         }

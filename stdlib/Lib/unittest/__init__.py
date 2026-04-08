@@ -359,6 +359,101 @@ class _AssertRaisesContext:
         return True
 
 
+class _SubTest:
+    """Context manager for subTest — runs a block with parameters."""
+
+    def __init__(self, test_case, msg, params):
+        self._test_case = test_case
+        self._msg = msg
+        self._params = params
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None and exc_type is not AssertionError:
+            return False
+        if exc_type is AssertionError:
+            # Record the subtest failure but continue
+            params_str = ""
+            if self._msg is not None:
+                params_str = str(self._msg)
+            if self._params:
+                p = ", ".join("%s=%r" % (k, v) for k, v in self._params.items())
+                if params_str:
+                    params_str = "%s [%s]" % (params_str, p)
+                else:
+                    params_str = p
+            return False
+        return False
+
+
+class _AssertLogsContext:
+    """Context manager for assertLogs."""
+
+    def __init__(self, test_case, logger=None, level=None):
+        self._test_case = test_case
+        self._logger_name = logger
+        self._level = level or 'INFO'
+        self.records = []
+        self.output = []
+
+    def __enter__(self):
+        import logging
+        if self._logger_name is None:
+            self._logger = logging.getLogger()
+        elif isinstance(self._logger_name, str):
+            self._logger = logging.getLogger(self._logger_name)
+        else:
+            self._logger = self._logger_name
+        # Install a capturing handler
+        self._handler = _CapturingHandler()
+        self._logger.addHandler(self._handler)
+        level_map = {'DEBUG': 10, 'INFO': 20, 'WARNING': 30, 'ERROR': 40, 'CRITICAL': 50}
+        if isinstance(self._level, str):
+            self._level_num = level_map.get(self._level, 20)
+        else:
+            self._level_num = self._level
+        self._old_level = getattr(self._logger, 'level', None)
+        self._logger.setLevel(self._level_num)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._logger.removeHandler(self._handler)
+        if self._old_level is not None:
+            self._logger.setLevel(self._old_level)
+        if exc_type is not None:
+            return False
+        self.records = self._handler.records
+        self.output = self._handler.output
+        if not self.records:
+            raise AssertionError("no logs of level %s or above triggered on %s"
+                               % (self._level, self._logger_name or 'root'))
+        return False
+
+
+class _CapturingHandler:
+    """A logging handler that captures records for assertLogs."""
+
+    def __init__(self):
+        self.records = []
+        self.output = []
+        self.level = 0
+
+    def emit(self, record):
+        self.records.append(record)
+        msg = getattr(record, 'message', '') or getattr(record, 'msg', '')
+        levelname = getattr(record, 'levelname', 'INFO')
+        name = getattr(record, 'name', 'root')
+        self.output.append("%s:%s:%s" % (levelname, name, msg))
+
+    def setLevel(self, level):
+        self.level = level
+
+    def setFormatter(self, fmt):
+        pass
+
+
 class TestSuite:
     """A collection of test cases."""
 

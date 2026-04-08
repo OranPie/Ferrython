@@ -123,7 +123,17 @@ pub fn create_typing_module() -> PyObjectRef {
 
                     let cls = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
                     let mut attrs = IndexMap::new();
-                    attrs.insert(CompactString::from("__origin__"), PyObject::str_val(CompactString::from(origin_display.as_str())));
+                    // Map typing names to actual builtin types for get_origin() CPython compat
+                    let origin_obj = match origin_display.as_str() {
+                        "List" => PyObject::builtin_type(CompactString::from("list")),
+                        "Dict" => PyObject::builtin_type(CompactString::from("dict")),
+                        "Set" => PyObject::builtin_type(CompactString::from("set")),
+                        "FrozenSet" => PyObject::builtin_type(CompactString::from("frozenset")),
+                        "Tuple" => PyObject::builtin_type(CompactString::from("tuple")),
+                        "Type" => PyObject::builtin_type(CompactString::from("type")),
+                        _ => PyObject::str_val(CompactString::from(origin_display.as_str())),
+                    };
+                    attrs.insert(CompactString::from("__origin__"), origin_obj);
                     attrs.insert(CompactString::from("__args__"), args_tuple);
                     // __repr__ and __str__ must be callable (not plain strings)
                     let repr_clone = repr.clone();

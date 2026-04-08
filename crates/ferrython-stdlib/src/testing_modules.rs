@@ -616,7 +616,14 @@ pub fn create_logging_module() -> PyObjectRef {
                             }
                         ));
                     }
-                    // Add the handler to the root logger
+                    // Add the handler to the root logger (create it if needed)
+                    let root_exists = LOGGER_REGISTRY.with(|reg| {
+                        reg.borrow().contains_key("root")
+                    });
+                    if !root_exists {
+                        // Create the root logger via logging_get_logger
+                        let _ = logging_get_logger(&[]);
+                    }
                     LOGGER_REGISTRY.with(|reg| {
                         let reg = reg.borrow();
                         if let Some(root) = reg.get("root") {
