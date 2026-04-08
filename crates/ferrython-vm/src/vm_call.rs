@@ -484,10 +484,24 @@ impl VirtualMachine {
                 let inst = PyObject::instance(cls.clone());
                 // For builtin type subclasses (int, str, float), store the constructor
                 // argument as __builtin_value__ so arithmetic/methods work correctly.
-                if !pos_args.is_empty() {
-                    if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
-                        if let Some(base_type) = get_builtin_base_type_name(cls) {
-                            let value = match base_type.as_str() {
+                if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
+                    if let Some(base_type) = get_builtin_base_type_name(cls) {
+                        let value = if pos_args.is_empty() {
+                            // No-arg defaults for builtin type subclasses
+                            match base_type.as_str() {
+                                "list" => Some(PyObject::list(vec![])),
+                                "dict" => Some(PyObject::dict(IndexMap::new())),
+                                "set" => Some(PyObject::set(IndexMap::new())),
+                                "tuple" => Some(PyObject::tuple(vec![])),
+                                "int" => Some(PyObject::int(0)),
+                                "float" => Some(PyObject::float(0.0)),
+                                "str" => Some(PyObject::str_val(CompactString::from(""))),
+                                "bytes" => Some(PyObject::bytes(vec![])),
+                                "bytearray" => Some(PyObject::bytes(vec![])),
+                                _ => None,
+                            }
+                        } else {
+                            match base_type.as_str() {
                                 "int" => {
                                     let arg = &pos_args[0];
                                     match &arg.payload {
@@ -550,12 +564,12 @@ impl VirtualMachine {
                                     Some(pos_args[0].clone())
                                 }
                                 _ => None,
-                            };
-                            if let Some(val) = value {
-                                inst_data.attrs.write().insert(
-                                    intern_or_new("__builtin_value__"), val,
-                                );
                             }
+                        };
+                        if let Some(val) = value {
+                            inst_data.attrs.write().insert(
+                                intern_or_new("__builtin_value__"), val,
+                            );
                         }
                     }
                 }
