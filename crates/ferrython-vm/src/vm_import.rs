@@ -251,6 +251,10 @@ impl VirtualMachine {
         let _base_name = name.split('.').last().unwrap_or(name);
         if let Some(module) = ferrython_stdlib::load_module(name) {
             self.cache_module(name, &module);
+            // Post-import hook: inject mixin methods for collections.abc
+            if name == "collections.abc" || name == "_collections_abc" {
+                self.inject_collections_abc_mixins(&module);
+            }
             return Ok(module);
         }
 
@@ -419,6 +423,173 @@ impl VirtualMachine {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// Inject mixin methods into Mapping and MutableMapping ABCs.
+    /// These need to be real Python functions so they can call self.__getitem__ etc.
+    fn inject_collections_abc_mixins(&mut self, module: &PyObjectRef) {
+        let code = r#"
+class _MappingMixin:
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+    def __contains__(self, key):
+        try:
+            self[key]
+        except KeyError:
+            return False
+        return True
+    def keys(self):
+        result = []
+        for k in self:
+            result.append(k)
+        return result
+    def values(self):
+        result = []
+        for k in self:
+            result.append(self[k])
+        return result
+    def items(self):
+        result = []
+        for k in self:
+            result.append((k, self[k]))
+        return result
+    def __eq__(self, other):
+        if not isinstance(other, type(self)) and not isinstance(self, type(other)):
+            return NotImplemented
+        if len(self) != len(other):
+            return False
+        for key in self:
+            if key not in other or self[key] != other[key]:
+                return False
+        return True
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return result
+        return not result
+
+class _MutableMappingMixin(_MappingMixin):
+    def pop(self, key, *args):
+        try:
+            v = self[key]
+        except KeyError:
+            if args:
+                return args[0]
+            raise
+        del self[key]
+        return v
+    def setdefault(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = default
+        return default
+    def update(self, other=(), **kwds):
+        if isinstance(other, type({})):
+            for key in other:
+                self[key] = other[key]
+        elif hasattr(other, 'keys'):
+            for key in other.keys():
+                self[key] = other[key]
+        else:
+            for key, value in other:
+                self[key] = value
+        for key in kwds:
+            self[key] = kwds[key]
+    def clear(self):
+        try:
+            while True:
+                k = next(iter(self))
+                del self[k]
+        except StopIteration:
+            pass
+    def popitem(self):
+        try:
+            key = next(iter(self))
+        except StopIteration:
+            raise KeyError('dictionary is empty')
+        value = self[key]
+        del self[key]
+        return key, value
+"#;
+
+        // Compile and execute the mixin code
+        let parse_result = ferrython_parser::parse(code, "<collections_abc_mixin>");
+        let ast = match parse_result {
+            Ok(ast) => ast,
+            Err(_) => return,
+        };
+        let code_obj = match ferrython_compiler::compile(&ast, "<collections_abc_mixin>") {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let globals = Arc::new(RwLock::new(IndexMap::new()));
+        {
+            let mut g = globals.write();
+            if let Some(builtins_mod) = ferrython_stdlib::load_module("builtins") {
+                g.insert(CompactString::from("__builtins__"), builtins_mod);
+            }
+        }
+        let frame = crate::frame::Frame::new(Arc::new(code_obj), globals.clone(), Arc::clone(&self.builtins));
+        self.call_stack.push(frame);
+        let _ = self.run_frame();
+        if let Some(frame) = self.call_stack.pop() {
+            frame.recycle(&mut self.frame_pool);
+        }
+
+        let g = globals.read();
+        let mapping_mixin = g.get("_MappingMixin").cloned();
+        let mutable_mapping_mixin = g.get("_MutableMappingMixin").cloned();
+        drop(g);
+
+        // Inject mixin methods into Mapping class
+        if let (Some(mixin), Some(mapping)) = (&mapping_mixin, module.get_attr("Mapping")) {
+            if let (PyObjectPayload::Class(mixin_cd), PyObjectPayload::Class(target_cd)) = (&mixin.payload, &mapping.payload) {
+                let mixin_ns = mixin_cd.namespace.read();
+                let mut target_ns = target_cd.namespace.write();
+                for (k, v) in mixin_ns.iter() {
+                    if !k.starts_with('_') || k == "__contains__" || k == "__eq__" || k == "__ne__" {
+                        target_ns.insert(k.clone(), v.clone());
+                    }
+                }
+                target_cd.invalidate_cache();
+            }
+        }
+
+        // Inject mixin methods into MutableMapping class
+        // MutableMapping gets both Mapping mixin methods AND its own
+        if let Some(mm) = module.get_attr("MutableMapping") {
+            if let PyObjectPayload::Class(target_cd) = &mm.payload {
+                let mut target_ns = target_cd.namespace.write();
+                // First inject Mapping mixin methods
+                if let Some(ref mixin) = mapping_mixin {
+                    if let PyObjectPayload::Class(mixin_cd) = &mixin.payload {
+                        let mixin_ns = mixin_cd.namespace.read();
+                        for (k, v) in mixin_ns.iter() {
+                            if !k.starts_with('_') || k == "__contains__" || k == "__eq__" || k == "__ne__" {
+                                target_ns.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                }
+                // Then inject MutableMapping-specific methods (overrides if any)
+                if let Some(ref mixin) = mutable_mapping_mixin {
+                    if let PyObjectPayload::Class(mixin_cd) = &mixin.payload {
+                        let mixin_ns = mixin_cd.namespace.read();
+                        for (k, v) in mixin_ns.iter() {
+                            if !k.starts_with('_') || k == "__contains__" || k == "__eq__" || k == "__ne__" {
+                                target_ns.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                }
+                target_cd.invalidate_cache();
             }
         }
     }

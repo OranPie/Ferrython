@@ -1335,6 +1335,11 @@ pub fn create_collections_abc_module() -> PyObjectRef {
         }
         cls
     };
+
+    // Build Mapping and MutableMapping separately to add mixin methods
+    let mapping_cls = make_abc("Mapping", &["dict"]);
+    let mutable_mapping_cls = make_abc("MutableMapping", &["dict"]);
+
     make_module("collections.abc", vec![
         ("Hashable",        make_abc("Hashable", &["int", "float", "str", "bool", "bytes", "tuple", "frozenset", "NoneType"])),
         ("Iterable",        make_abc("Iterable", &["list", "tuple", "dict", "set", "frozenset", "str", "bytes", "bytearray", "range", "iterator", "generator"])),
@@ -1350,8 +1355,8 @@ pub fn create_collections_abc_module() -> PyObjectRef {
         ("ByteString",      make_abc("ByteString", &["bytes", "bytearray"])),
         ("Set",             make_abc("Set", &["set", "frozenset"])),
         ("MutableSet",      make_abc("MutableSet", &["set"])),
-        ("Mapping",         make_abc("Mapping", &["dict"])),
-        ("MutableMapping",  make_abc("MutableMapping", &["dict"])),
+        ("Mapping",         mapping_cls),
+        ("MutableMapping",  mutable_mapping_cls),
         ("MappingView",     make_abc("MappingView", &[])),
         ("KeysView",        make_abc("KeysView", &[])),
         ("ItemsView",       make_abc("ItemsView", &[])),
