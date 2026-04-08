@@ -1195,7 +1195,8 @@ fn build_socket_object(
         PyObject::bool_val(true),
     );
 
-    PyObject::module_with_attrs(CompactString::from("socket"), attrs)
+    let socket_cls = PyObject::class(CompactString::from("socket"), vec![], IndexMap::new());
+    PyObject::instance_with_attrs(socket_cls, attrs)
 }
 
 // ── Module-level socket functions ──────────────────────────────────────

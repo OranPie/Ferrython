@@ -494,8 +494,10 @@ pub fn create_urllib_parse_module() -> PyObjectRef {
             ("urlencode", make_builtin(urllib_parse_urlencode)),
             ("quote", make_builtin(urllib_parse_quote)),
             ("quote_plus", make_builtin(urllib_parse_quote_plus)),
+            ("quote_from_bytes", make_builtin(urllib_parse_quote_from_bytes)),
             ("unquote", make_builtin(urllib_parse_unquote)),
             ("unquote_plus", make_builtin(urllib_parse_unquote_plus)),
+            ("unquote_to_bytes", make_builtin(urllib_parse_unquote_to_bytes)),
             ("urlparse", make_builtin(urllib_parse_urlparse)),
             ("urlunparse", make_builtin(urllib_parse_urlunparse)),
             ("urlsplit", make_builtin(urllib_parse_urlsplit)),
@@ -504,6 +506,12 @@ pub fn create_urllib_parse_module() -> PyObjectRef {
             ("urljoin", make_builtin(urllib_parse_urljoin)),
             ("parse_qs", make_builtin(urllib_parse_parse_qs)),
             ("parse_qsl", make_builtin(urllib_parse_parse_qsl)),
+            ("uses_relative", PyObject::list(vec![
+                "ftp", "http", "gopher", "nntp", "telnet", "file", "https", "shttp", "snews", "prospero", "rtsp", "rtspu", "svn", "svn+ssh", "sftp", "nfs", "git", "git+ssh",
+            ].into_iter().map(|s| PyObject::str_val(CompactString::from(s))).collect())),
+            ("uses_netloc", PyObject::list(vec![
+                "ftp", "http", "gopher", "nntp", "telnet", "file", "https", "shttp", "snews", "prospero", "rtsp", "rtspu", "svn", "svn+ssh", "sftp", "nfs", "git", "git+ssh", "ssh",
+            ].into_iter().map(|s| PyObject::str_val(CompactString::from(s))).collect())),
         ],
     )
 }
@@ -612,6 +620,39 @@ fn urllib_parse_quote_plus(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     }
     Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn urllib_parse_quote_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("quote_from_bytes() requires a bytes argument"));
+    }
+    let data = match &args[0].payload {
+        PyObjectPayload::Bytes(b) => b.clone(),
+        PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+        _ => return Err(PyException::type_error("quote_from_bytes: expected bytes")),
+    };
+    let safe = if args.len() > 1 { args[1].py_to_string() } else { "/".to_string() };
+    let mut result = String::with_capacity(data.len());
+    for b in &data {
+        if (*b as char).is_ascii_alphanumeric()
+            || *b == b'-' || *b == b'_' || *b == b'.' || *b == b'~'
+            || safe.as_bytes().contains(b)
+        {
+            result.push(*b as char);
+        } else {
+            result.push_str(&format!("%{:02X}", b));
+        }
+    }
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+fn urllib_parse_unquote_to_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() {
+        return Err(PyException::type_error("unquote_to_bytes() requires a string argument"));
+    }
+    let s = args[0].py_to_string();
+    let decoded = percent_decode(&s);
+    Ok(PyObject::bytes(decoded.into_bytes()))
 }
 
 fn urllib_parse_unquote(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

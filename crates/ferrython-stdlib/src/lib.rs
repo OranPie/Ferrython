@@ -184,6 +184,11 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "asyncio.locks" => Some(ferrython_async::create_asyncio_module()),
         "asyncio.runners" => Some(ferrython_async::create_asyncio_module()),
         "asyncio.streams" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.subprocess" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.protocols" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.transports" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.exceptions" => Some(ferrython_async::create_asyncio_module()),
+        "asyncio.base_events" => Some(ferrython_async::create_asyncio_module()),
         // Import system
         "importlib" => Some(import_modules::create_importlib_module()),
         "importlib.metadata" => Some(import_modules::create_importlib_metadata_module()),
