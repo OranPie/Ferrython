@@ -2880,6 +2880,105 @@ pub fn create_curses_module() -> PyObjectRef {
 
 // ── ctypes module ──
 
+/// Call a C function at `sym_addr` with the given Python arguments.
+/// Arguments are converted: int→i64, float→f64, bytes/str→pointer, None→NULL.
+/// Returns i64 result as Python int (caller can set .restype to change).
+fn ctypes_call_function(sym_addr: usize, fn_name: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Convert Python args to C values  
+    let mut c_args: Vec<u64> = Vec::with_capacity(args.len());
+    // Keep CString alive for the duration of the call
+    let mut _string_keepalive: Vec<std::ffi::CString> = Vec::new();
+    
+    for (i, arg) in args.iter().enumerate() {
+        match &arg.payload {
+            PyObjectPayload::Int(n) => c_args.push(n.to_i64().unwrap_or(0) as u64),
+            PyObjectPayload::Float(f) => c_args.push(f.to_bits()),
+            PyObjectPayload::Bool(b) => c_args.push(if *b { 1 } else { 0 }),
+            PyObjectPayload::Bytes(b) => {
+                let cs = std::ffi::CString::new(b.as_slice()).unwrap_or_else(|_| {
+                    std::ffi::CString::new("").unwrap()
+                });
+                c_args.push(cs.as_ptr() as u64);
+                _string_keepalive.push(cs);
+            }
+            PyObjectPayload::Str(s) => {
+                let cs = std::ffi::CString::new(s.as_str()).unwrap_or_else(|_| {
+                    std::ffi::CString::new("").unwrap()
+                });
+                c_args.push(cs.as_ptr() as u64);
+                _string_keepalive.push(cs);
+            }
+            PyObjectPayload::None => c_args.push(0),
+            // ctypes type instances: extract .value
+            PyObjectPayload::Instance(_) => {
+                if let Some(val) = arg.get_attr("value") {
+                    match &val.payload {
+                        PyObjectPayload::Int(n) => c_args.push(n.to_i64().unwrap_or(0) as u64),
+                        PyObjectPayload::Float(f) => c_args.push(f.to_bits()),
+                        PyObjectPayload::Bool(b) => c_args.push(if *b { 1 } else { 0 }),
+                        PyObjectPayload::Bytes(b) => {
+                            let cs = std::ffi::CString::new(b.as_slice()).unwrap_or_default();
+                            c_args.push(cs.as_ptr() as u64);
+                            _string_keepalive.push(cs);
+                        }
+                        PyObjectPayload::Str(s) => {
+                            let cs = std::ffi::CString::new(s.as_str()).unwrap_or_default();
+                            c_args.push(cs.as_ptr() as u64);
+                            _string_keepalive.push(cs);
+                        }
+                        _ => c_args.push(0),
+                    }
+                } else {
+                    c_args.push(0);
+                }
+            }
+            _ => return Err(PyException::type_error(&format!(
+                "ctypes: cannot convert argument {} of type {} for {}", i, arg.type_name(), fn_name
+            ))),
+        }
+    }
+    
+    // Call the function using the system ABI (x86_64 SysV: first 6 args in registers)
+    let result: i64 = unsafe {
+        let fn_ptr = sym_addr as *const ();
+        match c_args.len() {
+            0 => {
+                let f: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr);
+                f()
+            }
+            1 => {
+                let f: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr);
+                f(c_args[0])
+            }
+            2 => {
+                let f: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr);
+                f(c_args[0], c_args[1])
+            }
+            3 => {
+                let f: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr);
+                f(c_args[0], c_args[1], c_args[2])
+            }
+            4 => {
+                let f: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr);
+                f(c_args[0], c_args[1], c_args[2], c_args[3])
+            }
+            5 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr);
+                f(c_args[0], c_args[1], c_args[2], c_args[3], c_args[4])
+            }
+            6 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr);
+                f(c_args[0], c_args[1], c_args[2], c_args[3], c_args[4], c_args[5])
+            }
+            _ => return Err(PyException::type_error(&format!(
+                "ctypes: too many arguments ({}) for {}", c_args.len(), fn_name
+            ))),
+        }
+    };
+    
+    Ok(PyObject::int(result))
+}
+
 fn make_ctype(name: &str) -> PyObjectRef {
     // Create a callable ctypes type: c_int(42) → instance with .value attribute
     let type_name = CompactString::from(name);
@@ -2961,15 +3060,60 @@ pub fn create_ctypes_module() -> PyObjectRef {
     };
     let array_cls = PyObject::class(CompactString::from("Array"), vec![], IndexMap::new());
 
-    // CDLL stub — returns an object whose attribute access returns callable stubs
+    // CDLL — real dlopen/dlsym based foreign function interface
     let cdll_fn = make_builtin(|args: &[PyObjectRef]| {
         let name = args.first().map(|a| a.py_to_string()).unwrap_or_default();
+        
+        // dlopen the library
+        let c_name = std::ffi::CString::new(name.as_str()).map_err(|_| {
+            PyException::os_error(&format!("invalid library name: {}", name))
+        })?;
+        let handle = unsafe { libc::dlopen(c_name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_GLOBAL) };
+        if handle.is_null() {
+            let err = unsafe { libc::dlerror() };
+            let msg = if err.is_null() {
+                format!("cannot load library '{}'", name)
+            } else {
+                unsafe { std::ffi::CStr::from_ptr(err).to_string_lossy().into_owned() }
+            };
+            return Err(PyException::os_error(&msg));
+        }
+        let handle_val = handle as usize;
+        
         let cls = PyObject::class(CompactString::from("CDLL"), vec![], IndexMap::new());
-        let inst = PyObject::instance(cls);
+        let mut cls_ns = IndexMap::new();
+        
+        // __getattr__ for function lookup via dlsym
+        let lib_name = name.clone();
+        cls_ns.insert(CompactString::from("__getattr__"), PyObject::native_closure("__getattr__", move |args: &[PyObjectRef]| {
+            let attr_name = if args.len() > 1 { args[1].py_to_string() } else if !args.is_empty() { args[0].py_to_string() } else {
+                return Err(PyException::type_error("__getattr__ requires a name"));
+            };
+            // Look up symbol via dlsym
+            let c_sym = std::ffi::CString::new(attr_name.as_str()).map_err(|_| {
+                PyException::attribute_error(&format!("invalid symbol name: {}", attr_name))
+            })?;
+            let sym = unsafe { libc::dlsym(handle_val as *mut libc::c_void, c_sym.as_ptr()) };
+            if sym.is_null() {
+                return Err(PyException::attribute_error(&format!(
+                    "undefined symbol: {}", attr_name
+                )));
+            }
+            let sym_addr = sym as usize;
+            let fn_name = attr_name.clone();
+            
+            // Return a callable that invokes the C function
+            // Supports calling conventions: integers, pointers (bytes/str → c_char_p)
+            Ok(PyObject::native_closure(&format!("{}.{}", lib_name, attr_name), move |call_args: &[PyObjectRef]| {
+                ctypes_call_function(sym_addr, &fn_name, call_args)
+            }))
+        }));
+        
+        let inst = PyObject::instance_with_attrs(cls, cls_ns);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut attrs = d.attrs.write();
             attrs.insert(CompactString::from("_name"), PyObject::str_val(CompactString::from(name.as_str())));
-            attrs.insert(CompactString::from("_handle"), PyObject::int(0));
+            attrs.insert(CompactString::from("_handle"), PyObject::int(handle_val as i64));
         }
         Ok(inst)
     });

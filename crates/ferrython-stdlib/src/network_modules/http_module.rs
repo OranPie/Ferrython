@@ -497,6 +497,10 @@ pub fn create_urllib_parse_module() -> PyObjectRef {
             ("unquote", make_builtin(urllib_parse_unquote)),
             ("unquote_plus", make_builtin(urllib_parse_unquote_plus)),
             ("urlparse", make_builtin(urllib_parse_urlparse)),
+            ("urlunparse", make_builtin(urllib_parse_urlunparse)),
+            ("urlsplit", make_builtin(urllib_parse_urlsplit)),
+            ("urlunsplit", make_builtin(urllib_parse_urlunsplit)),
+            ("urldefrag", make_builtin(urllib_parse_urldefrag)),
             ("urljoin", make_builtin(urllib_parse_urljoin)),
             ("parse_qs", make_builtin(urllib_parse_parse_qs)),
             ("parse_qsl", make_builtin(urllib_parse_parse_qsl)),
@@ -716,6 +720,157 @@ fn urllib_parse_urlparse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::instance_with_attrs(cls, attrs))
 }
 
+/// urlunparse((scheme, netloc, path, params, query, fragment)) -> URL string
+fn urllib_parse_urlunparse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("urlunparse() requires 1 argument")); }
+    let components = match &args[0].payload {
+        PyObjectPayload::Tuple(items) => items.clone(),
+        PyObjectPayload::List(items) => items.read().clone(),
+        // Also handle ParseResult-like objects with scheme/netloc/path/etc
+        PyObjectPayload::Instance(_) => {
+            let mut parts = Vec::new();
+            for attr in &["scheme", "netloc", "path", "params", "query", "fragment"] {
+                parts.push(args[0].get_attr(attr).unwrap_or_else(|| PyObject::str_val(CompactString::from(""))));
+            }
+            parts
+        }
+        _ => return Err(PyException::type_error("urlunparse requires a tuple/list/ParseResult")),
+    };
+    if components.len() < 6 {
+        return Err(PyException::type_error("urlunparse requires 6 components"));
+    }
+    let scheme = components[0].py_to_string();
+    let netloc = components[1].py_to_string();
+    let path = components[2].py_to_string();
+    let params = components[3].py_to_string();
+    let query = components[4].py_to_string();
+    let fragment = components[5].py_to_string();
+
+    let mut url = String::new();
+    if !scheme.is_empty() {
+        url.push_str(&scheme);
+        url.push_str("://");
+    }
+    url.push_str(&netloc);
+    if !path.is_empty() {
+        if !path.starts_with('/') && !netloc.is_empty() {
+            url.push('/');
+        }
+        url.push_str(&path);
+    }
+    if !params.is_empty() {
+        url.push(';');
+        url.push_str(&params);
+    }
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query);
+    }
+    if !fragment.is_empty() {
+        url.push('#');
+        url.push_str(&fragment);
+    }
+    Ok(PyObject::str_val(CompactString::from(url)))
+}
+
+/// urlsplit(url) -> SplitResult (like urlparse but without params)
+fn urllib_parse_urlsplit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("urlsplit() requires 1 argument")); }
+    let url = args[0].py_to_string();
+    let p = parse_url_string(&url);
+
+    let scheme = PyObject::str_val(CompactString::from(&p.scheme));
+    let netloc = PyObject::str_val(CompactString::from(&p.netloc));
+    let path = PyObject::str_val(CompactString::from(&p.path));
+    let query = PyObject::str_val(CompactString::from(&p.query));
+    let fragment = PyObject::str_val(CompactString::from(&p.fragment));
+
+    let components = vec![scheme.clone(), netloc.clone(), path.clone(), query.clone(), fragment.clone()];
+
+    let cls = PyObject::class(CompactString::from("SplitResult"), vec![], IndexMap::new());
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("scheme"), scheme);
+    attrs.insert(CompactString::from("netloc"), netloc);
+    attrs.insert(CompactString::from("path"), path);
+    attrs.insert(CompactString::from("query"), query);
+    attrs.insert(CompactString::from("fragment"), fragment);
+    attrs.insert(CompactString::from("hostname"), PyObject::str_val(CompactString::from(&p.host)));
+    attrs.insert(CompactString::from("port"), PyObject::int(p.port as i64));
+
+    let url_c = url.clone();
+    attrs.insert(CompactString::from("geturl"), PyObject::native_closure("geturl", move |_| {
+        Ok(PyObject::str_val(CompactString::from(url_c.as_str())))
+    }));
+
+    let idx_components = components.clone();
+    attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure("__getitem__", move |args| {
+        let idx = if !args.is_empty() { args[0].as_int().unwrap_or(0) } else { 0 };
+        let i = if idx < 0 { (5 + idx) as usize } else { idx as usize };
+        idx_components.get(i).cloned().ok_or_else(|| PyException::index_error("tuple index out of range"))
+    }));
+
+    attrs.insert(CompactString::from("__len__"), PyObject::native_closure("__len__", |_| Ok(PyObject::int(5))));
+
+    Ok(PyObject::instance_with_attrs(cls, attrs))
+}
+
+/// urlunsplit((scheme, netloc, path, query, fragment)) -> URL string
+fn urllib_parse_urlunsplit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("urlunsplit() requires 1 argument")); }
+    let components = match &args[0].payload {
+        PyObjectPayload::Tuple(items) => items.clone(),
+        PyObjectPayload::List(items) => items.read().clone(),
+        _ => return Err(PyException::type_error("urlunsplit requires a tuple/list")),
+    };
+    if components.len() < 5 {
+        return Err(PyException::type_error("urlunsplit requires 5 components"));
+    }
+    let scheme = components[0].py_to_string();
+    let netloc = components[1].py_to_string();
+    let path = components[2].py_to_string();
+    let query = components[3].py_to_string();
+    let fragment = components[4].py_to_string();
+
+    let mut url = String::new();
+    if !scheme.is_empty() {
+        url.push_str(&scheme);
+        url.push_str("://");
+    }
+    url.push_str(&netloc);
+    if !path.is_empty() {
+        if !path.starts_with('/') && !netloc.is_empty() { url.push('/'); }
+        url.push_str(&path);
+    }
+    if !query.is_empty() { url.push('?'); url.push_str(&query); }
+    if !fragment.is_empty() { url.push('#'); url.push_str(&fragment); }
+    Ok(PyObject::str_val(CompactString::from(url)))
+}
+
+/// urldefrag(url) -> DefragResult(url_without_fragment, fragment)
+fn urllib_parse_urldefrag(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if args.is_empty() { return Err(PyException::type_error("urldefrag() requires 1 argument")); }
+    let url = args[0].py_to_string();
+    let (base, frag) = if let Some(idx) = url.find('#') {
+        (&url[..idx], &url[idx + 1..])
+    } else {
+        (url.as_str(), "")
+    };
+    let cls = PyObject::class(CompactString::from("DefragResult"), vec![], IndexMap::new());
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("url"), PyObject::str_val(CompactString::from(base)));
+    attrs.insert(CompactString::from("fragment"), PyObject::str_val(CompactString::from(frag)));
+    let base_c = base.to_string();
+    let frag_c = frag.to_string();
+    let components = vec![PyObject::str_val(CompactString::from(&base_c)), PyObject::str_val(CompactString::from(&frag_c))];
+    let idx_c = components.clone();
+    attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure("__getitem__", move |args| {
+        let idx = if !args.is_empty() { args[0].as_int().unwrap_or(0) } else { 0 };
+        let i = if idx < 0 { (2 + idx) as usize } else { idx as usize };
+        idx_c.get(i).cloned().ok_or_else(|| PyException::index_error("tuple index out of range"))
+    }));
+    attrs.insert(CompactString::from("__len__"), PyObject::native_closure("__len__", |_| Ok(PyObject::int(2))));
+    Ok(PyObject::instance_with_attrs(cls, attrs))
+}
 fn urllib_parse_urljoin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 {
         return Err(PyException::type_error(
@@ -2352,33 +2507,239 @@ pub fn create_ssl_module() -> PyObjectRef {
 
 pub fn create_smtplib_module() -> PyObjectRef {
     make_module("smtplib", vec![
-        ("SMTP", make_builtin(|args: &[PyObjectRef]| {
-            let host = if !args.is_empty() { args[0].py_to_string() } else { "localhost".to_string() };
-            let port = if args.len() > 1 { args[1].as_int().unwrap_or(25) } else { 25 };
-            let cls = PyObject::class(CompactString::from("SMTP"), vec![], IndexMap::new());
-            let inst = PyObject::instance(cls);
-            if let PyObjectPayload::Instance(ref data) = inst.payload {
-                let mut attrs = data.attrs.write();
-                attrs.insert(CompactString::from("host"), PyObject::str_val(CompactString::from(host)));
-                attrs.insert(CompactString::from("port"), PyObject::int(port));
-                attrs.insert(CompactString::from("ehlo"), make_builtin(|_| Ok(PyObject::tuple(vec![PyObject::int(250), PyObject::str_val(CompactString::from("OK"))])))); 
-                attrs.insert(CompactString::from("login"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("sendmail"), make_builtin(|_| Ok(PyObject::dict(IndexMap::new()))));
-                attrs.insert(CompactString::from("send_message"), make_builtin(|_| Ok(PyObject::dict(IndexMap::new()))));
-                attrs.insert(CompactString::from("quit"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("close"), make_builtin(|_| Ok(PyObject::none())));
-                attrs.insert(CompactString::from("starttls"), make_builtin(|_| Ok(PyObject::none())));
-            }
-            Ok(inst)
-        })),
+        ("SMTP", make_builtin(smtp_connect)),
         ("SMTP_SSL", make_builtin(|_args: &[PyObjectRef]| {
-            Err(PyException::runtime_error("smtplib.SMTP_SSL: not connected (stub)"))
+            Err(PyException::runtime_error("SMTP_SSL requires ssl module (not available)"))
         })),
         ("SMTPException", PyObject::class(CompactString::from("SMTPException"), vec![], IndexMap::new())),
         ("SMTPAuthenticationError", PyObject::class(CompactString::from("SMTPAuthenticationError"), vec![], IndexMap::new())),
+        ("SMTPResponseException", PyObject::class(CompactString::from("SMTPResponseException"), vec![], IndexMap::new())),
+        ("SMTPServerDisconnected", PyObject::class(CompactString::from("SMTPServerDisconnected"), vec![], IndexMap::new())),
         ("SMTP_PORT", PyObject::int(25)),
         ("SMTP_SSL_PORT", PyObject::int(465)),
     ])
+}
+
+fn smtp_connect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    use std::net::TcpStream;
+    use std::io::{BufRead, BufReader, Write};
+
+    let host = if !args.is_empty() { args[0].py_to_string() } else { "localhost".to_string() };
+    let port = if args.len() > 1 { args[1].as_int().unwrap_or(25) } else { 25 };
+    let timeout_secs = if args.len() > 2 { args[2].to_float().unwrap_or(30.0) } else { 30.0 };
+
+    let addr = format!("{}:{}", host, port);
+    let stream = TcpStream::connect_timeout(
+        &addr.parse().map_err(|_| PyException::os_error(&format!("invalid address: {}", addr)))?,
+        std::time::Duration::from_secs_f64(timeout_secs),
+    ).map_err(|e| PyException::os_error(&format!("SMTP connect to {} failed: {}", addr, e)))?;
+
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).ok();
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(30))).ok();
+
+    // Read greeting
+    let stream = std::sync::Arc::new(std::sync::Mutex::new(stream));
+    {
+        let mut sock = stream.lock().unwrap();
+        let mut reader = BufReader::new(&*sock);
+        let mut greeting = String::new();
+        reader.read_line(&mut greeting).map_err(|e| PyException::os_error(&format!("SMTP read greeting: {}", e)))?;
+        if !greeting.starts_with("220") {
+            return Err(PyException::runtime_error(&format!("SMTP unexpected greeting: {}", greeting.trim())));
+        }
+    }
+
+    let cls = PyObject::class(CompactString::from("SMTP"), vec![], IndexMap::new());
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("host"), PyObject::str_val(CompactString::from(&host)));
+    attrs.insert(CompactString::from("port"), PyObject::int(port));
+
+    // ehlo(hostname=None)
+    let s = stream.clone();
+    let h = host.clone();
+    attrs.insert(CompactString::from("ehlo"), PyObject::native_closure("ehlo", move |args: &[PyObjectRef]| {
+        let name = if !args.is_empty() { args[0].py_to_string() } else { h.clone() };
+        let mut sock = s.lock().unwrap();
+        write!(sock, "EHLO {}\r\n", name).map_err(|e| PyException::os_error(&format!("SMTP write: {}", e)))?;
+        sock.flush().ok();
+        let (code, msg) = smtp_read_response(&*sock)?;
+        Ok(PyObject::tuple(vec![PyObject::int(code as i64), PyObject::str_val(CompactString::from(msg))]))
+    }));
+
+    // login(user, password)
+    let s = stream.clone();
+    attrs.insert(CompactString::from("login"), PyObject::native_closure("login", move |args: &[PyObjectRef]| {
+        if args.len() < 2 { return Err(PyException::type_error("login requires user and password")); }
+        let user = args[0].py_to_string();
+        let pass = args[1].py_to_string();
+        let mut sock = s.lock().unwrap();
+        // AUTH LOGIN
+        write!(sock, "AUTH LOGIN\r\n").map_err(|e| PyException::os_error(&format!("SMTP write: {}", e)))?;
+        sock.flush().ok();
+        let (code, _) = smtp_read_response(&*sock)?;
+        if code == 334 {
+            write!(sock, "{}\r\n", simple_base64_encode(user.as_bytes())).ok();
+            sock.flush().ok();
+            smtp_read_response(&*sock)?;
+            write!(sock, "{}\r\n", simple_base64_encode(pass.as_bytes())).ok();
+            sock.flush().ok();
+            let (code2, msg2) = smtp_read_response(&*sock)?;
+            if code2 != 235 {
+                return Err(PyException::runtime_error(&format!("SMTP AUTH failed: {} {}", code2, msg2)));
+            }
+        }
+        Ok(PyObject::tuple(vec![PyObject::int(235), PyObject::str_val(CompactString::from("Authentication successful"))]))
+    }));
+
+    // sendmail(from_addr, to_addrs, msg)
+    let s = stream.clone();
+    attrs.insert(CompactString::from("sendmail"), PyObject::native_closure("sendmail", move |args: &[PyObjectRef]| {
+        if args.len() < 3 { return Err(PyException::type_error("sendmail requires from_addr, to_addrs, msg")); }
+        let from_addr = args[0].py_to_string();
+        let msg = args[2].py_to_string();
+        let mut sock = s.lock().unwrap();
+
+        // MAIL FROM
+        write!(sock, "MAIL FROM:<{}>\r\n", from_addr).map_err(|e| PyException::os_error(&format!("SMTP: {}", e)))?;
+        sock.flush().ok();
+        smtp_read_response(&*sock)?;
+
+        // RCPT TO (handle list or single string)
+        let to_list = match &args[1].payload {
+            PyObjectPayload::List(items) => items.read().iter().map(|i| i.py_to_string()).collect::<Vec<_>>(),
+            PyObjectPayload::Tuple(items) => items.iter().map(|i| i.py_to_string()).collect::<Vec<_>>(),
+            _ => vec![args[1].py_to_string()],
+        };
+        for to in &to_list {
+            write!(sock, "RCPT TO:<{}>\r\n", to).map_err(|e| PyException::os_error(&format!("SMTP: {}", e)))?;
+            sock.flush().ok();
+            smtp_read_response(&*sock)?;
+        }
+
+        // DATA
+        write!(sock, "DATA\r\n").map_err(|e| PyException::os_error(&format!("SMTP: {}", e)))?;
+        sock.flush().ok();
+        smtp_read_response(&*sock)?;
+
+        // Send message body + terminator
+        write!(sock, "{}\r\n.\r\n", msg).map_err(|e| PyException::os_error(&format!("SMTP: {}", e)))?;
+        sock.flush().ok();
+        smtp_read_response(&*sock)?;
+
+        Ok(PyObject::dict(IndexMap::new()))
+    }));
+
+    // send_message(msg)
+    let s = stream.clone();
+    attrs.insert(CompactString::from("send_message"), PyObject::native_closure("send_message", move |args: &[PyObjectRef]| {
+        if args.is_empty() { return Err(PyException::type_error("send_message requires a Message")); }
+        let msg_obj = &args[0];
+        let from_addr = msg_obj.get_attr("__getitem__").and_then(|gi| {
+            if let PyObjectPayload::NativeClosure { func, .. } = &gi.payload {
+                func(&[PyObject::str_val(CompactString::from("From"))]).ok()
+            } else { None }
+        }).map(|v| v.py_to_string()).unwrap_or_default();
+        let to_addr = msg_obj.get_attr("__getitem__").and_then(|gi| {
+            if let PyObjectPayload::NativeClosure { func, .. } = &gi.payload {
+                func(&[PyObject::str_val(CompactString::from("To"))]).ok()
+            } else { None }
+        }).map(|v| v.py_to_string()).unwrap_or_default();
+        let body = if let Some(as_string) = msg_obj.get_attr("as_string") {
+            match &as_string.payload {
+                PyObjectPayload::NativeFunction { func, .. } => func(&[]).map(|v| v.py_to_string()).unwrap_or_default(),
+                PyObjectPayload::NativeClosure { func, .. } => func(&[]).map(|v| v.py_to_string()).unwrap_or_default(),
+                _ => msg_obj.py_to_string(),
+            }
+        } else {
+            msg_obj.py_to_string()
+        };
+
+        let mut sock = s.lock().unwrap();
+        write!(sock, "MAIL FROM:<{}>\r\n", from_addr).ok();
+        sock.flush().ok();
+        smtp_read_response(&*sock)?;
+        write!(sock, "RCPT TO:<{}>\r\n", to_addr).ok();
+        sock.flush().ok();
+        smtp_read_response(&*sock)?;
+        write!(sock, "DATA\r\n").ok();
+        sock.flush().ok();
+        smtp_read_response(&*sock)?;
+        write!(sock, "{}\r\n.\r\n", body).ok();
+        sock.flush().ok();
+        smtp_read_response(&*sock)?;
+        Ok(PyObject::dict(IndexMap::new()))
+    }));
+
+    // starttls()
+    attrs.insert(CompactString::from("starttls"), make_builtin(|_| {
+        Err(PyException::runtime_error("STARTTLS requires ssl module (not available)"))
+    }));
+
+    // quit()
+    let s = stream.clone();
+    attrs.insert(CompactString::from("quit"), PyObject::native_closure("quit", move |_| {
+        let mut sock = s.lock().unwrap();
+        write!(sock, "QUIT\r\n").ok();
+        sock.flush().ok();
+        smtp_read_response(&*sock).ok();
+        Ok(PyObject::none())
+    }));
+
+    // close() — alias for quit without reading response
+    let s = stream.clone();
+    attrs.insert(CompactString::from("close"), PyObject::native_closure("close", move |_| {
+        if let Ok(mut sock) = s.lock() {
+            write!(sock, "QUIT\r\n").ok();
+            sock.flush().ok();
+        }
+        Ok(PyObject::none())
+    }));
+
+    // noop()
+    let s = stream.clone();
+    attrs.insert(CompactString::from("noop"), PyObject::native_closure("noop", move |_| {
+        let mut sock = s.lock().unwrap();
+        write!(sock, "NOOP\r\n").map_err(|e| PyException::os_error(&format!("SMTP: {}", e)))?;
+        sock.flush().ok();
+        let (code, msg) = smtp_read_response(&*sock)?;
+        Ok(PyObject::tuple(vec![PyObject::int(code as i64), PyObject::str_val(CompactString::from(msg))]))
+    }));
+
+    Ok(PyObject::instance_with_attrs(cls, attrs))
+}
+
+fn smtp_read_response(stream: &std::net::TcpStream) -> PyResult<(u16, String)> {
+    use std::io::{BufRead, BufReader};
+    let mut reader = BufReader::new(stream);
+    let mut full_msg = String::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).map_err(|e| PyException::os_error(&format!("SMTP read: {}", e)))?;
+        full_msg.push_str(&line);
+        if line.len() >= 4 && line.as_bytes()[3] == b' ' {
+            break;
+        }
+        if line.is_empty() { break; }
+    }
+    let code = full_msg.get(..3).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+    let msg = full_msg.get(4..).unwrap_or("").trim().to_string();
+    Ok((code, msg))
+}
+
+fn simple_base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((n >> 18) & 63) as usize] as char);
+        result.push(CHARS[((n >> 12) & 63) as usize] as char);
+        if chunk.len() > 1 { result.push(CHARS[((n >> 6) & 63) as usize] as char); } else { result.push('='); }
+        if chunk.len() > 2 { result.push(CHARS[(n & 63) as usize] as char); } else { result.push('='); }
+    }
+    result
 }
 
 // ── ftplib module ──
