@@ -2503,8 +2503,103 @@ pub fn create_codecs_module() -> PyObjectRef {
         })),
         ("open", make_builtin(|args: &[PyObjectRef]| {
             check_args_min("codecs.open", args, 1)?;
-            // Simplified: just delegate to builtins open
-            Err(PyException::not_implemented_error("codecs.open not yet implemented"))
+            let filename = args[0].py_to_string();
+            let mode = if args.len() > 1 && !matches!(args[1].payload, PyObjectPayload::Dict(_)) {
+                args[1].py_to_string()
+            } else { "r".to_string() };
+            let _encoding = if args.len() > 2 && !matches!(args[2].payload, PyObjectPayload::Dict(_)) {
+                args[2].py_to_string()
+            } else { "utf-8".to_string() };
+            // Delegate to Rust file I/O — codecs.open is just open() with encoding
+            if mode.contains('w') {
+                // Verify file is creatable
+                let _ = std::fs::File::create(&filename)
+                    .map_err(|e| PyException::os_error(format!("{}: {}", e, filename)))?;
+                let mut attrs = IndexMap::new();
+                let path = filename.clone();
+                let buf = Arc::new(parking_lot::RwLock::new(String::new()));
+                let buf_w = buf.clone();
+                let buf_r = buf.clone();
+                let path_w = path.clone();
+                attrs.insert(CompactString::from("write"), PyObject::native_closure(
+                    "write", move |wargs: &[PyObjectRef]| {
+                        if let Some(s) = wargs.first() {
+                            buf_w.write().push_str(&s.py_to_string());
+                        }
+                        Ok(PyObject::none())
+                    }
+                ));
+                attrs.insert(CompactString::from("flush"), PyObject::native_closure(
+                    "flush", move |_| {
+                        let content = buf_r.read().clone();
+                        std::fs::write(&path_w, content.as_bytes())
+                            .map_err(|e| PyException::os_error(e.to_string()))?;
+                        Ok(PyObject::none())
+                    }
+                ));
+                let path_c = path.clone();
+                let buf_c = buf.clone();
+                attrs.insert(CompactString::from("close"), PyObject::native_closure(
+                    "close", move |_| {
+                        let content = buf_c.read().clone();
+                        std::fs::write(&path_c, content.as_bytes())
+                            .map_err(|e| PyException::os_error(e.to_string()))?;
+                        Ok(PyObject::none())
+                    }
+                ));
+                attrs.insert(CompactString::from("__enter__"), PyObject::native_function(
+                    "__enter__", |a: &[PyObjectRef]| {
+                        Ok(if !a.is_empty() { a[0].clone() } else { PyObject::none() })
+                    }
+                ));
+                let path_e = path.clone();
+                let buf_e = buf.clone();
+                attrs.insert(CompactString::from("__exit__"), PyObject::native_closure(
+                    "__exit__", move |_| {
+                        let content = buf_e.read().clone();
+                        let _ = std::fs::write(&path_e, content.as_bytes());
+                        Ok(PyObject::bool_val(false))
+                    }
+                ));
+                Ok(PyObject::module_with_attrs(
+                    CompactString::from("TextIOWrapper"),
+                    attrs,
+                ))
+            } else {
+                // Read mode
+                let content = std::fs::read_to_string(&filename)
+                    .map_err(|e| PyException::os_error(format!("{}: {}", e, filename)))?;
+                let content_arc = Arc::new(content);
+                let c1 = content_arc.clone();
+                let c2 = content_arc.clone();
+                let mut attrs = IndexMap::new();
+                attrs.insert(CompactString::from("read"), PyObject::native_closure(
+                    "read", move |_| Ok(PyObject::str_val(CompactString::from(c1.as_str())))
+                ));
+                attrs.insert(CompactString::from("readlines"), PyObject::native_closure(
+                    "readlines", move |_| {
+                        let lines: Vec<PyObjectRef> = c2.lines()
+                            .map(|l| PyObject::str_val(CompactString::from(format!("{}\n", l))))
+                            .collect();
+                        Ok(PyObject::list(lines))
+                    }
+                ));
+                attrs.insert(CompactString::from("close"), PyObject::native_function(
+                    "close", |_: &[PyObjectRef]| Ok(PyObject::none())
+                ));
+                attrs.insert(CompactString::from("__enter__"), PyObject::native_function(
+                    "__enter__", |a: &[PyObjectRef]| {
+                        Ok(if !a.is_empty() { a[0].clone() } else { PyObject::none() })
+                    }
+                ));
+                attrs.insert(CompactString::from("__exit__"), PyObject::native_function(
+                    "__exit__", |_: &[PyObjectRef]| Ok(PyObject::bool_val(false))
+                ));
+                Ok(PyObject::module_with_attrs(
+                    CompactString::from("TextIOWrapper"),
+                    attrs,
+                ))
+            }
         })),
         ("BOM", PyObject::bytes(vec![0xFF, 0xFE])),
         ("BOM_UTF8", PyObject::bytes(vec![0xEF, 0xBB, 0xBF])),
@@ -2801,12 +2896,39 @@ fn codecs_lookup(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         | "cp1252" | "rot_13"
     );
     if known {
-        Ok(PyObject::tuple(vec![
-            PyObject::str_val(CompactString::from(enc)),
-            PyObject::none(),
-            PyObject::none(),
-            PyObject::none(),
-        ]))
+        // Return a CodecInfo-like object with .name attribute (CPython compat)
+        let display_name = enc.replace('_', "-");
+        let cls = PyObject::class(CompactString::from("CodecInfo"), vec![], IndexMap::new());
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(display_name.as_str())));
+        attrs.insert(CompactString::from("encode"), make_builtin(codecs_encode));
+        attrs.insert(CompactString::from("decode"), make_builtin(codecs_decode));
+        attrs.insert(CompactString::from("incrementalencoder"), PyObject::none());
+        attrs.insert(CompactString::from("incrementaldecoder"), PyObject::none());
+        attrs.insert(CompactString::from("streamreader"), PyObject::none());
+        attrs.insert(CompactString::from("streamwriter"), PyObject::none());
+        // Also support tuple-like indexing (CPython CodecInfo is a 4-tuple subclass)
+        let enc_fn = make_builtin(codecs_encode);
+        let dec_fn = make_builtin(codecs_decode);
+        attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
+            "CodecInfo.__getitem__",
+            {
+                let enc2 = enc_fn.clone();
+                let dec2 = dec_fn.clone();
+                let name2 = CompactString::from(display_name.as_str());
+                move |gargs: &[PyObjectRef]| {
+                    let idx = if !gargs.is_empty() { gargs[0].as_int().unwrap_or(0) } else { 0 };
+                    match idx {
+                        0 => Ok(PyObject::str_val(name2.clone())),
+                        1 => Ok(enc2.clone()),
+                        2 => Ok(dec2.clone()),
+                        3 => Ok(PyObject::none()),
+                        _ => Err(PyException::index_error("CodecInfo index out of range")),
+                    }
+                }
+            }
+        ));
+        Ok(PyObject::instance_with_attrs(cls, attrs))
     } else {
         Err(PyException::value_error(format!("unknown encoding: {}", norm)))
     }

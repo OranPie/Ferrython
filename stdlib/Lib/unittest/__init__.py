@@ -3,6 +3,7 @@
 __all__ = [
     'TestCase', 'TestResult', 'TestSuite', 'TestLoader', 'TextTestRunner',
     'main', 'skip', 'skipIf', 'skipUnless', 'expectedFailure', 'SkipTest',
+    'installHandler', 'registerResult', 'removeResult',
 ]
 
 
@@ -312,8 +313,31 @@ class TestCase:
             raise AssertionError("%s not raised" % exc_type.__name__)
         return _AssertRaisesContext(self, exc_type)
 
+    def assertRaisesRegex(self, exc_type, expected_regex, callable_obj=None, *args, **kwargs):
+        """Assert that a regex matches the string representation of the raised exception."""
+        if callable_obj is not None:
+            import re
+            try:
+                callable_obj(*args, **kwargs)
+            except exc_type as e:
+                if not re.search(expected_regex, str(e)):
+                    raise AssertionError(
+                        '"%s" does not match "%s"' % (expected_regex, str(e)))
+                return
+            except Exception as e:
+                raise AssertionError(
+                    "%s raised instead of %s" % (type(e).__name__, exc_type.__name__))
+            raise AssertionError("%s not raised" % exc_type.__name__)
+        return _AssertRaisesRegexContext(self, exc_type, expected_regex)
+
     def assertWarns(self, warning_type, callable_obj=None, *args, **kwargs):
         # Simplified: just run the callable (Ferrython doesn't track warnings yet)
+        if callable_obj is not None:
+            callable_obj(*args, **kwargs)
+        return _NullContext()
+
+    def assertWarnsRegex(self, warning_type, expected_regex, callable_obj=None, *args, **kwargs):
+        """Simplified assertWarnsRegex — Ferrython doesn't track warnings yet."""
         if callable_obj is not None:
             callable_obj(*args, **kwargs)
         return _NullContext()
@@ -321,6 +345,10 @@ class TestCase:
     def assertLogs(self, logger=None, level=None):
         """Context manager to assert that log messages are emitted."""
         return _AssertLogsContext(self, logger, level)
+
+    def assertNoLogs(self, logger=None, level=None):
+        """Context manager to assert that no log messages are emitted."""
+        return _AssertNoLogsContext(self, logger, level)
 
     def fail(self, msg=None):
         raise AssertionError(msg or "Test failed")
@@ -355,6 +383,30 @@ class _AssertRaisesContext:
             raise AssertionError("%s not raised" % self._exc_type.__name__)
         if not issubclass(exc_type, self._exc_type):
             return False
+        self.exception = exc_val
+        return True
+
+
+class _AssertRaisesRegexContext:
+    """Context manager for assertRaisesRegex."""
+
+    def __init__(self, test_case, exc_type, expected_regex):
+        self._test_case = test_case
+        self._exc_type = exc_type
+        self._expected_regex = expected_regex
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            raise AssertionError("%s not raised" % self._exc_type.__name__)
+        if not issubclass(exc_type, self._exc_type):
+            return False
+        import re
+        if not re.search(self._expected_regex, str(exc_val)):
+            raise AssertionError(
+                '"%s" does not match "%s"' % (self._expected_regex, str(exc_val)))
         self.exception = exc_val
         return True
 
@@ -454,6 +506,48 @@ class _CapturingHandler:
         pass
 
 
+class _AssertNoLogsContext:
+    """Context manager for assertNoLogs — asserts no log messages are emitted."""
+
+    def __init__(self, test_case, logger=None, level=None):
+        self._test_case = test_case
+        self._logger_name = logger
+        self._level = level or 'INFO'
+        self.records = []
+        self.output = []
+
+    def __enter__(self):
+        import logging
+        if self._logger_name is None:
+            self._logger = logging.getLogger()
+        elif isinstance(self._logger_name, str):
+            self._logger = logging.getLogger(self._logger_name)
+        else:
+            self._logger = self._logger_name
+        self._handler = _CapturingHandler()
+        self._logger.addHandler(self._handler)
+        level_map = {'DEBUG': 10, 'INFO': 20, 'WARNING': 30, 'ERROR': 40, 'CRITICAL': 50}
+        if isinstance(self._level, str):
+            self._level_num = level_map.get(self._level, 20)
+        else:
+            self._level_num = self._level
+        self._old_level = getattr(self._logger, 'level', None)
+        self._logger.setLevel(self._level_num)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._logger.removeHandler(self._handler)
+        if self._old_level is not None:
+            self._logger.setLevel(self._old_level)
+        if exc_type is not None:
+            return False
+        if self._handler.records:
+            raise AssertionError(
+                "Unexpected logs found: %s" %
+                self._handler.output)
+        return False
+
+
 class TestSuite:
     """A collection of test cases."""
 
@@ -470,8 +564,39 @@ class TestSuite:
     def run(self, result=None):
         if result is None:
             result = TestResult()
+        # Group tests by class for setUpClass/tearDownClass
+        classes_seen = []
+        current_class = None
         for test in self._tests:
+            test_class = type(test)
+            if test_class is not current_class:
+                # tearDownClass for previous class
+                if current_class is not None:
+                    try:
+                        tdc = getattr(current_class, 'tearDownClass', None)
+                        if tdc is not None:
+                            tdc()
+                    except Exception:
+                        pass
+                # setUpClass for new class
+                current_class = test_class
+                classes_seen.append(current_class)
+                try:
+                    suc = getattr(current_class, 'setUpClass', None)
+                    if suc is not None:
+                        suc()
+                except Exception as e:
+                    result.addError(test, e)
+                    continue
             test.run(result)
+        # tearDownClass for last class
+        if current_class is not None:
+            try:
+                tdc = getattr(current_class, 'tearDownClass', None)
+                if tdc is not None:
+                    tdc()
+            except Exception:
+                pass
         return result
 
     def countTestCases(self):
@@ -579,8 +704,53 @@ def expectedFailure(func):
     return wrapper
 
 
-def main(module='__main__', exit=True, verbosity=2):
-    """Simple test runner entry point."""
-    # In CPython this discovers tests from the calling module.
-    # For Ferrython, we provide a basic implementation.
-    print("unittest.main() — use TestLoader/TextTestRunner for test execution")
+def main(module='__main__', exit=True, verbosity=2, testRunner=None, testLoader=None):
+    """Simple test runner entry point.
+    
+    Discovers TestCase subclasses in the calling module and runs them.
+    """
+    import sys
+    if testLoader is None:
+        testLoader = TestLoader()
+    if testRunner is None:
+        testRunner = TextTestRunner(verbosity=verbosity)
+
+    # Try to discover tests from the calling module
+    if module == '__main__':
+        # Get the __main__ module from sys.modules
+        mod = sys.modules.get('__main__', None)
+    elif isinstance(module, str):
+        mod = sys.modules.get(module, None)
+    else:
+        mod = module
+
+    if mod is not None:
+        suite = TestSuite()
+        for name in dir(mod):
+            obj = getattr(mod, name, None)
+            if obj is None:
+                continue
+            if isinstance(obj, type) and issubclass(obj, TestCase) and obj is not TestCase:
+                loaded = testLoader.loadTestsFromTestCase(obj)
+                suite.addTests(loaded)
+        result = testRunner.run(suite)
+        if exit and not result.wasSuccessful():
+            sys.exit(1)
+        return result
+    else:
+        print("unittest.main() — no module found for test discovery")
+
+
+# --- Compatibility stubs ---
+
+def installHandler():
+    """Install a signal handler to catch Ctrl-C during test runs. (stub)"""
+    pass
+
+def registerResult(result):
+    """Register a TestResult for cleanup. (stub)"""
+    pass
+
+def removeResult(result):
+    """Remove a registered TestResult. (stub)"""
+    pass
