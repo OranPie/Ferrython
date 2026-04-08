@@ -720,7 +720,13 @@ pub fn create_dataclasses_module() -> PyObjectRef {
 }
 
 fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    if args.is_empty() { return Err(PyException::type_error("dataclass requires 1 argument")); }
+    // @dataclass() — called with empty parens, return decorator with defaults
+    if args.is_empty() {
+        return Ok(PyObject::native_closure("dataclass", move |args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("dataclass requires 1 argument")); }
+            dataclass_apply(&args[0], true, false, false, true, false)
+        }));
+    }
     let cls = &args[0];
     
     // If called as @dataclass(eq=True, ...) the first arg is kwargs dict, not a class.

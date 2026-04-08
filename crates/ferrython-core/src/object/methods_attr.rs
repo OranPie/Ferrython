@@ -569,7 +569,19 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 None
             }
-            PyObjectPayload::Module(m) => m.attrs.read().get(name).cloned(),
+            PyObjectPayload::Module(m) => {
+                if name == "__dict__" {
+                    // Return module attrs as a dict
+                    let attrs = m.attrs.read();
+                    let mut map = IndexMap::new();
+                    for (k, v) in attrs.iter() {
+                        map.insert(HashableKey::Str(k.clone()), v.clone());
+                    }
+                    Some(PyObject::dict(map))
+                } else {
+                    m.attrs.read().get(name).cloned()
+                }
+            }
             PyObjectPayload::Slice { start, stop, step } => {
                 match name {
                     "start" => Some(start.clone().unwrap_or_else(PyObject::none)),
