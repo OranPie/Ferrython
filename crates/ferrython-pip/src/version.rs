@@ -272,6 +272,25 @@ impl VersionSpec {
     }
 }
 
+impl std::fmt::Display for VersionSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let op_str = match self.op {
+            SpecOp::Eq => "==",
+            SpecOp::Ne => "!=",
+            SpecOp::Ge => ">=",
+            SpecOp::Le => "<=",
+            SpecOp::Gt => ">",
+            SpecOp::Lt => "<",
+            SpecOp::Compat => "~=",
+        };
+        write!(f, "{}{}", op_str, self.version)?;
+        if self.wildcard {
+            write!(f, ".*")?;
+        }
+        Ok(())
+    }
+}
+
 /// Parse a full version requirement string like ">=1.0,<2.0" or "~=1.4.2".
 pub fn parse_version_specs(s: &str) -> Vec<VersionSpec> {
     s.split(',')
@@ -293,17 +312,35 @@ pub fn version_matches(version_str: &str, specs_str: &str) -> bool {
 }
 
 /// From a list of version strings, find the best (highest) that satisfies all specs.
+/// Excludes pre-release and dev versions unless explicitly matched by a spec.
 pub fn find_best_version<'a>(versions: &[&'a str], specs_str: &str) -> Option<&'a str> {
     let specs = parse_version_specs(specs_str);
+    let allow_pre = specs.iter().any(|s| s.version.pre.is_some() || s.version.dev.is_some());
+
     let mut candidates: Vec<(&str, Version)> = versions
         .iter()
         .filter_map(|v| Version::parse(v).map(|parsed| (*v, parsed)))
         .filter(|(_, parsed)| {
+            // Skip pre-release/dev versions unless explicitly requested
+            if !allow_pre && (parsed.pre.is_some() || parsed.dev.is_some()) {
+                return false;
+            }
             specs.is_empty() || specs.iter().all(|s| s.matches(parsed))
         })
         .collect();
 
     candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // If no stable candidates found, fall back to including pre-releases
+    if candidates.is_empty() && !allow_pre {
+        candidates = versions
+            .iter()
+            .filter_map(|v| Version::parse(v).map(|parsed| (*v, parsed)))
+            .filter(|(_, parsed)| specs.is_empty() || specs.iter().all(|s| s.matches(parsed)))
+            .collect();
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    }
+
     candidates.first().map(|(s, _)| *s)
 }
 
@@ -360,5 +397,82 @@ mod tests {
         let versions = vec!["1.0.0", "1.1.0", "1.2.0", "2.0.0"];
         assert_eq!(find_best_version(&versions, ">=1.0,<2.0"), Some("1.2.0"));
         assert_eq!(find_best_version(&versions, ">=2.0"), Some("2.0.0"));
+    }
+
+    #[test]
+    fn test_version_spec_display() {
+        let spec = VersionSpec::parse(">=1.0.0").unwrap();
+        assert_eq!(format!("{}", spec), ">=1.0.0");
+
+        let spec = VersionSpec::parse("~=2.3").unwrap();
+        assert_eq!(format!("{}", spec), "~=2.3");
+
+        let spec = VersionSpec::parse("==1.0.*").unwrap();
+        assert_eq!(format!("{}", spec), "==1.0.*");
+    }
+
+    #[test]
+    fn test_ne_spec() {
+        let spec = VersionSpec::parse("!=1.5.0").unwrap();
+        assert!(!spec.matches(&Version::parse("1.5.0").unwrap()));
+        assert!(spec.matches(&Version::parse("1.5.1").unwrap()));
+        assert!(spec.matches(&Version::parse("1.4.0").unwrap()));
+    }
+
+    #[test]
+    fn test_ne_wildcard() {
+        let spec = VersionSpec::parse("!=1.5.*").unwrap();
+        assert!(!spec.matches(&Version::parse("1.5.0").unwrap()));
+        assert!(!spec.matches(&Version::parse("1.5.9").unwrap()));
+        assert!(spec.matches(&Version::parse("1.6.0").unwrap()));
+        assert!(spec.matches(&Version::parse("1.4.0").unwrap()));
+    }
+
+    #[test]
+    fn test_lt_gt_spec() {
+        assert!(version_matches("1.0.0", ">0.9"));
+        assert!(!version_matches("1.0.0", ">1.0.0"));
+        assert!(version_matches("1.0.0", "<1.0.1"));
+        assert!(!version_matches("1.0.0", "<1.0.0"));
+    }
+
+    #[test]
+    fn test_combined_range_specs() {
+        assert!(version_matches("1.5.0", ">=1.0,<2.0,!=1.3.0"));
+        assert!(!version_matches("1.3.0", ">=1.0,<2.0,!=1.3.0"));
+        assert!(!version_matches("0.9.0", ">=1.0,<2.0,!=1.3.0"));
+        assert!(!version_matches("2.0.0", ">=1.0,<2.0,!=1.3.0"));
+    }
+
+    #[test]
+    fn test_pre_release_ordering() {
+        assert!(Version::parse("1.0a1").unwrap() < Version::parse("1.0b1").unwrap());
+        assert!(Version::parse("1.0b1").unwrap() < Version::parse("1.0rc1").unwrap());
+        assert!(Version::parse("1.0rc1").unwrap() < Version::parse("1.0").unwrap());
+    }
+
+    #[test]
+    fn test_find_best_excludes_prerelease() {
+        let versions = vec!["1.0.0", "1.1.0", "2.0.0a1", "2.0.0b1"];
+        // Should pick 1.1.0, not 2.0.0a1
+        assert_eq!(find_best_version(&versions, ">=1.0"), Some("1.1.0"));
+    }
+
+    #[test]
+    fn test_find_best_includes_prerelease_when_explicit() {
+        let versions = vec!["1.0.0", "2.0.0a1", "2.0.0b1"];
+        // Spec includes pre-release version → allow pre-releases
+        assert_eq!(find_best_version(&versions, ">=2.0.0a1"), Some("2.0.0b1"));
+    }
+
+    #[test]
+    fn test_epoch_ordering() {
+        assert!(Version::parse("2!1.0").unwrap() > Version::parse("99.0").unwrap());
+    }
+
+    #[test]
+    fn test_post_release() {
+        assert!(Version::parse("1.0.post1").unwrap() > Version::parse("1.0").unwrap());
+        assert!(Version::parse("1.0.post2").unwrap() > Version::parse("1.0.post1").unwrap());
     }
 }

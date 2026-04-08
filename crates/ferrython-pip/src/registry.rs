@@ -11,6 +11,8 @@ pub struct InstalledPackage {
     pub summary: Option<String>,
     pub author: Option<String>,
     pub license: Option<String>,
+    pub requires_python: Option<String>,
+    pub home_page: Option<String>,
     pub requires: Option<Vec<String>>,
     pub files: Vec<String>,
 }
@@ -47,11 +49,15 @@ pub fn get_installed(name: &str, site_packages: &str) -> Option<InstalledPackage
         .find(|p| normalize(&p.name) == normalized)
 }
 
-/// Uninstall a package by removing its files and dist-info
+/// Uninstall a package by removing its files, dist-info, .pth files, and console scripts.
 pub fn uninstall(name: &str, site_packages: &str) -> Result<(), String> {
     let site = Path::new(site_packages);
     let pkg = get_installed(name, site_packages)
-        .ok_or_else(|| format!("Package '{}' is not installed", name))?;
+        .ok_or_else(|| format!(
+            "Package '{}' is not installed.\n\
+             Hint: Use 'ferryip list' to see installed packages.",
+            name
+        ))?;
 
     // Remove files listed in RECORD
     for file in &pkg.files {
@@ -67,8 +73,20 @@ pub fn uninstall(name: &str, site_packages: &str) -> Result<(), String> {
 
     // Remove dist-info directory
     let dist_info = find_dist_info_dir(site, name);
-    if let Some(dir) = dist_info {
+    if let Some(ref dir) = dist_info {
+        // Before removing, check for console_scripts to remove bin entries
+        let entry_points_path = dir.join("entry_points.txt");
+        if entry_points_path.exists() {
+            remove_console_scripts(site, &entry_points_path);
+        }
         let _ = fs::remove_dir_all(dir);
+    }
+
+    // Remove any .pth file for editable installs
+    let normalized = normalize(name);
+    let pth_file = site.join(format!("__{}.pth", normalized));
+    if pth_file.exists() {
+        let _ = fs::remove_file(&pth_file);
     }
 
     // Clean up empty package directories
@@ -87,6 +105,8 @@ fn read_dist_info(dist_info_path: &Path) -> Option<InstalledPackage> {
     let mut summary = None;
     let mut author = None;
     let mut license = None;
+    let mut requires_python = None;
+    let mut home_page = None;
     let mut requires = Vec::new();
 
     for line in metadata_content.lines() {
@@ -98,8 +118,16 @@ fn read_dist_info(dist_info_path: &Path) -> Option<InstalledPackage> {
             summary = Some(val.trim().to_string());
         } else if let Some(val) = line.strip_prefix("Author: ") {
             author = Some(val.trim().to_string());
+        } else if let Some(val) = line.strip_prefix("Author-email: ") {
+            if author.is_none() {
+                author = Some(val.trim().to_string());
+            }
         } else if let Some(val) = line.strip_prefix("License: ") {
             license = Some(val.trim().to_string());
+        } else if let Some(val) = line.strip_prefix("Requires-Python: ") {
+            requires_python = Some(val.trim().to_string());
+        } else if let Some(val) = line.strip_prefix("Home-page: ") {
+            home_page = Some(val.trim().to_string());
         } else if let Some(val) = line.strip_prefix("Requires-Dist: ") {
             requires.push(val.trim().to_string());
         }
@@ -134,6 +162,8 @@ fn read_dist_info(dist_info_path: &Path) -> Option<InstalledPackage> {
         summary,
         author,
         license,
+        requires_python,
+        home_page,
         requires: if requires.is_empty() { None } else { Some(requires) },
         files,
     })
@@ -176,5 +206,40 @@ fn is_empty_dir(path: &Path) -> bool {
     match fs::read_dir(path) {
         Ok(mut entries) => entries.next().is_none(),
         Err(_) => false,
+    }
+}
+
+/// Remove console scripts created by entry_points.txt during install.
+fn remove_console_scripts(site: &Path, entry_points_path: &Path) {
+    let content = match fs::read_to_string(entry_points_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let bin_dir = site.parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("bin"))
+        .unwrap_or_else(|| site.join("../bin"));
+
+    let mut in_console_scripts = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[console_scripts]" {
+            in_console_scripts = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_console_scripts = false;
+            continue;
+        }
+        if !in_console_scripts || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((script_name, _)) = trimmed.split_once('=') {
+            let script_path = bin_dir.join(script_name.trim());
+            if script_path.exists() {
+                let _ = fs::remove_file(&script_path);
+            }
+        }
     }
 }

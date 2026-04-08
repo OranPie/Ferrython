@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use crate::{pypi, registry, resolver};
 
 #[derive(Parser)]
-#[command(name = "ferryip", about = "Ferrython package manager (pip-compatible)")]
+#[command(name = "ferryip", version = env!("CARGO_PKG_VERSION"), about = "Ferrython package manager (pip-compatible)")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -14,6 +14,10 @@ struct Cli {
     /// Quiet mode — minimal output
     #[arg(short, long, global = true)]
     quiet: bool,
+
+    /// Verbose mode — show detailed output
+    #[arg(short, long, global = true)]
+    verbose: bool,
 }
 
 #[derive(Subcommand)]
@@ -23,9 +27,9 @@ enum Commands {
         /// Package names (with optional version specifiers)
         packages: Vec<String>,
 
-        /// Install from requirements file
+        /// Install from requirements files (may be specified multiple times)
         #[arg(short, long)]
-        requirement: Option<String>,
+        requirement: Vec<String>,
 
         /// Upgrade already-installed packages
         #[arg(short = 'U', long)]
@@ -180,25 +184,31 @@ pub fn run() {
     let cli = Cli::parse();
     let site_packages = cli.target.unwrap_or_else(default_site_packages);
     let quiet = cli.quiet;
+    let verbose = cli.verbose;
 
     let result = match cli.command {
         Commands::Install { packages, requirement, upgrade, editable, no_deps, pre, only_binary: _, install_target, no_cache_dir: _, dry_run, force_reinstall } => {
             let effective_site = install_target.as_deref().unwrap_or(&site_packages);
             let effective_upgrade = upgrade || force_reinstall;
             if dry_run {
-                // Dry run: just show what would be installed
-                dry_run_install(&packages, requirement.as_deref(), quiet)
+                dry_run_install(&packages, &requirement, quiet)
             } else if let Some(editable_path) = editable {
                 let proj_path = editable_path.unwrap_or_else(|| ".".to_string());
                 install_editable(&proj_path, effective_site, quiet)
-            } else if let Some(req_file) = requirement {
-                let reqs = parse_requirements_file(&req_file);
-                install_packages(&reqs, effective_site, effective_upgrade, no_deps, pre, quiet)
+            } else if !requirement.is_empty() {
+                // Collect all requirements from all -r files, then add CLI packages
+                let mut reqs: Vec<String> = Vec::new();
+                for req_file in &requirement {
+                    reqs.extend(parse_requirements_file(req_file));
+                }
+                reqs.extend(packages.iter().cloned());
+                install_packages(&reqs, effective_site, effective_upgrade, no_deps, pre, quiet, verbose)
             } else if packages.is_empty() {
-                eprintln!("Error: no packages specified");
+                eprintln!("Error: You must give at least one requirement to install \
+                           (see 'ferryip install --help')");
                 std::process::exit(1);
             } else {
-                install_packages(&packages, effective_site, effective_upgrade, no_deps, pre, quiet)
+                install_packages(&packages, effective_site, effective_upgrade, no_deps, pre, quiet, verbose)
             }
         }
         Commands::Uninstall { packages, yes } => {
@@ -382,7 +392,8 @@ fn parse_requirements_file_inner(path: &str, seen: &mut std::collections::HashSe
     result
 }
 
-fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_deps: bool, _pre: bool, quiet: bool) -> Result<(), String> {
+fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_deps: bool, _pre: bool, quiet: bool, verbose: bool) -> Result<(), String> {
+    let start_time = std::time::Instant::now();
     let mut visited = std::collections::HashSet::new();
     let total = specs.len();
     let mut installed_count = 0;
@@ -400,13 +411,32 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
             continue;
         }
 
-        // Handle `ferryip install .` or `ferryip install ./path`
-        if trimmed == "." || trimmed.starts_with("./") || trimmed.starts_with("../")
+        // Handle `ferryip install .` or `ferryip install .[dev]` or `ferryip install ./path`
+        if trimmed == "." || trimmed.starts_with(".[")
+            || trimmed.starts_with("./") || trimmed.starts_with("../")
             || std::path::Path::new(trimmed).join("pyproject.toml").exists()
             || std::path::Path::new(trimmed).join("setup.cfg").exists()
             || std::path::Path::new(trimmed).join("setup.py").exists()
         {
-            install_project(trimmed, site_packages, quiet)?;
+            // Extract extras from ".[dev,test]" syntax
+            let (proj_path, proj_extras) = if let Some(bracket_start) = trimmed.find('[') {
+                if let Some(bracket_end) = trimmed.find(']') {
+                    let extras_str = &trimmed[bracket_start + 1..bracket_end];
+                    let extras: Vec<String> = extras_str.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let path = trimmed[..bracket_start].trim();
+                    let path = if path.is_empty() { "." } else { path };
+                    (path.to_string(), extras)
+                } else {
+                    (trimmed.to_string(), vec![])
+                }
+            } else {
+                (trimmed.to_string(), vec![])
+            };
+
+            install_project_with_extras(&proj_path, &proj_extras, site_packages, quiet)?;
             installed_count += 1;
             continue;
         }
@@ -422,6 +452,15 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
         if !quiet && total > 1 {
             let ver_display = version_spec.as_deref().unwrap_or("");
             println!("[{}/{}] Processing {}{}", idx + 1, total, name, ver_display);
+        }
+        if verbose {
+            let extras_display = if extras.is_empty() {
+                String::new()
+            } else {
+                format!("[{}]", extras.join(","))
+            };
+            println!("  Resolving {}{}{}", name, extras_display,
+                     version_spec.as_deref().map(|v| format!(" ({})", v)).unwrap_or_default());
         }
         resolver::install_with_deps(
             &name,
@@ -441,7 +480,8 @@ fn install_packages(specs: &[String], site_packages: &str, upgrade: bool, no_dep
     }
 
     if !quiet && installed_count > 1 {
-        println!("\nProcessed {} package(s).", installed_count);
+        let elapsed = start_time.elapsed();
+        println!("\nSuccessfully processed {} package(s) in {:.1}s.", installed_count, elapsed.as_secs_f64());
     }
     Ok(())
 }
@@ -575,9 +615,9 @@ fn parse_version_specifier_with_extras(spec: &str) -> (String, Option<String>, V
 }
 
 /// Dry-run mode: show what would be installed without actually installing.
-fn dry_run_install(packages: &[String], requirement_file: Option<&str>, quiet: bool) -> Result<(), String> {
+fn dry_run_install(packages: &[String], requirement_files: &[String], quiet: bool) -> Result<(), String> {
     let mut specs: Vec<String> = packages.to_vec();
-    if let Some(req_file) = requirement_file {
+    for req_file in requirement_files {
         specs.extend(parse_requirements_file(req_file));
     }
 
@@ -652,7 +692,7 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
             if !quiet {
                 println!("Installing {} project dependencies...", deps.len());
             }
-            install_packages(&deps, site_packages, false, false, false, quiet)?;
+            install_packages(&deps, site_packages, false, false, false, quiet, false)?;
         }
 
         // Install build-system requirements too
@@ -661,7 +701,7 @@ fn install_editable(path: &str, site_packages: &str, quiet: bool) -> Result<(), 
             if !quiet {
                 println!("Installing {} build dependencies...", build_reqs.len());
             }
-            install_packages(&build_reqs, site_packages, false, false, false, quiet)?;
+            install_packages(&build_reqs, site_packages, false, false, false, quiet, false)?;
         }
     }
 
@@ -730,38 +770,105 @@ fn list_packages(site_packages: &str, outdated: bool) -> Result<(), String> {
 }
 
 fn show_package(name: &str, site_packages: &str) -> Result<(), String> {
-    let info = registry::get_installed(name, site_packages)
-        .ok_or_else(|| format!("Package '{}' is not installed", name))?;
-    println!("Name: {}", info.name);
-    println!("Version: {}", info.version);
-    if let Some(ref summary) = info.summary {
-        println!("Summary: {}", summary);
+    // Try installed first
+    if let Some(info) = registry::get_installed(name, site_packages) {
+        println!("Name: {}", info.name);
+        println!("Version: {}", info.version);
+        if let Some(ref summary) = info.summary {
+            println!("Summary: {}", summary);
+        }
+        if let Some(ref home_page) = info.home_page {
+            println!("Home-page: {}", home_page);
+        }
+        if let Some(ref author) = info.author {
+            println!("Author: {}", author);
+        }
+        if let Some(ref license) = info.license {
+            println!("License: {}", license);
+        }
+        if let Some(ref requires_python) = info.requires_python {
+            println!("Requires-Python: {}", requires_python);
+        }
+        if let Some(ref requires) = info.requires {
+            println!("Requires: {}", requires.join(", "));
+        }
+        println!("Location: {}", site_packages);
+        println!("Installer: ferryip");
+        println!("Files:");
+        for f in &info.files {
+            println!("  {}", f);
+        }
+        return Ok(());
     }
-    if let Some(ref author) = info.author {
-        println!("Author: {}", author);
+
+    // Not installed — try to fetch from PyPI
+    match pypi::fetch_package_info(name, None) {
+        Ok(info) => {
+            println!("Name: {} (not installed)", info.name);
+            println!("Version: {} (latest)", info.version);
+            if !info.summary.is_empty() {
+                println!("Summary: {}", info.summary);
+            }
+            if !info.author.is_empty() {
+                println!("Author: {}", info.author);
+            }
+            if !info.license.is_empty() {
+                println!("License: {}", info.license);
+            }
+            if !info.requires_dist.is_empty() {
+                println!("Requires: {}", info.requires_dist.join(", "));
+            }
+            println!("\nTo install: ferryip install {}", name);
+            Ok(())
+        }
+        Err(_) => Err(format!(
+            "Package '{}' is not installed and was not found on PyPI.\n\
+             Hint: Check the package name spelling or search with: ferryip search {}",
+            name, name
+        )),
     }
-    if let Some(ref license) = info.license {
-        println!("License: {}", license);
-    }
-    if let Some(ref requires) = info.requires {
-        println!("Requires: {}", requires.join(", "));
-    }
-    println!("Location: {}", site_packages);
-    println!("Files:");
-    for f in &info.files {
-        println!("  {}", f);
-    }
-    Ok(())
 }
 
 fn search_pypi(query: &str) -> Result<(), String> {
+    // Try exact match first
     let results = pypi::search(query).map_err(|e| format!("Search failed: {}", e))?;
-    if results.is_empty() {
-        println!("No packages found for '{}'", query);
-    } else {
+    if !results.is_empty() {
         for (name, version, summary) in &results {
             println!("{} ({}) - {}", name, version, summary);
         }
+        return Ok(());
+    }
+
+    // Try common name variations (replace spaces with hyphens, underscores)
+    let variations = vec![
+        query.replace(' ', "-"),
+        query.replace(' ', "_"),
+        query.replace('_', "-"),
+        query.replace('-', "_"),
+        format!("python-{}", query),
+        format!("py{}", query),
+    ];
+
+    let mut found = false;
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(query.to_lowercase());
+
+    for variant in &variations {
+        let normalized = variant.to_lowercase();
+        if !seen.insert(normalized) {
+            continue;
+        }
+        if let Ok(results) = pypi::search(variant) {
+            for (name, version, summary) in &results {
+                println!("{} ({}) - {}", name, version, summary);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        println!("No packages found matching '{}'.", query);
+        println!("Hint: Try browsing https://pypi.org/search/?q={}", query);
     }
     Ok(())
 }
@@ -841,6 +948,53 @@ fn check_packages(site_packages: &str) -> Result<(), String> {
                  packages.len(), checked);
     }
     Ok(())
+}
+
+/// Install dependencies from a project's pyproject.toml or setup.cfg, including optional extras.
+fn install_project_with_extras(path: &str, requested_extras: &[String], site_packages: &str, quiet: bool) -> Result<(), String> {
+    let proj_dir = std::path::Path::new(path);
+    let pyproject_path = proj_dir.join("pyproject.toml");
+
+    if pyproject_path.exists() && !requested_extras.is_empty() {
+        let pyproj = ferrython_toolchain::pyproject::parse_pyproject(&pyproject_path)?;
+        if !quiet {
+            if let Some(name) = pyproj.name() {
+                let version = pyproj.version().unwrap_or("0.0.0");
+                println!("Installing project: {} ({}) with extras: [{}]",
+                         name, version, requested_extras.join(", "));
+            }
+        }
+
+        // Install base project first
+        install_project(path, site_packages, quiet)?;
+
+        // Install requested extras
+        let mut visited = std::collections::HashSet::new();
+        for extra in requested_extras {
+            let extra_deps = pyproj.extra_deps(extra);
+            if extra_deps.is_empty() {
+                let available = pyproj.extras();
+                if available.is_empty() {
+                    eprintln!("WARNING: No optional dependencies defined in pyproject.toml");
+                } else {
+                    eprintln!("WARNING: Extra '{}' not found. Available extras: {}",
+                             extra, available.join(", "));
+                }
+                continue;
+            }
+            if !quiet {
+                println!("Installing extra '{}' ({} dependencies)...", extra, extra_deps.len());
+            }
+            for dep in &extra_deps {
+                let (name, spec) = parse_version_specifier(dep);
+                resolver::install_with_deps(&name, spec.as_deref(), site_packages, false, false, quiet, &mut visited)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // No extras or no pyproject.toml — fall through to regular install
+    install_project(path, site_packages, quiet)
 }
 
 /// Install dependencies from a project's pyproject.toml or setup.cfg.
@@ -952,7 +1106,7 @@ fn install_project(path: &str, site_packages: &str, quiet: bool) -> Result<(), S
     let req_path = proj_dir.join("requirements.txt");
     if req_path.exists() {
         let reqs = parse_requirements_file(&req_path.to_string_lossy());
-        return install_packages(&reqs, site_packages, false, false, false, quiet);
+        return install_packages(&reqs, site_packages, false, false, false, quiet, false);
     }
 
     Err(format!(
@@ -1006,7 +1160,7 @@ fn install_from_setup_cfg(path: &std::path::Path, site_packages: &str, quiet: bo
         return Ok(());
     }
 
-    install_packages(&deps, site_packages, false, false, false, quiet)
+    install_packages(&deps, site_packages, false, false, false, quiet, false)
 }
 
 /// Extract dependencies from a setup.py file using regex-based heuristic parsing.
@@ -1030,7 +1184,7 @@ fn install_from_setup_py(path: &std::path::Path, site_packages: &str, quiet: boo
         println!("Found {} dependencies in setup.py", deps.len());
     }
 
-    install_packages(&deps, site_packages, false, false, false, quiet)
+    install_packages(&deps, site_packages, false, false, false, quiet, false)
 }
 
 /// Heuristic parser for install_requires in setup.py.
@@ -1448,7 +1602,7 @@ fn add_dir_to_zip(
 
 fn show_config(site_packages: &str, _list: bool) -> Result<(), String> {
     let exe = std::env::current_exe().unwrap_or_default();
-    println!("ferryip version: 0.1.0");
+    println!("ferryip version: {}", env!("CARGO_PKG_VERSION"));
     println!("Ferrython compatible: 3.8+");
     println!("Location: {}", exe.display());
     println!("Site-packages: {}", site_packages);
@@ -1463,19 +1617,31 @@ fn show_config(site_packages: &str, _list: bool) -> Result<(), String> {
 
 fn inspect_packages(site_packages: &str) -> Result<(), String> {
     let packages = registry::list_installed(site_packages);
-    // Output in JSON-like format (pip inspect compatibility)
     println!("{{");
     println!("  \"version\": \"1\",");
-    println!("  \"pip_version\": \"ferryip-0.1.0\",");
+    println!("  \"pip_version\": \"ferryip-{}\",", env!("CARGO_PKG_VERSION"));
     println!("  \"installed\": [");
     for (i, pkg) in packages.iter().enumerate() {
         let comma = if i + 1 < packages.len() { "," } else { "" };
         println!("    {{");
         println!("      \"metadata\": {{");
         println!("        \"name\": \"{}\",", pkg.name);
-        println!("        \"version\": \"{}\"", pkg.version);
-        println!("      }},");
-        println!("      \"installer\": \"ferryip\"");
+        println!("        \"version\": \"{}\",", pkg.version);
+        if let Some(ref summary) = pkg.summary {
+            println!("        \"summary\": \"{}\",", summary.replace('"', "\\\""));
+        }
+        if let Some(ref requires_python) = pkg.requires_python {
+            println!("        \"requires_python\": \"{}\",", requires_python);
+        }
+        if let Some(ref requires) = pkg.requires {
+            let req_json: Vec<String> = requires.iter()
+                .map(|r| format!("\"{}\"", r.replace('"', "\\\"")))
+                .collect();
+            println!("        \"requires_dist\": [{}],", req_json.join(", "));
+        }
+        // Remove trailing comma from last field by always ending with a known field
+        println!("        \"installer\": \"ferryip\"");
+        println!("      }}");
         println!("    }}{}", comma);
     }
     println!("  ]");

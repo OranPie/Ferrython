@@ -3,15 +3,23 @@
 use crate::{pypi, installer, registry, version};
 use std::collections::{HashMap, HashSet};
 
+/// Maximum depth for recursive dependency resolution.
+const MAX_RESOLUTION_DEPTH: usize = 50;
+
 /// Tracks resolved package versions for conflict detection.
 struct ResolutionState {
     /// Map from normalized package name to (resolved version, who required it)
     resolved: HashMap<String, (String, String)>,
+    /// Current resolution path for cycle reporting
+    path: Vec<String>,
 }
 
 impl ResolutionState {
     fn new() -> Self {
-        Self { resolved: HashMap::new() }
+        Self {
+            resolved: HashMap::new(),
+            path: Vec::new(),
+        }
     }
 
     /// Record a resolved version; returns Err if conflicting with a previous resolution.
@@ -20,13 +28,38 @@ impl ResolutionState {
         if let Some((prev_ver, prev_by)) = self.resolved.get(&key) {
             if prev_ver != version {
                 return Err(format!(
-                    "Dependency conflict: {} {} (required by {}) conflicts with {} (required by {})",
-                    name, version, required_by, prev_ver, prev_by
+                    "Dependency conflict for {}:\n\
+                     \x20 {} {} (required by {})\n\
+                     \x20 {} {} (required by {})\n\
+                     Hint: Use a constraint file (-c) or pin to a compatible version.",
+                    name, name, version, required_by, name, prev_ver, prev_by
                 ));
             }
         }
         self.resolved.insert(key, (version.to_string(), required_by.to_string()));
         Ok(())
+    }
+
+    /// Check if we're in a dependency cycle, returning a descriptive error if so.
+    fn check_cycle(&self, name: &str) -> Result<(), String> {
+        let normalized = normalize(name);
+        if let Some(pos) = self.path.iter().position(|p| normalize(p) == normalized) {
+            let cycle: Vec<&str> = self.path[pos..].iter().map(|s| s.as_str()).collect();
+            return Err(format!(
+                "Circular dependency detected: {} → {} → {}\n\
+                 Hint: Use --no-deps to skip dependency resolution.",
+                cycle.join(" → "), name, cycle.first().unwrap_or(&name)
+            ));
+        }
+        Ok(())
+    }
+
+    fn push_path(&mut self, name: &str) {
+        self.path.push(name.to_string());
+    }
+
+    fn pop_path(&mut self) {
+        self.path.pop();
     }
 }
 
@@ -61,10 +94,27 @@ fn install_with_deps_inner(
 ) -> Result<(), String> {
     let normalized = normalize(name);
 
-    // Avoid cycles
+    // Depth limit
+    if state.path.len() >= MAX_RESOLUTION_DEPTH {
+        return Err(format!(
+            "Maximum dependency resolution depth ({}) exceeded while resolving '{}'.\n\
+             Resolution path: {}\n\
+             Hint: This usually indicates a cyclic or extremely deep dependency chain. \
+             Try --no-deps or pin specific versions.",
+            MAX_RESOLUTION_DEPTH, name,
+            state.path.join(" → ")
+        ));
+    }
+
+    // Check for cycles (using path tracking, more informative than visited set)
+    state.check_cycle(name)?;
+
+    // Avoid re-processing (visited set still used for idempotency)
     if !visited.insert(normalized.clone()) {
         return Ok(());
     }
+
+    state.push_path(name);
 
     // Check if already satisfied
     if !upgrade {
@@ -75,6 +125,7 @@ fn install_with_deps_inner(
                         println!("Requirement already satisfied: {} ({})", name, installed.version);
                     }
                     state.record(name, &installed.version, required_by).ok();
+                    state.pop_path();
                     return Ok(());
                 }
                 // Installed version doesn't match — need to upgrade
@@ -83,27 +134,37 @@ fn install_with_deps_inner(
                     println!("Requirement already satisfied: {} ({})", name, installed.version);
                 }
                 state.record(name, &installed.version, required_by).ok();
+                state.pop_path();
                 return Ok(());
             }
         }
     }
 
     // Resolve the best version from PyPI
-    let release = resolve_version(name, version_req)?;
+    let release = resolve_version(name, version_req).map_err(|e| {
+        state.pop_path();
+        e
+    })?;
 
     // Double-check that the resolved version satisfies the specs
     if let Some(spec) = version_req {
         if !version::version_matches(&release.version, spec) {
+            state.pop_path();
             return Err(format!(
-                "ERROR: Could not find a version that satisfies the requirement {} (from versions: {})\n\
-                 No matching distribution found for {} {}",
-                spec, release.version, name, spec
+                "ERROR: Could not find a version that satisfies the requirement {}{}\n\
+                 \x20 Available: {}\n\
+                 \x20 Required by: {}\n\
+                 No matching distribution found for {}",
+                name, spec, release.version, required_by, name
             ));
         }
     }
 
     // Conflict detection
-    state.record(name, &release.version, required_by)?;
+    if let Err(e) = state.record(name, &release.version, required_by) {
+        state.pop_path();
+        return Err(e);
+    }
 
     if !quiet {
         println!("Collecting {} ({})", release.name, release.version);
@@ -111,10 +172,16 @@ fn install_with_deps_inner(
 
     // Download and install the package
     let wheel_path = pypi::download_wheel(&release)
-        .map_err(|e| format!("Download failed for {}: {}", name, e))?;
+        .map_err(|e| {
+            state.pop_path();
+            format!("Download failed for {}: {}", name, e)
+        })?;
 
     installer::install_wheel(&wheel_path, site_packages, &release.name, &release.version)
-        .map_err(|e| format!("Install failed for {}: {}", name, e))?;
+        .map_err(|e| {
+            state.pop_path();
+            format!("Install failed for {}: {}", name, e)
+        })?;
 
     if !quiet {
         println!("  Successfully installed {}-{}", release.name, release.version);
@@ -137,6 +204,7 @@ fn install_with_deps_inner(
         }
     }
 
+    state.pop_path();
     Ok(())
 }
 
@@ -185,17 +253,29 @@ fn resolve_version(name: &str, version_req: Option<&str>) -> Result<pypi::Releas
             if trimmed.starts_with("==") && !trimmed.contains(',') && !trimmed.contains('*') {
                 let exact = trimmed[2..].trim();
                 pypi::fetch_package_info(name, Some(exact))
-                    .map_err(|e| format!("Could not find {}=={}: {}", name, exact, e))
+                    .map_err(|e| format!(
+                        "Could not find {}=={}:\n  {}\n  \
+                         Hint: Check available versions with: ferryip search {}",
+                        name, exact, e, name
+                    ))
             } else {
                 // Range specifier — try latest first (fast path), then scan all releases
                 pypi::fetch_best_version(name, trimmed)
-                    .map_err(|e| format!("Could not resolve {} {}: {}", name, trimmed, e))
+                    .map_err(|e| format!(
+                        "Could not find a version of '{}' satisfying '{}':\n  {}\n  \
+                         Hint: Try relaxing the version constraint or check: ferryip search {}",
+                        name, trimmed, e, name
+                    ))
             }
         }
         None => {
             // No version constraint — fetch latest
             pypi::fetch_package_info(name, None)
-                .map_err(|e| format!("Could not find {}: {}", name, e))
+                .map_err(|e| format!(
+                    "Package '{}' not found:\n  {}\n  \
+                     Hint: Check the package name or search: ferryip search {}",
+                    name, e, name
+                ))
         }
     }
 }

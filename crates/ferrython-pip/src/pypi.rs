@@ -106,7 +106,7 @@ pub fn fetch_package_info(name: &str, version: Option<&str>) -> Result<ReleaseIn
     let resp = get_with_retry(&client, &url)?;
 
     if !resp.status().is_success() {
-        return Err(format!("Package '{}' not found on PyPI (HTTP {})", name, resp.status()));
+        return Err(format_http_error(name, resp.status().as_u16()));
     }
 
     let data: PyPIResponse = resp.json()
@@ -139,11 +139,12 @@ pub fn fetch_best_version(name: &str, specs: &str) -> Result<ReleaseInfo, String
     let resp = get_with_retry(&client, &url)?;
 
     if !resp.status().is_success() {
-        return Err(format!("Package '{}' not found on PyPI (HTTP {})", name, resp.status()));
+        let status = resp.status();
+        return Err(format!("HTTP {} error fetching package '{}'", status.as_u16(), name));
     }
 
     let data: PyPIResponse = resp.json()
-        .map_err(|e| format!("JSON parse error: {}", e))?;
+        .map_err(|e| format!("JSON parse error for '{}': {}", name, e))?;
 
     // If latest version satisfies, use it directly (common fast path)
     if crate::version::version_matches(&data.info.version, specs) {
@@ -182,10 +183,27 @@ pub fn fetch_best_version(name: &str, specs: &str) -> Result<ReleaseInfo, String
 
 fn make_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
-        .user_agent("ferryip/0.1.0")
+        .user_agent(format!("ferryip/{}", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))
+}
+
+/// Format a descriptive error message for PyPI HTTP errors.
+fn format_http_error(name: &str, status: u16) -> String {
+    match status {
+        404 => format!(
+            "Package '{}' not found on PyPI (HTTP 404). Check the package name spelling.",
+            name
+        ),
+        403 => format!(
+            "Access denied for '{}' on PyPI (HTTP 403). The package may be private or restricted.",
+            name
+        ),
+        429 => "Rate limited by PyPI (HTTP 429). Please wait a moment and try again.".to_string(),
+        500..=599 => format!("PyPI server error (HTTP {}). Try again later.", status),
+        _ => format!("Failed to fetch '{}' from PyPI (HTTP {})", name, status),
+    }
 }
 
 /// GET request with retry logic (exponential backoff, 3 attempts).
@@ -198,15 +216,23 @@ fn get_with_retry(client: &reqwest::blocking::Client, url: &str) -> Result<reqwe
         match client.get(url).send() {
             Ok(resp) => return Ok(resp),
             Err(e) => {
-                last_err = format!("{}", e);
-                if e.is_timeout() || e.is_connect() {
-                    continue; // transient — retry
+                if e.is_timeout() {
+                    last_err = format!("Connection timed out: {}", e);
+                    continue;
                 }
-                return Err(format!("Network error: {}", e));
+                if e.is_connect() {
+                    last_err = format!("Connection failed (check network): {}", e);
+                    continue;
+                }
+                return Err(format!("Network error: {}\nHint: Check your internet connection and proxy settings.", e));
             }
         }
     }
-    Err(format!("Network error after 3 attempts: {}", last_err))
+    Err(format!(
+        "Network error after 3 retries: {}\n\
+         Hint: Check your internet connection, DNS, or try again later.",
+        last_err
+    ))
 }
 
 // ---------------------------------------------------------------------------

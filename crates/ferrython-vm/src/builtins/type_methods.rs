@@ -194,6 +194,102 @@ pub(super) fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &st
             }
             Ok(r[actual as usize].clone())
         }
+        "__setitem__" => {
+            check_args_min("__setitem__", args, 2)?;
+            let idx = args[0].to_int()?;
+            let mut w = items.write();
+            let len = w.len() as i64;
+            let actual = if idx < 0 { len + idx } else { idx };
+            if actual < 0 || actual >= len {
+                return Err(PyException::index_error("list assignment index out of range"));
+            }
+            w[actual as usize] = args[1].clone();
+            Ok(PyObject::none())
+        }
+        "__delitem__" => {
+            check_args_min("__delitem__", args, 1)?;
+            let idx = args[0].to_int()?;
+            let mut w = items.write();
+            let len = w.len() as i64;
+            let actual = if idx < 0 { len + idx } else { idx };
+            if actual < 0 || actual >= len {
+                return Err(PyException::index_error("list assignment index out of range"));
+            }
+            w.remove(actual as usize);
+            Ok(PyObject::none())
+        }
+        "__add__" => {
+            check_args_min("__add__", args, 1)?;
+            let other = args[0].to_list()?;
+            let mut result = items.read().clone();
+            result.extend(other);
+            Ok(PyObject::list(result))
+        }
+        "__mul__" | "__rmul__" => {
+            check_args_min("__mul__", args, 1)?;
+            let n = args[0].to_int()?.max(0) as usize;
+            let base = items.read().clone();
+            let mut result = Vec::with_capacity(base.len() * n);
+            for _ in 0..n { result.extend_from_slice(&base); }
+            Ok(PyObject::list(result))
+        }
+        "__iadd__" => {
+            check_args_min("__iadd__", args, 1)?;
+            let other = args[0].to_list()?;
+            items.write().extend(other);
+            Ok(PyObject::none())
+        }
+        "__imul__" => {
+            check_args_min("__imul__", args, 1)?;
+            let n = args[0].to_int()?.max(0) as usize;
+            let mut w = items.write();
+            let base = w.clone();
+            w.clear();
+            for _ in 0..n { w.extend_from_slice(&base); }
+            Ok(PyObject::none())
+        }
+        "__reversed__" => {
+            let mut snapshot = items.read().clone();
+            snapshot.reverse();
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(
+                Arc::new(std::sync::Mutex::new(IteratorData::List {
+                    items: snapshot,
+                    index: 0,
+                })),
+            )))
+        }
+        "__repr__" | "__str__" => {
+            let r = items.read();
+            let parts: Vec<String> = r.iter().map(|x| x.repr()).collect();
+            Ok(PyObject::str_val(CompactString::from(format!("[{}]", parts.join(", ")))))
+        }
+        "__eq__" => {
+            check_args_min("__eq__", args, 1)?;
+            if let PyObjectPayload::List(other) = &args[0].payload {
+                let a = items.read();
+                let b = other.read();
+                if a.len() != b.len() { return Ok(PyObject::bool_val(false)); }
+                for (x, y) in a.iter().zip(b.iter()) {
+                    if x.py_to_string() != y.py_to_string() { return Ok(PyObject::bool_val(false)); }
+                }
+                Ok(PyObject::bool_val(true))
+            } else { Ok(PyObject::not_implemented()) }
+        }
+        "__ne__" => {
+            check_args_min("__ne__", args, 1)?;
+            if let PyObjectPayload::List(other) = &args[0].payload {
+                let a = items.read();
+                let b = other.read();
+                if a.len() != b.len() { return Ok(PyObject::bool_val(true)); }
+                for (x, y) in a.iter().zip(b.iter()) {
+                    if x.py_to_string() != y.py_to_string() { return Ok(PyObject::bool_val(true)); }
+                }
+                Ok(PyObject::bool_val(false))
+            } else { Ok(PyObject::not_implemented()) }
+        }
+        "__bool__" => Ok(PyObject::bool_val(!items.read().is_empty())),
+        "__hash__" => Err(PyException::type_error("unhashable type: 'list'")),
+        "__sizeof__" => Ok(PyObject::int((std::mem::size_of::<Vec<PyObjectRef>>() + items.read().len() * std::mem::size_of::<PyObjectRef>()) as i64)),
         _ => Err(PyException::attribute_error(format!(
             "'list' object has no attribute '{}'", method
         ))),
@@ -475,6 +571,22 @@ pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRe
             Ok(PyObject::str_val(CompactString::from(format!("{{{}}}", inner.join(", ")))))
         }
         "__bool__" => Ok(PyObject::bool_val(!map.read().is_empty())),
+        "__setitem__" => {
+            check_args_min("dict.__setitem__", args, 2)?;
+            let key = args[0].to_hashable_key()?;
+            map.write().insert(key, args[1].clone());
+            Ok(PyObject::none())
+        }
+        "__delitem__" => {
+            check_args_min("dict.__delitem__", args, 1)?;
+            let key = args[0].to_hashable_key()?;
+            match map.write().shift_remove(&key) {
+                Some(_) => Ok(PyObject::none()),
+                None => Err(PyException::key_error(args[0].py_to_string())),
+            }
+        }
+        "__hash__" => Err(PyException::type_error("unhashable type: 'dict'")),
+        "__sizeof__" => Ok(PyObject::int((std::mem::size_of::<IndexMap<HashableKey, PyObjectRef>>() + map.read().len() * 64) as i64)),
         _ => Err(PyException::attribute_error(format!(
             "'dict' object has no attribute '{}'", method
         ))),
@@ -526,6 +638,64 @@ pub(super) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyO
             }
             Ok(items[actual as usize].clone())
         }
+        "__add__" => {
+            check_args_min("__add__", args, 1)?;
+            if let PyObjectPayload::Tuple(other) = &args[0].payload {
+                let mut result = items.to_vec();
+                result.extend_from_slice(other);
+                Ok(PyObject::tuple(result))
+            } else {
+                Err(PyException::type_error("can only concatenate tuple to tuple"))
+            }
+        }
+        "__mul__" | "__rmul__" => {
+            check_args_min("__mul__", args, 1)?;
+            let n = args[0].to_int()?.max(0) as usize;
+            let mut result = Vec::with_capacity(items.len() * n);
+            for _ in 0..n { result.extend_from_slice(items); }
+            Ok(PyObject::tuple(result))
+        }
+        "__eq__" => {
+            check_args_min("__eq__", args, 1)?;
+            if let PyObjectPayload::Tuple(other) = &args[0].payload {
+                if items.len() != other.len() { return Ok(PyObject::bool_val(false)); }
+                for (a, b) in items.iter().zip(other.iter()) {
+                    if a.py_to_string() != b.py_to_string() { return Ok(PyObject::bool_val(false)); }
+                }
+                Ok(PyObject::bool_val(true))
+            } else { Ok(PyObject::not_implemented()) }
+        }
+        "__ne__" => {
+            check_args_min("__ne__", args, 1)?;
+            if let PyObjectPayload::Tuple(other) = &args[0].payload {
+                if items.len() != other.len() { return Ok(PyObject::bool_val(true)); }
+                for (a, b) in items.iter().zip(other.iter()) {
+                    if a.py_to_string() != b.py_to_string() { return Ok(PyObject::bool_val(true)); }
+                }
+                Ok(PyObject::bool_val(false))
+            } else { Ok(PyObject::not_implemented()) }
+        }
+        "__repr__" | "__str__" => {
+            let parts: Vec<String> = items.iter().map(|x| x.repr()).collect();
+            if items.len() == 1 {
+                Ok(PyObject::str_val(CompactString::from(format!("({},)", parts[0]))))
+            } else {
+                Ok(PyObject::str_val(CompactString::from(format!("({})", parts.join(", ")))))
+            }
+        }
+        "__bool__" => Ok(PyObject::bool_val(!items.is_empty())),
+        "__hash__" => {
+            use std::hash::{Hash, Hasher};
+            use std::collections::hash_map::DefaultHasher;
+            let mut hasher = DefaultHasher::new();
+            for item in items {
+                if let Ok(hk) = item.to_hashable_key() {
+                    hk.hash(&mut hasher);
+                }
+            }
+            Ok(PyObject::int(hasher.finish() as i64))
+        }
+        "__sizeof__" => Ok(PyObject::int((std::mem::size_of::<Vec<PyObjectRef>>() + items.len() * std::mem::size_of::<PyObjectRef>()) as i64)),
         _ => Err(PyException::attribute_error(format!(
             "'tuple' object has no attribute '{}'", method
         ))),
