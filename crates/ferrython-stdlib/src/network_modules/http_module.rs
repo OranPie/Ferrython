@@ -919,12 +919,17 @@ fn urllib_parse_urlunparse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if components.len() < 6 {
         return Err(PyException::type_error("urlunparse requires 6 components"));
     }
-    let scheme = components[0].py_to_string();
-    let netloc = components[1].py_to_string();
-    let path = components[2].py_to_string();
-    let params = components[3].py_to_string();
-    let query = components[4].py_to_string();
-    let fragment = components[5].py_to_string();
+    // Treat None as empty string (requests passes None for missing components)
+    let to_str = |obj: &PyObjectRef| -> String {
+        if matches!(&obj.payload, PyObjectPayload::None) { String::new() }
+        else { obj.py_to_string() }
+    };
+    let scheme = to_str(&components[0]);
+    let netloc = to_str(&components[1]);
+    let path = to_str(&components[2]);
+    let params = to_str(&components[3]);
+    let query = to_str(&components[4]);
+    let fragment = to_str(&components[5]);
 
     let mut url = String::new();
     if !scheme.is_empty() {
@@ -1020,11 +1025,15 @@ fn urllib_parse_urlunsplit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if components.len() < 5 {
         return Err(PyException::type_error("urlunsplit requires 5 components"));
     }
-    let scheme = components[0].py_to_string();
-    let netloc = components[1].py_to_string();
-    let path = components[2].py_to_string();
-    let query = components[3].py_to_string();
-    let fragment = components[4].py_to_string();
+    let to_str = |obj: &PyObjectRef| -> String {
+        if matches!(&obj.payload, PyObjectPayload::None) { String::new() }
+        else { obj.py_to_string() }
+    };
+    let scheme = to_str(&components[0]);
+    let netloc = to_str(&components[1]);
+    let path = to_str(&components[2]);
+    let query = to_str(&components[3]);
+    let fragment = to_str(&components[4]);
 
     let mut url = String::new();
     if !scheme.is_empty() {
