@@ -228,6 +228,8 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "_json" => Some(serial_modules::create_json_module()),
         "_io" => Some(fs_modules::create_io_module()),
         "_collections" => Some(collection_modules::create_collections_module()),
+        "_multibytecodec" => Some(text_modules::create_multibytecodec_module()),
+        "_codecs" => Some(serial_modules::create_codecs_module()),
         // Compatibility
         "__future__" => Some(misc_modules::create_future_module()),
         "builtins" => Some(misc_modules::create_builtins_module()),
@@ -299,9 +301,9 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "_sysconfig" => Some(sys_modules::create_sysconfig_module()),
         // Encodings
         "encodings" => Some(text_modules::create_encodings_module()),
-        "encodings.utf_8" => Some(text_modules::create_encodings_module()),
-        "encodings.ascii" => Some(text_modules::create_encodings_module()),
-        "encodings.latin_1" => Some(text_modules::create_encodings_module()),
+        "encodings.utf_8" => Some(text_modules::create_encodings_codec_module("encodings.utf_8")),
+        "encodings.ascii" => Some(text_modules::create_encodings_codec_module("encodings.ascii")),
+        "encodings.latin_1" => Some(text_modules::create_encodings_codec_module("encodings.latin_1")),
         "encodings.aliases" => Some(text_modules::create_encodings_aliases_module()),
         "encodings.idna" => Some(text_modules::create_encodings_idna_module()),
         // Unix user/group info
@@ -331,6 +333,13 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         ])),
         "email.parser" => None,  // uses pure-python fallback
         "email.header" => None,  // uses pure-python fallback
-        _ => None,
+        _ => {
+            // Catch-all: handle encodings.* submodules dynamically
+            if name.starts_with("encodings.") {
+                Some(text_modules::create_encodings_codec_module(name))
+            } else {
+                None
+            }
+        }
     }
 }

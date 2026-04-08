@@ -399,6 +399,62 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         cd.namespace.write().insert(CompactString::from("_make"), make_fn);
     }
 
+    // _asdict: return OrderedDict of field_name → value
+    let field_names_ad = field_names.clone();
+    let asdict_fn = PyObject::native_closure(
+        "namedtuple._asdict",
+        move |args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+            if args.is_empty() { return Err(PyException::type_error("_asdict requires self")); }
+            let self_obj = &args[0];
+            let mut dict = IndexMap::new();
+            for name in &field_names_ad {
+                let val = self_obj.get_attr(name.as_str()).unwrap_or_else(PyObject::none);
+                dict.insert(HashableKey::Str(name.clone()), val);
+            }
+            Ok(PyObject::dict(dict))
+        }
+    );
+    if let PyObjectPayload::Class(ref cd) = cls.payload {
+        cd.namespace.write().insert(CompactString::from("_asdict"), asdict_fn);
+    }
+
+    // _replace(**kwargs): return new namedtuple with specified fields replaced
+    let cls_ref2 = cls.clone();
+    let field_names_rep = field_names.clone();
+    let replace_fn = PyObject::native_closure(
+        "namedtuple._replace",
+        move |args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
+            if args.is_empty() { return Err(PyException::type_error("_replace requires self")); }
+            let self_obj = &args[0];
+            let kwargs = if args.len() > 1 {
+                if let PyObjectPayload::Dict(ref map) = args[args.len() - 1].payload {
+                    Some(map.read().clone())
+                } else { None }
+            } else { None };
+            let inst = PyObject::instance(cls_ref2.clone());
+            if let PyObjectPayload::Instance(ref data) = inst.payload {
+                let mut attrs = data.attrs.write();
+                let mut tuple_items = Vec::new();
+                for name in &field_names_rep {
+                    let val = if let Some(ref kw) = kwargs {
+                        kw.get(&HashableKey::Str(name.clone()))
+                            .cloned()
+                            .unwrap_or_else(|| self_obj.get_attr(name.as_str()).unwrap_or_else(PyObject::none))
+                    } else {
+                        self_obj.get_attr(name.as_str()).unwrap_or_else(PyObject::none)
+                    };
+                    attrs.insert(name.clone(), val.clone());
+                    tuple_items.push(val);
+                }
+                attrs.insert(CompactString::from("_tuple"), PyObject::tuple(tuple_items));
+            }
+            Ok(inst)
+        }
+    );
+    if let PyObjectPayload::Class(ref cd) = cls.payload {
+        cd.namespace.write().insert(CompactString::from("_replace"), replace_fn);
+    }
+
     Ok(cls)
 }
 

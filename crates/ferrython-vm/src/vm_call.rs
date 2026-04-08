@@ -2491,6 +2491,32 @@ impl VirtualMachine {
                         return Ok(PyObject::none());
                     }
                 }
+                // Range methods
+                if let PyObjectPayload::Range { start, stop, step } = &receiver.payload {
+                    let (rs, re, rst) = (*start, *stop, *step);
+                    match method_name.as_str() {
+                        "count" => {
+                            if args.is_empty() { return Err(PyException::type_error("count() takes exactly one argument")); }
+                            let val = args[0].to_int().unwrap_or(i64::MIN);
+                            let found = if rst > 0 { val >= rs && val < re && (val - rs) % rst == 0 }
+                                       else if rst < 0 { val <= rs && val > re && (rs - val) % (-rst) == 0 }
+                                       else { false };
+                            return Ok(PyObject::int(if found { 1 } else { 0 }));
+                        }
+                        "index" => {
+                            if args.is_empty() { return Err(PyException::type_error("index() takes exactly one argument")); }
+                            let val = args[0].to_int().unwrap_or(i64::MIN);
+                            let in_range = if rst > 0 { val >= rs && val < re && (val - rs) % rst == 0 }
+                                          else if rst < 0 { val <= rs && val > re && (rs - val) % (-rst) == 0 }
+                                          else { false };
+                            if in_range {
+                                return Ok(PyObject::int((val - rs) / rst));
+                            }
+                            return Err(PyException::value_error(format!("{} is not in range", val)));
+                        }
+                        _ => {}
+                    }
+                }
                 // Class introspection methods
                 if let PyObjectPayload::Class(cd) = &receiver.payload {
                     match method_name.as_str() {

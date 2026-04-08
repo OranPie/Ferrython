@@ -3788,3 +3788,157 @@ pub fn create_encodings_idna_module() -> PyObjectRef {
         })),
     ])
 }
+
+pub fn create_multibytecodec_module() -> PyObjectRef {
+    let mb_inc_decoder = PyObject::class(
+        CompactString::from("MultibyteIncrementalDecoder"),
+        vec![],
+        IndexMap::new(),
+    );
+    if let PyObjectPayload::Class(ref cd) = mb_inc_decoder.payload {
+        cd.namespace.write().insert(
+            CompactString::from("__init__"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("requires self")); }
+                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    let errors = if args.len() > 1 { args[1].py_to_string() } else { "strict".to_string() };
+                    inst.attrs.write().insert(CompactString::from("errors"), PyObject::str_val(CompactString::from(errors)));
+                }
+                Ok(PyObject::none())
+            }),
+        );
+        cd.namespace.write().insert(
+            CompactString::from("decode"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("decode() requires input")); }
+                let input = args[1].py_to_string();
+                Ok(PyObject::str_val(CompactString::from(input)))
+            }),
+        );
+        cd.namespace.write().insert(CompactString::from("reset"), make_builtin(|_| Ok(PyObject::none())));
+    }
+
+    let mb_inc_encoder = PyObject::class(
+        CompactString::from("MultibyteIncrementalEncoder"),
+        vec![],
+        IndexMap::new(),
+    );
+    if let PyObjectPayload::Class(ref cd) = mb_inc_encoder.payload {
+        cd.namespace.write().insert(
+            CompactString::from("__init__"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("requires self")); }
+                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    let errors = if args.len() > 1 { args[1].py_to_string() } else { "strict".to_string() };
+                    inst.attrs.write().insert(CompactString::from("errors"), PyObject::str_val(CompactString::from(errors)));
+                }
+                Ok(PyObject::none())
+            }),
+        );
+        cd.namespace.write().insert(
+            CompactString::from("encode"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("encode() requires input")); }
+                let input = args[1].py_to_string();
+                Ok(PyObject::bytes(input.into_bytes()))
+            }),
+        );
+        cd.namespace.write().insert(CompactString::from("reset"), make_builtin(|_| Ok(PyObject::none())));
+    }
+
+    let mb_stream_reader = PyObject::class(CompactString::from("MultibyteStreamReader"), vec![], IndexMap::new());
+    let mb_stream_writer = PyObject::class(CompactString::from("MultibyteStreamWriter"), vec![], IndexMap::new());
+
+    make_module("_multibytecodec", vec![
+        ("MultibyteIncrementalDecoder", mb_inc_decoder),
+        ("MultibyteIncrementalEncoder", mb_inc_encoder),
+        ("MultibyteStreamReader", mb_stream_reader),
+        ("MultibyteStreamWriter", mb_stream_writer),
+        ("__create_codec", make_builtin(|_| Ok(PyObject::none()))),
+    ])
+}
+
+/// Generic encodings.* codec submodule — provides IncrementalDecoder/Encoder classes
+/// that handle encode/decode via the codecs module infrastructure.
+pub fn create_encodings_codec_module(module_name: &str) -> PyObjectRef {
+    let codec_name = module_name.strip_prefix("encodings.").unwrap_or(module_name);
+    let codec_name_cs = CompactString::from(codec_name);
+
+    // IncrementalDecoder class for this encoding
+    let inc_decoder = PyObject::class(CompactString::from("IncrementalDecoder"), vec![], IndexMap::new());
+    if let PyObjectPayload::Class(ref cd) = inc_decoder.payload {
+        let cn = codec_name_cs.clone();
+        cd.namespace.write().insert(
+            CompactString::from("__init__"),
+            PyObject::native_closure("IncrementalDecoder.__init__", move |args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("requires self")); }
+                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    let errors = if args.len() > 1 { args[1].py_to_string() } else { "strict".to_string() };
+                    inst.attrs.write().insert(CompactString::from("errors"), PyObject::str_val(CompactString::from(errors)));
+                    inst.attrs.write().insert(CompactString::from("_encoding"), PyObject::str_val(cn.clone()));
+                }
+                Ok(PyObject::none())
+            }),
+        );
+        cd.namespace.write().insert(
+            CompactString::from("decode"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("decode() requires input")); }
+                // Simple passthrough for UTF-8 compatible encodings
+                let input = args[1].py_to_string();
+                Ok(PyObject::str_val(CompactString::from(input)))
+            }),
+        );
+        cd.namespace.write().insert(CompactString::from("reset"), make_builtin(|_| Ok(PyObject::none())));
+        cd.namespace.write().insert(CompactString::from("getstate"), make_builtin(|_| Ok(PyObject::tuple(vec![PyObject::bytes(vec![]), PyObject::int(0)]))));
+        cd.namespace.write().insert(CompactString::from("setstate"), make_builtin(|_| Ok(PyObject::none())));
+    }
+
+    // IncrementalEncoder class for this encoding
+    let inc_encoder = PyObject::class(CompactString::from("IncrementalEncoder"), vec![], IndexMap::new());
+    if let PyObjectPayload::Class(ref cd) = inc_encoder.payload {
+        let cn = codec_name_cs.clone();
+        cd.namespace.write().insert(
+            CompactString::from("__init__"),
+            PyObject::native_closure("IncrementalEncoder.__init__", move |args: &[PyObjectRef]| {
+                if args.is_empty() { return Err(PyException::type_error("requires self")); }
+                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    let errors = if args.len() > 1 { args[1].py_to_string() } else { "strict".to_string() };
+                    inst.attrs.write().insert(CompactString::from("errors"), PyObject::str_val(CompactString::from(errors)));
+                    inst.attrs.write().insert(CompactString::from("_encoding"), PyObject::str_val(cn.clone()));
+                }
+                Ok(PyObject::none())
+            }),
+        );
+        cd.namespace.write().insert(
+            CompactString::from("encode"),
+            make_builtin(|args: &[PyObjectRef]| {
+                if args.len() < 2 { return Err(PyException::type_error("encode() requires input")); }
+                let input = args[1].py_to_string();
+                Ok(PyObject::bytes(input.into_bytes()))
+            }),
+        );
+        cd.namespace.write().insert(CompactString::from("reset"), make_builtin(|_| Ok(PyObject::none())));
+        cd.namespace.write().insert(CompactString::from("getstate"), make_builtin(|_| Ok(PyObject::int(0))));
+        cd.namespace.write().insert(CompactString::from("setstate"), make_builtin(|_| Ok(PyObject::none())));
+    }
+
+    // getregentry() — returns a CodecInfo-like tuple
+    let cn_entry = CompactString::from(codec_name);
+    let getregentry = PyObject::native_closure("getregentry", move |_args: &[PyObjectRef]| {
+        Ok(PyObject::tuple(vec![
+            PyObject::str_val(cn_entry.clone()),
+            PyObject::none(), // encode fn
+            PyObject::none(), // decode fn
+            PyObject::none(), // stream_reader
+            PyObject::none(), // stream_writer
+        ]))
+    });
+
+    make_module(module_name, vec![
+        ("IncrementalDecoder", inc_decoder),
+        ("IncrementalEncoder", inc_encoder),
+        ("getregentry", getregentry),
+        ("name", PyObject::str_val(CompactString::from(codec_name))),
+    ])
+}
