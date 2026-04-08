@@ -898,6 +898,32 @@ impl VirtualMachine {
                     "'type' object is not iterable"
                 )))
             }
+            // Module with __iter__/__next__ (e.g. file objects created as module_with_attrs)
+            PyObjectPayload::Module(_) => {
+                // Module.get_attr returns raw NativeFunction (no BoundMethod wrapping),
+                // so we must pass obj as self explicitly.
+                if let Some(next_fn) = obj.get_attr("__next__") {
+                    // Fast path: directly iterate via __next__ (file objects return self from __iter__)
+                    let mut items = Vec::new();
+                    loop {
+                        match self.call_object(next_fn.clone(), vec![obj.clone()]) {
+                            Ok(value) => items.push(value),
+                            Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    return Ok(items);
+                }
+                if let Some(iter_fn) = obj.get_attr("__iter__") {
+                    let iter_obj = self.call_object(iter_fn, vec![obj.clone()])?;
+                    if !std::sync::Arc::ptr_eq(&iter_obj, obj) {
+                        return self.collect_iterable(&iter_obj);
+                    }
+                }
+                Err(PyException::type_error(format!(
+                    "'module' object is not iterable"
+                )))
+            }
             _ => obj.to_list(),
         }
     }

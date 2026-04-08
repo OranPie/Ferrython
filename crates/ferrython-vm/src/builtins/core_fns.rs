@@ -1002,8 +1002,77 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
             }
         }
+        // Module with __iter__ (file objects, module_with_attrs with _bind_methods)
+        // Need to call __iter__ method to get the iterable result
+        PyObjectPayload::Module(_) => {
+            if let Some(iter_attr) = obj.get_attr("__iter__") {
+                match &iter_attr.payload {
+                    // __iter__ returned a list/iterator directly
+                    PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) => {
+                        return get_iter_from_obj(&iter_attr);
+                    }
+                    // __iter__ is a bound method — call it
+                    PyObjectPayload::BoundMethod { receiver, method } => {
+                        if let PyObjectPayload::NativeClosure { func, .. } = &method.payload {
+                            let result = func(&[receiver.clone()])?;
+                            return get_iter_from_obj(&result);
+                        }
+                        if let PyObjectPayload::NativeFunction { func, .. } = &method.payload {
+                            let result = func(&[receiver.clone()])?;
+                            return get_iter_from_obj(&result);
+                        }
+                    }
+                    // __iter__ is a native closure/function to call with self
+                    PyObjectPayload::NativeClosure { func, .. } => {
+                        let result = func(&[obj.clone()])?;
+                        return get_iter_from_obj(&result);
+                    }
+                    PyObjectPayload::NativeFunction { func, .. } => {
+                        let result = func(&[obj.clone()])?;
+                        return get_iter_from_obj(&result);
+                    }
+                    _ => {}
+                }
+            }
+            Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
+        }
         // Delegate all other payload types to the core get_iter (handles DictKeys, DictValues,
         // DictItems, Bytes, ByteArray, FrozenSet, MappingProxy, etc.)
+        // For Module payloads (file objects etc.) with __iter__, the __iter__ returns
+        // a list — use that directly.
+        PyObjectPayload::Module(_) => {
+            if let Some(iter_attr) = obj.get_attr("__iter__") {
+                match &iter_attr.payload {
+                    // __iter__ returned a list/iterator directly (not a method)
+                    PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) => {
+                        return get_iter_from_obj(&iter_attr);
+                    }
+                    // __iter__ is a bound method — it's a NativeClosure that needs calling
+                    // which we can't do from builtins. But we know file __iter__ returns
+                    // a list, so try calling it via the bound method pattern:
+                    PyObjectPayload::BoundMethod { receiver, method } => {
+                        if let PyObjectPayload::NativeClosure { func, .. } = &method.payload {
+                            let result = func(&[receiver.clone()])?;
+                            return get_iter_from_obj(&result);
+                        }
+                        if let PyObjectPayload::NativeFunction { func, .. } = &method.payload {
+                            let result = func(&[receiver.clone()])?;
+                            return get_iter_from_obj(&result);
+                        }
+                    }
+                    PyObjectPayload::NativeClosure { func, .. } => {
+                        let result = func(&[obj.clone()])?;
+                        return get_iter_from_obj(&result);
+                    }
+                    PyObjectPayload::NativeFunction { func, .. } => {
+                        let result = func(&[obj.clone()])?;
+                        return get_iter_from_obj(&result);
+                    }
+                    _ => {}
+                }
+            }
+            Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
+        }
         _ => obj.get_iter().map_err(|_| {
             PyException::type_error(format!("'{}' object is not iterable", obj.type_name()))
         }),
@@ -1045,6 +1114,18 @@ pub(super) fn builtin_list(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::list(vec![]));
     }
+    // For Module payloads (e.g. file objects), use VM-level iteration that can call __iter__
+    if matches!(&args[0].payload, PyObjectPayload::Module(_)) {
+        let iter = get_iter_from_obj(&args[0])?;
+        let mut items = Vec::new();
+        loop {
+            match iter_advance(&iter)? {
+                Some((_new_iter, value)) => items.push(value),
+                None => break,
+            }
+        }
+        return Ok(PyObject::list(items));
+    }
     let items = args[0].to_list()?;
     Ok(PyObject::list(items))
 }
@@ -1052,6 +1133,17 @@ pub(super) fn builtin_list(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_tuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::tuple(vec![]));
+    }
+    if matches!(&args[0].payload, PyObjectPayload::Module(_)) {
+        let iter = get_iter_from_obj(&args[0])?;
+        let mut items = Vec::new();
+        loop {
+            match iter_advance(&iter)? {
+                Some((_new_iter, value)) => items.push(value),
+                None => break,
+            }
+        }
+        return Ok(PyObject::tuple(items));
     }
     let items = args[0].to_list()?;
     Ok(PyObject::tuple(items))
