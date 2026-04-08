@@ -1069,8 +1069,14 @@ fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObject
         *pos_ref.lock().unwrap() = 0;
         *rc_ref.lock().unwrap() = result.rowcount;
         *lid_ref.lock().unwrap() = result.lastrowid;
-        // Return cursor (self) for chaining: cursor.execute(...).fetchall()
-        Ok(sr.lock().unwrap().clone().unwrap_or_else(|| PyObject::none()))
+        // Update attrs on cursor self-reference for property access
+        let cursor = sr.lock().unwrap().clone().unwrap_or_else(|| PyObject::none());
+        if let PyObjectPayload::Instance(inst) = &cursor.payload {
+            let mut a = inst.attrs.write();
+            a.insert(CompactString::from("rowcount"), PyObject::int(result.rowcount));
+            a.insert(CompactString::from("lastrowid"), PyObject::int(result.lastrowid));
+        }
+        Ok(cursor)
     }));
 
     // executemany(sql, seq_of_params)
@@ -1110,6 +1116,37 @@ fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObject
         }
         *rc_ref.lock().unwrap() = total_rowcount;
         *lid_ref.lock().unwrap() = last_id;
+        let cursor = sr.lock().unwrap().clone().unwrap_or_else(|| PyObject::none());
+        if let PyObjectPayload::Instance(inst) = &cursor.payload {
+            let mut a = inst.attrs.write();
+            a.insert(CompactString::from("rowcount"), PyObject::int(total_rowcount));
+            a.insert(CompactString::from("lastrowid"), PyObject::int(last_id));
+        }
+        Ok(cursor)
+    }));
+
+    // executescript(sql_script) — execute multiple SQL statements separated by semicolons
+    let db_ref = db.clone();
+    let sr = self_ref.clone();
+    attrs.insert(CompactString::from("executescript"), PyObject::native_closure("executescript", move |args| {
+        if args.is_empty() {
+            return Err(PyException::type_error("executescript() requires 1 argument"));
+        }
+        let script = args[0].py_to_string();
+        let mut db_guard = db_ref.lock().unwrap();
+        if db_guard.closed {
+            return Err(PyException::new(
+                ferrython_core::error::ExceptionKind::RuntimeError,
+                "Cannot operate on a closed database.",
+            ));
+        }
+        for stmt in script.split(';') {
+            let trimmed = stmt.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            execute_sql(&mut db_guard, trimmed, &[])?;
+        }
         Ok(sr.lock().unwrap().clone().unwrap_or_else(|| PyObject::none()))
     }));
 
@@ -1206,17 +1243,9 @@ fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObject
         Ok(PyObject::list(items))
     }));
 
-    // rowcount property
-    let rc_ref = rowcount.clone();
-    attrs.insert(CompactString::from("rowcount"), PyObject::native_closure("rowcount", move |_args| {
-        Ok(PyObject::int(*rc_ref.lock().unwrap()))
-    }));
-
-    // lastrowid property
-    let lid_ref = lastrowid.clone();
-    attrs.insert(CompactString::from("lastrowid"), PyObject::native_closure("lastrowid", move |_args| {
-        Ok(PyObject::int(*lid_ref.lock().unwrap()))
-    }));
+    // rowcount and lastrowid — direct values, updated by execute/executemany
+    attrs.insert(CompactString::from("rowcount"), PyObject::int(-1));
+    attrs.insert(CompactString::from("lastrowid"), PyObject::none());
 
     // close()
     attrs.insert(CompactString::from("close"), PyObject::native_function("close", |_args| {
@@ -1269,9 +1298,9 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
         let conn = cr.lock().unwrap().clone();
         let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
         if let PyObjectPayload::Instance(ref d) = cursor.payload {
-            let r = d.attrs.read();
-            if let Some(exec_fn) = r.get(&CompactString::from("execute")) {
-                if let PyObjectPayload::NativeClosure { func, .. } = &exec_fn.payload {
+            let exec_fn = d.attrs.read().get(&CompactString::from("execute")).cloned();
+            if let Some(f) = exec_fn {
+                if let PyObjectPayload::NativeClosure { func, .. } = &f.payload {
                     func(args)?;
                 }
             }
@@ -1286,9 +1315,26 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
         let conn = cr.lock().unwrap().clone();
         let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
         if let PyObjectPayload::Instance(ref d) = cursor.payload {
-            let r = d.attrs.read();
-            if let Some(exec_fn) = r.get(&CompactString::from("executemany")) {
-                if let PyObjectPayload::NativeClosure { func, .. } = &exec_fn.payload {
+            let exec_fn = d.attrs.read().get(&CompactString::from("executemany")).cloned();
+            if let Some(f) = exec_fn {
+                if let PyObjectPayload::NativeClosure { func, .. } = &f.payload {
+                    func(args)?;
+                }
+            }
+        }
+        Ok(cursor)
+    }));
+
+    // executescript(sql_script) — convenience on connection
+    let db_ref = db.clone();
+    let cr = conn_ref.clone();
+    attrs.insert(CompactString::from("executescript"), PyObject::native_closure("executescript", move |args| {
+        let conn = cr.lock().unwrap().clone();
+        let cursor = build_cursor_object_with_conn(db_ref.clone(), conn);
+        if let PyObjectPayload::Instance(ref d) = cursor.payload {
+            let exec_fn = d.attrs.read().get(&CompactString::from("executescript")).cloned();
+            if let Some(f) = exec_fn {
+                if let PyObjectPayload::NativeClosure { func, .. } = &f.payload {
                     func(args)?;
                 }
             }

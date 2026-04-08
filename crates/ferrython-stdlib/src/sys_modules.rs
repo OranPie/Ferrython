@@ -1617,7 +1617,6 @@ fn os_scandir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let is_sym_val = is_symlink;
         attrs.insert(CompactString::from("is_symlink"), PyObject::native_closure(
             "DirEntry.is_symlink", move |_| Ok(PyObject::bool_val(is_sym_val))));
-        // stat() — cached metadata
         let stat_path = full_path.clone();
         attrs.insert(CompactString::from("stat"), PyObject::native_closure(
             "DirEntry.stat", move |_| {
@@ -1625,13 +1624,11 @@ fn os_scandir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     .map_err(|e| PyException::os_error(format!("{}: '{}'", e, stat_path)))?;
                 crate::fs_modules::build_stat_result(meta)
             }));
-        // __repr__
         let repr_name = name.clone();
         attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
             "DirEntry.__repr__", move |_| {
                 Ok(PyObject::str_val(CompactString::from(format!("<DirEntry '{}'>", repr_name))))
             }));
-        // __str__ returns name
         let str_name = name.clone();
         attrs.insert(CompactString::from("__str__"), PyObject::native_closure(
             "DirEntry.__str__", move |_| {
@@ -1639,7 +1636,25 @@ fn os_scandir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }));
         items.push(PyObject::instance_with_attrs(cls, attrs));
     }
-    Ok(PyObject::list(items))
+    // Wrap in a ScandirIterator with context manager support
+    let items_list = PyObject::list(items);
+    let cls = PyObject::class(CompactString::from("ScandirIterator"), vec![], IndexMap::new());
+    let mut attrs = IndexMap::new();
+    let items_ref = items_list.clone();
+    attrs.insert(CompactString::from("_entries"), items_list);
+    attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
+        "ScandirIterator.__enter__", move |args| {
+            if args.is_empty() { return Err(PyException::type_error("expected self")); }
+            Ok(args[0].clone())
+        }));
+    attrs.insert(CompactString::from("__exit__"), PyObject::native_closure(
+        "ScandirIterator.__exit__", move |_| Ok(PyObject::none())));
+    let iter_items = items_ref;
+    attrs.insert(CompactString::from("__iter__"), PyObject::native_closure(
+        "ScandirIterator.__iter__", move |_| {
+            ferrython_core::object::PyObjectMethods::get_iter(&iter_items)
+        }));
+    Ok(PyObject::instance_with_attrs(cls, attrs))
 }
 
 // ── os.path module ──
