@@ -308,6 +308,12 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             PyObjectPayload::Instance(inst) => {
                 // Special instance attributes (cheap string comparisons)
                 if name == "__class__" {
+                    // CPython allows `obj.__class__ = NewClass`; honour overrides
+                    // stored in attrs by StoreAttr before falling back to the
+                    // structural class reference.
+                    if let Some(cls_override) = inst.attrs.read().get("__class__") {
+                        return Some(cls_override.clone());
+                    }
                     return Some(inst.class.clone());
                 }
                 if name == "__dict__" {
@@ -325,8 +331,14 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                 }
 
+                // Resolve effective class: honour `__class__` override (if any)
+                let effective_class = inst.attrs.read().get("__class__")
+                    .filter(|c| matches!(c.payload, PyObjectPayload::Class(_)))
+                    .cloned()
+                    .unwrap_or_else(|| inst.class.clone());
+
                 // Determine if this class has data descriptors
-                let class_has_descriptors = match &inst.class.payload {
+                let class_has_descriptors = match &effective_class.payload {
                     PyObjectPayload::Class(cd) => cd.has_descriptors,
                     _ => false,
                 };
@@ -338,13 +350,13 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         return Some(v.clone());
                     }
                     // Then class MRO for methods/class attrs
-                    if let Some(v) = lookup_in_class_mro(&inst.class, name) {
+                    if let Some(v) = lookup_in_class_mro(&effective_class, name) {
                         return Some(wrap_class_attr_for_instance(obj, inst, v));
                     }
                 } else {
                     // ── FULL DESCRIPTOR PROTOCOL ──
                     // 1. Data descriptors from class MRO take priority
-                    let class_attr = lookup_in_class_mro(&inst.class, name);
+                    let class_attr = lookup_in_class_mro(&effective_class, name);
                     if let Some(ref v) = class_attr {
                         match &v.payload {
                             PyObjectPayload::Property { .. } => {
@@ -377,7 +389,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 // Synthesized class-level attrs
                 if name == "__new__" || name == "__init_subclass__" || name == "__subclasshook__" {
-                    return py_get_attr(&inst.class, name);
+                    return py_get_attr(&effective_class, name);
                 }
                 None
             }

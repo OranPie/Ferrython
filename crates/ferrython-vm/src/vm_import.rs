@@ -247,13 +247,15 @@ impl VirtualMachine {
             return Ok(module.clone());
         }
 
-        // 1b. Check sys.modules dict (catches dynamically-inserted modules)
+        // 1b. Check sys.modules dict (catches dynamically-inserted modules).
+        // CPython allows *any* object in sys.modules — module proxies, lazy
+        // loaders, plain instances, etc.  We accept everything except None
+        // (which CPython treats as "module was deleted / import failed").
         if let Some(ref sys_mod_dict) = self.sys_modules_dict {
             if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
                 let key = HashableKey::Str(CompactString::from(name));
                 if let Some(module) = d.read().get(&key).cloned() {
-                    // Only use if it's actually a module (not a placeholder string)
-                    if matches!(&module.payload, PyObjectPayload::Module(_)) {
+                    if !matches!(&module.payload, PyObjectPayload::None) {
                         self.modules.insert(CompactString::from(name), module.clone());
                         return Ok(module);
                     }

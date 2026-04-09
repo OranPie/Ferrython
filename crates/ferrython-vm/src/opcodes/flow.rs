@@ -622,13 +622,19 @@ impl VirtualMachine {
                         && name.as_str() != "__dict__";
 
                     if is_plain {
+                        // Resolve effective class: honour `__class__` override
+                        let effective_class = inst.attrs.read().get("__class__")
+                            .filter(|c| matches!(c.payload, PyObjectPayload::Class(_)))
+                            .cloned()
+                            .unwrap_or_else(|| inst.class.clone());
+
                         // Instance dict lookup
                         if let Some(v) = inst.attrs.read().get(name.as_str()) {
                             frame.push(v.clone());
                             return Ok(None);
                         }
                         // Class MRO lookup (uses method cache)
-                        if let Some(method) = lookup_in_class_mro(&inst.class, &name) {
+                        if let Some(method) = lookup_in_class_mro(&effective_class, &name) {
                             match &method.payload {
                                 PyObjectPayload::Function(_)
                                 | PyObjectPayload::NativeFunction { .. } => {
@@ -658,7 +664,7 @@ impl VirtualMachine {
                                 PyObjectPayload::ClassMethod(func) => {
                                     frame.push(Arc::new(PyObject {
                                         payload: PyObjectPayload::BoundMethod {
-                                            receiver: inst.class.clone(),
+                                            receiver: effective_class.clone(),
                                             method: func.clone(),
                                         }
                                     }));
