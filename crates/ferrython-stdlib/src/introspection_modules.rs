@@ -1740,27 +1740,22 @@ pub fn create_ast_module() -> PyObjectRef {
         Ok(PyObject::list(children))
     });
 
-    let make_node_type = |name: &str| -> PyObjectRef {
+    let make_node_type = |name: &str, fields: &[&str]| -> PyObjectRef {
         let cls = get_or_create_ast_class(name);
-        let cls_clone = cls.clone();
-        // Return the class itself (callable). When called, it creates an instance.
-        // Also wrap in a NativeClosure for constructor kwargs support.
-        let n = name.to_string();
-        let _constructor = PyObject::native_closure(&format!("ast.{}", n), move |args: &[PyObjectRef]| {
-            let inst = PyObject::instance(cls_clone.clone());
-            if let Some(last) = args.last() {
-                if let PyObjectPayload::Dict(map) = &last.payload {
-                    let r = map.read();
-                    for (k, v) in r.iter() {
-                        let key = k.to_object().py_to_string();
-                        set_node_attr(&inst, &key, v.clone());
-                    }
-                }
-            }
-            Ok(inst)
-        });
-        // Return the class object so isinstance() works, but set __call__
-        // to the constructor closure
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            let field_strs: Vec<PyObjectRef> = fields.iter()
+                .map(|f| PyObject::str_val(CompactString::from(*f)))
+                .collect();
+            let mut ns = cd.namespace.write();
+            ns.insert(CompactString::from("_fields"), PyObject::tuple(field_strs));
+            // CPython AST nodes define _attributes for source location info
+            ns.insert(CompactString::from("_attributes"), PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from("lineno")),
+                PyObject::str_val(CompactString::from("col_offset")),
+                PyObject::str_val(CompactString::from("end_lineno")),
+                PyObject::str_val(CompactString::from("end_col_offset")),
+            ]));
+        }
         cls
     };
 
@@ -1801,106 +1796,106 @@ pub fn create_ast_module() -> PyObjectRef {
         ("iter_child_nodes", iter_child_nodes_fn),
         ("copy_location", copy_location_fn),
         ("unparse", unparse_fn),
-        // Node types
-        ("Module", make_node_type("Module")),
-        ("Expression", make_node_type("Expression")),
-        ("Interactive", make_node_type("Interactive")),
-        ("FunctionDef", make_node_type("FunctionDef")),
-        ("AsyncFunctionDef", make_node_type("AsyncFunctionDef")),
-        ("ClassDef", make_node_type("ClassDef")),
-        ("Return", make_node_type("Return")),
-        ("Assign", make_node_type("Assign")),
-        ("AugAssign", make_node_type("AugAssign")),
-        ("AnnAssign", make_node_type("AnnAssign")),
-        ("For", make_node_type("For")),
-        ("AsyncFor", make_node_type("AsyncFor")),
-        ("While", make_node_type("While")),
-        ("If", make_node_type("If")),
-        ("With", make_node_type("With")),
-        ("AsyncWith", make_node_type("AsyncWith")),
-        ("Raise", make_node_type("Raise")),
-        ("Try", make_node_type("Try")),
-        ("Import", make_node_type("Import")),
-        ("ImportFrom", make_node_type("ImportFrom")),
-        ("Global", make_node_type("Global")),
-        ("Nonlocal", make_node_type("Nonlocal")),
-        ("Delete", make_node_type("Delete")),
-        ("Assert", make_node_type("Assert")),
-        ("Expr", make_node_type("Expr")),
-        ("Name", make_node_type("Name")),
-        ("Constant", make_node_type("Constant")),
-        ("BinOp", make_node_type("BinOp")),
-        ("UnaryOp", make_node_type("UnaryOp")),
-        ("BoolOp", make_node_type("BoolOp")),
-        ("Compare", make_node_type("Compare")),
-        ("Call", make_node_type("Call")),
-        ("Attribute", make_node_type("Attribute")),
-        ("Subscript", make_node_type("Subscript")),
-        ("Starred", make_node_type("Starred")),
-        ("List", make_node_type("List")),
-        ("Tuple", make_node_type("Tuple")),
-        ("Dict", make_node_type("Dict")),
-        ("Set", make_node_type("Set")),
-        ("Lambda", make_node_type("Lambda")),
-        ("IfExp", make_node_type("IfExp")),
-        ("ListComp", make_node_type("ListComp")),
-        ("SetComp", make_node_type("SetComp")),
-        ("DictComp", make_node_type("DictComp")),
-        ("GeneratorExp", make_node_type("GeneratorExp")),
-        ("Yield", make_node_type("Yield")),
-        ("YieldFrom", make_node_type("YieldFrom")),
-        ("Await", make_node_type("Await")),
-        ("FormattedValue", make_node_type("FormattedValue")),
-        ("JoinedStr", make_node_type("JoinedStr")),
-        ("NamedExpr", make_node_type("NamedExpr")),
-        ("Slice", make_node_type("Slice")),
-        ("Pass", make_node_type("Pass")),
-        ("Break", make_node_type("Break")),
-        ("Continue", make_node_type("Continue")),
-        ("ExceptHandler", make_node_type("ExceptHandler")),
+        // Node types (with ASDL field definitions for positional arg mapping)
+        ("Module", make_node_type("Module", &["body", "type_ignores"])),
+        ("Expression", make_node_type("Expression", &["body"])),
+        ("Interactive", make_node_type("Interactive", &["body"])),
+        ("FunctionDef", make_node_type("FunctionDef", &["name", "args", "body", "decorator_list", "returns"])),
+        ("AsyncFunctionDef", make_node_type("AsyncFunctionDef", &["name", "args", "body", "decorator_list", "returns"])),
+        ("ClassDef", make_node_type("ClassDef", &["name", "bases", "keywords", "body", "decorator_list"])),
+        ("Return", make_node_type("Return", &["value"])),
+        ("Assign", make_node_type("Assign", &["targets", "value"])),
+        ("AugAssign", make_node_type("AugAssign", &["target", "op", "value"])),
+        ("AnnAssign", make_node_type("AnnAssign", &["target", "annotation", "value", "simple"])),
+        ("For", make_node_type("For", &["target", "iter", "body", "orelse"])),
+        ("AsyncFor", make_node_type("AsyncFor", &["target", "iter", "body", "orelse"])),
+        ("While", make_node_type("While", &["test", "body", "orelse"])),
+        ("If", make_node_type("If", &["test", "body", "orelse"])),
+        ("With", make_node_type("With", &["items", "body"])),
+        ("AsyncWith", make_node_type("AsyncWith", &["items", "body"])),
+        ("Raise", make_node_type("Raise", &["exc", "cause"])),
+        ("Try", make_node_type("Try", &["body", "handlers", "orelse", "finalbody"])),
+        ("Import", make_node_type("Import", &["names"])),
+        ("ImportFrom", make_node_type("ImportFrom", &["module", "names", "level"])),
+        ("Global", make_node_type("Global", &["names"])),
+        ("Nonlocal", make_node_type("Nonlocal", &["names"])),
+        ("Delete", make_node_type("Delete", &["targets"])),
+        ("Assert", make_node_type("Assert", &["test", "msg"])),
+        ("Expr", make_node_type("Expr", &["value"])),
+        ("Name", make_node_type("Name", &["id", "ctx"])),
+        ("Constant", make_node_type("Constant", &["value", "kind"])),
+        ("BinOp", make_node_type("BinOp", &["left", "op", "right"])),
+        ("UnaryOp", make_node_type("UnaryOp", &["op", "operand"])),
+        ("BoolOp", make_node_type("BoolOp", &["op", "values"])),
+        ("Compare", make_node_type("Compare", &["left", "ops", "comparators"])),
+        ("Call", make_node_type("Call", &["func", "args", "keywords"])),
+        ("Attribute", make_node_type("Attribute", &["value", "attr", "ctx"])),
+        ("Subscript", make_node_type("Subscript", &["value", "slice", "ctx"])),
+        ("Starred", make_node_type("Starred", &["value", "ctx"])),
+        ("List", make_node_type("List", &["elts", "ctx"])),
+        ("Tuple", make_node_type("Tuple", &["elts", "ctx"])),
+        ("Dict", make_node_type("Dict", &["keys", "values"])),
+        ("Set", make_node_type("Set", &["elts"])),
+        ("Lambda", make_node_type("Lambda", &["args", "body"])),
+        ("IfExp", make_node_type("IfExp", &["test", "body", "orelse"])),
+        ("ListComp", make_node_type("ListComp", &["elt", "generators"])),
+        ("SetComp", make_node_type("SetComp", &["elt", "generators"])),
+        ("DictComp", make_node_type("DictComp", &["key", "value", "generators"])),
+        ("GeneratorExp", make_node_type("GeneratorExp", &["elt", "generators"])),
+        ("Yield", make_node_type("Yield", &["value"])),
+        ("YieldFrom", make_node_type("YieldFrom", &["value"])),
+        ("Await", make_node_type("Await", &["value"])),
+        ("FormattedValue", make_node_type("FormattedValue", &["value", "conversion", "format_spec"])),
+        ("JoinedStr", make_node_type("JoinedStr", &["values"])),
+        ("NamedExpr", make_node_type("NamedExpr", &["target", "value"])),
+        ("Slice", make_node_type("Slice", &["lower", "upper", "step"])),
+        ("Pass", make_node_type("Pass", &[])),
+        ("Break", make_node_type("Break", &[])),
+        ("Continue", make_node_type("Continue", &[])),
+        ("ExceptHandler", make_node_type("ExceptHandler", &["type", "name", "body"])),
         // Context types
-        ("Load", make_node_type("Load")),
-        ("Store", make_node_type("Store")),
-        ("Del", make_node_type("Del")),
+        ("Load", make_node_type("Load", &[])),
+        ("Store", make_node_type("Store", &[])),
+        ("Del", make_node_type("Del", &[])),
         // Operator types
-        ("Add", make_node_type("Add")),
-        ("Sub", make_node_type("Sub")),
-        ("Mult", make_node_type("Mult")),
-        ("Div", make_node_type("Div")),
-        ("Mod", make_node_type("Mod")),
-        ("Pow", make_node_type("Pow")),
-        ("LShift", make_node_type("LShift")),
-        ("RShift", make_node_type("RShift")),
-        ("BitOr", make_node_type("BitOr")),
-        ("BitXor", make_node_type("BitXor")),
-        ("BitAnd", make_node_type("BitAnd")),
-        ("FloorDiv", make_node_type("FloorDiv")),
-        ("MatMult", make_node_type("MatMult")),
-        ("And", make_node_type("And")),
-        ("Or", make_node_type("Or")),
-        ("Invert", make_node_type("Invert")),
-        ("Not", make_node_type("Not")),
-        ("UAdd", make_node_type("UAdd")),
-        ("USub", make_node_type("USub")),
-        ("Eq", make_node_type("Eq")),
-        ("NotEq", make_node_type("NotEq")),
-        ("Lt", make_node_type("Lt")),
-        ("LtE", make_node_type("LtE")),
-        ("Gt", make_node_type("Gt")),
-        ("GtE", make_node_type("GtE")),
-        ("Is", make_node_type("Is")),
-        ("IsNot", make_node_type("IsNot")),
-        ("In", make_node_type("In")),
-        ("NotIn", make_node_type("NotIn")),
+        ("Add", make_node_type("Add", &[])),
+        ("Sub", make_node_type("Sub", &[])),
+        ("Mult", make_node_type("Mult", &[])),
+        ("Div", make_node_type("Div", &[])),
+        ("Mod", make_node_type("Mod", &[])),
+        ("Pow", make_node_type("Pow", &[])),
+        ("LShift", make_node_type("LShift", &[])),
+        ("RShift", make_node_type("RShift", &[])),
+        ("BitOr", make_node_type("BitOr", &[])),
+        ("BitXor", make_node_type("BitXor", &[])),
+        ("BitAnd", make_node_type("BitAnd", &[])),
+        ("FloorDiv", make_node_type("FloorDiv", &[])),
+        ("MatMult", make_node_type("MatMult", &[])),
+        ("And", make_node_type("And", &[])),
+        ("Or", make_node_type("Or", &[])),
+        ("Invert", make_node_type("Invert", &[])),
+        ("Not", make_node_type("Not", &[])),
+        ("UAdd", make_node_type("UAdd", &[])),
+        ("USub", make_node_type("USub", &[])),
+        ("Eq", make_node_type("Eq", &[])),
+        ("NotEq", make_node_type("NotEq", &[])),
+        ("Lt", make_node_type("Lt", &[])),
+        ("LtE", make_node_type("LtE", &[])),
+        ("Gt", make_node_type("Gt", &[])),
+        ("GtE", make_node_type("GtE", &[])),
+        ("Is", make_node_type("Is", &[])),
+        ("IsNot", make_node_type("IsNot", &[])),
+        ("In", make_node_type("In", &[])),
+        ("NotIn", make_node_type("NotIn", &[])),
         // Misc
-        ("arguments", make_node_type("arguments")),
-        ("arg", make_node_type("arg")),
-        ("keyword", make_node_type("keyword")),
-        ("alias", make_node_type("alias")),
-        ("withitem", make_node_type("withitem")),
-        ("comprehension", make_node_type("comprehension")),
+        ("arguments", make_node_type("arguments", &["posonlyargs", "args", "vararg", "kwonlyargs", "kw_defaults", "kwarg", "defaults"])),
+        ("arg", make_node_type("arg", &["arg", "annotation"])),
+        ("keyword", make_node_type("keyword", &["arg", "value"])),
+        ("alias", make_node_type("alias", &["name", "asname"])),
+        ("withitem", make_node_type("withitem", &["context_expr", "optional_vars"])),
+        ("comprehension", make_node_type("comprehension", &["target", "iter", "ifs", "is_async"])),
         ("PyCF_ONLY_AST", PyObject::int(1024)),
-        ("AST", make_node_type("AST")),
+        ("AST", make_node_type("AST", &[])),
     ])
 }
 
@@ -2772,6 +2767,11 @@ fn get_child_nodes(obj: &PyObjectRef) -> Vec<PyObjectRef> {
     children
 }
 
+/// Public API for compile() to use when compiling programmatically-built AST
+pub fn ast_unparse_module(node: &PyObjectRef) -> String {
+    ast_unparse(node)
+}
+
 /// Simplified AST unparse — convert AST node back to Python source
 fn ast_unparse(node: &PyObjectRef) -> String {
     // Use the class name (type_name()) which is "Module", "Assign", etc.
@@ -3597,4 +3597,724 @@ pub fn create_symtable_module() -> PyObjectRef {
         ("DEF_FREE_CLASS", PyObject::int(32)),
         ("DEF_BOUND", PyObject::int(64)),
     ])
+}
+
+// ── PyObject AST → Rust AST converter ──────────────────────────────────
+// Converts Python AST objects (from `ast.parse()` or programmatic construction)
+// directly into ferrython_ast types, bypassing source code roundtrip.
+// This is necessary because werkzeug and other libs use invalid-identifier
+// names (e.g. `<builder:...>`, `.self`) that cannot survive unparse→reparse.
+
+use ferrython_ast::{
+    Module as AstModule, Statement, StatementKind, Expression as AstExpression,
+    ExpressionKind, Constant as AstConstant, BigInt as AstBigInt,
+    Operator, BoolOperator, UnaryOperator, CompareOperator, ExprContext,
+    Arguments as AstArguments, Arg as AstArg, Keyword as AstKeyword,
+    Alias as AstAlias, WithItem as AstWithItem, ExceptHandler as AstExceptHandler,
+    Comprehension as AstComprehension, SourceLocation,
+};
+
+/// Convert a PyObject AST Module into a ferrython_ast Module for compilation.
+pub fn pyobj_ast_to_module(node: &PyObjectRef) -> Result<AstModule, String> {
+    let type_name = node.type_name().to_string();
+    match type_name.as_str() {
+        "Module" => {
+            let body = convert_stmt_list(node, "body")?;
+            Ok(AstModule::Module {
+                body,
+                type_ignores: Vec::new(),
+            })
+        }
+        "Expression" => {
+            let body_expr = node.get_attr("body")
+                .ok_or_else(|| "Expression node missing 'body'".to_string())?;
+            let expr = convert_expr(&body_expr)?;
+            Ok(AstModule::Expression {
+                body: Box::new(expr),
+            })
+        }
+        "Interactive" => {
+            let body = convert_stmt_list(node, "body")?;
+            Ok(AstModule::Interactive { body })
+        }
+        _ => Err(format!("Expected Module/Expression/Interactive, got {}", type_name)),
+    }
+}
+
+fn loc_from_node(node: &PyObjectRef) -> SourceLocation {
+    let line = node.get_attr("lineno")
+        .and_then(|v| v.to_int().map(|i| i as u32).ok())
+        .unwrap_or(1);
+    let col = node.get_attr("col_offset")
+        .and_then(|v| v.to_int().map(|i| i as u32).ok())
+        .unwrap_or(0);
+    let end_line = node.get_attr("end_lineno")
+        .and_then(|v| v.to_int().map(|i| i as u32).ok());
+    let end_col = node.get_attr("end_col_offset")
+        .and_then(|v| v.to_int().map(|i| i as u32).ok());
+    let mut loc = SourceLocation::new(line, col);
+    if let (Some(el), Some(ec)) = (end_line, end_col) {
+        loc = loc.with_end(el, ec);
+    }
+    loc
+}
+
+fn get_list_attr(node: &PyObjectRef, attr: &str) -> Vec<PyObjectRef> {
+    node.get_attr(attr).map(|v| {
+        if let PyObjectPayload::List(items) = &v.payload {
+            items.read().clone()
+        } else if matches!(&v.payload, PyObjectPayload::None) {
+            Vec::new()
+        } else {
+            vec![v]
+        }
+    }).unwrap_or_default()
+}
+
+fn get_str_attr(node: &PyObjectRef, attr: &str) -> CompactString {
+    node.get_attr(attr)
+        .map(|v| CompactString::from(v.py_to_string()))
+        .unwrap_or_default()
+}
+
+fn get_optional_str(node: &PyObjectRef, attr: &str) -> Option<CompactString> {
+    node.get_attr(attr).and_then(|v| {
+        if matches!(&v.payload, PyObjectPayload::None) {
+            None
+        } else {
+            Some(CompactString::from(v.py_to_string()))
+        }
+    })
+}
+
+fn convert_stmt_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<Statement>, String> {
+    let items = get_list_attr(parent, attr);
+    items.iter().map(convert_stmt).collect()
+}
+
+fn convert_expr_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstExpression>, String> {
+    let items = get_list_attr(parent, attr);
+    items.iter().map(convert_expr).collect()
+}
+
+fn convert_optional_expr(parent: &PyObjectRef, attr: &str) -> Result<Option<Box<AstExpression>>, String> {
+    match parent.get_attr(attr) {
+        Some(v) if !matches!(&v.payload, PyObjectPayload::None) => {
+            Ok(Some(Box::new(convert_expr(&v)?)))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn convert_stmt(node: &PyObjectRef) -> Result<Statement, String> {
+    let type_name = node.type_name().to_string();
+    let location = loc_from_node(node);
+    let kind = match type_name.as_str() {
+        "FunctionDef" | "AsyncFunctionDef" => {
+            let name = get_str_attr(node, "name");
+            let args = node.get_attr("args")
+                .map(|a| convert_arguments(&a))
+                .unwrap_or_else(|| Ok(AstArguments::empty()))?;
+            let body = convert_stmt_list(node, "body")?;
+            let decorator_list = convert_expr_list(node, "decorator_list")?;
+            let returns = convert_optional_expr(node, "returns")?;
+            StatementKind::FunctionDef {
+                name,
+                args: Box::new(args),
+                body,
+                decorator_list,
+                returns,
+                type_comment: None,
+                is_async: type_name == "AsyncFunctionDef",
+            }
+        }
+        "ClassDef" => {
+            let name = get_str_attr(node, "name");
+            let bases = convert_expr_list(node, "bases")?;
+            let keywords = convert_keyword_list(node, "keywords")?;
+            let body = convert_stmt_list(node, "body")?;
+            let decorator_list = convert_expr_list(node, "decorator_list")?;
+            StatementKind::ClassDef { name, bases, keywords, body, decorator_list }
+        }
+        "Return" => {
+            let value = convert_optional_expr(node, "value")?;
+            StatementKind::Return { value }
+        }
+        "Delete" => {
+            let targets = convert_expr_list(node, "targets")?;
+            StatementKind::Delete { targets }
+        }
+        "Assign" => {
+            let targets = convert_expr_list(node, "targets")?;
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "Assign missing 'value'".to_string())?;
+            let value = Box::new(convert_expr(&value_node)?);
+            StatementKind::Assign { targets, value, type_comment: None }
+        }
+        "AugAssign" => {
+            let target_node = node.get_attr("target")
+                .ok_or_else(|| "AugAssign missing 'target'".to_string())?;
+            let target = Box::new(convert_expr(&target_node)?);
+            let op = node.get_attr("op")
+                .map(|o| convert_operator(&o))
+                .unwrap_or(Operator::Add);
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "AugAssign missing 'value'".to_string())?;
+            let value = Box::new(convert_expr(&value_node)?);
+            StatementKind::AugAssign { target, op, value }
+        }
+        "AnnAssign" => {
+            let target_node = node.get_attr("target")
+                .ok_or_else(|| "AnnAssign missing 'target'".to_string())?;
+            let target = Box::new(convert_expr(&target_node)?);
+            let ann_node = node.get_attr("annotation")
+                .ok_or_else(|| "AnnAssign missing 'annotation'".to_string())?;
+            let annotation = Box::new(convert_expr(&ann_node)?);
+            let value = convert_optional_expr(node, "value")?;
+            let simple = node.get_attr("simple")
+                .and_then(|v| v.to_int().ok())
+                .map(|i| i != 0)
+                .unwrap_or(true);
+            StatementKind::AnnAssign { target, annotation, value, simple }
+        }
+        "For" | "AsyncFor" => {
+            let target_node = node.get_attr("target")
+                .ok_or_else(|| "For missing 'target'".to_string())?;
+            let target = Box::new(convert_expr(&target_node)?);
+            let iter_node = node.get_attr("iter")
+                .ok_or_else(|| "For missing 'iter'".to_string())?;
+            let iter_expr = Box::new(convert_expr(&iter_node)?);
+            let body = convert_stmt_list(node, "body")?;
+            let orelse = convert_stmt_list(node, "orelse")?;
+            StatementKind::For {
+                target, iter: iter_expr, body, orelse,
+                type_comment: None,
+                is_async: type_name == "AsyncFor",
+            }
+        }
+        "While" => {
+            let test_node = node.get_attr("test")
+                .ok_or_else(|| "While missing 'test'".to_string())?;
+            let test = Box::new(convert_expr(&test_node)?);
+            let body = convert_stmt_list(node, "body")?;
+            let orelse = convert_stmt_list(node, "orelse")?;
+            StatementKind::While { test, body, orelse }
+        }
+        "If" => {
+            let test_node = node.get_attr("test")
+                .ok_or_else(|| "If missing 'test'".to_string())?;
+            let test = Box::new(convert_expr(&test_node)?);
+            let body = convert_stmt_list(node, "body")?;
+            let orelse = convert_stmt_list(node, "orelse")?;
+            StatementKind::If { test, body, orelse }
+        }
+        "With" | "AsyncWith" => {
+            let items = get_list_attr(node, "items");
+            let with_items: Vec<AstWithItem> = items.iter().map(|item| {
+                let ctx_node = item.get_attr("context_expr")
+                    .ok_or_else(|| "WithItem missing 'context_expr'".to_string())?;
+                let context_expr = convert_expr(&ctx_node)?;
+                let optional_vars = convert_optional_expr(item, "optional_vars")?;
+                Ok(AstWithItem { context_expr, optional_vars })
+            }).collect::<Result<_, String>>()?;
+            let body = convert_stmt_list(node, "body")?;
+            StatementKind::With {
+                items: with_items,
+                body,
+                type_comment: None,
+                is_async: type_name == "AsyncWith",
+            }
+        }
+        "Raise" => {
+            let exc = convert_optional_expr(node, "exc")?;
+            let cause = convert_optional_expr(node, "cause")?;
+            StatementKind::Raise { exc, cause }
+        }
+        "Try" | "TryStar" => {
+            let body = convert_stmt_list(node, "body")?;
+            let handlers = get_list_attr(node, "handlers");
+            let except_handlers: Vec<AstExceptHandler> = handlers.iter().map(|h| {
+                let typ = convert_optional_expr(h, "type")?;
+                let name = get_optional_str(h, "name");
+                let handler_body = convert_stmt_list(h, "body")?;
+                Ok(AstExceptHandler {
+                    typ, name, body: handler_body,
+                    location: loc_from_node(h),
+                    is_star: type_name == "TryStar",
+                })
+            }).collect::<Result<_, String>>()?;
+            let orelse = convert_stmt_list(node, "orelse")?;
+            let finalbody = convert_stmt_list(node, "finalbody")?;
+            StatementKind::Try { body, handlers: except_handlers, orelse, finalbody }
+        }
+        "Assert" => {
+            let test_node = node.get_attr("test")
+                .ok_or_else(|| "Assert missing 'test'".to_string())?;
+            let test = Box::new(convert_expr(&test_node)?);
+            let msg = convert_optional_expr(node, "msg")?;
+            StatementKind::Assert { test, msg }
+        }
+        "Import" => {
+            let names = convert_alias_list(node, "names")?;
+            StatementKind::Import { names }
+        }
+        "ImportFrom" => {
+            let module = get_optional_str(node, "module");
+            let names = convert_alias_list(node, "names")?;
+            let level = node.get_attr("level")
+                .and_then(|v| v.to_int().ok())
+                .unwrap_or(0) as u32;
+            StatementKind::ImportFrom { module, names, level }
+        }
+        "Global" => {
+            let names = get_list_attr(node, "names")
+                .iter().map(|n| CompactString::from(n.py_to_string())).collect();
+            StatementKind::Global { names }
+        }
+        "Nonlocal" => {
+            let names = get_list_attr(node, "names")
+                .iter().map(|n| CompactString::from(n.py_to_string())).collect();
+            StatementKind::Nonlocal { names }
+        }
+        "Expr" => {
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "Expr missing 'value'".to_string())?;
+            let value = Box::new(convert_expr(&value_node)?);
+            StatementKind::Expr { value }
+        }
+        "Pass" => StatementKind::Pass,
+        "Break" => StatementKind::Break,
+        "Continue" => StatementKind::Continue,
+        _ => return Err(format!("Unknown statement type: {}", type_name)),
+    };
+    Ok(Statement { node: kind, location })
+}
+
+fn convert_expr(node: &PyObjectRef) -> Result<AstExpression, String> {
+    let type_name = node.type_name().to_string();
+    let location = loc_from_node(node);
+    let kind = match type_name.as_str() {
+        "BoolOp" => {
+            let op = node.get_attr("op")
+                .map(|o| convert_bool_op(&o))
+                .unwrap_or(BoolOperator::And);
+            let values = convert_expr_list(node, "values")?;
+            ExpressionKind::BoolOp { op, values }
+        }
+        "NamedExpr" => {
+            let target_node = node.get_attr("target")
+                .ok_or_else(|| "NamedExpr missing 'target'".to_string())?;
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "NamedExpr missing 'value'".to_string())?;
+            ExpressionKind::NamedExpr {
+                target: Box::new(convert_expr(&target_node)?),
+                value: Box::new(convert_expr(&value_node)?),
+            }
+        }
+        "BinOp" => {
+            let left_node = node.get_attr("left")
+                .ok_or_else(|| "BinOp missing 'left'".to_string())?;
+            let right_node = node.get_attr("right")
+                .ok_or_else(|| "BinOp missing 'right'".to_string())?;
+            let op = node.get_attr("op")
+                .map(|o| convert_operator(&o))
+                .unwrap_or(Operator::Add);
+            ExpressionKind::BinOp {
+                left: Box::new(convert_expr(&left_node)?),
+                op,
+                right: Box::new(convert_expr(&right_node)?),
+            }
+        }
+        "UnaryOp" => {
+            let op = node.get_attr("op")
+                .map(|o| convert_unary_op(&o))
+                .unwrap_or(UnaryOperator::UAdd);
+            let operand_node = node.get_attr("operand")
+                .ok_or_else(|| "UnaryOp missing 'operand'".to_string())?;
+            ExpressionKind::UnaryOp {
+                op,
+                operand: Box::new(convert_expr(&operand_node)?),
+            }
+        }
+        "Lambda" => {
+            let args = node.get_attr("args")
+                .map(|a| convert_arguments(&a))
+                .unwrap_or_else(|| Ok(AstArguments::empty()))?;
+            let body_node = node.get_attr("body")
+                .ok_or_else(|| "Lambda missing 'body'".to_string())?;
+            ExpressionKind::Lambda {
+                args: Box::new(args),
+                body: Box::new(convert_expr(&body_node)?),
+            }
+        }
+        "IfExp" => {
+            let test = node.get_attr("test")
+                .ok_or_else(|| "IfExp missing 'test'".to_string())?;
+            let body = node.get_attr("body")
+                .ok_or_else(|| "IfExp missing 'body'".to_string())?;
+            let orelse = node.get_attr("orelse")
+                .ok_or_else(|| "IfExp missing 'orelse'".to_string())?;
+            ExpressionKind::IfExp {
+                test: Box::new(convert_expr(&test)?),
+                body: Box::new(convert_expr(&body)?),
+                orelse: Box::new(convert_expr(&orelse)?),
+            }
+        }
+        "Dict" => {
+            let keys_raw = get_list_attr(node, "keys");
+            let values_raw = get_list_attr(node, "values");
+            let keys: Vec<Option<AstExpression>> = keys_raw.iter().map(|k| {
+                if matches!(&k.payload, PyObjectPayload::None) {
+                    Ok(None)
+                } else {
+                    convert_expr(k).map(Some)
+                }
+            }).collect::<Result<_, String>>()?;
+            let values: Vec<AstExpression> = values_raw.iter()
+                .map(|v| convert_expr(v)).collect::<Result<_, String>>()?;
+            ExpressionKind::Dict { keys, values }
+        }
+        "Set" => {
+            let elts = convert_expr_list(node, "elts")?;
+            ExpressionKind::Set { elts }
+        }
+        "ListComp" => {
+            let elt_node = node.get_attr("elt")
+                .ok_or_else(|| "ListComp missing 'elt'".to_string())?;
+            let generators = convert_comprehension_list(node)?;
+            ExpressionKind::ListComp {
+                elt: Box::new(convert_expr(&elt_node)?),
+                generators,
+            }
+        }
+        "SetComp" => {
+            let elt_node = node.get_attr("elt")
+                .ok_or_else(|| "SetComp missing 'elt'".to_string())?;
+            let generators = convert_comprehension_list(node)?;
+            ExpressionKind::SetComp {
+                elt: Box::new(convert_expr(&elt_node)?),
+                generators,
+            }
+        }
+        "DictComp" => {
+            let key_node = node.get_attr("key")
+                .ok_or_else(|| "DictComp missing 'key'".to_string())?;
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "DictComp missing 'value'".to_string())?;
+            let generators = convert_comprehension_list(node)?;
+            ExpressionKind::DictComp {
+                key: Box::new(convert_expr(&key_node)?),
+                value: Box::new(convert_expr(&value_node)?),
+                generators,
+            }
+        }
+        "GeneratorExp" => {
+            let elt_node = node.get_attr("elt")
+                .ok_or_else(|| "GeneratorExp missing 'elt'".to_string())?;
+            let generators = convert_comprehension_list(node)?;
+            ExpressionKind::GeneratorExp {
+                elt: Box::new(convert_expr(&elt_node)?),
+                generators,
+            }
+        }
+        "Await" => {
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "Await missing 'value'".to_string())?;
+            ExpressionKind::Await {
+                value: Box::new(convert_expr(&value_node)?),
+            }
+        }
+        "Yield" => {
+            let value = convert_optional_expr(node, "value")?;
+            ExpressionKind::Yield { value: value.map(|b| *b).map(Box::new) }
+        }
+        "YieldFrom" => {
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "YieldFrom missing 'value'".to_string())?;
+            ExpressionKind::YieldFrom {
+                value: Box::new(convert_expr(&value_node)?),
+            }
+        }
+        "Compare" => {
+            let left_node = node.get_attr("left")
+                .ok_or_else(|| "Compare missing 'left'".to_string())?;
+            let ops_raw = get_list_attr(node, "ops");
+            let ops: Vec<CompareOperator> = ops_raw.iter()
+                .map(|o| convert_compare_op(o)).collect();
+            let comparators = convert_expr_list(node, "comparators")?;
+            ExpressionKind::Compare {
+                left: Box::new(convert_expr(&left_node)?),
+                ops,
+                comparators,
+            }
+        }
+        "Call" => {
+            let func_node = node.get_attr("func")
+                .ok_or_else(|| "Call missing 'func'".to_string())?;
+            let args = convert_expr_list(node, "args")?;
+            let keywords = convert_keyword_list(node, "keywords")?;
+            ExpressionKind::Call {
+                func: Box::new(convert_expr(&func_node)?),
+                args,
+                keywords,
+            }
+        }
+        "FormattedValue" => {
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "FormattedValue missing 'value'".to_string())?;
+            let conversion = node.get_attr("conversion")
+                .and_then(|v| v.to_int().ok())
+                .and_then(|c| if c < 0 { None } else { char::from_u32(c as u32) });
+            let format_spec = convert_optional_expr(node, "format_spec")?;
+            ExpressionKind::FormattedValue {
+                value: Box::new(convert_expr(&value_node)?),
+                conversion,
+                format_spec,
+            }
+        }
+        "JoinedStr" => {
+            let values = convert_expr_list(node, "values")?;
+            ExpressionKind::JoinedStr { values }
+        }
+        "Constant" => {
+            let value = node.get_attr("value")
+                .map(|v| convert_constant(&v))
+                .unwrap_or(AstConstant::None);
+            ExpressionKind::Constant { value }
+        }
+        "Attribute" => {
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "Attribute missing 'value'".to_string())?;
+            let attr = get_str_attr(node, "attr");
+            let ctx = node.get_attr("ctx")
+                .map(|c| convert_expr_context(&c))
+                .unwrap_or(ExprContext::Load);
+            ExpressionKind::Attribute {
+                value: Box::new(convert_expr(&value_node)?),
+                attr,
+                ctx,
+            }
+        }
+        "Subscript" => {
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "Subscript missing 'value'".to_string())?;
+            let slice_node = node.get_attr("slice")
+                .ok_or_else(|| "Subscript missing 'slice'".to_string())?;
+            let ctx = node.get_attr("ctx")
+                .map(|c| convert_expr_context(&c))
+                .unwrap_or(ExprContext::Load);
+            ExpressionKind::Subscript {
+                value: Box::new(convert_expr(&value_node)?),
+                slice: Box::new(convert_expr(&slice_node)?),
+                ctx,
+            }
+        }
+        "Starred" => {
+            let value_node = node.get_attr("value")
+                .ok_or_else(|| "Starred missing 'value'".to_string())?;
+            let ctx = node.get_attr("ctx")
+                .map(|c| convert_expr_context(&c))
+                .unwrap_or(ExprContext::Load);
+            ExpressionKind::Starred {
+                value: Box::new(convert_expr(&value_node)?),
+                ctx,
+            }
+        }
+        "Name" => {
+            let id = get_str_attr(node, "id");
+            let ctx = node.get_attr("ctx")
+                .map(|c| convert_expr_context(&c))
+                .unwrap_or(ExprContext::Load);
+            ExpressionKind::Name { id, ctx }
+        }
+        "List" => {
+            let elts = convert_expr_list(node, "elts")?;
+            let ctx = node.get_attr("ctx")
+                .map(|c| convert_expr_context(&c))
+                .unwrap_or(ExprContext::Load);
+            ExpressionKind::List { elts, ctx }
+        }
+        "Tuple" => {
+            let elts = convert_expr_list(node, "elts")?;
+            let ctx = node.get_attr("ctx")
+                .map(|c| convert_expr_context(&c))
+                .unwrap_or(ExprContext::Load);
+            ExpressionKind::Tuple { elts, ctx }
+        }
+        "Slice" => {
+            let lower = convert_optional_expr(node, "lower")?;
+            let upper = convert_optional_expr(node, "upper")?;
+            let step = convert_optional_expr(node, "step")?;
+            ExpressionKind::Slice { lower, upper, step }
+        }
+        _ => {
+            return Err(format!("Unknown expression type: {}", type_name));
+        }
+    };
+    Ok(AstExpression { node: kind, location })
+}
+
+fn convert_constant(val: &PyObjectRef) -> AstConstant {
+    use ferrython_core::types::PyInt;
+    match &val.payload {
+        PyObjectPayload::None => AstConstant::None,
+        PyObjectPayload::Bool(b) => AstConstant::Bool(*b),
+        PyObjectPayload::Int(pi) => match pi {
+            PyInt::Small(i) => AstConstant::Int(AstBigInt::Small(*i)),
+            PyInt::Big(bi) => AstConstant::Int(AstBigInt::Big(bi.clone())),
+        },
+        PyObjectPayload::Float(f) => AstConstant::Float(*f),
+        PyObjectPayload::Str(s) => AstConstant::Str(CompactString::from(s.as_str())),
+        PyObjectPayload::Bytes(b) => AstConstant::Bytes(b.clone()),
+        _ => {
+            let s = val.py_to_string();
+            if let Ok(i) = s.parse::<i64>() {
+                AstConstant::Int(AstBigInt::Small(i))
+            } else if let Ok(f) = s.parse::<f64>() {
+                AstConstant::Float(f)
+            } else {
+                AstConstant::Str(CompactString::from(s))
+            }
+        }
+    }
+}
+
+fn convert_operator(node: &PyObjectRef) -> Operator {
+    match node.type_name().to_string().as_str() {
+        "Add" => Operator::Add,
+        "Sub" => Operator::Sub,
+        "Mult" => Operator::Mult,
+        "Div" => Operator::Div,
+        "Mod" => Operator::Mod,
+        "Pow" => Operator::Pow,
+        "LShift" => Operator::LShift,
+        "RShift" => Operator::RShift,
+        "BitOr" => Operator::BitOr,
+        "BitXor" => Operator::BitXor,
+        "BitAnd" => Operator::BitAnd,
+        "FloorDiv" => Operator::FloorDiv,
+        "MatMult" => Operator::MatMult,
+        _ => Operator::Add,
+    }
+}
+
+fn convert_bool_op(node: &PyObjectRef) -> BoolOperator {
+    match node.type_name().to_string().as_str() {
+        "And" => BoolOperator::And,
+        "Or" => BoolOperator::Or,
+        _ => BoolOperator::And,
+    }
+}
+
+fn convert_unary_op(node: &PyObjectRef) -> UnaryOperator {
+    match node.type_name().to_string().as_str() {
+        "Invert" => UnaryOperator::Invert,
+        "Not" => UnaryOperator::Not,
+        "UAdd" => UnaryOperator::UAdd,
+        "USub" => UnaryOperator::USub,
+        _ => UnaryOperator::UAdd,
+    }
+}
+
+fn convert_compare_op(node: &PyObjectRef) -> CompareOperator {
+    match node.type_name().to_string().as_str() {
+        "Eq" => CompareOperator::Eq,
+        "NotEq" => CompareOperator::NotEq,
+        "Lt" => CompareOperator::Lt,
+        "LtE" => CompareOperator::LtE,
+        "Gt" => CompareOperator::Gt,
+        "GtE" => CompareOperator::GtE,
+        "Is" => CompareOperator::Is,
+        "IsNot" => CompareOperator::IsNot,
+        "In" => CompareOperator::In,
+        "NotIn" => CompareOperator::NotIn,
+        _ => CompareOperator::Eq,
+    }
+}
+
+fn convert_expr_context(node: &PyObjectRef) -> ExprContext {
+    match node.type_name().to_string().as_str() {
+        "Store" => ExprContext::Store,
+        "Del" => ExprContext::Del,
+        _ => ExprContext::Load,
+    }
+}
+
+fn convert_arguments(node: &PyObjectRef) -> Result<AstArguments, String> {
+    let posonlyargs = convert_arg_list(node, "posonlyargs")?;
+    let args = convert_arg_list(node, "args")?;
+    let vararg = node.get_attr("vararg").and_then(|v| {
+        if matches!(&v.payload, PyObjectPayload::None) { None }
+        else { Some(convert_arg(&v)) }
+    }).transpose()?;
+    let kwonlyargs = convert_arg_list(node, "kwonlyargs")?;
+    let kw_defaults = get_list_attr(node, "kw_defaults").iter().map(|d| {
+        if matches!(&d.payload, PyObjectPayload::None) {
+            Ok(None)
+        } else {
+            convert_expr(d).map(Some)
+        }
+    }).collect::<Result<Vec<_>, String>>()?;
+    let kwarg = node.get_attr("kwarg").and_then(|v| {
+        if matches!(&v.payload, PyObjectPayload::None) { None }
+        else { Some(convert_arg(&v)) }
+    }).transpose()?;
+    let defaults = convert_expr_list(node, "defaults")?;
+    Ok(AstArguments { posonlyargs, args, vararg, kwonlyargs, kw_defaults, kwarg, defaults })
+}
+
+fn convert_arg_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstArg>, String> {
+    get_list_attr(parent, attr).iter().map(convert_arg).collect()
+}
+
+fn convert_arg(node: &PyObjectRef) -> Result<AstArg, String> {
+    let arg = get_str_attr(node, "arg");
+    let annotation = convert_optional_expr(node, "annotation")?;
+    Ok(AstArg {
+        arg,
+        annotation,
+        type_comment: None,
+        location: loc_from_node(node),
+    })
+}
+
+fn convert_keyword_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstKeyword>, String> {
+    get_list_attr(parent, attr).iter().map(|k| {
+        let arg = get_optional_str(k, "arg");
+        let value_node = k.get_attr("value")
+            .ok_or_else(|| "keyword missing 'value'".to_string())?;
+        Ok(AstKeyword {
+            arg,
+            value: convert_expr(&value_node)?,
+            location: loc_from_node(k),
+        })
+    }).collect()
+}
+
+fn convert_alias_list(parent: &PyObjectRef, attr: &str) -> Result<Vec<AstAlias>, String> {
+    get_list_attr(parent, attr).iter().map(|a| {
+        let name = get_str_attr(a, "name");
+        let asname = get_optional_str(a, "asname");
+        Ok(AstAlias { name, asname, location: loc_from_node(a) })
+    }).collect()
+}
+
+fn convert_comprehension_list(parent: &PyObjectRef) -> Result<Vec<AstComprehension>, String> {
+    get_list_attr(parent, "generators").iter().map(|g| {
+        let target_node = g.get_attr("target")
+            .ok_or_else(|| "comprehension missing 'target'".to_string())?;
+        let iter_node = g.get_attr("iter")
+            .ok_or_else(|| "comprehension missing 'iter'".to_string())?;
+        let ifs = convert_expr_list(g, "ifs")?;
+        let is_async = g.get_attr("is_async")
+            .and_then(|v| v.to_int().ok())
+            .map(|i| i != 0)
+            .unwrap_or(false);
+        Ok(AstComprehension {
+            target: convert_expr(&target_node)?,
+            iter: convert_expr(&iter_node)?,
+            ifs,
+            is_async,
+        })
+    }).collect()
 }

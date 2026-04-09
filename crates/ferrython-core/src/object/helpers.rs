@@ -1187,6 +1187,50 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             }
             Ok(PyObject::none())
         })),
+        // dict.__init__(self, data=None, **kwargs) — populate dict_storage from positional/kw args
+        ("dict", "__init__") => Some(PyObject::native_function("dict.__init__", |args| {
+            if args.is_empty() {
+                return Ok(PyObject::none());
+            }
+            let self_obj = &args[0];
+            if let PyObjectPayload::Instance(inst) = &self_obj.payload {
+                if let Some(ref ds) = inst.dict_storage {
+                    let mut storage = ds.write();
+                    // If there's a positional arg (a dict or iterable of pairs), copy entries
+                    if args.len() >= 2 {
+                        match &args[1].payload {
+                            PyObjectPayload::Dict(src) => {
+                                for (k, v) in src.read().iter() {
+                                    storage.insert(k.clone(), v.clone());
+                                }
+                            }
+                            PyObjectPayload::Instance(src_inst)
+                                if src_inst.dict_storage.is_some() =>
+                            {
+                                let src_ds = src_inst.dict_storage.as_ref().unwrap();
+                                for (k, v) in src_ds.read().iter() {
+                                    storage.insert(k.clone(), v.clone());
+                                }
+                            }
+                            _ => {
+                                // Try treating as iterable of (key, value) pairs
+                                if let Ok(items) = args[1].to_list() {
+                                    for item in &items {
+                                        if let Ok(pair) = item.to_list() {
+                                            if pair.len() == 2 {
+                                                let hk = pair[0].to_hashable_key()?;
+                                                storage.insert(hk, pair[1].clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(PyObject::none())
+        })),
         // __init__ on any builtin type base is a no-op (instance already created)
         (_, "__init__") => Some(PyObject::native_function("builtin.__init__", |_args| {
             Ok(PyObject::none())

@@ -35,6 +35,8 @@ pub use concurrency_modules::drain_deferred_calls;
 pub use ferrython_async::take_asyncio_run_coro;
 pub use import_modules::{take_import_module_request, take_reload_request, ImportModuleRequest, ReloadRequest};
 pub use serial_modules::json_dumps_fn;
+pub use introspection_modules::ast_unparse_module;
+pub use introspection_modules::pyobj_ast_to_module;
 
 // ── Global stdout/stderr override for redirect_stdout/redirect_stderr ──
 // When set, print() writes here instead of real stdout.

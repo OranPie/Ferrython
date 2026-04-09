@@ -65,16 +65,21 @@ impl VirtualMachine {
     /// Returns the method if it's a real callable (BoundMethod, Function, etc.).
     pub(crate) fn resolve_instance_dunder(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
-            // Check if the class's own namespace defines this dunder
-            // (not inherited from a builtin base type)
+            // Search the class's own namespace and MRO bases for this dunder.
+            // We need to walk MRO ourselves so we can detect descriptors that
+            // require __get__ invocation (e.g. _ProxyLookup in werkzeug).
             if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                if let Some(class_method) = cd.namespace.read().get(name).cloned() {
-                    // Found in the class's own namespace — this is a custom implementation
-                    // Return the instance-bound version if available
-                    if let Some(method) = obj.get_attr(name) {
-                        return Some(method);
+                // Check class's own namespace first
+                if let Some(class_val) = cd.namespace.read().get(name).cloned() {
+                    return Some(Self::bind_class_val_for_instance(obj, inst, class_val));
+                }
+                // Walk MRO bases
+                for base in &cd.mro {
+                    if let PyObjectPayload::Class(bcd) = &base.payload {
+                        if let Some(class_val) = bcd.namespace.read().get(name).cloned() {
+                            return Some(Self::bind_class_val_for_instance(obj, inst, class_val));
+                        }
                     }
-                    return Some(class_method);
                 }
             }
             // Also check instance attrs directly (Python-defined __str__/__repr__)
@@ -92,6 +97,58 @@ impl VirtualMachine {
         None
     }
 
+    /// Bind a class-level attribute for instance access: wrap functions as BoundMethod,
+    /// and leave descriptors (Instance with __get__) as-is for the VM to invoke __get__.
+    fn bind_class_val_for_instance(obj: &PyObjectRef, inst: &ferrython_core::object::InstanceData, class_val: PyObjectRef) -> PyObjectRef {
+        match &class_val.payload {
+            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } => {
+                Arc::new(PyObject {
+                    payload: PyObjectPayload::BoundMethod {
+                        receiver: obj.clone(),
+                        method: class_val,
+                    }
+                })
+            }
+            PyObjectPayload::StaticMethod(func) => func.clone(),
+            PyObjectPayload::ClassMethod(func) => Arc::new(PyObject {
+                payload: PyObjectPayload::BoundMethod {
+                    receiver: inst.class.clone(),
+                    method: func.clone(),
+                }
+            }),
+            // For Instance values (including descriptors like _ProxyLookup),
+            // return raw — caller must invoke __get__ via the VM if needed.
+            _ => class_val,
+        }
+    }
+
+    /// Invoke __get__ on a descriptor to get the actual callable.
+    /// Returns the original value if it's not a descriptor.
+    pub(crate) fn resolve_descriptor(&mut self, val: &PyObjectRef, instance: &PyObjectRef) -> PyResult<PyObjectRef> {
+        use ferrython_core::object::has_descriptor_get;
+        if has_descriptor_get(val) {
+            if let Some(get_method) = val.get_attr("__get__") {
+                let owner = if let PyObjectPayload::Instance(inst) = &instance.payload {
+                    inst.class.clone()
+                } else {
+                    PyObject::none()
+                };
+                let bound = if matches!(&get_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                    get_method
+                } else {
+                    Arc::new(PyObject {
+                        payload: PyObjectPayload::BoundMethod {
+                            receiver: val.clone(),
+                            method: get_method,
+                        }
+                    })
+                };
+                return self.call_object(bound, vec![instance.clone(), owner]);
+            }
+        }
+        Ok(val.clone())
+    }
+
     /// Get the __builtin_value__ from an Instance (for builtin type subclasses).
     pub(crate) fn get_builtin_value(obj: &PyObjectRef) -> Option<PyObjectRef> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
@@ -105,21 +162,23 @@ impl VirtualMachine {
             PyObjectPayload::Instance(inst) => {
                 // Check for custom __str__ (skip BuiltinBoundMethod from builtin bases)
                 if let Some(str_method) = Self::resolve_instance_dunder(obj, "__str__") {
-                    let args = match &str_method.payload {
+                    let method = self.resolve_descriptor(&str_method, obj)?;
+                    let args = match &method.payload {
                         PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
                         _ => vec![],
                     };
-                    let result = self.call_object(str_method, args)?;
+                    let result = self.call_object(method, args)?;
                     return Ok(result.py_to_string());
                 }
                 // Fall back to __repr__ before __builtin_value__: namedtuples, dataclasses, etc.
                 // define custom __repr__ that should serve as str() too.
                 if let Some(repr_method) = Self::resolve_instance_dunder(obj, "__repr__") {
-                    let args = match &repr_method.payload {
+                    let method = self.resolve_descriptor(&repr_method, obj)?;
+                    let args = match &method.payload {
                         PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
                         _ => vec![],
                     };
-                    let result = self.call_object(repr_method, args)?;
+                    let result = self.call_object(method, args)?;
                     return Ok(result.py_to_string());
                 }
                 // namedtuple: use BuiltinBoundMethod __str__ (dispatches to call_namedtuple_method)
@@ -429,11 +488,13 @@ impl VirtualMachine {
             PyObjectPayload::Instance(inst) => {
                 // Check for custom __repr__ (skip BuiltinBoundMethod from builtin bases)
                 if let Some(repr_method) = Self::resolve_instance_dunder(obj, "__repr__") {
-                    let args = match &repr_method.payload {
+                    // If it's a descriptor (Instance with __get__), invoke __get__
+                    let method = self.resolve_descriptor(&repr_method, obj)?;
+                    let args = match &method.payload {
                         PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
                         _ => vec![],
                     };
-                    let result = self.call_object(repr_method, args)?;
+                    let result = self.call_object(method, args)?;
                     return Ok(result.py_to_string());
                 }
                 // Dataclass auto-repr (before __builtin_value__ delegation)
@@ -1868,23 +1929,65 @@ impl VirtualMachine {
         let filename = args[1].py_to_string();
         let mode = args[2].py_to_string();
 
-        // Accept AST objects: extract stored __source__ from ast.parse()
+        // Check if the argument is an AST object (Instance), not a string
+        let is_ast_obj = matches!(&args[0].payload, PyObjectPayload::Instance(_));
+
+        if is_ast_obj {
+            // Try direct PyObject AST → Rust AST conversion first.
+            // This handles non-standard identifiers (e.g. werkzeug's `<builder:...>`)
+            // that can't survive source-code roundtrip.
+            let has_stored_source = if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                let attrs = inst.attrs.read();
+                attrs.get("__source__").map(|s| !s.py_to_string().is_empty()).unwrap_or(false)
+            } else { false };
+
+            if has_stored_source {
+                // Has original source from ast.parse() — use it (fast path)
+                let source = if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    inst.attrs.read().get("__source__").unwrap().py_to_string()
+                } else { unreachable!() };
+                let effective = if mode == "eval" {
+                    format!("__eval_result__ = ({})", source)
+                } else { source };
+                let module = ferrython_parser::parse(&effective, &filename)
+                    .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+                let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
+                let code = compiler.compile_module(&module)
+                    .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+                return Ok(PyObject::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))));
+            }
+
+            // No stored source — convert AST objects directly to Rust AST
+            match ferrython_stdlib::pyobj_ast_to_module(&args[0]) {
+                Ok(module) => {
+                    let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
+                    let code = compiler.compile_module(&module)
+                        .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))));
+                }
+                Err(_e) => {
+                    // Fallback: try unparse → reparse
+                    let source = ferrython_stdlib::ast_unparse_module(&args[0]);
+                    let effective = if mode == "eval" {
+                        format!("__eval_result__ = ({})", source)
+                    } else { source };
+                    let module = ferrython_parser::parse(&effective, &filename)
+                        .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+                    let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
+                    let code = compiler.compile_module(&module)
+                        .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
+                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))));
+                }
+            }
+        }
+
+        // String source code
         let source = if let Some(s) = args[0].as_str() {
             s.to_string()
-        } else if let PyObjectPayload::Instance(inst) = &args[0].payload {
-            let attrs = inst.attrs.read();
-            if let Some(src) = attrs.get("__source__") {
-                src.py_to_string()
-            } else {
-                return Err(PyException::type_error(
-                    "compile() arg 1 must be a string, bytes, or AST object"));
-            }
         } else {
             return Err(PyException::type_error(
                 "compile() arg 1 must be a string, bytes, or AST object"));
         };
-
-        // In "eval" mode, wrap as assignment so eval() can extract the result
         let effective_source = if mode == "eval" {
             format!("__eval_result__ = ({})", source)
         } else {

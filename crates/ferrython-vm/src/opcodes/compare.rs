@@ -397,8 +397,10 @@ impl VirtualMachine {
                         }
                         // Raised is user-defined class, handler is builtin ExceptionType
                         if let PyObjectPayload::ExceptionType(kind_b) = &b_item.payload {
-                            let kind_a = Self::find_exception_kind(a_item);
-                            return exception_kind_matches(&kind_a, kind_b);
+                            // Check all exception kinds in the MRO, not just the first one.
+                            // This handles multiple inheritance like BadRequestKeyError(BadRequest, KeyError)
+                            // where we need to match against KeyError even though BadRequest comes first.
+                            return Self::any_exception_kind_matches(a_item, kind_b);
                         }
                         return false;
                     }

@@ -31,7 +31,7 @@ fn parse_url_string(url: &str) -> ParsedUrl {
     let (scheme, rest) = if let Some(idx) = url.find("://") {
         (url[..idx].to_string(), &url[idx + 3..])
     } else {
-        ("http".to_string(), url)
+        (String::new(), url)
     };
 
     let (rest2, fragment) = if let Some(idx) = rest.find('#') {
@@ -1110,6 +1110,22 @@ fn urllib_parse_urlsplit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }));
 
     attrs.insert(CompactString::from("__len__"), PyObject::native_closure("__len__", |_| Ok(PyObject::int(5))));
+
+    // __iter__ for tuple-like unpacking
+    let iter_components = components.clone();
+    attrs.insert(CompactString::from("__iter__"), PyObject::native_closure("__iter__", move |_| {
+        Ok(PyObject::tuple(iter_components.clone()))
+    }));
+
+    // __repr__
+    let repr_components = components;
+    attrs.insert(CompactString::from("__repr__"), PyObject::native_closure("__repr__", move |_| {
+        let parts: Vec<String> = repr_components.iter().map(|c| format!("'{}'", c.py_to_string())).collect();
+        Ok(PyObject::str_val(CompactString::from(format!(
+            "SplitResult(scheme={}, netloc={}, path={}, query={}, fragment={})",
+            parts[0], parts[1], parts[2], parts[3], parts[4]
+        ))))
+    }));
 
     Ok(PyObject::instance_with_attrs(cls, attrs))
 }

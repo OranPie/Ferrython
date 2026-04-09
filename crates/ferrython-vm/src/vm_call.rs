@@ -969,6 +969,41 @@ impl VirtualMachine {
             }
         }
 
+        // Store kwargs as instance attrs when no user __init__ consumed them.
+        // This supports AST nodes, simple data classes, and similar patterns
+        // where Class(field=value) stores field as an attribute.
+        if !kwargs.is_empty() {
+            if let PyObjectPayload::Instance(inst) = &instance.payload {
+                let mut attrs = inst.attrs.write();
+                for (k, v) in &kwargs {
+                    if !attrs.contains_key(k.as_str()) {
+                        attrs.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+
+        // Map positional args to _fields for AST-like node classes.
+        // When a class defines _fields (tuple of field name strings) and has no
+        // user __init__, positional constructor args are stored as named attrs.
+        if !pos_args.is_empty() {
+            if let Some(fields_obj) = cls.get_attr("_fields") {
+                if let PyObjectPayload::Tuple(field_names) = &fields_obj.payload {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        let mut attrs = inst.attrs.write();
+                        for (i, field) in field_names.iter().enumerate() {
+                            if i < pos_args.len() {
+                                let fname = field.py_to_string();
+                                if !attrs.contains_key(fname.as_str()) {
+                                    attrs.insert(CompactString::from(fname.as_str()), pos_args[i].clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Exception subclass attrs
         if Self::is_exception_class(cls) {
             if let PyObjectPayload::Instance(inst) = &instance.payload {
@@ -1034,16 +1069,52 @@ impl VirtualMachine {
                 let mut cls = runtime_cls.clone();
                 if let Some(def_name) = defining_class_name {
                     if let PyObjectPayload::Class(cd) = &runtime_cls.payload {
-                        let mro = if cd.mro.is_empty() {
-                            vec![runtime_cls.clone()]
-                        } else {
-                            cd.mro.clone()
-                        };
-                        for m in &mro {
+                        // Build full MRO including the runtime class itself
+                        let mut full_mro = vec![runtime_cls.clone()];
+                        full_mro.extend(cd.mro.iter().cloned());
+
+                        // Strategy: find the class whose namespace contains the
+                        // currently executing function (by matching Arc<CodeObject>
+                        // pointers).  This is robust even when multiple classes
+                        // share the same name (e.g. Flask Request vs werkzeug
+                        // Request, or same-named EnvironBuilder subclasses).
+                        let code_ptr = Arc::as_ptr(&frame.code);
+                        let mut found_by_code = false;
+                        for m in &full_mro {
                             if let PyObjectPayload::Class(mc) = &m.payload {
-                                if mc.name.as_str() == def_name {
-                                    cls = m.clone();
-                                    break;
+                                let ns = mc.namespace.read();
+                                // Check method name from qualname (last segment)
+                                let method_name = qualname.rsplit_once('.')
+                                    .map(|(_, m)| m).unwrap_or(qualname);
+                                if let Some(val) = ns.get(method_name) {
+                                    let matches = match &val.payload {
+                                        PyObjectPayload::Function(f) =>
+                                            Arc::as_ptr(&f.code) == code_ptr,
+                                        PyObjectPayload::BoundMethod { method, .. } => {
+                                            if let PyObjectPayload::Function(f) = &method.payload {
+                                                Arc::as_ptr(&f.code) == code_ptr
+                                            } else { false }
+                                        }
+                                        _ => false,
+                                    };
+                                    if matches {
+                                        cls = m.clone();
+                                        found_by_code = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Fallback: match by class name if code-pointer match failed
+                        // (can happen with NativeFunction or wrapped methods)
+                        if !found_by_code {
+                            for m in &full_mro {
+                                if let PyObjectPayload::Class(mc) = &m.payload {
+                                    if mc.name.as_str() == def_name {
+                                        cls = m.clone();
+                                        break;
+                                    }
                                 }
                             }
                         }

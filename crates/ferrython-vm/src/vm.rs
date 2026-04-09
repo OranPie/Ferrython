@@ -1317,6 +1317,44 @@ impl VirtualMachine {
         }
     }
 
+    /// Check if any exception kind in the class's full MRO matches the expected handler.
+    /// Unlike find_exception_kind (which returns the first non-RuntimeError kind),
+    /// this checks ALL bases — essential for multiple inheritance like
+    /// `BadRequestKeyError(BadRequest, KeyError)` where the second base matters.
+    pub(crate) fn any_exception_kind_matches(cls: &PyObjectRef, expected: &ExceptionKind) -> bool {
+        match &cls.payload {
+            PyObjectPayload::ExceptionType(kind) => exception_kind_matches(kind, expected),
+            PyObjectPayload::BuiltinType(name) | PyObjectPayload::BuiltinFunction(name) => {
+                if let Some(kind) = ExceptionKind::from_name(name) {
+                    exception_kind_matches(&kind, expected)
+                } else { false }
+            }
+            PyObjectPayload::Class(cd) => {
+                // Direct name match
+                if let Some(kind) = ExceptionKind::from_name(&cd.name) {
+                    if exception_kind_matches(&kind, expected) { return true; }
+                }
+                // Check all bases recursively
+                for base in &cd.bases {
+                    if Self::any_exception_kind_matches(base, expected) { return true; }
+                }
+                // Check MRO entries
+                for base in &cd.mro {
+                    if let PyObjectPayload::ExceptionType(k) = &base.payload {
+                        if exception_kind_matches(k, expected) { return true; }
+                    }
+                    if let PyObjectPayload::Class(bc) = &base.payload {
+                        if let Some(kind) = ExceptionKind::from_name(&bc.name) {
+                            if exception_kind_matches(&kind, expected) { return true; }
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn vm_is_truthy(&mut self, obj: &PyObjectRef) -> PyResult<bool> {
         if let PyObjectPayload::Instance(_) = &obj.payload {
             if let Some(bool_method) = Self::resolve_instance_dunder(obj, "__bool__") {

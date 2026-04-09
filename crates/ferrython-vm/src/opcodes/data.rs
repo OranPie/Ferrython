@@ -396,8 +396,38 @@ impl VirtualMachine {
                         return Ok(None);
                     }
                 }
-                if let PyObjectPayload::Instance(_) = &obj.payload {
-                    if let Some(ga) = obj.get_attr("__getattr__") {
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    // Look up __getattr__ through class MRO and apply descriptor protocol
+                    if let Some(ga_raw) = lookup_in_class_mro(&inst.class, "__getattr__") {
+                        let ga = if has_descriptor_get(&ga_raw) {
+                            // Descriptor (e.g. _ProxyLookup): invoke __get__ to bind
+                            if let Some(get_method) = ga_raw.get_attr("__get__") {
+                                let owner = inst.class.clone();
+                                let get_bound = if matches!(&get_method.payload, PyObjectPayload::BoundMethod { .. }) {
+                                    get_method
+                                } else {
+                                    Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: ga_raw.clone(),
+                                            method: get_method,
+                                        }
+                                    })
+                                };
+                                self.call_object(get_bound, vec![obj.clone(), owner])?
+                            } else {
+                                ga_raw
+                            }
+                        } else if matches!(&ga_raw.payload, PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                            // Regular function: bind as method
+                            Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: obj.clone(),
+                                    method: ga_raw,
+                                }
+                            })
+                        } else {
+                            ga_raw
+                        };
                         let name_arg = PyObject::str_val(intern::intern_or_new(name.as_str()));
                         let result = self.call_object(ga, vec![name_arg])?;
                         self.vm_push(result);
