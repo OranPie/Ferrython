@@ -434,3 +434,34 @@ pub fn take_collect_vm_call_results() -> bool {
         val
     })
 }
+
+// ── Thread spawn callback ──
+// The VM registers a function that can execute a Python callable on a new OS
+// thread with its own VM instance.  The stdlib calls this to spawn real threads
+// for Python-defined thread targets.
+
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+type ThreadSpawnFn = fn(PyObjectRef, Vec<PyObjectRef>) -> std::thread::JoinHandle<()>;
+
+static THREAD_SPAWN_FN: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Register the thread-spawn callback (called once by the VM at startup).
+pub fn register_thread_spawn(f: ThreadSpawnFn) {
+    THREAD_SPAWN_FN.store(f as *mut (), Ordering::Release);
+}
+
+/// Spawn a Python callable on a new OS thread via the registered VM callback.
+/// Returns `Some(JoinHandle)` if the callback is registered, `None` otherwise.
+pub fn spawn_python_thread(
+    func: PyObjectRef,
+    args: Vec<PyObjectRef>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let ptr = THREAD_SPAWN_FN.load(Ordering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        let f: ThreadSpawnFn = unsafe { std::mem::transmute(ptr) };
+        Some(f(func, args))
+    }
+}

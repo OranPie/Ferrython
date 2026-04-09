@@ -124,9 +124,31 @@ pub fn create_threading_module() -> PyObjectRef {
                         return Ok(PyObject::none());
                     }
                     _ => {
-                        // Python-defined functions: run sequentially (needs VM)
-                        // Skip daemon threads — they block indefinitely and should
-                        // only run alongside a live main thread.
+                        // Python-defined functions: spawn a real OS thread with its own VM
+                        let alive_attrs = inst.attrs.clone();
+                        if let Some(handle) = ferrython_core::error::spawn_python_thread(target.clone(), call_args.clone()) {
+                            let join_handle = std::sync::Arc::new(std::sync::Mutex::new(Some(handle)));
+                            let jh = join_handle.clone();
+                            let alive_flag = alive_attrs.clone();
+                            // Monitor thread completion in a background helper
+                            std::thread::spawn(move || {
+                                if let Some(h) = jh.lock().unwrap().take() {
+                                    let _ = h.join();
+                                }
+                                alive_flag.write().insert(CompactString::from("_alive"), PyObject::bool_val(false));
+                            });
+                            inst.attrs.write().insert(
+                                CompactString::from("_join_handle"),
+                                PyObject::native_closure("_join_handle", move |_| {
+                                    if let Some(h) = join_handle.lock().unwrap().take() {
+                                        let _ = h.join();
+                                    }
+                                    Ok(PyObject::none())
+                                }),
+                            );
+                            return Ok(PyObject::none());
+                        }
+                        // Fallback: deferred sequential execution
                         let is_daemon = inst.attrs.read().get("daemon")
                             .cloned()
                             .or_else(|| inst.attrs.read().get("_daemon").cloned())
@@ -239,19 +261,20 @@ pub fn create_threading_module() -> PyObjectRef {
 
     let thread_class = PyObject::class(CompactString::from("Thread"), vec![], thread_ns);
 
-    // Lock — context manager with acquire/release using shared state
+    // Lock — real mutex for cross-thread synchronization
     let lock_cls = PyObject::class(CompactString::from("Lock"), vec![], IndexMap::new());
     let lc = lock_cls.clone();
     let lock_fn = PyObject::native_closure("Lock", move |_args: &[PyObjectRef]| {
         let inst = PyObject::instance(lc.clone());
-        let locked = Arc::new(RwLock::new(false));
+        let mutex = Arc::new(parking_lot::Mutex::new(()));
+        let locked_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let inst_ref = inst.clone();
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
-            let l1 = locked.clone();
+            let m1 = mutex.clone();
+            let lf1 = locked_flag.clone();
             attrs.insert(CompactString::from("acquire"), PyObject::native_closure(
                 "acquire", move |args: &[PyObjectRef]| {
-                    // Parse blocking kwarg: acquire(blocking=True, timeout=-1)
                     let mut blocking = true;
                     for a in args {
                         match &a.payload {
@@ -265,32 +288,54 @@ pub fn create_threading_module() -> PyObjectRef {
                             _ => {}
                         }
                     }
-                    let mut g = l1.write();
-                    if *g {
-                        // Already locked
-                        if blocking {
-                            // In real impl would block; just return True (single-thread semantics)
-                            Ok(PyObject::bool_val(true))
-                        } else {
-                            Ok(PyObject::bool_val(false))
-                        }
-                    } else {
-                        *g = true;
+                    if blocking {
+                        let guard = m1.lock();
+                        lf1.store(true, std::sync::atomic::Ordering::Release);
+                        // Leak the guard to keep the mutex locked until release()
+                        std::mem::forget(guard);
                         Ok(PyObject::bool_val(true))
+                    } else {
+                        match m1.try_lock() {
+                            Some(guard) => {
+                                lf1.store(true, std::sync::atomic::Ordering::Release);
+                                std::mem::forget(guard);
+                                Ok(PyObject::bool_val(true))
+                            }
+                            None => Ok(PyObject::bool_val(false)),
+                        }
                     }
                 }));
-            let l2 = locked.clone();
+            let m2 = mutex.clone();
+            let lf2 = locked_flag.clone();
             attrs.insert(CompactString::from("release"), PyObject::native_closure(
-                "release", move |_: &[PyObjectRef]| { *l2.write() = false; Ok(PyObject::none()) }));
-            let l3 = locked.clone();
+                "release", move |_: &[PyObjectRef]| {
+                    if lf2.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                        // Safety: we know the mutex was locked by acquire()
+                        unsafe { m2.force_unlock(); }
+                    }
+                    Ok(PyObject::none())
+                }));
+            let lf3 = locked_flag.clone();
             attrs.insert(CompactString::from("locked"), PyObject::native_closure(
-                "locked", move |_: &[PyObjectRef]| { Ok(PyObject::bool_val(*l3.read())) }));
-            let l4 = locked.clone();
+                "locked", move |_: &[PyObjectRef]| { Ok(PyObject::bool_val(lf3.load(std::sync::atomic::Ordering::Acquire))) }));
+            let m4 = mutex.clone();
+            let lf4 = locked_flag.clone();
             attrs.insert(CompactString::from("__enter__"), PyObject::native_closure(
-                "__enter__", move |_: &[PyObjectRef]| { *l4.write() = true; Ok(inst_ref.clone()) }));
-            let l5 = locked.clone();
+                "__enter__", move |_: &[PyObjectRef]| {
+                    let guard = m4.lock();
+                    lf4.store(true, std::sync::atomic::Ordering::Release);
+                    std::mem::forget(guard);
+                    Ok(inst_ref.clone())
+                }));
+            let m5 = mutex.clone();
+            let lf5 = locked_flag.clone();
             attrs.insert(CompactString::from("__exit__"), PyObject::native_closure(
-                "__exit__", move |_: &[PyObjectRef]| { *l5.write() = false; Ok(PyObject::bool_val(false)) }));
+                "__exit__", move |_: &[PyObjectRef]| {
+                    if lf5.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                        unsafe { m5.force_unlock(); }
+                    }
+                    Ok(PyObject::bool_val(false))
+                }));
         }
         Ok(inst)
     });

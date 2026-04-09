@@ -13,7 +13,25 @@ use ferrython_core::types::{PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+/// Shared builtins for spawning thread VMs without re-initializing.
+static SHARED_BUILTINS: OnceLock<SharedBuiltins> = OnceLock::new();
+
+/// Callback registered with ferrython-core to spawn Python functions on real OS threads.
+fn spawn_python_thread_impl(
+    func: PyObjectRef,
+    args: Vec<PyObjectRef>,
+) -> std::thread::JoinHandle<()> {
+    let builtins = SHARED_BUILTINS
+        .get()
+        .expect("SHARED_BUILTINS not initialized")
+        .clone();
+    std::thread::spawn(move || {
+        let mut vm = VirtualMachine::new_for_thread(builtins);
+        let _ = vm.call_function_standalone(func, args);
+    })
+}
 
 /// The Ferrython virtual machine.
 pub struct VirtualMachine {
@@ -34,9 +52,17 @@ pub struct VirtualMachine {
 
 impl VirtualMachine {
     pub fn new() -> Self {
+        let builtins = Arc::new(builtins::init_builtins());
+        // Register the thread spawn callback so the stdlib can spawn real OS
+        // threads for Python function targets.  Uses the shared builtins Arc.
+        {
+            let shared_bi = Arc::clone(&builtins);
+            SHARED_BUILTINS.get_or_init(|| shared_bi);
+            ferrython_core::error::register_thread_spawn(spawn_python_thread_impl);
+        }
         Self {
             call_stack: Vec::new(),
-            builtins: Arc::new(builtins::init_builtins()),
+            builtins,
             modules: IndexMap::new(),
             active_exception: None,
             sys_modules_dict: None,
@@ -44,6 +70,37 @@ impl VirtualMachine {
             breakpoints: BreakpointManager::new(),
             frame_pool: FramePool::new(),
         }
+    }
+
+    /// Create a lightweight VM for use in a spawned thread.
+    /// Shares the same builtins map (Arc) so builtin lookup is free.
+    pub fn new_for_thread(builtins: SharedBuiltins) -> Self {
+        Self {
+            call_stack: Vec::new(),
+            builtins,
+            modules: IndexMap::new(),
+            active_exception: None,
+            sys_modules_dict: None,
+            profiler: ExecutionProfiler::new(),
+            breakpoints: BreakpointManager::new(),
+            frame_pool: FramePool::new(),
+        }
+    }
+
+    /// Get a clone of the builtins Arc for passing to thread VMs.
+    pub fn shared_builtins(&self) -> SharedBuiltins {
+        Arc::clone(&self.builtins)
+    }
+
+    /// Execute a Python function object with arguments on this VM.
+    /// Used by thread spawning to run Python-defined thread targets.
+    pub fn call_function_standalone(
+        &mut self,
+        func: PyObjectRef,
+        args: Vec<PyObjectRef>,
+    ) -> PyResult<PyObjectRef> {
+        self.install_hash_eq_dispatch();
+        self.call_object(func, args)
     }
 
     /// Create a new empty shared globals map.
