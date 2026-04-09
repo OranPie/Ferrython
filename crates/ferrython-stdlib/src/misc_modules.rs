@@ -676,7 +676,7 @@ pub fn create_dataclasses_module() -> PyObjectRef {
             ns.insert(CompactString::from("__annotations__"), PyObject::dict(annotations));
             let cls = PyObject::class(CompactString::from(cls_name.as_str()), vec![], ns);
             // Apply the dataclass transform to generate __init__, __repr__, __eq__
-            dataclass_apply(&cls, true, false, false, true, false)
+            dataclass_apply(&cls, true, false, false, true, false, false)
         })),
         ("FrozenInstanceError", PyObject::exception_type(ferrython_core::error::ExceptionKind::AttributeError)),
         ("InitVar", make_builtin(|args: &[PyObjectRef]| {
@@ -700,7 +700,7 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::native_closure("dataclass", move |args: &[PyObjectRef]| {
             if args.is_empty() { return Err(PyException::type_error("dataclass requires 1 argument")); }
-            dataclass_apply(&args[0], true, false, false, true, false)
+            dataclass_apply(&args[0], true, false, false, true, false, false)
         }));
     }
     let cls = &args[0];
@@ -712,6 +712,7 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut frozen = false;
         let mut repr = true;
         let mut unsafe_hash = false;
+        let mut slots = false;
         if let PyObjectPayload::Dict(map) = &cls.payload {
             let m = map.read();
             if let Some(v) = m.get(&HashableKey::Str(CompactString::from("eq"))) {
@@ -729,15 +730,17 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if let Some(v) = m.get(&HashableKey::Str(CompactString::from("unsafe_hash"))) {
                 unsafe_hash = v.is_truthy();
             }
+            if let Some(v) = m.get(&HashableKey::Str(CompactString::from("slots"))) {
+                slots = v.is_truthy();
+            }
         }
         return Ok(PyObject::native_closure("dataclass", move |args: &[PyObjectRef]| {
             if args.is_empty() { return Err(PyException::type_error("dataclass requires 1 argument")); }
-            dataclass_apply(&args[0], eq, order, frozen, repr, unsafe_hash)
+            dataclass_apply(&args[0], eq, order, frozen, repr, unsafe_hash, slots)
         }));
     }
     
-    // Default: eq=True, order=False, frozen=False, repr=True, unsafe_hash=False
-    dataclass_apply(cls, true, false, false, true, false)
+    dataclass_apply(cls, true, false, false, true, false, false)
 }
 
 /// Call a default_factory callable or clone a static default value.
@@ -769,7 +772,7 @@ fn call_factory_or_clone(default: &PyObjectRef) -> PyResult<PyObjectRef> {
     }
 }
 
-fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr: bool, unsafe_hash: bool) -> PyResult<PyObjectRef> {
+fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr: bool, unsafe_hash: bool, slots: bool) -> PyResult<PyObjectRef> {
     
     // Get annotations to discover fields — walk MRO for inherited dataclass fields
     let mut field_names: Vec<CompactString> = Vec::new();
@@ -866,6 +869,31 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
         let mut ns = cd.namespace.write();
         ns.insert(CompactString::from("__dataclass_fields__"), PyObject::dict(fields_dict));
         ns.insert(CompactString::from("__dataclass__"), PyObject::bool_val(true));
+
+        // slots=True: add __slots__ tuple and restrict attribute assignment
+        if slots {
+            let slot_names: Vec<PyObjectRef> = field_names.iter()
+                .map(|n| PyObject::str_val(n.clone()))
+                .collect();
+            ns.insert(CompactString::from("__slots__"), PyObject::tuple(slot_names));
+            // Add __setattr__ that restricts to declared slots + dataclass internals
+            let allowed: Vec<CompactString> = field_names.clone();
+            ns.insert(CompactString::from("__setattr__"), PyObject::native_closure("__setattr__", move |args: &[PyObjectRef]| {
+                if args.len() < 3 {
+                    return Err(PyException::type_error("__setattr__ requires 3 arguments"));
+                }
+                let attr_name = args[1].py_to_string();
+                if !allowed.iter().any(|f| f.as_str() == attr_name) && !attr_name.starts_with("__") {
+                    return Err(PyException::attribute_error(
+                        format!("'{}' object has no attribute '{}'", "object", attr_name)
+                    ));
+                }
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    inst.attrs.write().insert(CompactString::from(attr_name), args[2].clone());
+                }
+                Ok(PyObject::none())
+            }));
+        }
 
         // Generate __setattr__ and __delattr__ for frozen=True
         if frozen {
