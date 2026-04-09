@@ -1306,6 +1306,59 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
             }
             Ok(PyObject::not_implemented())
         }
+        "__truediv__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                let d = if let Ok(m) = args[0].to_int() { m as f64 } else if let Ok(f) = args[0].to_float() { f } else { return Ok(PyObject::not_implemented()); };
+                if d == 0.0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "division by zero".to_string())); }
+                return Ok(PyObject::float(n as f64 / d));
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__float__" => { let n = _receiver.to_int()?; Ok(PyObject::float(n as f64)) }
+        "__round__" => {
+            let n = _receiver.to_int()?;
+            // int.__round__(ndigits) — for ints, just returns self (unless ndigits is negative)
+            if !args.is_empty() {
+                if let Ok(nd) = args[0].to_int() {
+                    if nd < 0 {
+                        let factor = 10i64.pow((-nd) as u32);
+                        return Ok(PyObject::int((n + factor / 2) / factor * factor));
+                    }
+                }
+            }
+            Ok(PyObject::int(n))
+        }
+        "__divmod__" => {
+            if !args.is_empty() {
+                let n = _receiver.to_int()?;
+                if let Ok(m) = args[0].to_int() {
+                    if m == 0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "integer division or modulo by zero".to_string())); }
+                    return Ok(PyObject::tuple(vec![PyObject::int(n.div_euclid(m)), PyObject::int(n.rem_euclid(m))]));
+                }
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__lshift__" => {
+            if !args.is_empty() { let n = _receiver.to_int()?; if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n << (m as u32))); } }
+            Ok(PyObject::not_implemented())
+        }
+        "__rshift__" => {
+            if !args.is_empty() { let n = _receiver.to_int()?; if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n >> (m as u32))); } }
+            Ok(PyObject::not_implemented())
+        }
+        "__and__" => {
+            if !args.is_empty() { let n = _receiver.to_int()?; if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n & m)); } }
+            Ok(PyObject::not_implemented())
+        }
+        "__or__" => {
+            if !args.is_empty() { let n = _receiver.to_int()?; if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n | m)); } }
+            Ok(PyObject::not_implemented())
+        }
+        "__xor__" => {
+            if !args.is_empty() { let n = _receiver.to_int()?; if let Ok(m) = args[0].to_int() { return Ok(PyObject::int(n ^ m)); } }
+            Ok(PyObject::not_implemented())
+        }
         _ => Err(PyException::attribute_error(format!(
             "'int' object has no attribute '{}'", method
         ))),
@@ -1453,6 +1506,41 @@ pub(super) fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> 
             }
             Ok(PyObject::not_implemented())
         }
+        "__floordiv__" => {
+            if !_args.is_empty() {
+                let g = if let Ok(g) = _args[0].to_float() { g } else if let Ok(n) = _args[0].to_int() { n as f64 } else { return Ok(PyObject::not_implemented()); };
+                if g == 0.0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "float floor division by zero".to_string())); }
+                return Ok(PyObject::float((f / g).floor()));
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__mod__" => {
+            if !_args.is_empty() {
+                let g = if let Ok(g) = _args[0].to_float() { g } else if let Ok(n) = _args[0].to_int() { n as f64 } else { return Ok(PyObject::not_implemented()); };
+                if g == 0.0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "float modulo".to_string())); }
+                return Ok(PyObject::float(f - (f / g).floor() * g));
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__pow__" => {
+            if !_args.is_empty() {
+                let g = if let Ok(g) = _args[0].to_float() { g } else if let Ok(n) = _args[0].to_int() { n as f64 } else { return Ok(PyObject::not_implemented()); };
+                return Ok(PyObject::float(f.powf(g)));
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__divmod__" => {
+            if !_args.is_empty() {
+                let g = if let Ok(g) = _args[0].to_float() { g } else if let Ok(n) = _args[0].to_int() { n as f64 } else { return Ok(PyObject::not_implemented()); };
+                if g == 0.0 { return Err(PyException::new(ExceptionKind::ZeroDivisionError, "float divmod()".to_string())); }
+                let q = (f / g).floor();
+                return Ok(PyObject::tuple(vec![PyObject::float(q), PyObject::float(f - q * g)]));
+            }
+            Ok(PyObject::not_implemented())
+        }
+        "__ceil__" => Ok(PyObject::int(f.ceil() as i64)),
+        "__floor__" => Ok(PyObject::int(f.floor() as i64)),
+        "__trunc__" | "__int__" => Ok(PyObject::int(f as i64)),
         _ => Err(PyException::attribute_error(format!(
             "'float' object has no attribute '{}'", method
         ))),
