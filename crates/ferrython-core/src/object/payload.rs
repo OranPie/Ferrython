@@ -6,6 +6,7 @@ use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
@@ -215,7 +216,11 @@ pub struct ClassData {
     pub metaclass: Option<PyObjectRef>,
     /// Per-class method resolution cache: avoids repeated MRO scans for the same attr name.
     /// Cleared on any namespace mutation (class attr assignment).
-    pub method_cache: Arc<RwLock<IndexMap<CompactString, Option<PyObjectRef>>>>,
+    /// Uses FxHashMap for faster hashing (no insertion-order needed).
+    pub method_cache: Arc<RwLock<FxHashMap<CompactString, Option<PyObjectRef>>>>,
+    /// Fast-path flag: true if this class or any base defines Property, __set__, or __delete__.
+    /// When false, instance attr lookup can skip the descriptor protocol entirely.
+    pub has_descriptors: bool,
     /// Weak references to direct subclasses (for type.__subclasses__()).
     pub subclasses: Arc<RwLock<Vec<std::sync::Weak<PyObject>>>>,
     /// `__slots__` declared on *this* class (None means no __slots__ declared).
@@ -258,6 +263,8 @@ impl ClassData {
                 false
             }
         });
+        // Detect data descriptors (Property, __set__, __delete__) in this class or bases
+        let has_descriptors = Self::detect_descriptors(&namespace, &mro);
         // If MRO is empty but we have bases, build a simple linearization
         let mro = if mro.is_empty() && !bases.is_empty() {
             let mut result = Vec::new();
@@ -283,10 +290,11 @@ impl ClassData {
             namespace: Arc::new(RwLock::new(namespace)),
             mro,
             metaclass,
-            method_cache: Arc::new(RwLock::new(IndexMap::new())),
+            method_cache: Arc::new(RwLock::new(FxHashMap::default())),
             subclasses: Arc::new(RwLock::new(Vec::new())),
             slots,
             has_getattribute,
+            has_descriptors,
         }
     }
 
@@ -349,6 +357,41 @@ impl ClassData {
     /// Invalidate the method cache (call after any namespace mutation).
     pub fn invalidate_cache(&self) {
         self.method_cache.write().clear();
+    }
+
+    /// Detect if this class or any base has data descriptors (Property, __set__, __delete__).
+    /// When false, instance attribute lookup can skip the full descriptor protocol and
+    /// check instance __dict__ directly — a significant hot-path optimization.
+    fn detect_descriptors(namespace: &IndexMap<CompactString, PyObjectRef>, mro: &[PyObjectRef]) -> bool {
+        // Check own namespace for Property or descriptor-like objects
+        for v in namespace.values() {
+            match &v.payload {
+                PyObjectPayload::Property { .. } => return true,
+                PyObjectPayload::Instance(inst) => {
+                    let attrs = inst.attrs.read();
+                    if attrs.contains_key("__set__") || attrs.contains_key("__delete__") {
+                        return true;
+                    }
+                    // Check class for __set__/__delete__
+                    if let PyObjectPayload::Class(icd) = &inst.class.payload {
+                        if icd.namespace.read().contains_key("__set__")
+                            || icd.namespace.read().contains_key("__delete__") {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Check bases
+        for base in mro {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                if bcd.has_descriptors {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 

@@ -10,6 +10,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use rustc_hash::FxHashMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
@@ -722,10 +723,11 @@ impl VirtualMachine {
                             namespace: cd.namespace.clone(),
                             mro: cd.mro.clone(),
                             metaclass: Some(meta.clone()),
-                            method_cache: Arc::new(RwLock::new(IndexMap::new())),
+                            method_cache: Arc::new(RwLock::new(FxHashMap::default())),
                             subclasses: Arc::new(RwLock::new(Vec::new())),
                             slots: cd.slots.clone(),
                             has_getattribute: cd.has_getattribute,
+                            has_descriptors: cd.has_descriptors,
                         }))
                     } else {
                         result

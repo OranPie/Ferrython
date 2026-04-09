@@ -94,9 +94,63 @@ fn has_method_in_class(class: &PyObjectRef, name: &str) -> bool {
     lookup_in_class_mro(class, name).is_some()
 }
 
+/// Wrap a class-level attribute for instance access: bind functions as BoundMethod,
+/// unwrap StaticMethod/ClassMethod, handle cached_property/lru_cache wrappers.
+/// Extracted to avoid duplicating this logic in fast-path and descriptor-protocol paths.
+#[inline]
+fn wrap_class_attr_for_instance(obj: &PyObjectRef, inst: &InstanceData, v: PyObjectRef) -> PyObjectRef {
+    match &v.payload {
+        PyObjectPayload::StaticMethod(func) => func.clone(),
+        PyObjectPayload::ClassMethod(func) => Arc::new(PyObject {
+            payload: PyObjectPayload::BoundMethod {
+                receiver: inst.class.clone(),
+                method: func.clone(),
+            }
+        }),
+        PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } => {
+            Arc::new(PyObject {
+                payload: PyObjectPayload::BoundMethod {
+                    receiver: obj.clone(),
+                    method: v,
+                }
+            })
+        }
+        PyObjectPayload::Instance(ref cp_inst) => {
+            let cp_attrs = cp_inst.attrs.read();
+            if cp_attrs.contains_key("__cached_property_func__") {
+                return v.clone();
+            }
+            if cp_attrs.contains_key("__wrapped__") {
+                return Arc::new(PyObject {
+                    payload: PyObjectPayload::BoundMethod {
+                        receiver: obj.clone(),
+                        method: v.clone(),
+                    }
+                });
+            }
+            drop(cp_attrs);
+            v
+        }
+        PyObjectPayload::NativeClosure { ref name, .. } => {
+            if name.contains('.') {
+                Arc::new(PyObject {
+                    payload: PyObjectPayload::BoundMethod {
+                        receiver: obj.clone(),
+                        method: v,
+                    }
+                })
+            } else {
+                v
+            }
+        }
+        _ => v,
+    }
+}
+
 
 
 /// Returns a BuiltinBoundMethod if the method name matches, None otherwise.
+/// Uses a single lock acquisition to check all special instance markers.
 fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -> Option<PyObjectRef> {
     let make_bound = |name: &str| -> PyObjectRef {
         Arc::new(PyObject {
@@ -128,11 +182,13 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
         }
     }
 
+    // Single lock acquisition for all marker checks
+    let attrs = inst.attrs.read();
+
     // Deque
-    if inst.attrs.read().contains_key("__deque__") {
-        // maxlen is a property, not a method — return the value directly
+    if attrs.contains_key("__deque__") {
         if name == "maxlen" {
-            return Some(inst.attrs.read().get("__maxlen__").cloned().unwrap_or_else(PyObject::none));
+            return Some(attrs.get("__maxlen__").cloned().unwrap_or_else(PyObject::none));
         }
         if matches!(name, "append" | "appendleft" | "pop" | "popleft" | "extend"
             | "extendleft" | "rotate" | "clear" | "copy" | "count" | "index"
@@ -141,37 +197,36 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
         {
             return Some(make_bound(name));
         }
-        return inst.attrs.read().get(name).cloned();
+        return attrs.get(name).cloned();
     }
 
     // StringIO
-    if inst.attrs.read().contains_key("__stringio__") {
+    if attrs.contains_key("__stringio__") {
         if matches!(name, "write" | "read" | "getvalue" | "seek" | "tell" | "close" | "closed"
             | "readline" | "readlines" | "writelines" | "truncate" | "readable" | "writable" | "seekable"
             | "__iter__" | "__next__" | "__enter__" | "__exit__")
         {
             return Some(make_bound(name));
         }
-        return inst.attrs.read().get(name).cloned();
+        return attrs.get(name).cloned();
     }
 
     // BytesIO
-    if inst.attrs.read().contains_key("__bytesio__") {
+    if attrs.contains_key("__bytesio__") {
         if matches!(name, "write" | "read" | "getvalue" | "seek" | "tell" | "close"
             | "readline" | "readlines" | "truncate" | "readable" | "writable" | "seekable")
         {
             return Some(make_bound(name));
         }
-        return inst.attrs.read().get(name).cloned();
+        return attrs.get(name).cloned();
     }
 
     // pathlib.Path
-    if inst.attrs.read().contains_key("__pathlib_path__") {
-        // Check instance attrs first for properties (name, stem, suffix, suffixes, parts, parent)
-        if let Some(v) = inst.attrs.read().get(name).cloned() {
+    if attrs.contains_key("__pathlib_path__") {
+        if let Some(v) = attrs.get(name).cloned() {
             return Some(v);
         }
-        // Methods are returned as bound methods
+        drop(attrs); // Release before returning bound method
         if matches!(name, "exists" | "is_file" | "is_dir" | "is_absolute" | "is_symlink"
             | "__str__" | "__fspath__" | "__repr__"
             | "resolve" | "absolute" | "as_posix" | "relative_to"
@@ -186,63 +241,63 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
         return None;
     }
 
-    // Hashlib hash objects
+    // Hashlib hash objects (check class name, not attrs)
     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.as_str() } else { "" };
     if matches!(class_name, "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
         if matches!(name, "hexdigest" | "digest" | "update" | "copy") {
             return Some(make_bound(name));
         }
-        return inst.attrs.read().get(name).cloned();
+        return attrs.get(name).cloned();
     }
 
     // CSV writer
-    if inst.attrs.read().contains_key("__csv_writer__") {
+    if attrs.contains_key("__csv_writer__") {
         if matches!(name, "writerow" | "writerows") {
             return Some(make_bound(name));
         }
-        return inst.attrs.read().get(name).cloned();
+        return attrs.get(name).cloned();
     }
 
     // CSV DictWriter
-    if inst.attrs.read().contains_key("__csv_dictwriter__") {
+    if attrs.contains_key("__csv_dictwriter__") {
         if matches!(name, "writeheader" | "writerow" | "writerows") {
             return Some(make_bound(name));
         }
-        return inst.attrs.read().get(name).cloned();
+        return attrs.get(name).cloned();
     }
 
     // datetime instances
-    if inst.attrs.read().contains_key("__datetime__") {
+    if attrs.contains_key("__datetime__") {
         if matches!(name, "strftime" | "isoformat" | "timestamp" | "replace" | "date" | "time"
             | "timetuple" | "weekday" | "isoweekday" | "toordinal" | "ctime" | "__str__" | "__repr__"
             | "astimezone" | "utcoffset" | "tzname" | "isocalendar")
         {
             return Some(make_bound(name));
         }
-        return inst.attrs.read().get(name).cloned();
+        return attrs.get(name).cloned();
     }
 
     // timedelta instances
-    if inst.attrs.read().contains_key("__timedelta__") {
+    if attrs.contains_key("__timedelta__") {
         if matches!(name, "total_seconds" | "__str__" | "__repr__") {
             return Some(make_bound(name));
         }
-        return inst.attrs.read().get(name).cloned();
+        return attrs.get(name).cloned();
     }
 
     // timezone instances
-    if inst.attrs.read().contains_key("__timezone__") {
-        return inst.attrs.read().get(name).cloned();
+    if attrs.contains_key("__timezone__") {
+        return attrs.get(name).cloned();
     }
 
     // queue instances
-    if inst.attrs.read().contains_key("__queue__") {
+    if attrs.contains_key("__queue__") {
         if matches!(name, "put" | "get" | "empty" | "full" | "qsize" | "get_nowait" | "put_nowait"
             | "task_done" | "join")
         {
             return Some(make_bound(name));
         }
-        return inst.attrs.read().get(name).cloned();
+        return attrs.get(name).cloned();
     }
 
     None
@@ -251,15 +306,14 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
 pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
-                // Special instance attributes
+                // Special instance attributes (cheap string comparisons)
                 if name == "__class__" {
                     return Some(inst.class.clone());
                 }
                 if name == "__dict__" {
-                    // If __slots__ is defined without __dict__ in it, block access
                     if let PyObjectPayload::Class(cd) = &inst.class.payload {
                         if !cd.has_dict_slot() {
-                            return None; // Will trigger AttributeError
+                            return None;
                         }
                     }
                     return Some(PyObject::wrap(PyObjectPayload::InstanceDict(inst.attrs.clone())));
@@ -270,105 +324,58 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         return Some(result);
                     }
                 }
-                // CPython descriptor protocol:
-                // 1. Data descriptors (has __set__ or __delete__) from class MRO
-                // 2. Instance __dict__
-                // 3. Non-data descriptors (has __get__ only) and other class attrs
-                let class_attr = lookup_in_class_mro(&inst.class, name);
-                if let Some(ref v) = class_attr {
-                    match &v.payload {
-                        PyObjectPayload::Property { .. } => {
-                            // Property is always a data descriptor — VM calls fget
-                            return Some(v.clone());
-                        }
-                        _ => {
-                            // Check if this is a custom data descriptor (has __set__ or __delete__)
-                            if is_data_descriptor(v) {
-                                // Data descriptor takes priority over instance dict
-                                // Return it; VM's LoadAttr will call __get__
+
+                // Determine if this class has data descriptors
+                let class_has_descriptors = match &inst.class.payload {
+                    PyObjectPayload::Class(cd) => cd.has_descriptors,
+                    _ => false,
+                };
+
+                if !class_has_descriptors {
+                    // ── FAST PATH: no data descriptors ──
+                    // Check instance dict first (avoids MRO lookup entirely for instance attrs)
+                    if let Some(v) = inst.attrs.read().get(name) {
+                        return Some(v.clone());
+                    }
+                    // Then class MRO for methods/class attrs
+                    if let Some(v) = lookup_in_class_mro(&inst.class, name) {
+                        return Some(wrap_class_attr_for_instance(obj, inst, v));
+                    }
+                } else {
+                    // ── FULL DESCRIPTOR PROTOCOL ──
+                    // 1. Data descriptors from class MRO take priority
+                    let class_attr = lookup_in_class_mro(&inst.class, name);
+                    if let Some(ref v) = class_attr {
+                        match &v.payload {
+                            PyObjectPayload::Property { .. } => {
                                 return Some(v.clone());
                             }
+                            _ => {
+                                if is_data_descriptor(v) {
+                                    return Some(v.clone());
+                                }
+                            }
                         }
+                    }
+                    // 2. Instance attributes
+                    if let Some(v) = inst.attrs.read().get(name) { return Some(v.clone()); }
+                    // 3. Non-data descriptors and other class attrs
+                    if let Some(v) = class_attr {
+                        return Some(wrap_class_attr_for_instance(obj, inst, v));
                     }
                 }
-                // Instance attributes (between data and non-data descriptors)
-                if let Some(v) = inst.attrs.read().get(name) { return Some(v.clone()); }
-                // Non-data descriptors and other class attrs
-                if let Some(v) = class_attr {
-                    // StaticMethod / ClassMethod are non-data descriptors (no __set__)
-                    match &v.payload {
-                        PyObjectPayload::StaticMethod(func) => {
-                            return Some(func.clone());
-                        }
-                        PyObjectPayload::ClassMethod(func) => {
-                            return Some(Arc::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: inst.class.clone(),
-                                    method: func.clone(),
-                                }
-                            }));
-                        }
-                        _ => {}
-                    }
-                    // cached_property: if instance has the cached value, return it
-                    if let PyObjectPayload::Instance(ref cp_inst) = v.payload {
-                        if cp_inst.attrs.read().contains_key("__cached_property_func__") {
-                            // This is a cached_property descriptor — return marker for VM
-                            // The VM's LoadAttr handler will call the function and cache the result
-                            return Some(v.clone());
-                        }
-                        // lru_cache wrapper or other callable instance from class MRO → bind self
-                        if cp_inst.attrs.read().contains_key("__wrapped__") {
-                            return Some(Arc::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: obj.clone(),
-                                    method: v.clone(),
-                                }
-                            }));
-                        }
-                    }
-                    if matches!(&v.payload, PyObjectPayload::Function(_)) {
-                        return Some(Arc::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver: obj.clone(),
-                                method: v.clone(),
-                            }
-                        }));
-                    }
-                    // NativeFunction / NativeClosure (class methods with '.' in name) from class namespace → wrap to pass self
-                    if matches!(&v.payload, PyObjectPayload::NativeFunction { .. }) {
-                        let receiver = obj.clone();
-                        let func = v.clone();
-                        return Some(Arc::new(PyObject {
-                            payload: PyObjectPayload::BoundMethod {
-                                receiver,
-                                method: func,
-                            }
-                        }));
-                    }
-                    if let PyObjectPayload::NativeClosure { ref name, .. } = v.payload {
-                        if name.contains('.') {
-                            return Some(Arc::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: obj.clone(),
-                                    method: v.clone(),
-                                }
-                            }));
-                        }
-                    }
-                    return Some(v.clone());
-                }
-                // Check for built-in instance methods (namedtuple, deque, hashlib)
+
+                // Fallback: built-in instance methods (namedtuple, deque, hashlib, etc.)
                 if let Some(result) = instance_builtin_method(obj, inst, name) {
                     return Some(result);
                 }
-                // Builtin type subclass: delegate to the underlying value's get_attr
+                // Builtin type subclass: delegate to underlying value
                 if let Some(val) = inst.attrs.read().get("__builtin_value__").cloned() {
                     if let Some(result) = py_get_attr(&val, name) {
                         return Some(result);
                     }
                 }
-                // Fallback: synthesized class-level attrs (__new__, __subclasshook__, etc.)
+                // Synthesized class-level attrs
                 if name == "__new__" || name == "__init_subclass__" || name == "__subclasshook__" {
                     return py_get_attr(&inst.class, name);
                 }

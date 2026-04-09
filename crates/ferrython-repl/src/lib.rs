@@ -106,6 +106,8 @@ pub fn run_repl() {
                             Ok(_) => {}
                             Err(e) => eprintln!("{}", ferrython_debug::format_traceback(&e)),
                         }
+                        // Clear thread-local exception state so it doesn't persist into next input
+                        ferrython_core::error::clear_thread_exc_info();
                     }
                     Err(e) => eprintln!("CompileError: {}", e),
                 }
