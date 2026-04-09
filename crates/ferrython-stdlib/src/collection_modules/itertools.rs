@@ -105,19 +105,26 @@ fn itertools_islice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::type_error("islice() requires at least 2 arguments"));
     }
     let items = args[0].to_list()?;
+    let total = items.len();
     let (start, stop, step) = if args.len() == 2 {
-        (0usize, args[1].to_int()? as usize, 1usize)
+        // islice(iterable, stop) — stop=None means no limit
+        let stop = if matches!(&args[1].payload, PyObjectPayload::None) { total } else { args[1].to_int()? as usize };
+        (0usize, stop, 1usize)
     } else if args.len() == 3 {
+        // islice(iterable, start, stop)
         let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
-        (s, args[2].to_int()? as usize, 1usize)
+        let stop = if matches!(&args[2].payload, PyObjectPayload::None) { total } else { args[2].to_int()? as usize };
+        (s, stop, 1usize)
     } else {
+        // islice(iterable, start, stop, step)
         let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
+        let stop = if matches!(&args[2].payload, PyObjectPayload::None) { total } else { args[2].to_int()? as usize };
         let step = if matches!(&args[3].payload, PyObjectPayload::None) { 1 } else { args[3].to_int()? as usize };
-        (s, args[2].to_int()? as usize, step)
+        (s, stop, step)
     };
     let result: Vec<PyObjectRef> = items.into_iter()
         .skip(start)
-        .take(stop - start)
+        .take(stop.saturating_sub(start))
         .step_by(step.max(1))
         .collect();
     Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(

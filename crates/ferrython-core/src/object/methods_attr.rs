@@ -317,6 +317,15 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             // The VM's LoadAttr handler will call the function and cache the result
                             return Some(v.clone());
                         }
+                        // lru_cache wrapper or other callable instance from class MRO → bind self
+                        if cp_inst.attrs.read().contains_key("__wrapped__") {
+                            return Some(Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: obj.clone(),
+                                    method: v.clone(),
+                                }
+                            }));
+                        }
                     }
                     if matches!(&v.payload, PyObjectPayload::Function(_)) {
                         return Some(Arc::new(PyObject {
@@ -358,6 +367,10 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     if let Some(result) = py_get_attr(&val, name) {
                         return Some(result);
                     }
+                }
+                // Fallback: synthesized class-level attrs (__new__, __subclasshook__, etc.)
+                if name == "__new__" || name == "__init_subclass__" || name == "__subclasshook__" {
+                    return py_get_attr(&inst.class, name);
                 }
                 None
             }

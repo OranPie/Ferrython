@@ -646,15 +646,19 @@ impl VirtualMachine {
             return Err(PyException::type_error("islice() requires at least 2 arguments"));
         }
         let iterable = &args[0];
+        // None stop means no limit (use usize::MAX as sentinel)
         let (start, stop, step) = if args.len() == 2 {
-            (0usize, args[1].to_int()? as usize, 1usize)
+            let stop = if matches!(&args[1].payload, PyObjectPayload::None) { usize::MAX } else { args[1].to_int()? as usize };
+            (0usize, stop, 1usize)
         } else if args.len() == 3 {
             let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
-            (s, args[2].to_int()? as usize, 1usize)
+            let stop = if matches!(&args[2].payload, PyObjectPayload::None) { usize::MAX } else { args[2].to_int()? as usize };
+            (s, stop, 1usize)
         } else {
             let s = if matches!(&args[1].payload, PyObjectPayload::None) { 0 } else { args[1].to_int()? as usize };
+            let stop = if matches!(&args[2].payload, PyObjectPayload::None) { usize::MAX } else { args[2].to_int()? as usize };
             let st = if matches!(&args[3].payload, PyObjectPayload::None) { 1 } else { args[3].to_int()? as usize };
-            (s, args[2].to_int()? as usize, st.max(1))
+            (s, stop, st.max(1))
         };
 
         // For generators: consume items one at a time, only up to `stop`
@@ -664,7 +668,7 @@ impl VirtualMachine {
             let mut idx = 0usize;
             let mut next_yield = start;
             loop {
-                if result.len() >= stop - start { break; }
+                if result.len() >= stop.saturating_sub(start) { break; }
                 if idx >= stop { break; }
                 match self.resume_generator(&gen_arc, PyObject::none()) {
                     Ok(value) => {
@@ -735,7 +739,7 @@ impl VirtualMachine {
         let items = iterable.to_list()?;
         let result: Vec<PyObjectRef> = items.into_iter()
             .skip(start)
-            .take(stop - start)
+            .take(stop.saturating_sub(start))
             .step_by(step)
             .collect();
         Ok(PyObject::wrap(PyObjectPayload::Iterator(

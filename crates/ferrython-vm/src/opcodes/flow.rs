@@ -669,6 +669,16 @@ impl VirtualMachine {
                                         "unreadable attribute '{}'", name
                                     )));
                                 }
+                                // lru_cache wrapper (Instance with __wrapped__) → bind self
+                                PyObjectPayload::Instance(ref ci) if ci.attrs.read().contains_key("__wrapped__") => {
+                                    frame.push(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: obj,
+                                            method,
+                                        }
+                                    }));
+                                    return Ok(None);
+                                }
                                 // For descriptors or other types, fall through to full path
                                 _ => {
                                     frame.push(method);
