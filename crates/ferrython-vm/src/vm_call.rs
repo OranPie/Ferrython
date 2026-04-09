@@ -484,6 +484,14 @@ impl VirtualMachine {
             let is_abstract_marker = |val: &PyObjectRef| -> bool {
                 if let PyObjectPayload::Tuple(items) = &val.payload {
                     items.len() == 2 && items[0].as_str() == Some("__abstract__")
+                } else if let PyObjectPayload::Property { fget, .. } = &val.payload {
+                    // @property @abstractmethod: fget is the abstract marker tuple
+                    if let Some(fg) = fget {
+                        if let PyObjectPayload::Tuple(items) = &fg.payload {
+                            return items.len() == 2 && items[0].as_str() == Some("__abstract__");
+                        }
+                    }
+                    false
                 } else {
                     false
                 }
@@ -2388,7 +2396,8 @@ impl VirtualMachine {
                                 // Invoke descriptor protocol (Property, custom __get__)
                                 if let PyObjectPayload::Property { fget, .. } = &v.payload {
                                     if let Some(getter) = fget {
-                                        return self.call_object(getter.clone(), vec![args[0].clone()]);
+                                        let getter = crate::builtins::unwrap_abstract_fget(getter);
+                                        return self.call_object(getter, vec![args[0].clone()]);
                                     }
                                     return Err(PyException::attribute_error(
                                         format!("unreadable attribute '{}'", attr_name)));
@@ -3159,7 +3168,8 @@ impl VirtualMachine {
                     // Try native Property payload first
                     if let PyObjectPayload::Property { fget, .. } = &prop.payload {
                         if let Some(getter) = fget {
-                            return self.call_object(getter.clone(), vec![obj.clone()]);
+                            let getter = crate::builtins::unwrap_abstract_fget(getter);
+                            return self.call_object(getter, vec![obj.clone()]);
                         }
                         return Err(PyException::attribute_error("unreadable attribute"));
                     }

@@ -1348,12 +1348,26 @@ pub(super) fn builtin_ascii(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 pub(super) fn builtin_property(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let fget = args.first().cloned();
+    let fget_raw = args.first().cloned();
     let fset = args.get(1).cloned();
     let fdel = args.get(2).cloned();
+    // If fget is an abstract marker ("__abstract__", func), keep it as-is.
+    // is_abstract_marker() detects Property.fget abstract markers.
+    // unwrap_abstract_fget() unwraps the marker when actually calling the getter.
     Ok(Arc::new(PyObject {
-        payload: PyObjectPayload::Property { fget, fset, fdel },
+        payload: PyObjectPayload::Property { fget: fget_raw, fset, fdel },
     }))
+}
+
+/// Unwrap abstract marker from a property fget if present.
+/// Returns the real callable function, whether it was abstract-wrapped or not.
+pub(crate) fn unwrap_abstract_fget(fget: &PyObjectRef) -> PyObjectRef {
+    if let PyObjectPayload::Tuple(items) = &fget.payload {
+        if items.len() == 2 && items[0].as_str() == Some("__abstract__") {
+            return items[1].clone();
+        }
+    }
+    fget.clone()
 }
 
 pub(super) fn builtin_staticmethod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

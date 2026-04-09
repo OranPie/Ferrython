@@ -805,13 +805,11 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
                 // Get the fget from the property
                 if let PyObjectPayload::Property { fget, .. } = &prop.payload {
                     if let Some(getter) = fget {
-                        // This is a native call — we can't call functions here (we're in a pure fn)
-                        // Return a sentinel that the VM will handle
-                        // Actually, we need to return the getter bound to obj
+                        let getter = crate::builtins::core_fns::unwrap_abstract_fget(getter);
                         return Ok(Arc::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: obj.clone(),
-                                method: getter.clone(),
+                                method: getter,
                             }
                         }));
                     }

@@ -19,6 +19,7 @@ use instance_methods::*;
 
 pub(crate) use core_fns::{builtin_abs, builtin_dir};
 pub(crate) use core_fns::take_import_request;
+pub(crate) use core_fns::unwrap_abstract_fget;
 pub(crate) use type_methods::partial_cmp_for_sort;
 pub use instance_methods::resolve_type_class_method;
 

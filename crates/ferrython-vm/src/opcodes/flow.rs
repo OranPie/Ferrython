@@ -672,7 +672,8 @@ impl VirtualMachine {
                                 }
                                 PyObjectPayload::Property { fget, .. } => {
                                     if let Some(getter) = fget {
-                                        let result = self.call_object(getter.clone(), vec![obj])?;
+                                        let getter = crate::builtins::unwrap_abstract_fget(getter);
+                                        let result = self.call_object(getter, vec![obj])?;
                                         self.vm_push(result);
                                         return Ok(None);
                                     }
