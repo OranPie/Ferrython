@@ -52,6 +52,21 @@ class ModuleSpec:
 def module_from_spec(spec):
     """Create a new module based on the provided spec."""
     import types
+    # For built-in modules or when loader is None, import and return the module directly
+    if spec.origin == 'built-in' or spec.loader is None:
+        try:
+            __import__(spec.name)
+            mod = sys.modules.get(spec.name)
+            if mod is not None:
+                mod.__spec__ = spec
+                # Provide a no-op loader so spec.loader.exec_module() works
+                class _NoopLoader:
+                    def exec_module(self, module):
+                        pass
+                spec.loader = _NoopLoader()
+                return mod
+        except ImportError:
+            pass
     module = types.ModuleType(spec.name)
     module.__spec__ = spec
     module.__loader__ = spec.loader
@@ -94,7 +109,32 @@ def find_spec(name, package=None):
         mod = sys.modules[name]
         if hasattr(mod, '__spec__'):
             return mod.__spec__
-        return ModuleSpec(name, None)
+        origin = getattr(mod, '__file__', None)
+        return ModuleSpec(name, None, origin=origin)
+    
+    # Try to find the module on the filesystem or as a builtin
+    import os
+    rel_path = name.replace('.', os.sep)
+    search_paths = list(getattr(sys, 'path', []))
+    if '.' not in search_paths:
+        search_paths.insert(0, '.')
+    for base in search_paths:
+        file_path = os.path.join(base, rel_path + '.py')
+        if os.path.exists(file_path):
+            return ModuleSpec(name, None, origin=file_path)
+        init_path = os.path.join(base, rel_path, '__init__.py')
+        if os.path.exists(init_path):
+            return ModuleSpec(name, None, origin=init_path, is_package=True)
+    
+    # Try importing it (catches builtins and other non-file modules)
+    try:
+        __import__(name)
+        if name in sys.modules:
+            mod = sys.modules[name]
+            origin = getattr(mod, '__file__', 'built-in')
+            return ModuleSpec(name, None, origin=origin)
+    except ImportError:
+        pass
     
     return None
 

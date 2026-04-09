@@ -129,6 +129,7 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "time" => Some(time_modules::create_time_module()),
         "datetime" => Some(time_modules::create_datetime_module()),
         "calendar" => Some(time_modules::create_calendar_module()),
+        "zoneinfo" => Some(time_modules::create_zoneinfo_module()),
         // Type system
         "typing" => Some(type_modules::create_typing_module()),
         "typing_extensions" => Some(type_modules::create_typing_module()),

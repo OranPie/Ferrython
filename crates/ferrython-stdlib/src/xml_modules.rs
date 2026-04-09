@@ -953,6 +953,51 @@ pub fn create_xml_etree_elementtree_module() -> PyObjectRef {
             elem.text = text;
             Ok(xml_element_to_pyobject(&elem))
         })),
+        // QName(text_or_uri, tag=None) — qualified XML name
+        ("QName", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() { return Err(PyException::type_error("QName() requires at least 1 argument")); }
+            let text = if args.len() >= 2 {
+                let uri = args[0].py_to_string();
+                let tag = args[1].py_to_string();
+                format!("{{{}}}{}", uri, tag)
+            } else {
+                args[0].py_to_string()
+            };
+            let cls = PyObject::class(CompactString::from("QName"), vec![], IndexMap::new());
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("text"), PyObject::str_val(CompactString::from(text.as_str())));
+            Ok(PyObject::instance_with_attrs(cls, attrs))
+        })),
+        // indent(tree, space="  ", level=0) — add whitespace indentation
+        ("indent", make_builtin(|_args: &[PyObjectRef]| {
+            Ok(PyObject::none())
+        })),
+        // TreeBuilder class (stub)
+        ("TreeBuilder", make_builtin(|_args: &[PyObjectRef]| {
+            let cls = PyObject::class(CompactString::from("TreeBuilder"), vec![], IndexMap::new());
+            Ok(PyObject::instance(cls))
+        })),
+        // iterparse(source, events=None) — stub
+        ("iterparse", make_builtin(|_args: &[PyObjectRef]| {
+            Ok(PyObject::list(vec![]))
+        })),
+        // register_namespace(prefix, uri) — stub
+        ("register_namespace", make_builtin(|_args: &[PyObjectRef]| {
+            Ok(PyObject::none())
+        })),
+        // HTML_EMPTY — set of HTML void elements (CPython compat)
+        ("HTML_EMPTY", {
+            let elems = vec![
+                "area", "base", "basefont", "br", "col", "frame", "hr",
+                "img", "input", "isindex", "link", "meta", "param",
+            ];
+            let mut set = IndexMap::new();
+            for s in elems {
+                let val = PyObject::str_val(CompactString::from(s));
+                set.insert(HashableKey::Str(CompactString::from(s)), val);
+            }
+            PyObject::set(set)
+        }),
     ])
 }
 

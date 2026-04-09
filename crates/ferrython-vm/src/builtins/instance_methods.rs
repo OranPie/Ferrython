@@ -493,6 +493,29 @@ pub(super) fn call_instance_dict_method(
             }
             Ok(PyObject::none())
         }
+        "copy" => {
+            let guard = attrs.read();
+            let copy: IndexMap<HashableKey, PyObjectRef> = guard.iter()
+                .map(|(k, v)| (HashableKey::Str(k.clone()), v.clone()))
+                .collect();
+            Ok(PyObject::dict(copy))
+        }
+        "clear" => {
+            attrs.write().clear();
+            Ok(PyObject::none())
+        }
+        "setdefault" => {
+            check_args_min("setdefault", args, 1)?;
+            let key = CompactString::from(args[0].py_to_string());
+            let default = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
+            let mut w = attrs.write();
+            if let Some(v) = w.get(key.as_str()) {
+                Ok(v.clone())
+            } else {
+                w.insert(key, default.clone());
+                Ok(default)
+            }
+        }
         _ => Err(PyException::attribute_error(format!("'dict' object has no attribute '{}'", method))),
     }
 }
@@ -762,6 +785,71 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
         ("float", "fromhex") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
             name: CompactString::from("float.fromhex"),
             func: builtin_float_fromhex,
+        })),
+        // property descriptor methods: property.__get__(self, obj, type)
+        ("property", "__get__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("property.__get__"),
+            func: |args: &[PyObjectRef]| {
+                // property.__get__(self, obj, objtype=None)
+                // self is the property object, obj is the instance
+                if args.is_empty() {
+                    return Err(PyException::type_error("descriptor '__get__' requires a property object"));
+                }
+                let prop = &args[0];
+                let obj = args.get(1);
+                // If obj is None or not provided, return the property itself
+                let obj = match obj {
+                    Some(o) if !matches!(&o.payload, PyObjectPayload::None) => o,
+                    _ => return Ok(prop.clone()),
+                };
+                // Get the fget from the property
+                if let PyObjectPayload::Property { fget, .. } = &prop.payload {
+                    if let Some(getter) = fget {
+                        // This is a native call — we can't call functions here (we're in a pure fn)
+                        // Return a sentinel that the VM will handle
+                        // Actually, we need to return the getter bound to obj
+                        return Ok(Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: obj.clone(),
+                                method: getter.clone(),
+                            }
+                        }));
+                    }
+                    return Err(PyException::attribute_error("unreadable attribute"));
+                }
+                // For InstanceProperty (subclass of property), look for fget in instance attrs
+                if let PyObjectPayload::Instance(inst) = &prop.payload {
+                    if let Some(fget) = inst.attrs.read().get("fget").cloned() {
+                        return Ok(Arc::new(PyObject {
+                            payload: PyObjectPayload::BoundMethod {
+                                receiver: obj.clone(),
+                                method: fget,
+                            }
+                        }));
+                    }
+                }
+                Ok(prop.clone())
+            },
+        })),
+        ("property", "__init__") => Some(PyObject::wrap(PyObjectPayload::NativeFunction {
+            name: CompactString::from("property.__init__"),
+            func: |args: &[PyObjectRef]| {
+                // property.__init__(self, fget=None, fset=None, fdel=None, doc=None)
+                // Store fget/fset/fdel on the instance so subclasses work
+                if args.is_empty() {
+                    return Ok(PyObject::none());
+                }
+                let fget = args.get(1).cloned();
+                let fset = args.get(2).cloned();
+                let fdel = args.get(3).cloned();
+                if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                    let mut w = inst.attrs.write();
+                    if let Some(f) = &fget { w.insert(CompactString::from("fget"), f.clone()); }
+                    if let Some(f) = &fset { w.insert(CompactString::from("fset"), f.clone()); }
+                    if let Some(f) = &fdel { w.insert(CompactString::from("fdel"), f.clone()); }
+                }
+                Ok(PyObject::none())
+            },
         })),
         _ => None,
     }

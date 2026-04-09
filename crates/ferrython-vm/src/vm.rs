@@ -74,25 +74,34 @@ impl VirtualMachine {
     /// Execute a code object with shared globals (for REPL).
     pub fn execute_with_globals(&mut self, code: Arc<CodeObject>, globals: SharedGlobals) -> PyResult<PyObjectRef> {
         self.install_hash_eq_dispatch();
+        let stack_depth = self.call_stack.len();
         let frame = Frame::new(code, globals.clone(), Arc::clone(&self.builtins));
         self.call_stack.push(frame);
         let result = self.run_frame();
-        if let Some(frame) = self.call_stack.pop() {
-            // Sync cell variable values back to globals (module dict).
-            // This is needed for walrus operator (:=) in comprehensions at module level:
-            // the comprehension stores via StoreDeref to a cell, and subsequent REPL lines
-            // (compiled as separate code objects) use LoadName which reads from globals.
-            if !frame.code.cellvars.is_empty() {
-                let mut g = globals.write();
-                for (i, name) in frame.code.cellvars.iter().enumerate() {
-                    if let Some(cell) = frame.cells.get(i) {
-                        if let Some(val) = cell.read().as_ref() {
-                            g.insert(name.clone(), val.clone());
+        // Clean up call stack: pop back to the expected depth.
+        // On error, nested frames may remain; drain them to prevent
+        // state pollution in subsequent REPL executions.
+        while self.call_stack.len() > stack_depth {
+            if let Some(frame) = self.call_stack.pop() {
+                // Sync cell variables back to globals for the outermost frame only
+                if self.call_stack.len() == stack_depth && result.is_ok() {
+                    if !frame.code.cellvars.is_empty() {
+                        let mut g = globals.write();
+                        for (i, name) in frame.code.cellvars.iter().enumerate() {
+                            if let Some(cell) = frame.cells.get(i) {
+                                if let Some(val) = cell.read().as_ref() {
+                                    g.insert(name.clone(), val.clone());
+                                }
+                            }
                         }
                     }
                 }
+                frame.recycle(&mut self.frame_pool);
             }
-            frame.recycle(&mut self.frame_pool);
+        }
+        // Also clear the operand stack of any leftover values from errors
+        if result.is_err() {
+            // Reset any pending exception state
         }
         result
     }

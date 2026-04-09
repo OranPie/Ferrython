@@ -924,18 +924,24 @@ pub fn create_logging_module() -> PyObjectRef {
         ("NullHandler", null_handler_fn),
         ("Filter", filter_fn),
         ("LogRecord", log_record_fn),
-        ("Logger", make_builtin(logging_get_logger)),
+        ("Logger", {
+            // Logger is a class that, when called, creates logger instances
+            let mut logger_ns = IndexMap::new();
+            logger_ns.insert(CompactString::from("__init__"), make_builtin(|_| Ok(PyObject::none())));
+            logger_ns.insert(CompactString::from("__call__"), make_builtin(logging_get_logger));
+            PyObject::class(CompactString::from("Logger"), vec![], logger_ns)
+        }),
         ("root", make_builtin(|_| logging_get_logger(&[]))),
         ("addLevelName", make_builtin(|_args| Ok(PyObject::none()))),
         ("setLoggerClass", make_builtin(|_args| Ok(PyObject::none()))),
-        ("Filterer", make_builtin(|_args| {
-            let mut attrs = IndexMap::new();
-            attrs.insert(CompactString::from("filters"), PyObject::list(vec![]));
-            attrs.insert(CompactString::from("addFilter"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("removeFilter"), make_builtin(|_| Ok(PyObject::none())));
-            attrs.insert(CompactString::from("filter"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-            Ok(PyObject::module_with_attrs(CompactString::from("Filterer"), attrs))
-        })),
+        ("Filterer", {
+            let mut filterer_ns = IndexMap::new();
+            filterer_ns.insert(CompactString::from("filters"), PyObject::list(vec![]));
+            filterer_ns.insert(CompactString::from("addFilter"), make_builtin(|_| Ok(PyObject::none())));
+            filterer_ns.insert(CompactString::from("removeFilter"), make_builtin(|_| Ok(PyObject::none())));
+            filterer_ns.insert(CompactString::from("filter"), make_builtin(|_| Ok(PyObject::bool_val(true))));
+            PyObject::class(CompactString::from("Filterer"), vec![], filterer_ns)
+        }),
         ("lastResort", PyObject::none()),
         ("raiseExceptions", PyObject::bool_val(true)),
         ("captureWarnings", make_builtin(|_args| Ok(PyObject::none()))),

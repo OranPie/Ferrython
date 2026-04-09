@@ -786,7 +786,7 @@ impl Parser {
 
         // Check if there's a value after yield (not at end of statement/expression)
         if self.at_expression_start() {
-            let value = self.parse_test_list()?;
+            let value = self.parse_test_list_star_expr()?;
             Ok(Expression::new(
                 ExpressionKind::Yield { value: Some(Box::new(value)) },
                 loc,

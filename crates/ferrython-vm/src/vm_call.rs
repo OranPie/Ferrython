@@ -395,7 +395,68 @@ impl VirtualMachine {
         kwargs: Vec<(CompactString, PyObjectRef)>,
     ) -> PyResult<PyObjectRef> {
         // Enum lookup: Color(2) returns the member with that value
+        // Also handle Enum functional API: Enum("Name", "mem1 mem2") or Enum("Name", ["mem1", "mem2"])
         if let PyObjectPayload::Class(cd) = &cls.payload {
+            let is_enum_base = cd.name.as_str() == "Enum" || cd.name.as_str() == "Flag"
+                || cd.name.as_str() == "IntEnum" || cd.name.as_str() == "IntFlag"
+                || cd.name.as_str() == "StrEnum";
+            // Functional API: Enum("Name", "member1 member2") or Enum("Name", [...])
+            if is_enum_base && pos_args.len() >= 2 {
+                if let PyObjectPayload::Str(ref name_str) = pos_args[0].payload {
+                    // Collect (name, value) pairs from different input formats
+                    let members: Vec<(String, PyObjectRef)> = match &pos_args[1].payload {
+                        PyObjectPayload::Str(s) => {
+                            // "member1 member2" or "member1,member2"
+                            s.replace(',', " ").split_whitespace().enumerate()
+                                .map(|(i, n)| (n.to_string(), PyObject::int((i + 1) as i64)))
+                                .collect()
+                        }
+                        PyObjectPayload::List(items) => {
+                            items.read().iter().enumerate()
+                                .map(|(i, item)| (item.py_to_string(), PyObject::int((i + 1) as i64)))
+                                .collect()
+                        }
+                        PyObjectPayload::Tuple(items) => {
+                            items.iter().enumerate()
+                                .map(|(i, item)| (item.py_to_string(), PyObject::int((i + 1) as i64)))
+                                .collect()
+                        }
+                        PyObjectPayload::Dict(map) => {
+                            map.read().iter().map(|(k, v)| {
+                                let name = match k {
+                                    HashableKey::Str(s) => s.to_string(),
+                                    _ => format!("{:?}", k),
+                                };
+                                (name, v.clone())
+                            }).collect()
+                        }
+                        _ => vec![],
+                    };
+                    if !members.is_empty() {
+                        let mut ns = IndexMap::new();
+                        ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
+                        let new_cls = PyObject::class(name_str.clone(), vec![cls.clone()], ns);
+                        if let PyObjectPayload::Class(ref new_cd) = new_cls.payload {
+                            let mut new_ns = new_cd.namespace.write();
+                            for (member_name, member_value) in &members {
+                                let member = PyObject::instance_with_attrs(
+                                    new_cls.clone(),
+                                    {
+                                        let mut m = IndexMap::new();
+                                        m.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(member_name.as_str())));
+                                        m.insert(CompactString::from("value"), member_value.clone());
+                                        m.insert(CompactString::from("_name_"), PyObject::str_val(CompactString::from(member_name.as_str())));
+                                        m.insert(CompactString::from("_value_"), member_value.clone());
+                                        m
+                                    },
+                                );
+                                new_ns.insert(CompactString::from(member_name.as_str()), member);
+                            }
+                        }
+                        return Ok(new_cls);
+                    }
+                }
+            }
             if cd.namespace.read().contains_key("__enum__") && pos_args.len() == 1 && kwargs.is_empty() {
                 let target_val = &pos_args[0];
                 let ns = cd.namespace.read();
@@ -625,49 +686,90 @@ impl VirtualMachine {
             // Dataclass auto-init: populate fields from args/kwargs
             let is_frozen = class_has_key(cls, "__dataclass_frozen__");
             if let Some(fields) = cls.get_attr("__dataclass_fields__") {
-                if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
-                    let mut arg_idx = 0;
-                    for ft in field_tuples {
-                        if let PyObjectPayload::Tuple(info) = &ft.payload {
-                            let name = info[0].py_to_string();
-                            let has_default = info[1].is_truthy();
-                            let default_val = &info[2];
-                            // init flag (index 3): whether field participates in __init__
-                            let field_init = if info.len() > 3 { info[3].is_truthy() } else { true };
-
-                            let value = if !field_init {
-                                // init=False: use default if available, else skip (post_init sets it)
-                                if has_default {
-                                    if default_val.is_callable() {
-                                        self.call_object(default_val.clone(), vec![])?
-                                    } else {
-                                        default_val.clone()
-                                    }
-                                } else {
-                                    continue; // Will be set by __post_init__
-                                }
-                            } else if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
-                                v.clone()
-                            } else if arg_idx < pos_args.len() {
-                                let v = pos_args[arg_idx].clone();
-                                arg_idx += 1;
-                                v
-                            } else if has_default {
-                                if default_val.is_callable() {
-                                    self.call_object(default_val.clone(), vec![])?
-                                } else {
-                                    default_val.clone()
-                                }
-                            } else {
-                                return Err(PyException::type_error(format!(
-                                    "__init__() missing required argument: '{}'", name
-                                )));
+                // __dataclass_fields__ can be either:
+                // - Tuple of (name, has_default, default_val, init_flag) tuples (legacy VM format)
+                // - Dict mapping field_name → Field instance (Python dataclasses format)
+                let field_entries: Vec<(String, bool, PyObjectRef, bool)> = match &fields.payload {
+                    PyObjectPayload::Tuple(field_tuples) => {
+                        field_tuples.iter().filter_map(|ft| {
+                            if let PyObjectPayload::Tuple(info) = &ft.payload {
+                                let name = info[0].py_to_string();
+                                let has_default = info[1].is_truthy();
+                                let default_val = info[2].clone();
+                                let field_init = if info.len() > 3 { info[3].is_truthy() } else { true };
+                                Some((name, has_default, default_val, field_init))
+                            } else { None }
+                        }).collect()
+                    }
+                    PyObjectPayload::Dict(map) => {
+                        // Dict of {name: Field} — extract field info from Field instances
+                        let r = map.read();
+                        r.iter().map(|(k, field_obj)| {
+                            let name = match k {
+                                HashableKey::Str(s) => s.to_string(),
+                                _ => field_obj.get_attr("name")
+                                    .map(|n| n.py_to_string())
+                                    .unwrap_or_default(),
                             };
+                            let field_init = field_obj.get_attr("init")
+                                .map(|v| v.is_truthy())
+                                .unwrap_or(true);
+                            // Use __has_default__ flag (set by our Rust dataclass_apply)
+                            // to reliably distinguish "no default" from "default is None"
+                            let has_default_flag = field_obj.get_attr("__has_default__")
+                                .map(|v| v.is_truthy())
+                                .unwrap_or(false);
+                            let default_factory = field_obj.get_attr("default_factory");
+                            let has_factory = default_factory.as_ref()
+                                .map(|f| f.is_callable())
+                                .unwrap_or(false);
+                            let (has_default, default_val) = if has_factory {
+                                (true, default_factory.unwrap_or_else(PyObject::none))
+                            } else if has_default_flag {
+                                let default = field_obj.get_attr("default").unwrap_or_else(PyObject::none);
+                                (true, default)
+                            } else {
+                                (false, PyObject::none())
+                            };
+                            (name, has_default, default_val, field_init)
+                        }).collect()
+                    }
+                    _ => Vec::new(),
+                };
 
-                            if let PyObjectPayload::Instance(inst) = &instance.payload {
-                                inst.attrs.write().insert(CompactString::from(name.as_str()), value);
+                let mut arg_idx = 0;
+                for (name, has_default, default_val, field_init) in &field_entries {
+                    let value = if !field_init {
+                        // init=False: use default if available, else skip (post_init sets it)
+                        if *has_default {
+                            if default_val.is_callable() {
+                                self.call_object(default_val.clone(), vec![])?
+                            } else {
+                                default_val.clone()
                             }
+                        } else {
+                            continue; // Will be set by __post_init__
                         }
+                    } else if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == name.as_str()) {
+                        v.clone()
+                    } else if arg_idx < pos_args.len() {
+                        let v = pos_args[arg_idx].clone();
+                        arg_idx += 1;
+                        v
+                    } else if *has_default {
+                        if default_val.is_callable() {
+                            self.call_object(default_val.clone(), vec![])?
+                        } else {
+                            default_val.clone()
+                        }
+                    } else {
+                        return Err(PyException::type_error(format!(
+                            "__init__() missing required argument: '{}'", name
+                        )));
+                    };
+
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        inst.attrs.write().insert(CompactString::from(name.as_str()), value);
                     }
                 }
             }
@@ -789,7 +891,23 @@ impl VirtualMachine {
     pub(crate) fn make_super(&self, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.is_empty() {
             let frame = self.call_stack.last().unwrap();
-            if let Some(self_obj) = frame.locals.first().cloned().flatten() {
+            // First check locals[0] for self; if moved to a cell (e.g. captured by
+            // a comprehension), fall back to cellvars to find it (PEP 3135 compat).
+            let self_obj = frame.locals.first().cloned().flatten().or_else(|| {
+                // If self is in cellvars (common when method body has comprehensions
+                // that reference self), look it up from cells
+                for (i, cv) in frame.code.cellvars.iter().enumerate() {
+                    if cv.as_str() == "self" || cv.as_str() == "cls" {
+                        if let Some(cell) = frame.cells.get(i) {
+                            if let Some(val) = cell.read().as_ref() {
+                                return Some(val.clone());
+                            }
+                        }
+                    }
+                }
+                None
+            });
+            if let Some(self_obj) = self_obj {
                 let qualname = frame.code.qualname.as_str();
                 let defining_class_name = qualname.rsplit_once('.')
                     .map(|(cls_part, _)| {
@@ -870,19 +988,6 @@ impl VirtualMachine {
                 // If class has a metaclass with __call__, dispatch through it
                 if let Some(meta) = &cd.metaclass {
                     if let Some(call_method) = meta.get_attr("__call__") {
-                        let mut call_args = vec![func.clone()];
-                        call_args.extend(pos_args);
-                        if kwargs.is_empty() {
-                            return self.call_object(call_method, call_args);
-                        } else {
-                            return self.call_object_kw(call_method, call_args, kwargs);
-                        }
-                    }
-                }
-                // If class has __call__ in its own namespace (e.g. Enum functional API),
-                // and args look like a functional call (2+ string args), use __call__
-                if pos_args.len() >= 2 {
-                    if let Some(call_method) = cd.namespace.read().get("__call__").cloned() {
                         let mut call_args = vec![func.clone()];
                         call_args.extend(pos_args);
                         if kwargs.is_empty() {
@@ -1162,6 +1267,23 @@ impl VirtualMachine {
                 // Handle other payload types that support kwargs
                 match &func.payload {
                     PyObjectPayload::NativeFunction { func: nf, name } => {
+                        // property.__init__(self, fget=None, fset=None, fdel=None, doc=None)
+                        if name.as_str() == "property.__init__" {
+                            if pos_args.is_empty() { return Ok(PyObject::none()); }
+                            let fget = kwargs.iter().find(|(k, _)| k.as_str() == "fget").map(|(_, v)| v.clone())
+                                .or_else(|| pos_args.get(1).cloned());
+                            let fset = kwargs.iter().find(|(k, _)| k.as_str() == "fset").map(|(_, v)| v.clone())
+                                .or_else(|| pos_args.get(2).cloned());
+                            let fdel = kwargs.iter().find(|(k, _)| k.as_str() == "fdel").map(|(_, v)| v.clone())
+                                .or_else(|| pos_args.get(3).cloned());
+                            if let PyObjectPayload::Instance(ref inst) = pos_args[0].payload {
+                                let mut w = inst.attrs.write();
+                                if let Some(f) = &fget { w.insert(CompactString::from("fget"), f.clone()); }
+                                if let Some(f) = &fset { w.insert(CompactString::from("fset"), f.clone()); }
+                                if let Some(f) = &fdel { w.insert(CompactString::from("fdel"), f.clone()); }
+                            }
+                            return Ok(PyObject::none());
+                        }
                         // OrderedDict(**kwargs) / Counter(**kwargs) / defaultdict(factory, **kwargs) — dict-like init
                         if name.as_str() == "collections.OrderedDict" || name.as_str() == "collections.Counter" {
                             let mut map = IndexMap::new();
@@ -2398,14 +2520,6 @@ impl VirtualMachine {
                         return self.call_object(call_method, call_args);
                     }
                 }
-                // If class has __call__ in its own namespace (e.g. Enum functional API)
-                if args.len() >= 2 {
-                    if let Some(call_method) = cd.namespace.read().get("__call__").cloned() {
-                        let mut call_args = vec![func.clone()];
-                        call_args.extend(args);
-                        return self.call_object(call_method, call_args);
-                    }
-                }
                 self.instantiate_class(&func, args, vec![])
             }
             PyObjectPayload::BoundMethod { receiver, method } => {
@@ -2699,10 +2813,10 @@ impl VirtualMachine {
                         return builtins::call_method(&instance, method_name.as_str(), &rest_args);
                     }
                 }
-                // list.extend with generator/lazy iterator needs VM-level collection
+                // list.extend with generator/lazy iterator/instance needs VM-level collection
                 if method_name.as_str() == "extend" && !args.is_empty() {
                     if matches!(receiver.payload, PyObjectPayload::List(_)) {
-                        if matches!(args[0].payload, PyObjectPayload::Generator(_)) ||
+                        if matches!(args[0].payload, PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_)) ||
                            (matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
                                let data = d.lock().unwrap();
                                matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
@@ -2911,6 +3025,38 @@ impl VirtualMachine {
             }
             PyObjectPayload::NativeFunction { func, name } => {
                 // Intercept functions that need VM access to call Python callables
+                // property.__get__(self, obj, objtype) — must call fget(obj) and return result
+                if name.as_str() == "property.__get__" {
+                    if args.is_empty() {
+                        return Err(PyException::type_error("descriptor '__get__' requires a property object"));
+                    }
+                    let prop = &args[0];
+                    let obj = args.get(1);
+                    let is_none_obj = match obj {
+                        Some(o) => matches!(&o.payload, PyObjectPayload::None),
+                        None => true,
+                    };
+                    if is_none_obj {
+                        return Ok(prop.clone());
+                    }
+                    let obj = obj.unwrap();
+                    // Try native Property payload first
+                    if let PyObjectPayload::Property { fget, .. } = &prop.payload {
+                        if let Some(getter) = fget {
+                            return self.call_object(getter.clone(), vec![obj.clone()]);
+                        }
+                        return Err(PyException::attribute_error("unreadable attribute"));
+                    }
+                    // Instance subclass of property — look for fget in instance attrs
+                    if let PyObjectPayload::Instance(inst) = &prop.payload {
+                        if let Some(fget) = inst.attrs.read().get("fget").cloned() {
+                            if !matches!(&fget.payload, PyObjectPayload::None) {
+                                return self.call_object(fget, vec![obj.clone()]);
+                            }
+                        }
+                    }
+                    return Ok(prop.clone());
+                }
                 if name.as_str() == "functools.reduce" {
                     return self.vm_functools_reduce(&args);
                 }

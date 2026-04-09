@@ -26,12 +26,46 @@ impl VirtualMachine {
         None
     }
 
+    /// PEP 560: resolve __mro_entries__ for generic aliases in bases.
+    /// e.g. `class Foo(dict[str, int])` → bases become `[dict]`
+    fn resolve_mro_entries(raw_bases: &[PyObjectRef]) -> Vec<PyObjectRef> {
+        let mut resolved = Vec::with_capacity(raw_bases.len());
+        for base in raw_bases {
+            match &base.payload {
+                PyObjectPayload::Class(_) | PyObjectPayload::BuiltinType(_) => {
+                    // Already a real class, keep as-is
+                    resolved.push(base.clone());
+                }
+                PyObjectPayload::Instance(inst) => {
+                    // Check for GenericAlias (__origin__ attribute)
+                    if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                        if cd.name.contains("GenericAlias") || cd.name.contains("_GenericAlias")
+                            || cd.name.contains("_SpecialForm")
+                        {
+                            // Use __origin__ as the real base class
+                            if let Some(origin) = inst.attrs.read().get("__origin__").cloned() {
+                                resolved.push(origin);
+                                continue;
+                            }
+                        }
+                    }
+                    // Not a generic alias — might be a regular class used as base
+                    resolved.push(base.clone());
+                }
+                _ => {
+                    resolved.push(base.clone());
+                }
+            }
+        }
+        resolved
+    }
+
     pub(crate) fn build_class(&mut self, args: Vec<PyObjectRef>) -> PyResult<PyObjectRef> {
         if args.len() < 2 {
             return Err(PyException::type_error(
                 "__build_class__ requires at least 2 arguments"));
         }
-        let bases: Vec<PyObjectRef> = args[2..].to_vec();
+        let bases: Vec<PyObjectRef> = Self::resolve_mro_entries(&args[2..]);
 
         // If any base has a custom metaclass, delegate to the kw path
         if let Some(meta) = Self::inherited_metaclass(&bases) {
@@ -83,14 +117,12 @@ impl VirtualMachine {
             Self::patch_class_cell(cellvar_names, cells, &cls);
         }
 
-        // Call __init_subclass__ on each base class (PEP 487)
-        // __init_subclass__(cls) is called on the base's method with cls being the *new* subclass
-        for base in &bases {
+        // Call __init_subclass__ on the first base class that defines it (PEP 487)
+        // CPython calls it once via super().__init_subclass__ in type.__init__
+        if let Some(base) = bases.first() {
             if let Some(init_sub) = base.get_attr("__init_subclass__") {
-                // If it's already a BoundMethod (e.g., classmethod), call with cls as arg
-                // Otherwise, bind to the NEW class (cls) so `self` is the subclass
+                // Re-bind to the NEW class (cls) so `cls` is the subclass
                 let bound = if matches!(&init_sub.payload, PyObjectPayload::BoundMethod { .. }) {
-                    // Re-bind to the new subclass
                     if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
                         Arc::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
@@ -109,7 +141,6 @@ impl VirtualMachine {
                         }
                     })
                 };
-                // __init_subclass__(cls) where cls is the new subclass
                 self.call_object(bound, vec![])?;
             }
         }
@@ -517,7 +548,7 @@ impl VirtualMachine {
             PyObjectPayload::Str(s) => s.clone(),
             _ => CompactString::from(args[1].py_to_string()),
         };
-        let bases: Vec<PyObjectRef> = args[2..].to_vec();
+        let bases: Vec<PyObjectRef> = Self::resolve_mro_entries(&args[2..]);
 
         // Extract metaclass from kwargs, falling back to inherited metaclass from bases
         let metaclass = kwargs.iter()
@@ -705,7 +736,7 @@ impl VirtualMachine {
                 .cloned()
                 .collect();
             if let PyObjectPayload::Class(cd) = &cls.payload {
-                for base in &cd.bases {
+                if let Some(base) = cd.bases.first() {
                     if let Some(init_sub) = base.get_attr("__init_subclass__") {
                         let bound = if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
                             Arc::new(PyObject {
@@ -788,7 +819,7 @@ impl VirtualMachine {
                 .filter(|(k, _)| k.as_str() != "metaclass")
                 .cloned()
                 .collect();
-            for base in &bases {
+            if let Some(base) = bases.first() {
                 if let Some(init_sub) = base.get_attr("__init_subclass__") {
                     let bound = if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
                         Arc::new(PyObject {
@@ -812,7 +843,6 @@ impl VirtualMachine {
                     }
                 }
             }
-
             // Call __set_name__ on descriptors in the class namespace (PEP 487)
             self.call_set_name_on_descriptors(&cls)?;
 

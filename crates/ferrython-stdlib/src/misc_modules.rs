@@ -546,14 +546,14 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                 if let Some(class) = inst.attrs.read().get("__class__").cloned()
                     .or_else(|| Some(inst.class.clone())) {
                     if let Some(fields) = class.get_attr("__dataclass_fields__") {
-                        if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                        if let PyObjectPayload::Dict(field_dict) = &fields.payload {
+                            let dict = field_dict.read();
                             let attrs = inst.attrs.read();
                             let mut map = IndexMap::new();
-                            for ft in field_tuples {
-                                if let PyObjectPayload::Tuple(info) = &ft.payload {
-                                    let name = info[0].py_to_string();
+                            for (k, _v) in dict.iter() {
+                                if let HashableKey::Str(name) = k {
                                     if let Some(v) = attrs.get(name.as_str()) {
-                                        map.insert(HashableKey::Str(CompactString::from(name.as_str())), v.clone());
+                                        map.insert(HashableKey::Str(name.clone()), v.clone());
                                     }
                                 }
                             }
@@ -580,11 +580,11 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                 if let Some(class) = inst.attrs.read().get("__class__").cloned()
                     .or_else(|| Some(inst.class.clone())) {
                     if let Some(fields) = class.get_attr("__dataclass_fields__") {
-                        if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                        if let PyObjectPayload::Dict(field_dict) = &fields.payload {
+                            let dict = field_dict.read();
                             let attrs = inst.attrs.read();
-                            let items: Vec<_> = field_tuples.iter().filter_map(|ft| {
-                                if let PyObjectPayload::Tuple(info) = &ft.payload {
-                                    let name = info[0].py_to_string();
+                            let items: Vec<_> = dict.keys().filter_map(|k| {
+                                if let HashableKey::Str(name) = k {
                                     attrs.get(name.as_str()).cloned()
                                 } else { None }
                             }).collect();
@@ -607,42 +607,10 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                 PyObjectPayload::Instance(inst) => inst.class.clone(),
                 _ => return Err(PyException::type_error("fields() argument must be a dataclass or instance")),
             };
-            if let Some(fields_tuple) = cls.get_attr("__dataclass_fields__") {
-                if let PyObjectPayload::Tuple(field_tuples) = &fields_tuple.payload {
-                    let field_objs: Vec<PyObjectRef> = field_tuples.iter().map(|ft| {
-                        if let PyObjectPayload::Tuple(info) = &ft.payload {
-                            let name = info[0].py_to_string();
-                            let mut field_attrs = IndexMap::new();
-                            field_attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name.as_str())));
-                            if info.len() > 2 {
-                                field_attrs.insert(CompactString::from("default"), info[2].clone());
-                            }
-                            if info.len() > 3 {
-                                field_attrs.insert(CompactString::from("init"), info[3].clone());
-                            }
-                            if info.len() > 4 {
-                                field_attrs.insert(CompactString::from("compare"), info[4].clone());
-                            }
-                            if info.len() > 5 {
-                                field_attrs.insert(CompactString::from("repr"), info[5].clone());
-                            } else {
-                                field_attrs.insert(CompactString::from("repr"), PyObject::bool_val(true));
-                            }
-                            if info.len() > 6 {
-                                field_attrs.insert(CompactString::from("type"), info[6].clone());
-                            } else {
-                                field_attrs.insert(CompactString::from("type"), PyObject::none());
-                            }
-                            field_attrs.insert(CompactString::from("hash"), PyObject::none());
-                            field_attrs.insert(CompactString::from("metadata"), PyObject::dict(IndexMap::new()));
-                            field_attrs.insert(CompactString::from("kw_only"), PyObject::bool_val(false));
-                            field_attrs.insert(CompactString::from("default_factory"), PyObject::none());
-                            PyObject::instance_with_attrs(
-                                PyObject::builtin_type(CompactString::from("Field")),
-                                field_attrs,
-                            )
-                        } else { ft.clone() }
-                    }).collect();
+            if let Some(fields_data) = cls.get_attr("__dataclass_fields__") {
+                if let PyObjectPayload::Dict(field_dict) = &fields_data.payload {
+                    let dict = field_dict.read();
+                    let field_objs: Vec<PyObjectRef> = dict.values().cloned().collect();
                     return Ok(PyObject::tuple(field_objs));
                 }
             }
@@ -772,6 +740,35 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     dataclass_apply(cls, true, false, false, true, false)
 }
 
+/// Call a default_factory callable or clone a static default value.
+/// Handles NativeFunction, NativeClosure, BuiltinType (dict/list/set/tuple/frozenset),
+/// Function (Python lambda/def), and Class (user-defined types).
+fn call_factory_or_clone(default: &PyObjectRef) -> PyResult<PyObjectRef> {
+    match &default.payload {
+        PyObjectPayload::NativeFunction { func, .. } => func(&[]),
+        PyObjectPayload::NativeClosure { func, .. } => func(&[]),
+        PyObjectPayload::BuiltinType(name) => {
+            // Common builtin types: dict() → {}, list() → [], set() → set(), etc.
+            match name.as_str() {
+                "dict" => Ok(PyObject::dict(IndexMap::new())),
+                "list" => Ok(PyObject::list(vec![])),
+                "set" => Ok(PyObject::set(IndexMap::new())),
+                "tuple" => Ok(PyObject::tuple(vec![])),
+                "frozenset" => Ok(PyObject::frozenset(IndexMap::new())),
+                "str" => Ok(PyObject::str_val(CompactString::new(""))),
+                "int" => Ok(PyObject::int(0)),
+                "float" => Ok(PyObject::float(0.0)),
+                "bool" => Ok(PyObject::bool_val(false)),
+                "bytes" => Ok(PyObject::bytes(vec![])),
+                "bytearray" => Ok(PyObject::bytearray(vec![])),
+                _ => Ok(default.clone()),
+            }
+        }
+        // BuiltinFunction holds a name string, not callable — skip
+        _ => Ok(default.clone()),
+    }
+}
+
 fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr: bool, unsafe_hash: bool) -> PyResult<PyObjectRef> {
     
     // Get annotations to discover fields — walk MRO for inherited dataclass fields
@@ -834,28 +831,40 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
         }
     }
     
-    // Store __dataclass_fields__ as tuple of (name, has_default, default_val, init, compare, repr, type) tuples
-    let fields_info: Vec<PyObjectRef> = field_names.iter().map(|name| {
+    // Store __dataclass_fields__ as dict mapping field name → Field-like object
+    // CPython stores Field objects; we use Module objects with the same key attributes.
+    let mut fields_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+    for name in &field_names {
         let has_default = field_defaults.contains_key(name.as_str());
         let default_val = field_defaults.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
         let init_flag = init_fields.contains(name);
         let compare_flag = compare_fields.contains(name);
         let repr_flag = repr_fields.contains(name);
         let type_val = field_types.get(name).cloned().unwrap_or_else(PyObject::none);
-        PyObject::tuple(vec![
-            PyObject::str_val(CompactString::from(name.as_str())),
-            PyObject::bool_val(has_default),
-            default_val,
-            PyObject::bool_val(init_flag),
-            PyObject::bool_val(compare_flag),
-            PyObject::bool_val(repr_flag),
-            type_val,
-        ])
-    }).collect();
+        // Create a Field-like object with standard dataclass Field attributes
+        let mut field_attrs: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
+        field_attrs.insert(CompactString::from("name"), PyObject::str_val(name.clone()));
+        field_attrs.insert(CompactString::from("type"), type_val);
+        field_attrs.insert(CompactString::from("default"), default_val.clone());
+        field_attrs.insert(CompactString::from("default_factory"), PyObject::none());
+        field_attrs.insert(CompactString::from("__has_default__"), PyObject::bool_val(has_default));
+        field_attrs.insert(CompactString::from("init"), PyObject::bool_val(init_flag));
+        field_attrs.insert(CompactString::from("repr"), PyObject::bool_val(repr_flag));
+        field_attrs.insert(CompactString::from("compare"), PyObject::bool_val(compare_flag));
+        field_attrs.insert(CompactString::from("hash"), PyObject::none());
+        field_attrs.insert(CompactString::from("metadata"), PyObject::dict(IndexMap::new()));
+        field_attrs.insert(CompactString::from("kw_only"), PyObject::bool_val(false));
+        field_attrs.insert(CompactString::from("_field_type"), PyObject::str_val(CompactString::from("_FIELD")));
+        let field_obj = PyObject::module_with_attrs(CompactString::from("Field"), field_attrs);
+        fields_dict.insert(
+            HashableKey::Str(name.clone()),
+            field_obj,
+        );
+    }
     
     if let PyObjectPayload::Class(cd) = &cls.payload {
         let mut ns = cd.namespace.write();
-        ns.insert(CompactString::from("__dataclass_fields__"), PyObject::tuple(fields_info));
+        ns.insert(CompactString::from("__dataclass_fields__"), PyObject::dict(fields_dict));
         ns.insert(CompactString::from("__dataclass__"), PyObject::bool_val(true));
 
         // Generate __setattr__ and __delattr__ for frozen=True
@@ -865,6 +874,7 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
             // Generate a Rust __init__ that bypasses __setattr__ (like CPython uses object.__setattr__)
             let init_field_names = init_fields.clone();
             let init_field_defaults = field_defaults.clone();
+            let cls_for_init = cls.clone();
             ns.insert(CompactString::from("__init__"), PyObject::native_closure("__init__", move |args: &[PyObjectRef]| {
                 if args.is_empty() {
                     return Err(PyException::type_error("__init__ requires self"));
@@ -893,22 +903,14 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                             if let Some(v) = kw.get(&HashableKey::Str(fname.clone())) {
                                 v.clone()
                             } else if let Some(default) = init_field_defaults.get(fname.as_str()) {
-                                match &default.payload {
-                                    PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
-                                    PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
-                                    _ => default.clone(),
-                                }
+                                call_factory_or_clone(default)?
                             } else {
                                 return Err(PyException::type_error(format!(
                                     "__init__() missing required argument: '{}'", fname
                                 )));
                             }
                         } else if let Some(default) = init_field_defaults.get(fname.as_str()) {
-                            match &default.payload {
-                                PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
-                                PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
-                                _ => default.clone(),
-                            }
+                            call_factory_or_clone(default)?
                         } else {
                             return Err(PyException::type_error(format!(
                                 "__init__() missing required argument: '{}'", fname
@@ -918,15 +920,52 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                         pos += 1;
                     }
                 }
+                // Call __post_init__ if defined (CPython does this in generated __init__)
+                if let PyObjectPayload::Class(cd) = &cls_for_init.payload {
+                    if let Some(post_init) = cd.namespace.read().get("__post_init__") {
+                        ferrython_core::error::request_vm_call(
+                            post_init.clone(),
+                            vec![self_obj.clone()],
+                        );
+                    }
+                }
                 Ok(PyObject::none())
             }));
 
-            // Raise FrozenInstanceError on attribute assignment
-            ns.insert(CompactString::from("__setattr__"), make_builtin(|_| {
-                Err(PyException::attribute_error("cannot assign to field of frozen dataclass".to_string()))
+            // Raise FrozenInstanceError on frozen field assignment, allow other attrs
+            let frozen_field_names: Vec<CompactString> = field_names.clone();
+            ns.insert(CompactString::from("__setattr__"), PyObject::native_closure("__setattr__", move |args: &[PyObjectRef]| {
+                // args: self, name, value
+                if args.len() < 3 {
+                    return Err(PyException::type_error("__setattr__ requires 3 arguments"));
+                }
+                let attr_name = args[1].py_to_string();
+                if frozen_field_names.iter().any(|f| f.as_str() == attr_name) {
+                    return Err(PyException::attribute_error(
+                        format!("cannot assign to field '{}'", attr_name)
+                    ));
+                }
+                // Allow non-field attributes (e.g., subclass __init__ setting new attrs)
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    inst.attrs.write().insert(CompactString::from(attr_name), args[2].clone());
+                }
+                Ok(PyObject::none())
             }));
-            ns.insert(CompactString::from("__delattr__"), make_builtin(|_| {
-                Err(PyException::attribute_error("cannot delete field of frozen dataclass".to_string()))
+            let frozen_del_names: Vec<CompactString> = field_names.clone();
+            ns.insert(CompactString::from("__delattr__"), PyObject::native_closure("__delattr__", move |args: &[PyObjectRef]| {
+                if args.len() < 2 {
+                    return Err(PyException::type_error("__delattr__ requires 2 arguments"));
+                }
+                let attr_name = args[1].py_to_string();
+                if frozen_del_names.iter().any(|f| f.as_str() == attr_name) {
+                    return Err(PyException::attribute_error(
+                        format!("cannot delete field '{}'", attr_name)
+                    ));
+                }
+                if let PyObjectPayload::Instance(inst) = &args[0].payload {
+                    inst.attrs.write().swap_remove(attr_name.as_str());
+                }
+                Ok(PyObject::none())
             }));
         }
 
@@ -1281,84 +1320,93 @@ pub fn create_builtins_module() -> PyObjectRef {
 // ── contextvars module ──
 
 pub fn create_contextvars_module() -> PyObjectRef {
-    make_module("contextvars", vec![
-        ("ContextVar", make_builtin(|args: &[PyObjectRef]| {
-            if args.is_empty() { return Err(PyException::type_error("ContextVar() requires a name")); }
-            let name = args[0].py_to_string();
-            // Check for default kwarg in trailing dict
-            let default_val = if args.len() > 1 {
-                if let PyObjectPayload::Dict(kw) = &args[args.len()-1].payload {
-                    kw.read().get(&HashableKey::Str(CompactString::from("default")))
-                        .cloned()
-                } else {
-                    Some(args[1].clone())
-                }
-            } else { None };
+    // Create a shared ContextVar class so isinstance() works
+    let context_var_class = PyObject::class(CompactString::from("ContextVar"), vec![], IndexMap::new());
+    let cv_cls = context_var_class.clone();
 
-            let cls = PyObject::class(CompactString::from("ContextVar"), vec![], IndexMap::new());
-            let inst = PyObject::instance(cls);
-            if let PyObjectPayload::Instance(ref data) = inst.payload {
-                let mut attrs = data.attrs.write();
-                attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&name)));
-                let value: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(default_val.clone()));
-
-                let v = value.clone();
-                attrs.insert(CompactString::from("get"), PyObject::native_closure("ContextVar.get", move |a: &[PyObjectRef]| {
-                    if let Some(val) = v.read().as_ref() {
-                        Ok(val.clone())
-                    } else if !a.is_empty() {
-                        Ok(a[0].clone()) // default argument
-                    } else {
-                        Err(PyException::runtime_error("ContextVar has no value"))
-                    }
-                }));
-
-                let v = value.clone();
-                attrs.insert(CompactString::from("set"), PyObject::native_closure("ContextVar.set", move |a: &[PyObjectRef]| {
-                    if a.is_empty() { return Err(PyException::type_error("set() requires a value")); }
-                    let old = v.read().clone();
-                    *v.write() = Some(a[0].clone());
-                    // Return a Token with old_value and a restore closure
-                    let v_restore = v.clone();
-                    let token_cls = PyObject::class(CompactString::from("Token"), vec![], IndexMap::new());
-                    let token = PyObject::instance(token_cls);
-                    if let PyObjectPayload::Instance(ref td) = token.payload {
-                        let mut ta = td.attrs.write();
-                        ta.insert(CompactString::from("old_value"), old.clone().unwrap_or_else(PyObject::none));
-                        ta.insert(CompactString::from("var"), PyObject::str_val(CompactString::from(&name)));
-                        let old_clone = old;
-                        ta.insert(CompactString::from("_restore"), PyObject::native_closure("Token._restore", move |_| {
-                            *v_restore.write() = old_clone.clone();
-                            Ok(PyObject::none())
-                        }));
-                    }
-                    Ok(token)
-                }));
-
-                let v = value.clone();
-                let default_clone = default_val.clone();
-                attrs.insert(CompactString::from("reset"), PyObject::native_closure("ContextVar.reset", move |a: &[PyObjectRef]| {
-                    if a.is_empty() { return Err(PyException::type_error("reset() requires a token")); }
-                    let token = &a[0];
-                    // Try the token's _restore closure first
-                    if let Some(restore_fn) = token.get_attr("_restore") {
-                        if let PyObjectPayload::NativeClosure { func, .. } = &restore_fn.payload {
-                            return func(&[]);
-                        }
-                    }
-                    // Fallback: restore from old_value
-                    if let Some(old) = token.get_attr("old_value") {
-                        if matches!(&old.payload, PyObjectPayload::None) {
-                            *v.write() = default_clone.clone();
-                        } else {
-                            *v.write() = Some(old);
-                        }
-                    }
-                    Ok(PyObject::none())
-                }));
+    // __new__ receives (cls, name, ...) — create a properly-typed instance
+    let cv_new = PyObject::native_closure("ContextVar.__new__", move |args: &[PyObjectRef]| {
+        // args[0] = cls, args[1..] = user args
+        let user_args = if args.len() > 1 { &args[1..] } else { &[] };
+        if user_args.is_empty() { return Err(PyException::type_error("ContextVar() requires a name")); }
+        let name = user_args[0].py_to_string();
+        let default_val = if user_args.len() > 1 {
+            if let PyObjectPayload::Dict(kw) = &user_args[user_args.len()-1].payload {
+                kw.read().get(&HashableKey::Str(CompactString::from("default")))
+                    .cloned()
+            } else {
+                Some(user_args[1].clone())
             }
-            Ok(inst)
-        })),
+        } else { None };
+
+        let inst = PyObject::instance(cv_cls.clone());
+        if let PyObjectPayload::Instance(ref data) = inst.payload {
+            let mut attrs = data.attrs.write();
+            attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&name)));
+            let value: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(default_val.clone()));
+
+            let v = value.clone();
+            attrs.insert(CompactString::from("get"), PyObject::native_closure("ContextVar.get", move |a: &[PyObjectRef]| {
+                if let Some(val) = v.read().as_ref() {
+                    Ok(val.clone())
+                } else if !a.is_empty() {
+                    Ok(a[0].clone())
+                } else {
+                    Err(PyException::runtime_error("ContextVar has no value"))
+                }
+            }));
+
+            let v = value.clone();
+            let name_clone = name.clone();
+            attrs.insert(CompactString::from("set"), PyObject::native_closure("ContextVar.set", move |a: &[PyObjectRef]| {
+                if a.is_empty() { return Err(PyException::type_error("set() requires a value")); }
+                let old = v.read().clone();
+                *v.write() = Some(a[0].clone());
+                let v_restore = v.clone();
+                let token_cls = PyObject::class(CompactString::from("Token"), vec![], IndexMap::new());
+                let token = PyObject::instance(token_cls);
+                if let PyObjectPayload::Instance(ref td) = token.payload {
+                    let mut ta = td.attrs.write();
+                    ta.insert(CompactString::from("old_value"), old.clone().unwrap_or_else(PyObject::none));
+                    ta.insert(CompactString::from("var"), PyObject::str_val(CompactString::from(name_clone.as_str())));
+                    let old_clone = old;
+                    ta.insert(CompactString::from("_restore"), PyObject::native_closure("Token._restore", move |_| {
+                        *v_restore.write() = old_clone.clone();
+                        Ok(PyObject::none())
+                    }));
+                }
+                Ok(token)
+            }));
+
+            let v = value.clone();
+            let default_clone = default_val.clone();
+            attrs.insert(CompactString::from("reset"), PyObject::native_closure("ContextVar.reset", move |a: &[PyObjectRef]| {
+                if a.is_empty() { return Err(PyException::type_error("reset() requires a token")); }
+                let token = &a[0];
+                if let Some(restore_fn) = token.get_attr("_restore") {
+                    if let PyObjectPayload::NativeClosure { func, .. } = &restore_fn.payload {
+                        return func(&[]);
+                    }
+                }
+                if let Some(old) = token.get_attr("old_value") {
+                    if matches!(&old.payload, PyObjectPayload::None) {
+                        *v.write() = default_clone.clone();
+                    } else {
+                        *v.write() = Some(old);
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+        }
+        Ok(inst)
+    });
+
+    if let PyObjectPayload::Class(ref cd) = context_var_class.payload {
+        cd.namespace.write().insert(CompactString::from("__new__"), cv_new);
+    }
+
+    make_module("contextvars", vec![
+        ("ContextVar", context_var_class),
         ("Context", make_builtin(|_| {
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);

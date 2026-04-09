@@ -528,6 +528,17 @@ pub fn create_datetime_module() -> PyObjectRef {
         );
     }
 
+    // Class constants: datetime.min, datetime.max, datetime.resolution
+    if let PyObjectPayload::Class(ref cd) = datetime_cls.payload {
+        let mut ns = cd.namespace.write();
+        ns.insert(CompactString::from("min"), make_datetime_instance(1, 1, 1, 0, 0, 0, 0));
+        ns.insert(CompactString::from("max"), make_datetime_instance(9999, 12, 31, 23, 59, 59, 999999));
+        ns.insert(CompactString::from("resolution"), datetime_timedelta(&[
+            PyObject::none(),
+            PyObject::int(0), PyObject::int(0), PyObject::int(1),
+        ]).unwrap_or_else(|_| PyObject::none()));
+    }
+
     // Build date class with constructor and class methods
     let mut date_ns = IndexMap::new();
     date_ns.insert(CompactString::from("today"), make_builtin(date_today));
@@ -608,6 +619,47 @@ pub fn create_datetime_module() -> PyObjectRef {
                 Ok(PyObject::none())
             }),
         );
+    }
+    // date class constants: date.min, date.max, date.resolution
+    if let PyObjectPayload::Class(ref cd) = date_cls.payload {
+        let mut ns = cd.namespace.write();
+        let min_date = {
+            let class = PyObject::class(CompactString::from("date"), vec![], IndexMap::new());
+            let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+                class, attrs: Arc::new(RwLock::new(IndexMap::new())),
+                is_special: true, dict_storage: None,
+            }));
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+                w.insert(CompactString::from("__date_only__"), PyObject::bool_val(true));
+                w.insert(CompactString::from("year"), PyObject::int(1));
+                w.insert(CompactString::from("month"), PyObject::int(1));
+                w.insert(CompactString::from("day"), PyObject::int(1));
+            }
+            inst
+        };
+        let max_date = {
+            let class = PyObject::class(CompactString::from("date"), vec![], IndexMap::new());
+            let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+                class, attrs: Arc::new(RwLock::new(IndexMap::new())),
+                is_special: true, dict_storage: None,
+            }));
+            if let PyObjectPayload::Instance(ref d) = inst.payload {
+                let mut w = d.attrs.write();
+                w.insert(CompactString::from("__datetime__"), PyObject::bool_val(true));
+                w.insert(CompactString::from("__date_only__"), PyObject::bool_val(true));
+                w.insert(CompactString::from("year"), PyObject::int(9999));
+                w.insert(CompactString::from("month"), PyObject::int(12));
+                w.insert(CompactString::from("day"), PyObject::int(31));
+            }
+            inst
+        };
+        ns.insert(CompactString::from("min"), min_date);
+        ns.insert(CompactString::from("max"), max_date);
+        ns.insert(CompactString::from("resolution"), datetime_timedelta(&[
+            PyObject::none(), PyObject::int(1), PyObject::int(0), PyObject::int(0),
+        ]).unwrap_or_else(|_| PyObject::none()));
     }
 
     // Build tzinfo abstract base class (base of timezone)
@@ -2436,6 +2488,70 @@ fn build_html_calendar_class(
 
         Ok(PyObject::instance_with_attrs(cls_ref.clone(), attrs))
     })
+}
+
+// ── zoneinfo module ──────────────────────────────────────────────────
+
+pub fn create_zoneinfo_module() -> PyObjectRef {
+    // ZoneInfo class — wraps IANA timezone names
+    let mut zi_ns = IndexMap::new();
+    zi_ns.insert(CompactString::from("__init__"), make_builtin(|args: &[PyObjectRef]| {
+        // ZoneInfo(key) — store the key
+        if args.len() < 2 {
+            return Err(PyException::type_error("ZoneInfo() requires key argument"));
+        }
+        let key = args[1].py_to_string();
+        if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+            let mut w = inst.attrs.write();
+            w.insert(CompactString::from("key"), PyObject::str_val(CompactString::from(key.as_str())));
+            w.insert(CompactString::from("_name"), PyObject::str_val(CompactString::from(key.as_str())));
+        }
+        Ok(PyObject::none())
+    }));
+    zi_ns.insert(CompactString::from("__repr__"), make_builtin(|args: &[PyObjectRef]| {
+        let key = args.first().and_then(|a| a.get_attr("key")).map(|k| k.py_to_string()).unwrap_or_default();
+        Ok(PyObject::str_val(CompactString::from(format!("zoneinfo.ZoneInfo(key='{}')", key))))
+    }));
+    zi_ns.insert(CompactString::from("__str__"), make_builtin(|args: &[PyObjectRef]| {
+        let key = args.first().and_then(|a| a.get_attr("key")).map(|k| k.py_to_string()).unwrap_or_default();
+        Ok(PyObject::str_val(CompactString::from(key)))
+    }));
+    zi_ns.insert(CompactString::from("utcoffset"), make_builtin(|_args: &[PyObjectRef]| {
+        // Return None (unknown offset for now)
+        Ok(PyObject::none())
+    }));
+    zi_ns.insert(CompactString::from("tzname"), make_builtin(|args: &[PyObjectRef]| {
+        let key = args.first().and_then(|a| a.get_attr("key")).map(|k| k.py_to_string()).unwrap_or_default();
+        Ok(PyObject::str_val(CompactString::from(key)))
+    }));
+    zi_ns.insert(CompactString::from("dst"), make_builtin(|_args: &[PyObjectRef]| {
+        Ok(PyObject::none())
+    }));
+    let zi_cls = PyObject::class(CompactString::from("ZoneInfo"), vec![], zi_ns);
+
+    // ZoneInfoNotFoundError — subclass of KeyError
+    let err_cls = PyObject::class(CompactString::from("ZoneInfoNotFoundError"), vec![], IndexMap::new());
+
+    // available_timezones()
+    let available_tz = make_builtin(|_args: &[PyObjectRef]| {
+        let tzs = vec![
+            "UTC", "US/Eastern", "US/Central", "US/Mountain", "US/Pacific",
+            "Europe/London", "Europe/Paris", "Europe/Berlin", "Asia/Tokyo",
+            "Asia/Shanghai", "Australia/Sydney",
+        ];
+        let mut items = IndexMap::new();
+        for tz in tzs {
+            let key = HashableKey::Str(CompactString::from(tz));
+            items.insert(key, PyObject::str_val(CompactString::from(tz)));
+        }
+        Ok(PyObject::frozenset(items))
+    });
+
+    make_module("zoneinfo", vec![
+        ("ZoneInfo", zi_cls),
+        ("ZoneInfoNotFoundError", err_cls),
+        ("available_timezones", available_tz),
+    ])
 }
 
 // ── weakref module ──

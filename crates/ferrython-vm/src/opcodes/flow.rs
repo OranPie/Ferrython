@@ -396,9 +396,24 @@ impl VirtualMachine {
                 let stack_pos = frame.stack.len() - idx;
                 let set_obj = frame.stack[stack_pos].clone();
                 if let PyObjectPayload::Set(s) = &set_obj.payload {
-                    let new_items = iterable.to_list()?;
+                    let items = if let PyObjectPayload::Generator(gen_arc) = &iterable.payload {
+                        let mut result = Vec::new();
+                        loop {
+                            match self.resume_generator(gen_arc, PyObject::none()) {
+                                Ok(val) => result.push(val),
+                                Err(e) if e.kind == ExceptionKind::StopIteration => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        result
+                    } else {
+                        match iterable.to_list() {
+                            Ok(v) => v,
+                            Err(_) => self.collect_iterable(&iterable)?,
+                        }
+                    };
                     let mut set = s.write();
-                    for item in new_items {
+                    for item in items {
                         if let Ok(key) = self.vm_to_hashable_key(&item) {
                             set.insert(key, item);
                         }
@@ -665,6 +680,18 @@ impl VirtualMachine {
                         }
                     }
                     None => {
+                        // Fallback: resolve_type_class_method for BuiltinType
+                        let type_name = match &obj.payload {
+                            PyObjectPayload::BuiltinType(tn) => Some(tn.as_str()),
+                            PyObjectPayload::NativeFunction { name: fn_name, .. } => Some(fn_name.as_str()),
+                            _ => None,
+                        };
+                        if let Some(tn) = type_name {
+                            if let Some(type_method) = crate::builtins::resolve_type_class_method(tn, &name) {
+                                self.vm_push(type_method);
+                                return Ok(None);
+                            }
+                        }
                         // Fallback: check __getattr__ on instances
                         if let PyObjectPayload::Instance(_) = &obj.payload {
                             if let Some(ga) = obj.get_attr("__getattr__") {

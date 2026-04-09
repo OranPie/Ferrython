@@ -440,19 +440,17 @@ impl VirtualMachine {
                 let class = &inst.class;
                 if matches!(&class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__dataclass__")) {
                     if let Some(fields) = class.get_attr("__dataclass_fields__") {
-                        if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                        let field_names = crate::vm_dataclass_utils::extract_field_names(&fields);
+                        if !field_names.is_empty() {
                             let class_name = if let PyObjectPayload::Class(cd) = &class.payload {
                                 cd.name.to_string()
                             } else { "?".to_string() };
                             let mut parts = Vec::new();
                             let attrs = inst.attrs.read();
-                            for ft in field_tuples {
-                                if let PyObjectPayload::Tuple(info) = &ft.payload {
-                                    let name = info[0].py_to_string();
-                                    if let Some(val) = attrs.get(name.as_str()) {
-                                        let val_repr = self.vm_repr(val)?;
-                                        parts.push(format!("{}={}", name, val_repr));
-                                    }
+                            for name in &field_names {
+                                if let Some(val) = attrs.get(name.as_str()) {
+                                    let val_repr = self.vm_repr(val)?;
+                                    parts.push(format!("{}={}", name, val_repr));
                                 }
                             }
                             return Ok(format!("{}({})", class_name, parts.join(", ")));
@@ -756,7 +754,14 @@ impl VirtualMachine {
             }
             // Custom __iter__: call it to get the actual iterator
             if let Some(iter_method) = obj.get_attr("__iter__") {
-                return self.call_object(iter_method, vec![]);
+                let result = self.call_object(iter_method, vec![])?;
+                // If __iter__ returns a raw Tuple/List, convert to proper iterator
+                match &result.payload {
+                    PyObjectPayload::Tuple(_) | PyObjectPayload::List(_) => {
+                        return builtins::get_iter_from_obj_pub(&result);
+                    }
+                    _ => return Ok(result),
+                }
             }
             // Builtin base type subclass: delegate to __builtin_value__
             if let Some(bv) = inst.attrs.read().get("__builtin_value__").cloned() {
@@ -1415,7 +1420,13 @@ impl VirtualMachine {
             PyObjectPayload::Iterator(_) | PyObjectPayload::Generator(_) => obj.clone(),
             PyObjectPayload::Instance(_) => {
                 if let Some(iter_fn) = obj.get_attr("__iter__") {
-                    self.call_object(iter_fn, vec![])?
+                    let result = self.call_object(iter_fn, vec![])?;
+                    // If __iter__ returns a directly iterable type (tuple, list),
+                    // collect it immediately instead of treating as an iterator.
+                    if let Ok(items) = result.to_list() {
+                        return Ok(items);
+                    }
+                    result
                 } else {
                     return Err(PyException::type_error(format!(
                         "cannot unpack non-iterable {} object", obj.type_name()

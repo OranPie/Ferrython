@@ -206,6 +206,14 @@ pub fn create_sys_module() -> PyObjectRef {
                     Ok(PyObject::bool_val(false))
                 });
                 attrs.insert(CompactString::from("__eq__"), eq_fn);
+                attrs.insert(CompactString::from("__iter__"), PyObject::native_closure(
+                    "version_info.__iter__", |_: &[PyObjectRef]| {
+                        Ok(PyObject::tuple(vec![
+                            PyObject::int(3), PyObject::int(8), PyObject::int(0),
+                            PyObject::str_val(CompactString::from("final")), PyObject::int(0),
+                        ]))
+                    }
+                ));
             }
             inst
         }),
@@ -1376,7 +1384,7 @@ pub fn make_terminal_size_instance(cols: i64, lines: i64) -> PyObjectRef {
     let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("columns"), PyObject::int(cols));
     attrs.insert(CompactString::from("lines"), PyObject::int(lines));
-    // Support tuple-like indexing and repr
+    // Support tuple-like indexing, iteration, length, and repr
     let c = cols;
     let l = lines;
     attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
@@ -1391,6 +1399,11 @@ pub fn make_terminal_size_instance(cols: i64, lines: i64) -> PyObjectRef {
     ));
     attrs.insert(CompactString::from("__len__"), PyObject::native_closure(
         "terminal_size.__len__", |_| Ok(PyObject::int(2))
+    ));
+    attrs.insert(CompactString::from("__iter__"), PyObject::native_closure(
+        "terminal_size.__iter__", move |_| {
+            Ok(PyObject::tuple(vec![PyObject::int(c), PyObject::int(l)]))
+        }
     ));
     attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
         "terminal_size.__repr__", move |_| {

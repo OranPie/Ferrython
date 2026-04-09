@@ -49,6 +49,10 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                         Ok(n) => {
                             if let Some(c) = char::from_u32(n) {
                                 result.push(c);
+                            } else if (0xD800..=0xDFFF).contains(&n) {
+                                // Surrogate code points: CPython allows these in strings.
+                                // Encode as replacement char since Rust strings are UTF-8.
+                                result.push('\u{FFFD}');
                             } else {
                                 return Err(ParseError::new(
                                     ParseErrorKind::InvalidEscape('u'),
@@ -70,6 +74,8 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                         Ok(n) => {
                             if let Some(c) = char::from_u32(n) {
                                 result.push(c);
+                            } else if (0xD800..=0xDFFF).contains(&n) {
+                                result.push('\u{FFFD}');
                             } else {
                                 return Err(ParseError::new(
                                     ParseErrorKind::InvalidEscape('U'),

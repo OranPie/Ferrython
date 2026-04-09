@@ -9,6 +9,7 @@ use ferrython_core::object::{
     has_descriptor_get, is_data_descriptor, lookup_in_class_mro, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef,
 };
+use ferrython_core::types::HashableKey;
 use ferrython_core::intern;
 use std::sync::Arc;
 
@@ -491,7 +492,32 @@ impl VirtualMachine {
                         }
                     }
                 }
-                inst.attrs.write().insert(name.clone(), value);
+                // Special case: __dict__ assignment replaces instance attrs
+                if name.as_str() == "__dict__" {
+                    match &value.payload {
+                        PyObjectPayload::Dict(map) => {
+                            let mut attrs = inst.attrs.write();
+                            attrs.clear();
+                            for (k, v) in map.read().iter() {
+                                if let HashableKey::Str(s) = k {
+                                    attrs.insert(s.clone(), v.clone());
+                                }
+                            }
+                        }
+                        PyObjectPayload::InstanceDict(other_attrs) => {
+                            let mut attrs = inst.attrs.write();
+                            attrs.clear();
+                            for (k, v) in other_attrs.read().iter() {
+                                attrs.insert(k.clone(), v.clone());
+                            }
+                        }
+                        _ => {
+                            inst.attrs.write().insert(name.clone(), value);
+                        }
+                    }
+                } else {
+                    inst.attrs.write().insert(name.clone(), value);
+                }
             }
             PyObjectPayload::Class(cd) => {
                 cd.namespace.write().insert(name.clone(), value);

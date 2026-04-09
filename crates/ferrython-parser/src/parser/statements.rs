@@ -281,7 +281,7 @@ impl Parser {
         let loc = self.current_location();
         self.expect(TokenKind::Return)?;
         let value = if !self.check_newline_or_eof() {
-            Some(Box::new(self.parse_test_list()?))
+            Some(Box::new(self.parse_test_list_star_expr()?))
         } else {
             None
         };

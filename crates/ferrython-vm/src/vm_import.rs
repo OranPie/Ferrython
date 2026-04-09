@@ -152,9 +152,10 @@ impl VirtualMachine {
                     ferrython_import::resolve_relative_import(&current_name, importer_file, the_level)
                         .map_err(|e| { e })?
                 } else {
-                    // For i > 0 in a dotted relative import, resolve relative
-                    // to the same base directory
-                    ferrython_import::resolve_relative_import(&current_name, importer_file, 1)?
+                    // For i > 0 in a dotted relative import (e.g., _backends.sync),
+                    // resolve the full dotted path relative to the original base,
+                    // not the importer file — use the same level as the original import.
+                    ferrython_import::resolve_relative_import(&current_name, importer_file, level)?
                 };
                 let module = match resolved_mod {
                     ferrython_import::ResolvedModule::Builtin(m) => {
@@ -320,6 +321,22 @@ impl VirtualMachine {
             };
             g.insert(CompactString::from("__package__"), PyObject::str_val(CompactString::from(pkg)));
             g.insert(CompactString::from("__doc__"), PyObject::none());
+
+            // __path__: for packages (__init__.py), set to a list containing the
+            // package directory. This is essential for submodule resolution.
+            if is_init {
+                if let Some(ref fp) = file_path {
+                    let p = std::path::Path::new(fp.as_str());
+                    if let Some(pkg_dir) = p.parent() {
+                        g.insert(
+                            CompactString::from("__path__"),
+                            PyObject::list(vec![PyObject::str_val(
+                                CompactString::from(pkg_dir.to_string_lossy().as_ref()),
+                            )]),
+                        );
+                    }
+                }
+            }
         }
 
         // Circular import protection: insert partial module that shares the same

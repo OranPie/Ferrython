@@ -268,6 +268,8 @@ impl VirtualMachine {
                 // str % val → Python printf-style formatting
                 if let PyObjectPayload::Str(fmt_str) = &a.payload {
                     self.vm_string_percent_format(fmt_str, &b)?
+                } else if let PyObjectPayload::Bytes(fmt_bytes) = &a.payload {
+                    self.vm_bytes_percent_format(fmt_bytes, &b)?
                 } else if let Some(r) = self.try_binary_dunder(&a, &b, "__mod__", Some("__rmod__"))? { r }
                 else { with_enum_fallback!(a, b, modulo) }
             }
@@ -435,6 +437,32 @@ impl VirtualMachine {
                     return Ok(None);
                 }
                 // Dict subclass: Instance with dict_storage
+                // Typing aliases: _GenericAlias[X] or types.GenericAlias[X] → new alias
+                if let PyObjectPayload::Instance(inst) = &obj.payload {
+                    if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                        if cd.name.contains("GenericAlias") || cd.name.contains("_GenericAlias") {
+                            let base_repr = inst.attrs.read().get("__typing_repr__")
+                                .map(|r| r.py_to_string())
+                                .unwrap_or_else(|| obj.py_to_string());
+                            let params = match &key.payload {
+                                PyObjectPayload::Tuple(items) => {
+                                    items.iter().map(|i| self.format_type_param(i)).collect::<Vec<_>>().join(", ")
+                                }
+                                _ => self.format_type_param(&key),
+                            };
+                            let repr = format!("{}[{}]", base_repr, params);
+                            let alias_cls = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());
+                            let mut attrs = IndexMap::new();
+                            attrs.insert(intern_or_new("__typing_repr__"), PyObject::str_val(CompactString::from(&repr)));
+                            if let Some(origin) = inst.attrs.read().get("__origin__").cloned() {
+                                attrs.insert(intern_or_new("__origin__"), origin);
+                            }
+                            attrs.insert(intern_or_new("__args__"), key.clone());
+                            self.vm_push(PyObject::instance_with_attrs(alias_cls, attrs));
+                            return Ok(None);
+                        }
+                    }
+                }
                 // If the subclass defines its own __getitem__, call it instead of dict_storage
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
                     if let Some(ref ds) = inst.dict_storage {
@@ -973,6 +1001,124 @@ impl VirtualMachine {
             }
         }
         Ok(PyObject::str_val(CompactString::from(result)))
+    }
+
+    /// Bytes % formatting (PEP 461)
+    fn vm_bytes_percent_format(&mut self, fmt: &[u8], args: &PyObjectRef) -> Result<PyObjectRef, PyException> {
+        let arg_list: Vec<PyObjectRef> = match &args.payload {
+            PyObjectPayload::Tuple(items) => items.clone(),
+            _ => vec![args.clone()],
+        };
+
+        let mut result = Vec::with_capacity(fmt.len() + 32);
+        let mut i = 0;
+        let mut arg_idx = 0;
+
+        while i < fmt.len() {
+            if fmt[i] != b'%' {
+                result.push(fmt[i]);
+                i += 1;
+                continue;
+            }
+            i += 1;
+            if i >= fmt.len() { break; }
+            if fmt[i] == b'%' { result.push(b'%'); i += 1; continue; }
+
+            // Parse flags
+            let mut zero_pad = false;
+            let mut left_align = false;
+            while i < fmt.len() && matches!(fmt[i], b'-' | b'+' | b'0' | b' ' | b'#') {
+                if fmt[i] == b'0' { zero_pad = true; }
+                if fmt[i] == b'-' { left_align = true; }
+                i += 1;
+            }
+            // Parse width
+            let mut width = 0usize;
+            while i < fmt.len() && fmt[i].is_ascii_digit() {
+                width = width * 10 + (fmt[i] - b'0') as usize;
+                i += 1;
+            }
+            // Parse precision
+            let mut _precision: Option<usize> = None;
+            if i < fmt.len() && fmt[i] == b'.' {
+                i += 1;
+                let mut p = 0usize;
+                while i < fmt.len() && fmt[i].is_ascii_digit() {
+                    p = p * 10 + (fmt[i] - b'0') as usize;
+                    i += 1;
+                }
+                _precision = Some(p);
+            }
+
+            if i >= fmt.len() { break; }
+            let spec = fmt[i];
+            i += 1;
+
+            if arg_idx >= arg_list.len() {
+                return Err(PyException::type_error("not enough arguments for format string"));
+            }
+            let arg = &arg_list[arg_idx];
+            arg_idx += 1;
+
+            let formatted: Vec<u8> = match spec {
+                b's' | b'b' => {
+                    match &arg.payload {
+                        PyObjectPayload::Bytes(b) => b.clone(),
+                        PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                        _ => {
+                            let s = self.vm_str(arg)?;
+                            s.into_bytes()
+                        }
+                    }
+                }
+                b'r' | b'a' => {
+                    let s = self.vm_repr(arg)?;
+                    s.into_bytes()
+                }
+                b'd' | b'i' | b'u' => {
+                    let v = arg.as_int().unwrap_or(0);
+                    format!("{}", v).into_bytes()
+                }
+                b'x' => {
+                    let v = arg.as_int().unwrap_or(0);
+                    format!("{:x}", v).into_bytes()
+                }
+                b'X' => {
+                    let v = arg.as_int().unwrap_or(0);
+                    format!("{:X}", v).into_bytes()
+                }
+                b'o' => {
+                    let v = arg.as_int().unwrap_or(0);
+                    format!("{:o}", v).into_bytes()
+                }
+                b'c' => {
+                    let v = arg.as_int().unwrap_or(0) as u8;
+                    vec![v]
+                }
+                _ => {
+                    let mut fallback = vec![b'%'];
+                    fallback.push(spec);
+                    fallback
+                }
+            };
+
+            // Apply width/padding
+            if width > 0 && formatted.len() < width {
+                let pad_len = width - formatted.len();
+                let pad_byte = if zero_pad && !left_align { b'0' } else { b' ' };
+                if left_align {
+                    result.extend_from_slice(&formatted);
+                    result.extend(std::iter::repeat(b' ').take(pad_len));
+                } else {
+                    result.extend(std::iter::repeat(pad_byte).take(pad_len));
+                    result.extend_from_slice(&formatted);
+                }
+            } else {
+                result.extend_from_slice(&formatted);
+            }
+        }
+
+        Ok(PyObject::bytes(result))
     }
 }
 

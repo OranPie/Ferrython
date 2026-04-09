@@ -1364,6 +1364,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
                 "__doc__" => Some(PyObject::none()),
+                "__call__" => Some(obj.clone()),
                 "__get__" => {
                     let func = obj.clone();
                     Some(PyObject::native_closure("__get__", move |args| {
@@ -1382,6 +1383,14 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }))
                     }))
                 }
+                _ => None,
+            }
+            PyObjectPayload::BuiltinFunction(fname) => match name {
+                "__name__" | "__qualname__" => Some(PyObject::str_val(fname.clone())),
+                "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
+                "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
+                "__doc__" => Some(PyObject::none()),
+                "__call__" => Some(obj.clone()),
                 _ => None,
             }
             PyObjectPayload::ClassMethod(func) => match name {
@@ -2163,6 +2172,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "__name__" | "__qualname__" => Some(PyObject::str_val(nc_name.clone())),
                     "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
                     "__doc__" => Some(PyObject::none()),
+                    "__call__" => Some(obj.clone()),
                     "__get__" => {
                         let func = obj.clone();
                         Some(PyObject::native_closure("__get__", move |args| {

@@ -1168,6 +1168,23 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
             }
             Ok(PyObject::instance(args[0].clone()))
         })),
+        // property.__init__(self, fget=None, fset=None, fdel=None, doc=None)
+        // Store fget/fset/fdel on Instance attrs so property subclasses work
+        ("property", "__init__") => Some(PyObject::native_function("property.__init__", |args| {
+            if args.is_empty() {
+                return Ok(PyObject::none());
+            }
+            let fget = args.get(1).cloned();
+            let fset = args.get(2).cloned();
+            let fdel = args.get(3).cloned();
+            if let PyObjectPayload::Instance(ref inst) = args[0].payload {
+                let mut w = inst.attrs.write();
+                if let Some(f) = &fget { w.insert(CompactString::from("fget"), f.clone()); }
+                if let Some(f) = &fset { w.insert(CompactString::from("fset"), f.clone()); }
+                if let Some(f) = &fdel { w.insert(CompactString::from("fdel"), f.clone()); }
+            }
+            Ok(PyObject::none())
+        })),
         // __init__ on any builtin type base is a no-op (instance already created)
         (_, "__init__") => Some(PyObject::native_function("builtin.__init__", |_args| {
             Ok(PyObject::none())

@@ -139,23 +139,21 @@ impl VirtualMachine {
                     let cls_a = &inst_a.class;
                     if cls_a.get_attr("__dataclass__").is_some() {
                         if let Some(fields) = cls_a.get_attr("__dataclass_fields__") {
-                            if let PyObjectPayload::Tuple(field_tuples) = &fields.payload {
+                            let field_names = crate::vm_dataclass_utils::extract_field_names(&fields);
+                            if !field_names.is_empty() {
                                 let attrs_a = inst_a.attrs.read();
                                 let attrs_b = inst_b.attrs.read();
                                 let mut eq = true;
-                                for ft in field_tuples {
-                                    if let PyObjectPayload::Tuple(info) = &ft.payload {
-                                        let name = info[0].py_to_string();
-                                        let va = attrs_a.get(name.as_str());
-                                        let vb = attrs_b.get(name.as_str());
-                                        match (va, vb) {
-                                            (Some(x), Some(y)) => {
-                                                if let Ok(r) = x.compare(y, CompareOp::Eq) {
-                                                    if !r.is_truthy() { eq = false; break; }
-                                                } else { eq = false; break; }
-                                            }
-                                            _ => { eq = false; break; }
+                                for name in &field_names {
+                                    let va = attrs_a.get(name.as_str());
+                                    let vb = attrs_b.get(name.as_str());
+                                    match (va, vb) {
+                                        (Some(x), Some(y)) => {
+                                            if let Ok(r) = x.compare(y, CompareOp::Eq) {
+                                                if !r.is_truthy() { eq = false; break; }
+                                            } else { eq = false; break; }
                                         }
+                                        _ => { eq = false; break; }
                                     }
                                 }
                                 let result = if cmp == 2 { eq } else { !eq };

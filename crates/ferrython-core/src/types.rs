@@ -39,8 +39,12 @@ pub fn set_hash_dispatch<F: FnMut(&PyObjectRef) -> Option<i64> + 'static>(f: F) 
 /// Call the installed __eq__ dispatch, if any.
 fn call_eq_dispatch(a: &PyObjectRef, b: &PyObjectRef) -> Option<bool> {
     EQ_DISPATCH.with(|cell| {
-        if let Some(ref mut f) = *cell.borrow_mut() {
-            f(a, b)
+        // Take the closure out to avoid re-entrant borrow panic
+        let func = cell.borrow_mut().take();
+        if let Some(mut f) = func {
+            let result = f(a, b);
+            *cell.borrow_mut() = Some(f);
+            result
         } else {
             None
         }
@@ -50,8 +54,12 @@ fn call_eq_dispatch(a: &PyObjectRef, b: &PyObjectRef) -> Option<bool> {
 /// Call the installed __hash__ dispatch, if any.
 fn call_hash_dispatch(obj: &PyObjectRef) -> Option<i64> {
     HASH_DISPATCH.with(|cell| {
-        if let Some(ref mut f) = *cell.borrow_mut() {
-            f(obj)
+        // Take the closure out to avoid re-entrant borrow panic
+        let func = cell.borrow_mut().take();
+        if let Some(mut f) = func {
+            let result = f(obj);
+            *cell.borrow_mut() = Some(f);
+            result
         } else {
             None
         }
