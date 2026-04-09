@@ -220,7 +220,11 @@ impl Compiler {
                 orelse,
                 finalbody,
             } => {
-                self.compile_try(body, handlers, orelse, finalbody)?;
+                if handlers.iter().any(|h| h.is_star) {
+                    self.compile_try_star(body, handlers, orelse, finalbody)?;
+                } else {
+                    self.compile_try(body, handlers, orelse, finalbody)?;
+                }
             }
 
             StatementKind::Assert { test, msg } => {
@@ -1007,6 +1011,132 @@ impl Compiler {
         Ok(())
     }
 
+    /// Compile try/except* (PEP 654 — exception groups)
+    pub(super) fn compile_try_star(
+        &mut self,
+        body: &[Statement],
+        handlers: &[ExceptHandler],
+        orelse: &[Statement],
+        finalbody: &[Statement],
+    ) -> Result<()> {
+        let has_finally = !finalbody.is_empty();
+
+        let finally_label = if has_finally {
+            Some(self.emit_jump(Opcode::SetupFinally))
+        } else {
+            None
+        };
+
+        let except_label = self.emit_jump(Opcode::SetupExcept);
+
+        self.compile_body(body)?;
+        self.emit_op(Opcode::PopBlock);
+
+        if !orelse.is_empty() {
+            self.compile_body(orelse)?;
+        }
+
+        let after_except = self.emit_jump(Opcode::JumpForward);
+
+        self.patch_jump_here(except_label);
+
+        // Stack: [traceback, value, type] with type on top
+        let remain_var = CompactString::from("$exc_remain$");
+        let remain_idx = self.varname_index(&remain_var);
+        self.emit_op(Opcode::PopTop);           // pop type
+        self.emit_arg(Opcode::StoreFast, remain_idx); // store value
+        self.emit_op(Opcode::PopTop);           // pop traceback
+
+        // For each except* handler: try to split, run handler body if matched
+        let mut handler_end_labels = Vec::new();
+        for handler in handlers {
+            if let Some(ref typ) = handler.typ {
+                // Skip if remainder is None
+                self.emit_arg(Opcode::LoadFast, remain_idx);
+                let none_idx = self.add_const(ConstantValue::None);
+                self.emit_arg(Opcode::LoadConst, none_idx);
+                self.emit_arg(Opcode::CompareOp, 8); // is
+                let skip_handler = self.emit_jump(Opcode::PopJumpIfTrue);
+
+                // Call $exc_remain$.split(Type) → (match, rest)
+                self.load_name("getattr");
+                self.emit_arg(Opcode::LoadFast, remain_idx);
+                let split_str = self.add_const(ConstantValue::Str(CompactString::from("split")));
+                self.emit_arg(Opcode::LoadConst, split_str);
+                self.emit_arg(Opcode::CallFunction, 2);
+                // Stack: split_method (bound)
+                self.compile_expression(typ)?;
+                self.emit_arg(Opcode::CallFunction, 1);
+                // Stack: (match, rest) tuple — unpack
+                self.emit_arg(Opcode::UnpackSequence, 2);
+                let match_var = CompactString::from(format!("$exc_match_{}$", handler.location.line));
+                let match_idx = self.varname_index(&match_var);
+                let rest_var = CompactString::from(format!("$exc_rest_{}$", handler.location.line));
+                let rest_idx = self.varname_index(&rest_var);
+                self.emit_arg(Opcode::StoreFast, match_idx);
+                self.emit_arg(Opcode::StoreFast, rest_idx);
+
+                // If match is None, skip handler body
+                self.emit_arg(Opcode::LoadFast, match_idx);
+                self.emit_arg(Opcode::LoadConst, none_idx);
+                self.emit_arg(Opcode::CompareOp, 8); // is
+                let no_match = self.emit_jump(Opcode::PopJumpIfTrue);
+
+                // Match! Bind and execute handler body
+                if let Some(ref name) = handler.name {
+                    self.emit_arg(Opcode::LoadFast, match_idx);
+                    self.store_name(name);
+                }
+                self.compile_body(&handler.body)?;
+                // Clean up handler variable
+                if let Some(ref name) = handler.name {
+                    let none_c = self.add_const(ConstantValue::None);
+                    self.emit_arg(Opcode::LoadConst, none_c);
+                    self.store_name(name);
+                    self.delete_name(name);
+                }
+                // Update remainder
+                self.emit_arg(Opcode::LoadFast, rest_idx);
+                self.emit_arg(Opcode::StoreFast, remain_idx);
+                let after_handler = self.emit_jump(Opcode::JumpForward);
+
+                self.patch_jump_here(no_match);
+                // No match: remainder stays unchanged
+                self.patch_jump_here(after_handler);
+                self.patch_jump_here(skip_handler);
+            }
+        }
+
+        // After all handlers: if remainder is not None, re-raise it
+        self.emit_arg(Opcode::LoadFast, remain_idx);
+        let none_idx2 = self.add_const(ConstantValue::None);
+        self.emit_arg(Opcode::LoadConst, none_idx2);
+        self.emit_arg(Opcode::CompareOp, 8); // is
+        let all_done = self.emit_jump(Opcode::PopJumpIfTrue);
+        self.emit_arg(Opcode::LoadFast, remain_idx);
+        self.emit_arg(Opcode::RaiseVarargs, 1);
+        self.patch_jump_here(all_done);
+        self.emit_op(Opcode::PopExcept);
+
+        handler_end_labels.push(self.emit_jump(Opcode::JumpForward));
+
+        self.patch_jump_here(after_except);
+        for label in handler_end_labels {
+            self.patch_jump_here(label);
+        }
+
+        if has_finally {
+            self.emit_op(Opcode::PopBlock);
+            if let Some(label) = finally_label {
+                self.patch_jump_here(label);
+            }
+            self.compile_body(finalbody)?;
+            self.emit_op(Opcode::EndFinally);
+        }
+
+        Ok(())
+    }
+
     pub(super) fn compile_assert(
         &mut self,
         test: &Expression,
@@ -1541,20 +1671,31 @@ impl Compiler {
 
         let len_fail = self.emit_jump(Opcode::PopJumpIfFalse);
 
-        // Check each element pattern
+        // Check each element pattern, using negative indices for elements after the star
         let mut elem_fails = Vec::new();
+        let star_pos = patterns.iter().position(|p| matches!(p, Pattern::MatchStar { .. }));
+        let post_star_count = star_pos.map_or(0, |sp| patterns.len() - sp - 1);
         let mut elem_idx = 0u32;
+        let mut past_star = false;
+        let mut after_star_i = 0usize;
         for pat in patterns {
             if matches!(pat, Pattern::MatchStar { .. }) {
-                // Skip star patterns in testing — they match the rest
+                past_star = true;
                 continue;
             }
-            // Create temp for element
             let elem_temp = CompactString::from(format!("$match_elem_{}$", elem_idx));
             let elem_temp_idx = self.varname_index(&elem_temp);
             self.emit_arg(Opcode::LoadFast, subject_idx);
-            let idx_const = self.add_const(ConstantValue::Integer(elem_idx as i64));
-            self.emit_arg(Opcode::LoadConst, idx_const);
+            if past_star {
+                // Use negative index: subject[-(post_star_count - after_star_i)]
+                let neg_idx = -((post_star_count - after_star_i) as i64);
+                let idx_const = self.add_const(ConstantValue::Integer(neg_idx));
+                self.emit_arg(Opcode::LoadConst, idx_const);
+                after_star_i += 1;
+            } else {
+                let idx_const = self.add_const(ConstantValue::Integer(elem_idx as i64));
+                self.emit_arg(Opcode::LoadConst, idx_const);
+            }
             self.emit_op(Opcode::BinarySubscr);
             self.emit_arg(Opcode::StoreFast, elem_temp_idx);
 
@@ -1743,15 +1884,47 @@ impl Compiler {
                 }
             }
             Pattern::MatchSequence { patterns } => {
+                let star_pos = patterns.iter().position(|p| matches!(p, Pattern::MatchStar { .. }));
+                let post_star_count = star_pos.map_or(0, |sp| patterns.len() - sp - 1);
                 let mut elem_idx = 0u32;
+                let mut past_star = false;
+                let mut after_star_i = 0usize;
                 for pat in patterns {
-                    if matches!(pat, Pattern::MatchStar { .. }) {
+                    if let Pattern::MatchStar { name } = pat {
+                        // Bind star capture: rest = subject[pre_count : len(subject) - post_count]
+                        if let Some(star_name) = name {
+                            let pre_count = elem_idx as i64;
+                            let post_count = post_star_count as i64;
+                            // subject[pre_count:]  or  subject[pre_count:-post_count]
+                            self.emit_arg(Opcode::LoadFast, subject_idx);
+                            // Build slice(pre_count, -post_count or None)
+                            let start_c = self.add_const(ConstantValue::Integer(pre_count));
+                            self.emit_arg(Opcode::LoadConst, start_c);
+                            if post_count > 0 {
+                                let end_c = self.add_const(ConstantValue::Integer(-post_count));
+                                self.emit_arg(Opcode::LoadConst, end_c);
+                            } else {
+                                let none_c = self.add_const(ConstantValue::None);
+                                self.emit_arg(Opcode::LoadConst, none_c);
+                            }
+                            self.emit_arg(Opcode::BuildSlice, 2);
+                            self.emit_op(Opcode::BinarySubscr);
+                            // Convert to list (subject slice may be tuple)
+                            self.load_name("list");
+                            self.emit_op(Opcode::RotTwo);
+                            self.emit_arg(Opcode::CallFunction, 1);
+                            self.store_name(star_name);
+                        }
+                        past_star = true;
                         continue;
                     }
                     let elem_temp = CompactString::from(format!("$match_elem_{}$", elem_idx));
                     let elem_temp_idx = self.varname_index(&elem_temp);
                     self.compile_pattern_bindings(pat, elem_temp_idx)?;
                     elem_idx += 1;
+                    if past_star {
+                        after_star_i += 1;
+                    }
                 }
             }
             Pattern::MatchMapping { keys, patterns, rest } => {

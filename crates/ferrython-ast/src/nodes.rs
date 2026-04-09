@@ -521,13 +521,14 @@ pub struct WithItem {
     pub optional_vars: Option<Box<Expression>>,
 }
 
-/// `except [type [as name]]: body`
+/// `except [type [as name]]: body` or `except* type [as name]: body`
 #[derive(Debug, Clone)]
 pub struct ExceptHandler {
     pub typ: Option<Box<Expression>>,
     pub name: Option<CompactString>,
     pub body: Vec<Statement>,
     pub location: SourceLocation,
+    pub is_star: bool,
 }
 
 /// Comprehension: `for target in iter [if cond] ...`

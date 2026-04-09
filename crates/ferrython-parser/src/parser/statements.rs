@@ -418,6 +418,13 @@ impl Parser {
     fn parse_except_handler(&mut self) -> Result<ExceptHandler, ParseError> {
         let loc = self.current_location();
         self.expect(TokenKind::Except)?;
+        // Check for except* (PEP 654)
+        let is_star = if self.check(TokenKind::Star) {
+            self.advance();
+            true
+        } else {
+            false
+        };
         let (typ, name) = if !self.check(TokenKind::Colon) {
             let t = self.parse_expr()?;
             let n = if self.check(TokenKind::As) {
@@ -437,6 +444,7 @@ impl Parser {
             name,
             body,
             location: loc,
+            is_star,
         })
     }
 
