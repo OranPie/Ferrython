@@ -276,6 +276,26 @@ impl VirtualMachine {
                     frame.stack.pop();
                     Ok(None)
                 }
+                Opcode::DupTop => {
+                    let v = frame.stack.last().expect("stack underflow").clone();
+                    frame.stack.push(v);
+                    Ok(None)
+                }
+                Opcode::RotTwo => {
+                    let len = frame.stack.len();
+                    frame.stack.swap(len - 1, len - 2);
+                    Ok(None)
+                }
+                Opcode::Nop => Ok(None),
+                // Inline GetIter for common types
+                Opcode::GetIter => {
+                    let obj = frame.stack.last().unwrap();
+                    match &obj.payload {
+                        // Range/list/tuple iterators are already iterators
+                        PyObjectPayload::Iterator(_) => Ok(None),
+                        _ => self.execute_one(instr),
+                    }
+                }
                 // Inline ReturnValue: fast path when no finally blocks are active
                 Opcode::ReturnValue => {
                     if frame.block_stack.iter().any(|b| b.kind == BlockKind::Finally) {
@@ -336,6 +356,13 @@ impl VirtualMachine {
                     if len >= 2 {
                         let a = &frame.stack[len - 2];
                         let b = &frame.stack[len - 1];
+                        // Arc pointer equality fast-path: same object → equal
+                        if (instr.arg == 2 || instr.arg == 3) && Arc::ptr_eq(a, b) {
+                            let result = instr.arg == 2; // Eq=true, Ne=false
+                            frame.stack.pop();
+                            *frame.stack.last_mut().unwrap() = PyObject::bool_val(result);
+                            Ok(None)
+                        } else {
                         match (&a.payload, &b.payload) {
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
                                 let result = match instr.arg {
@@ -374,6 +401,26 @@ impl VirtualMachine {
                             }
                             _ => self.execute_one(instr),
                         }
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline is/is not comparisons (CompareOp arg 8/9)
+                Opcode::CompareOp if instr.arg == 8 || instr.arg == 9 => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let a = &frame.stack[len - 2];
+                        let b = &frame.stack[len - 1];
+                        let same = Arc::ptr_eq(a, b)
+                            || matches!((&a.payload, &b.payload),
+                                (PyObjectPayload::BuiltinType(at), PyObjectPayload::BuiltinType(bt)) if at == bt)
+                            || matches!((&a.payload, &b.payload),
+                                (PyObjectPayload::ExceptionType(at), PyObjectPayload::ExceptionType(bt)) if at == bt);
+                        let result = if instr.arg == 8 { same } else { !same };
+                        frame.stack.pop();
+                        *frame.stack.last_mut().unwrap() = PyObject::bool_val(result);
+                        Ok(None)
                     } else {
                         self.execute_one(instr)
                     }
@@ -678,7 +725,7 @@ impl VirtualMachine {
                             match result {
                                 Ok(val) => {
                                     let val = self.post_call_intercept(val)?;
-                                    self.vm_push(val);
+                                    self.call_stack.last_mut().unwrap().stack.push(val);
                                     Ok(None)
                                 }
                                 Err(e) => Err(e),

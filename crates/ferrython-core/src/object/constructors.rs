@@ -20,15 +20,20 @@ static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObje
 static ELLIPSIS_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Ellipsis }));
 static NOT_IMPLEMENTED_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::NotImplemented }));
 
-// ── Small-int cache (CPython caches -5..=256) ──
+// ── Small-int cache (CPython caches -5..=256, we go wider for loop bounds) ──
 const SMALL_INT_MIN: i64 = -5;
-const SMALL_INT_MAX: i64 = 256;
+const SMALL_INT_MAX: i64 = 1024;
 
 static SMALL_INT_CACHE: LazyLock<Vec<PyObjectRef>> = LazyLock::new(|| {
     (SMALL_INT_MIN..=SMALL_INT_MAX)
         .map(|n| Arc::new(PyObject { payload: PyObjectPayload::Int(PyInt::Small(n)) }))
         .collect()
 });
+
+// ── Float singleton cache for common values ──
+static FLOAT_ZERO: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Float(0.0) }));
+static FLOAT_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Float(1.0) }));
+static FLOAT_NEG_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Float(-1.0) }));
 
 // ── GC Tracking for cycle-capable objects (Instance, Dict, List) ──
 static TRACKED_OBJECTS: LazyLock<Mutex<Vec<Weak<PyObject>>>> = LazyLock::new(|| Mutex::new(Vec::new()));
@@ -231,7 +236,12 @@ impl PyObject {
         }
     }
     pub fn big_int(v: BigInt) -> PyObjectRef { Self::wrap(PyObjectPayload::Int(PyInt::Big(Box::new(v)))) }
-    pub fn float(v: f64) -> PyObjectRef { Self::wrap(PyObjectPayload::Float(v)) }
+    pub fn float(v: f64) -> PyObjectRef {
+        if v == 0.0 && !v.is_sign_negative() { return FLOAT_ZERO.clone(); }
+        if v == 1.0 { return FLOAT_ONE.clone(); }
+        if v == -1.0 { return FLOAT_NEG_ONE.clone(); }
+        Self::wrap(PyObjectPayload::Float(v))
+    }
     pub fn complex(real: f64, imag: f64) -> PyObjectRef { Self::wrap(PyObjectPayload::Complex { real, imag }) }
     pub fn str_val(v: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::Str(v)) }
     pub fn bytes(v: Vec<u8>) -> PyObjectRef { Self::wrap(PyObjectPayload::Bytes(v)) }
