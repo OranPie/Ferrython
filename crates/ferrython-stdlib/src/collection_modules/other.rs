@@ -1,5 +1,5 @@
 use compact_str::CompactString;
-use ferrython_core::error::{PyException, PyResult};
+use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args_min,
@@ -112,18 +112,50 @@ fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyOb
                 Ok(PyObject::none())
             }));
 
-        // get()
+        // get(block=True, timeout=None)
         let it2 = items.clone();
         w.insert(CompactString::from("get"), PyObject::native_closure(
-            "get", move |_: &[PyObjectRef]| {
-                let mut v = it2.write();
-                if v.is_empty() {
-                    return Err(PyException::runtime_error("queue is empty"));
-                }
-                if is_lifo {
-                    Ok(v.pop().unwrap())
+            "get", move |args: &[PyObjectRef]| {
+                // Parse block and timeout from kwargs-style positional args
+                let block = if args.len() > 0 {
+                    args[0].is_truthy()
                 } else {
-                    Ok(v.remove(0))
+                    true
+                };
+                let timeout_ms: Option<u64> = if args.len() > 1 {
+                    args[1].to_float().ok().map(|t| (t * 1000.0) as u64)
+                } else {
+                    None
+                };
+
+                if block && timeout_ms.is_some() {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.unwrap());
+                    loop {
+                        {
+                            let mut v = it2.write();
+                            if !v.is_empty() {
+                                return if is_lifo {
+                                    Ok(v.pop().unwrap())
+                                } else {
+                                    Ok(v.remove(0))
+                                };
+                            }
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            return Err(PyException::new(ExceptionKind::RuntimeError, "queue.Empty"));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                } else {
+                    let mut v = it2.write();
+                    if v.is_empty() {
+                        return Err(PyException::new(ExceptionKind::RuntimeError, "queue.Empty"));
+                    }
+                    if is_lifo {
+                        Ok(v.pop().unwrap())
+                    } else {
+                        Ok(v.remove(0))
+                    }
                 }
             }));
 
@@ -177,13 +209,17 @@ fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyOb
                 Ok(PyObject::none())
             }));
 
-        // join() — blocks until all tasks done; stub returns immediately
+        // join() — blocks until all tasks done
         let uf3 = unfinished.clone();
         w.insert(CompactString::from("join"), PyObject::native_closure(
             "join", move |_: &[PyObjectRef]| {
-                // In single-threaded context, just return
-                drop(uf3.lock().unwrap());
-                Ok(PyObject::none())
+                // Spin-wait with backoff until unfinished tasks reach 0
+                loop {
+                    if *uf3.lock().unwrap() <= 0 {
+                        return Ok(PyObject::none());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }));
 
         // _items for backwards compat

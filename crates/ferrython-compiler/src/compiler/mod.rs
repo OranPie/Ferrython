@@ -285,9 +285,14 @@ impl Compiler {
         let name = self.mangle_name(name);
         let name = name.as_ref();
         // Cell/free variables use LoadDeref in ANY scope (function, class, comprehension)
+        // BUT in class scope, free vars use LoadClassderef (checks locals first)
         if self.is_cell(name) || self.is_free(name) {
             let idx = self.deref_index(name);
-            self.emit_arg(Opcode::LoadDeref, idx);
+            if self.current_unit().class_name.is_some() && self.is_free(name) {
+                self.emit_arg(Opcode::LoadClassderef, idx);
+            } else {
+                self.emit_arg(Opcode::LoadDeref, idx);
+            }
         } else if self.is_function_scope() {
             if self.is_global(name) {
                 let idx = self.add_name(name);

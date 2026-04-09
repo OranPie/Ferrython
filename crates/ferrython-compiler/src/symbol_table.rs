@@ -367,6 +367,18 @@ impl Analyzer {
                 for default in args.kw_defaults.iter().flatten() {
                     self.analyze_expression(default);
                 }
+                // Analyze parameter annotations in the enclosing scope
+                // (annotations are evaluated where the def statement appears)
+                for arg in args.posonlyargs.iter()
+                    .chain(args.args.iter())
+                    .chain(args.vararg.iter())
+                    .chain(args.kwonlyargs.iter())
+                    .chain(args.kwarg.iter())
+                {
+                    if let Some(ref ann) = arg.annotation {
+                        self.analyze_expression(ann);
+                    }
+                }
                 // Push function scope
                 self.push_scope(name.as_str(), ScopeType::Function);
                 self.analyze_arguments(args);

@@ -1617,30 +1617,116 @@ pub fn create_http_client_module() -> PyObjectRef {
     PyObject::module_with_attrs(CompactString::from("http.client"), client_attrs)
 }
 
+/// Create an HTTPStatus member with value, name, phrase, and description.
+fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &str) -> PyObjectRef {
+    let status_cls = PyObject::class(
+        CompactString::from("HTTPStatus"),
+        vec![],
+        IndexMap::new(),
+    );
+    let mut attrs = IndexMap::new();
+    attrs.insert(CompactString::from("value"), PyObject::int(code));
+    attrs.insert(CompactString::from("_value_"), PyObject::int(code));
+    attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(name)));
+    attrs.insert(CompactString::from("_name_"), PyObject::str_val(CompactString::from(name)));
+    attrs.insert(CompactString::from("phrase"), PyObject::str_val(CompactString::from(phrase)));
+    attrs.insert(CompactString::from("description"), PyObject::str_val(CompactString::from(description)));
+
+    // __eq__: compare by value (code)
+    let eq_code = code;
+    attrs.insert(CompactString::from("__eq__"), PyObject::wrap(
+        PyObjectPayload::NativeClosure {
+            name: CompactString::from("__eq__"),
+            func: Arc::new(move |args: &[PyObjectRef]| {
+                let other = if args.len() > 1 { &args[1] } else { &args[0] };
+                if let Some(v) = other.as_int() {
+                    Ok(PyObject::bool_val(v == eq_code))
+                } else {
+                    Ok(PyObject::bool_val(false))
+                }
+            }),
+        },
+    ));
+    // __int__: return numeric code
+    let int_code = code;
+    attrs.insert(CompactString::from("__int__"), PyObject::wrap(
+        PyObjectPayload::NativeClosure {
+            name: CompactString::from("__int__"),
+            func: Arc::new(move |_args: &[PyObjectRef]| {
+                Ok(PyObject::int(int_code))
+            }),
+        },
+    ));
+    // __hash__
+    let hash_code = code;
+    attrs.insert(CompactString::from("__hash__"), PyObject::wrap(
+        PyObjectPayload::NativeClosure {
+            name: CompactString::from("__hash__"),
+            func: Arc::new(move |_args: &[PyObjectRef]| {
+                Ok(PyObject::int(hash_code))
+            }),
+        },
+    ));
+    // __repr__ / __str__
+    let repr_s = CompactString::from(format!("<HTTPStatus.{}: {}>", name, code));
+    let str_s = CompactString::from(format!("HTTPStatus.{}", name));
+    attrs.insert(CompactString::from("__repr__"), PyObject::wrap(
+        PyObjectPayload::NativeClosure {
+            name: CompactString::from("__repr__"),
+            func: Arc::new(move |_args: &[PyObjectRef]| {
+                Ok(PyObject::str_val(repr_s.clone()))
+            }),
+        },
+    ));
+    attrs.insert(CompactString::from("__str__"), PyObject::wrap(
+        PyObjectPayload::NativeClosure {
+            name: CompactString::from("__str__"),
+            func: Arc::new(move |_args: &[PyObjectRef]| {
+                Ok(PyObject::str_val(str_s.clone()))
+            }),
+        },
+    ));
+
+    PyObject::instance_with_attrs(status_cls, attrs)
+}
+
 pub fn create_http_module() -> PyObjectRef {
-    // Build HTTPStatus as an object with named constants
-    let mut status_attrs = IndexMap::new();
-    let statuses: Vec<(i64, &str)> = vec![
-        (100, "CONTINUE"),
-        (200, "OK"),
-        (201, "CREATED"),
-        (204, "NO_CONTENT"),
-        (301, "MOVED_PERMANENTLY"),
-        (302, "FOUND"),
-        (304, "NOT_MODIFIED"),
-        (400, "BAD_REQUEST"),
-        (401, "UNAUTHORIZED"),
-        (403, "FORBIDDEN"),
-        (404, "NOT_FOUND"),
-        (405, "METHOD_NOT_ALLOWED"),
-        (408, "REQUEST_TIMEOUT"),
-        (500, "INTERNAL_SERVER_ERROR"),
-        (502, "BAD_GATEWAY"),
-        (503, "SERVICE_UNAVAILABLE"),
-        (504, "GATEWAY_TIMEOUT"),
+    // Build HTTPStatus as a proper IntEnum-like type with .value, .name, .phrase
+    let statuses: Vec<(i64, &str, &str, &str)> = vec![
+        (100, "CONTINUE", "Continue", ""),
+        (101, "SWITCHING_PROTOCOLS", "Switching Protocols", ""),
+        (200, "OK", "OK", ""),
+        (201, "CREATED", "Created", ""),
+        (202, "ACCEPTED", "Accepted", ""),
+        (204, "NO_CONTENT", "No Content", ""),
+        (206, "PARTIAL_CONTENT", "Partial Content", ""),
+        (301, "MOVED_PERMANENTLY", "Moved Permanently", ""),
+        (302, "FOUND", "Found", ""),
+        (304, "NOT_MODIFIED", "Not Modified", ""),
+        (307, "TEMPORARY_REDIRECT", "Temporary Redirect", ""),
+        (308, "PERMANENT_REDIRECT", "Permanent Redirect", ""),
+        (400, "BAD_REQUEST", "Bad Request", ""),
+        (401, "UNAUTHORIZED", "Unauthorized", ""),
+        (403, "FORBIDDEN", "Forbidden", ""),
+        (404, "NOT_FOUND", "Not Found", ""),
+        (405, "METHOD_NOT_ALLOWED", "Method Not Allowed", ""),
+        (408, "REQUEST_TIMEOUT", "Request Timeout", ""),
+        (409, "CONFLICT", "Conflict", ""),
+        (410, "GONE", "Gone", ""),
+        (413, "CONTENT_TOO_LARGE", "Content Too Large", ""),
+        (415, "UNSUPPORTED_MEDIA_TYPE", "Unsupported Media Type", ""),
+        (422, "UNPROCESSABLE_ENTITY", "Unprocessable Entity", ""),
+        (429, "TOO_MANY_REQUESTS", "Too Many Requests", ""),
+        (500, "INTERNAL_SERVER_ERROR", "Internal Server Error", ""),
+        (502, "BAD_GATEWAY", "Bad Gateway", ""),
+        (503, "SERVICE_UNAVAILABLE", "Service Unavailable", ""),
+        (504, "GATEWAY_TIMEOUT", "Gateway Timeout", ""),
     ];
-    for (code, name) in &statuses {
-        status_attrs.insert(CompactString::from(*name), PyObject::int(*code));
+
+    let mut status_attrs = IndexMap::new();
+    for (code, name, phrase, desc) in &statuses {
+        let member = make_http_status_member(*code, name, phrase, desc);
+        status_attrs.insert(CompactString::from(*name), member);
     }
     let http_status = PyObject::module_with_attrs(CompactString::from("HTTPStatus"), status_attrs);
 
@@ -1652,20 +1738,6 @@ pub fn create_http_module() -> PyObjectRef {
             ("HTTPStatus", http_status),
             ("HTTPConnection", http_connection_cls),
             ("client", create_http_client_module()),
-            // Common status codes at top level
-            ("OK", PyObject::int(200)),
-            ("CREATED", PyObject::int(201)),
-            ("NO_CONTENT", PyObject::int(204)),
-            ("MOVED_PERMANENTLY", PyObject::int(301)),
-            ("FOUND", PyObject::int(302)),
-            ("NOT_MODIFIED", PyObject::int(304)),
-            ("BAD_REQUEST", PyObject::int(400)),
-            ("UNAUTHORIZED", PyObject::int(401)),
-            ("FORBIDDEN", PyObject::int(403)),
-            ("NOT_FOUND", PyObject::int(404)),
-            ("INTERNAL_SERVER_ERROR", PyObject::int(500)),
-            ("BAD_GATEWAY", PyObject::int(502)),
-            ("SERVICE_UNAVAILABLE", PyObject::int(503)),
         ],
     )
 }
