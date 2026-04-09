@@ -634,8 +634,103 @@ impl<'src> Lexer<'src> {
                         '\\' => content.push('\\'),
                         '\'' => content.push('\''),
                         '"' => content.push('"'),
+                        'a' => content.push('\x07'),
+                        'b' => content.push('\x08'),
+                        'f' => content.push('\x0C'),
+                        'v' => content.push('\x0B'),
                         '{' => content.push('{'),
                         '}' => content.push('}'),
+                        'x' => {
+                            // \xHH hex escape
+                            let mut hex = String::new();
+                            for _ in 0..2 {
+                                if !self.is_at_end() && self.peek_char().is_ascii_hexdigit() {
+                                    hex.push(self.peek_char());
+                                    self.advance();
+                                }
+                            }
+                            if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                                if let Some(ch) = char::from_u32(n) {
+                                    content.push(ch);
+                                } else {
+                                    content.push('\\');
+                                    content.push('x');
+                                    content.push_str(&hex);
+                                }
+                            } else {
+                                content.push('\\');
+                                content.push('x');
+                                content.push_str(&hex);
+                            }
+                        }
+                        '0'..='7' => {
+                            // Octal escape: up to 3 octal digits total
+                            let mut octal = String::new();
+                            octal.push(esc);
+                            for _ in 0..2 {
+                                if !self.is_at_end() && ('0'..='7').contains(&self.peek_char()) {
+                                    octal.push(self.peek_char());
+                                    self.advance();
+                                }
+                            }
+                            if let Ok(n) = u32::from_str_radix(&octal, 8) {
+                                if let Some(ch) = char::from_u32(n) {
+                                    content.push(ch);
+                                } else {
+                                    content.push('\\');
+                                    content.push_str(&octal);
+                                }
+                            } else {
+                                content.push('\\');
+                                content.push_str(&octal);
+                            }
+                        }
+                        'u' => {
+                            // \uHHHH unicode escape
+                            let mut hex = String::new();
+                            for _ in 0..4 {
+                                if !self.is_at_end() && self.peek_char().is_ascii_hexdigit() {
+                                    hex.push(self.peek_char());
+                                    self.advance();
+                                }
+                            }
+                            if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                                if let Some(ch) = char::from_u32(n) {
+                                    content.push(ch);
+                                } else {
+                                    content.push('\\');
+                                    content.push('u');
+                                    content.push_str(&hex);
+                                }
+                            } else {
+                                content.push('\\');
+                                content.push('u');
+                                content.push_str(&hex);
+                            }
+                        }
+                        'U' => {
+                            // \UHHHHHHHH unicode escape
+                            let mut hex = String::new();
+                            for _ in 0..8 {
+                                if !self.is_at_end() && self.peek_char().is_ascii_hexdigit() {
+                                    hex.push(self.peek_char());
+                                    self.advance();
+                                }
+                            }
+                            if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                                if let Some(ch) = char::from_u32(n) {
+                                    content.push(ch);
+                                } else {
+                                    content.push('\\');
+                                    content.push('U');
+                                    content.push_str(&hex);
+                                }
+                            } else {
+                                content.push('\\');
+                                content.push('U');
+                                content.push_str(&hex);
+                            }
+                        }
                         _ => { content.push('\\'); content.push(esc); }
                     }
                 }

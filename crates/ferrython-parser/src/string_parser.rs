@@ -21,7 +21,6 @@ pub fn parse_string_literal(s: &str, span: Span) -> Result<CompactString, ParseE
                 Some('r') => result.push('\r'),
                 Some('t') => result.push('\t'),
                 Some('v') => result.push('\x0B'),
-                Some('0') => result.push('\0'),
                 Some('x') => {
                     let hex = take_n(&mut chars, 2);
                     match u32::from_str_radix(&hex, 16) {
@@ -177,7 +176,6 @@ pub fn parse_bytes_literal(s: &str, span: Span) -> Result<Vec<u8>, ParseError> {
                 Some('r') => result.push(b'\r'),
                 Some('t') => result.push(b'\t'),
                 Some('v') => result.push(0x0B),
-                Some('0') => result.push(0),
                 Some('x') => {
                     let hex = take_n(&mut chars, 2);
                     match u8::from_str_radix(&hex, 16) {

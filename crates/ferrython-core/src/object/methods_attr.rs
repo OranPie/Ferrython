@@ -505,10 +505,14 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 // If class has a metaclass, look in metaclass namespace too
                 // (e.g., cls._instances where _instances is a metaclass class attribute)
+                // But skip __new__/__init__ — those are type-level constructors,
+                // not methods on instances of the metaclass.
                 if let Some(meta) = &cd.metaclass {
-                    if let PyObjectPayload::Class(mcd) = &meta.payload {
-                        if let Some(v) = mcd.namespace.read().get(name).cloned() {
-                            return Some(v);
+                    if name != "__new__" && name != "__init__" {
+                        if let PyObjectPayload::Class(mcd) = &meta.payload {
+                            if let Some(v) = mcd.namespace.read().get(name).cloned() {
+                                return Some(v);
+                            }
                         }
                     }
                 }

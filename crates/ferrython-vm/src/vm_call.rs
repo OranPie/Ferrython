@@ -985,15 +985,24 @@ impl VirtualMachine {
                 self.call_object_kw(method.clone(), bound_args, kwargs)
             }
             PyObjectPayload::Class(cd) => {
-                // If class has a metaclass with __call__, dispatch through it
+                // If the metaclass defines its own __call__ (not just type.__call__),
+                // dispatch through it.
                 if let Some(meta) = &cd.metaclass {
                     if let Some(call_method) = meta.get_attr("__call__") {
-                        let mut call_args = vec![func.clone()];
-                        call_args.extend(pos_args);
-                        if kwargs.is_empty() {
-                            return self.call_object(call_method, call_args);
-                        } else {
-                            return self.call_object_kw(call_method, call_args, kwargs);
+                        let is_inherited_type_call = matches!(
+                            &call_method.payload,
+                            PyObjectPayload::BuiltinBoundMethod { receiver, method_name }
+                                if method_name.as_str() == "__call__"
+                                && matches!(&receiver.payload, PyObjectPayload::BuiltinType(t) if t.as_str() == "type")
+                        );
+                        if !is_inherited_type_call {
+                            let mut call_args = vec![func.clone()];
+                            call_args.extend(pos_args);
+                            if kwargs.is_empty() {
+                                return self.call_object(call_method, call_args);
+                            } else {
+                                return self.call_object_kw(call_method, call_args, kwargs);
+                            }
                         }
                     }
                 }
@@ -2558,12 +2567,22 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::Class(cd) => {
-                // If class has a metaclass with __call__, dispatch through it
+                // If the metaclass defines its own __call__ (not just type.__call__),
+                // dispatch through it.
                 if let Some(meta) = &cd.metaclass {
                     if let Some(call_method) = meta.get_attr("__call__") {
-                        let mut call_args = vec![func.clone()];
-                        call_args.extend(args);
-                        return self.call_object(call_method, call_args);
+                        // Skip if this is just the inherited type.__call__ builtin
+                        let is_inherited_type_call = matches!(
+                            &call_method.payload,
+                            PyObjectPayload::BuiltinBoundMethod { receiver, method_name }
+                                if method_name.as_str() == "__call__"
+                                && matches!(&receiver.payload, PyObjectPayload::BuiltinType(t) if t.as_str() == "type")
+                        );
+                        if !is_inherited_type_call {
+                            let mut call_args = vec![func.clone()];
+                            call_args.extend(args);
+                            return self.call_object(call_method, call_args);
+                        }
                     }
                 }
                 self.instantiate_class(&func, args, vec![])
@@ -2847,6 +2866,34 @@ impl VirtualMachine {
                 }
                 // Unbound method call: str.upper("hello") → call_method("hello", "upper", [])
                 if let PyObjectPayload::BuiltinType(tn) = &receiver.payload {
+                    // type.__call__(cls, *args) → instantiate the class
+                    if tn.as_str() == "type" && method_name.as_str() == "__call__" && !args.is_empty() {
+                        if matches!(&args[0].payload, PyObjectPayload::Class(_)) {
+                            let cls = args[0].clone();
+                            let mut rest = args[1..].to_vec();
+                            // Unpack trailing kwargs dict (produced by call_object_kw fallback)
+                            let kw = {
+                                let mut extracted = vec![];
+                                let should_pop = if let Some(last) = rest.last() {
+                                    if let PyObjectPayload::Dict(map) = &last.payload {
+                                        let rd = map.read();
+                                        let all_str = rd.keys().all(|k| matches!(k, HashableKey::Str(_)));
+                                        if all_str && !rd.is_empty() {
+                                            for (k, v) in rd.iter() {
+                                                if let HashableKey::Str(s) = k {
+                                                    extracted.push((s.clone(), v.clone()));
+                                                }
+                                            }
+                                            true
+                                        } else { false }
+                                    } else { false }
+                                } else { false };
+                                if should_pop { rest.pop(); }
+                                extracted
+                            };
+                            return self.instantiate_class(&cls, rest, kw);
+                        }
+                    }
                     // Class methods (e.g., int.from_bytes, dict.fromkeys)
                     if let Some(class_method) = builtins::resolve_type_class_method(tn, method_name) {
                         if let PyObjectPayload::NativeFunction { func, .. } = &class_method.payload {
