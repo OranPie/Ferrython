@@ -13,3 +13,6 @@ ferrython-parser = { workspace = true }
 ferrython-compiler = { workspace = true }
 compact_str = { workspace = true }
 thiserror = { workspace = true }
+rustyline = { workspace = true }
+parking_lot = { workspace = true }
+indexmap = { workspace = true }
