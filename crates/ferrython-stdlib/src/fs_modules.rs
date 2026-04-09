@@ -1432,7 +1432,17 @@ pub fn create_io_module() -> PyObjectRef {
         ("BufferedReader", make_builtin(io_buffered_reader)),
         ("BufferedWriter", make_builtin(io_buffered_writer)),
         ("IOBase", PyObject::class(CompactString::from("IOBase"), vec![], IndexMap::new())),
-        ("RawIOBase", PyObject::class(CompactString::from("RawIOBase"), vec![], IndexMap::new())),
+        ("RawIOBase", {
+            let mut ns = IndexMap::new();
+            // Marker methods — actual logic is handled by VM-level intercept
+            ns.insert(CompactString::from("read"), PyObject::native_function("RawIOBase.read", |_| {
+                Err(PyException::runtime_error("RawIOBase.read requires VM intercept"))
+            }));
+            ns.insert(CompactString::from("readall"), PyObject::native_function("RawIOBase.readall", |_| {
+                Err(PyException::runtime_error("RawIOBase.readall requires VM intercept"))
+            }));
+            PyObject::class(CompactString::from("RawIOBase"), vec![], ns)
+        }),
         ("BufferedIOBase", PyObject::class(CompactString::from("BufferedIOBase"), vec![], IndexMap::new())),
         ("BufferedRandom", make_builtin(io_buffered_reader)), // BufferedRandom ≈ BufferedReader for now
         ("BufferedRWPair", PyObject::class(CompactString::from("BufferedRWPair"), vec![], IndexMap::new())),

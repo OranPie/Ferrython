@@ -1357,12 +1357,14 @@ impl VirtualMachine {
 
     pub(crate) fn vm_is_truthy(&mut self, obj: &PyObjectRef) -> PyResult<bool> {
         if let PyObjectPayload::Instance(_) = &obj.payload {
-            if let Some(bool_method) = Self::resolve_instance_dunder(obj, "__bool__") {
-                let result = self.call_object(bool_method, vec![])?;
+            if let Some(raw_method) = Self::resolve_instance_dunder(obj, "__bool__") {
+                let method = self.resolve_descriptor(&raw_method, obj)?;
+                let result = self.call_object(method, vec![])?;
                 return Ok(result.is_truthy());
             }
-            if let Some(len_method) = Self::resolve_instance_dunder(obj, "__len__") {
-                let result = self.call_object(len_method, vec![])?;
+            if let Some(raw_method) = Self::resolve_instance_dunder(obj, "__len__") {
+                let method = self.resolve_descriptor(&raw_method, obj)?;
+                let result = self.call_object(method, vec![])?;
                 return Ok(result.is_truthy());
             }
             // Builtin base type subclass: delegate to __builtin_value__
@@ -1381,7 +1383,8 @@ impl VirtualMachine {
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
                 // Use resolve_instance_dunder to skip BuiltinBoundMethod from builtin type bases
-                if let Some(method) = Self::resolve_instance_dunder(obj, dunder) {
+                if let Some(raw_method) = Self::resolve_instance_dunder(obj, dunder) {
+                    let method = self.resolve_descriptor(&raw_method, obj)?;
                     return Ok(Some(self.call_object(method, args)?));
                 }
                 // Fall through: check __builtin_value__ for supported container operations

@@ -11,6 +11,21 @@ use indexmap::IndexMap;
 
 use super::apply_format_spec_str;
 
+/// Extract a string value from a PyObject, accepting both Str payload and str subclasses.
+fn extract_str_value(obj: &PyObjectRef) -> Option<String> {
+    match &obj.payload {
+        PyObjectPayload::Str(s) => Some(s.to_string()),
+        PyObjectPayload::Instance(inst) => {
+            inst.attrs.read().get("__builtin_value__")
+                .and_then(|bv| match &bv.payload {
+                    PyObjectPayload::Str(s) => Some(s.to_string()),
+                    _ => None,
+                })
+        }
+        _ => None,
+    }
+}
+
 /// Extract a named kwarg from a trailing Dict argument (if present).
 fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
     if let Some(last) = args.last() {
@@ -234,13 +249,15 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
         }
         "replace" => {
             check_args_min("replace", args, 2)?;
-            let old = args[0].as_str().ok_or_else(|| PyException::type_error("replace() argument 1 must be str"))?;
-            let new = args[1].as_str().ok_or_else(|| PyException::type_error("replace() argument 2 must be str"))?;
+            let old = extract_str_value(&args[0])
+                .ok_or_else(|| PyException::type_error("replace() argument 1 must be str"))?;
+            let new = extract_str_value(&args[1])
+                .ok_or_else(|| PyException::type_error("replace() argument 2 must be str"))?;
             if args.len() >= 3 {
                 let count = args[2].to_int()? as usize;
-                Ok(PyObject::str_val(CompactString::from(s.replacen(old, new, count))))
+                Ok(PyObject::str_val(CompactString::from(s.replacen(&old, &new, count))))
             } else {
-                Ok(PyObject::str_val(CompactString::from(s.replace(old, new))))
+                Ok(PyObject::str_val(CompactString::from(s.replace(&old[..], &new[..]))))
             }
         }
         "find" => {

@@ -939,6 +939,12 @@ pub fn create_weakref_module() -> PyObjectRef {
             if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
                 let mut attrs = inst_data.attrs.write();
 
+                // VM-accessible target accessor for transparent delegation
+                let w_target = weak.clone();
+                attrs.insert(CompactString::from("__weakref_target__"), PyObject::native_closure(
+                    "__weakref_target__", move |_| { upgrade_or_err(&w_target) },
+                ));
+
                 // __getattr__(name) → forward to referent
                 let w_ga = weak.clone();
                 attrs.insert(CompactString::from("__getattr__"), PyObject::native_closure(

@@ -271,6 +271,16 @@ impl VirtualMachine {
     }
 
     fn exec_load_attr(&mut self, name: &CompactString, obj: PyObjectRef) -> Result<Option<PyObjectRef>, PyException> {
+        // Transparent weakref.proxy delegation: upgrade and substitute referent
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
+                if let PyObjectPayload::NativeClosure { ref func, .. } = target_fn.payload {
+                    let referent = func(&[])?;
+                    return self.exec_load_attr(name, referent);
+                }
+            }
+        }
+
         // __getattribute__ override: called before normal lookup
         // Fast-path: skip MRO scan if the class doesn't override __getattribute__
         if let PyObjectPayload::Instance(inst) = &obj.payload {

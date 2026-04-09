@@ -2678,6 +2678,16 @@ impl VirtualMachine {
                 self.instantiate_class(&func, args, vec![])
             }
             PyObjectPayload::BoundMethod { receiver, method } => {
+                // VM intercept: RawIOBase.read(size=-1) → calls self.readinto()
+                if let PyObjectPayload::NativeFunction { name, .. } = &method.payload {
+                    if name.as_str() == "RawIOBase.read" {
+                        let size: i64 = args.first().and_then(|a| a.as_int()).unwrap_or(-1);
+                        return self.rawiobase_read(receiver, size);
+                    }
+                    if name.as_str() == "RawIOBase.readall" {
+                        return self.rawiobase_readall(receiver);
+                    }
+                }
                 let mut bound_args = vec![receiver.clone()];
                 bound_args.extend(args);
                 self.call_object(method.clone(), bound_args)
@@ -2886,6 +2896,21 @@ impl VirtualMachine {
                                     ferrython_core::error::PyException::type_error("sequence item: expected str")))
                                 .collect();
                             return Ok(PyObject::str_val(CompactString::from(strs?.join(sep.as_str()))));
+                        }
+                    }
+                    if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &receiver.payload {
+                        if !args.is_empty() {
+                            let sep = sep.clone();
+                            let items = self.collect_iterable(&args[0])?;
+                            let mut result = Vec::new();
+                            for (i, item) in items.iter().enumerate() {
+                                if i > 0 { result.extend_from_slice(&sep); }
+                                match &item.payload {
+                                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => result.extend_from_slice(b),
+                                    _ => return Err(PyException::type_error("sequence item: expected a bytes-like object")),
+                                }
+                            }
+                            return Ok(PyObject::bytes(result));
                         }
                     }
                 }
