@@ -9,7 +9,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
 };
-use ferrython_core::types::{PyInt, SharedGlobals};
+use ferrython_core::types::{HashableKey, PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -119,10 +119,37 @@ impl VirtualMachine {
                 CompactString::from("__name__"),
                 PyObject::str_val(CompactString::from("__main__")),
             );
+            // Store __file__ if the code has a filename
+            if !code.filename.is_empty() {
+                g.insert(
+                    CompactString::from("__file__"),
+                    PyObject::str_val(code.filename.clone()),
+                );
+            }
             // In CPython, __builtins__ is available in every module's globals.
             // In __main__, it is the builtins module itself.
             if let Some(builtins_mod) = ferrython_stdlib::load_module("builtins") {
                 g.insert(CompactString::from("__builtins__"), builtins_mod);
+            }
+        }
+        // Register __main__ in sys.modules so that sys.modules["__main__"] works
+        let main_attrs = {
+            let g = globals.read();
+            let mut attrs = IndexMap::new();
+            for (k, v) in g.iter() {
+                attrs.insert(k.clone(), v.clone());
+            }
+            attrs
+        };
+        let main_mod = PyObject::module_with_attrs(CompactString::from("__main__"), main_attrs);
+        self.modules.insert(CompactString::from("__main__"), main_mod.clone());
+        // If sys_modules_dict is already initialized, update it too
+        if let Some(ref sys_mod_dict) = self.sys_modules_dict {
+            if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
+                d.write().insert(
+                    HashableKey::Str(CompactString::from("__main__")),
+                    main_mod,
+                );
             }
         }
         self.execute_with_globals(Arc::new(code), globals)
