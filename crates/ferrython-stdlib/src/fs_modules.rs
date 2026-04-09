@@ -1287,6 +1287,12 @@ pub fn create_tempfile_module() -> PyObjectRef {
         })),
         ("NamedTemporaryFile", make_builtin(named_temporary_file)),
         ("TemporaryFile", make_builtin(named_temporary_file)),
+        ("SpooledTemporaryFile", make_builtin(named_temporary_file)),
+        ("_TemporaryFileWrapper", PyObject::class(CompactString::from("_TemporaryFileWrapper"), vec![], {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("__init__"), make_builtin(|_| Ok(PyObject::none())));
+            ns
+        })),
         ("TemporaryDirectory", make_builtin(|args| {
             let mut prefix = "tmp".to_string();
             for arg in args {
@@ -1338,12 +1344,26 @@ pub fn create_io_module() -> PyObjectRef {
         ("IOBase", PyObject::class(CompactString::from("IOBase"), vec![], IndexMap::new())),
         ("RawIOBase", PyObject::class(CompactString::from("RawIOBase"), vec![], IndexMap::new())),
         ("BufferedIOBase", PyObject::class(CompactString::from("BufferedIOBase"), vec![], IndexMap::new())),
+        ("BufferedRandom", make_builtin(io_buffered_reader)), // BufferedRandom ≈ BufferedReader for now
+        ("BufferedRWPair", PyObject::class(CompactString::from("BufferedRWPair"), vec![], IndexMap::new())),
+        ("FileIO", PyObject::class(CompactString::from("FileIO"), vec![], IndexMap::new())),
         ("TextIOBase", PyObject::class(CompactString::from("TextIOBase"), vec![], IndexMap::new())),
         ("UnsupportedOperation", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
         ("SEEK_SET", PyObject::int(0)),
         ("SEEK_CUR", PyObject::int(1)),
         ("SEEK_END", PyObject::int(2)),
         ("DEFAULT_BUFFER_SIZE", PyObject::int(8192)),
+        // io.text_encoding(encoding, stacklevel=2) — Python 3.11+
+        ("text_encoding", make_builtin(|args: &[PyObjectRef]| {
+            // If encoding is None or not provided, return "locale" (CPython default)
+            if args.is_empty() {
+                return Ok(PyObject::str_val(CompactString::from("locale")));
+            }
+            if matches!(&args[0].payload, PyObjectPayload::None) {
+                return Ok(PyObject::str_val(CompactString::from("locale")));
+            }
+            Ok(args[0].clone())
+        })),
         ("open", make_builtin(|args| {
             // io.open — replicates builtins.open() behavior
             if args.is_empty() { return Err(PyException::type_error("open() requires at least 1 argument")); }
@@ -2274,11 +2294,14 @@ pub fn create_subprocess_module() -> PyObjectRef {
         Ok(PyObject::instance_with_attrs(cpe_cls_ref.clone(), attrs))
     });
 
+    let completed_process_cls = PyObject::class(CompactString::from("CompletedProcess"), vec![], IndexMap::new());
     make_module("subprocess", vec![
         ("PIPE", PyObject::int(-1)),
         ("STDOUT", PyObject::int(-2)),
         ("DEVNULL", PyObject::int(-3)),
         ("CalledProcessError", PyObject::exception_type(ExceptionKind::CalledProcessError)),
+        ("SubprocessError", PyObject::exception_type(ExceptionKind::RuntimeError)),
+        ("CompletedProcess", completed_process_cls),
         ("run", make_builtin(subprocess_run)),
         ("call", make_builtin(subprocess_call)),
         ("check_output", make_builtin(subprocess_check_output)),

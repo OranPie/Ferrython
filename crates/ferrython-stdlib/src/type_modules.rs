@@ -1282,6 +1282,16 @@ pub fn create_types_module() -> PyObjectRef {
         ("CoroutineType", PyObject::builtin_type(CompactString::from("coroutine"))),
         ("AsyncGeneratorType", PyObject::builtin_type(CompactString::from("async_generator"))),
         ("MappingProxyType", PyObject::builtin_type(CompactString::from("mappingproxy"))),
+        ("GetSetDescriptorType", PyObject::builtin_type(CompactString::from("getset_descriptor"))),
+        ("MemberDescriptorType", PyObject::builtin_type(CompactString::from("member_descriptor"))),
+        ("WrapperDescriptorType", PyObject::builtin_type(CompactString::from("wrapper_descriptor"))),
+        ("MethodWrapperType", PyObject::builtin_type(CompactString::from("method-wrapper"))),
+        ("MethodDescriptorType", PyObject::builtin_type(CompactString::from("method_descriptor"))),
+        ("ClassMethodDescriptorType", PyObject::builtin_type(CompactString::from("classmethod_descriptor"))),
+        ("CellType", PyObject::builtin_type(CompactString::from("cell"))),
+        ("UnionType", PyObject::builtin_type(CompactString::from("UnionType"))),
+        ("EllipsisType", PyObject::builtin_type(CompactString::from("ellipsis"))),
+        ("NotImplementedType", PyObject::builtin_type(CompactString::from("NotImplementedType"))),
         ("SimpleNamespace", make_builtin(|args| {
             // Build class-level __repr__ and __eq__ so the VM can dispatch them
             let mut methods = IndexMap::new();

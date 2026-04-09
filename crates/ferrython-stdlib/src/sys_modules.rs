@@ -93,11 +93,11 @@ pub fn get_recursion_limit() -> i64 {
 
 pub fn create_sys_module() -> PyObjectRef {
     make_module("sys", vec![
-        ("version", PyObject::str_val(CompactString::from("3.8.0 (ferrython)"))),
+        ("version", PyObject::str_val(CompactString::from("3.12.0 (ferrython)"))),
         ("version_info", {
             let vi_attrs = IndexMap::from([
                 (CompactString::from("major"), PyObject::int(3)),
-                (CompactString::from("minor"), PyObject::int(8)),
+                (CompactString::from("minor"), PyObject::int(12)),
                 (CompactString::from("micro"), PyObject::int(0)),
                 (CompactString::from("releaselevel"), PyObject::str_val(CompactString::from("final"))),
                 (CompactString::from("serial"), PyObject::int(0)),
@@ -116,7 +116,7 @@ pub fn create_sys_module() -> PyObjectRef {
                         let idx = idx_obj.as_int().unwrap_or(0);
                         Ok(match idx {
                             0 => PyObject::int(3),
-                            1 => PyObject::int(8),
+                            1 => PyObject::int(12),
                             2 => PyObject::int(0),
                             3 => PyObject::str_val(CompactString::from("final")),
                             4 => PyObject::int(0),
@@ -129,13 +129,13 @@ pub fn create_sys_module() -> PyObjectRef {
                 ));
                 attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
                     "version_info.__repr__", |_: &[PyObjectRef]| {
-                        Ok(PyObject::str_val(CompactString::from("sys.version_info(major=3, minor=8, micro=0, releaselevel='final', serial=0)")))
+                        Ok(PyObject::str_val(CompactString::from("sys.version_info(major=3, minor=12, micro=0, releaselevel='final', serial=0)")))
                     }
                 ));
                 let ge_fn = PyObject::native_closure("version_info.__ge__", |args: &[PyObjectRef]| {
                     if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
                     if let PyObjectPayload::Tuple(t) = &args[1].payload {
-                        let self_parts = [3i64, 8, 0];
+                        let self_parts = [3i64, 12, 0];
                         for (i, sp) in self_parts.iter().enumerate() {
                             let other_val = t.get(i).and_then(|v| v.as_int()).unwrap_or(0);
                             if *sp > other_val { return Ok(PyObject::bool_val(true)); }
@@ -149,7 +149,7 @@ pub fn create_sys_module() -> PyObjectRef {
                 let lt_fn = PyObject::native_closure("version_info.__lt__", |args: &[PyObjectRef]| {
                     if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
                     if let PyObjectPayload::Tuple(t) = &args[1].payload {
-                        let self_parts = [3i64, 8, 0];
+                        let self_parts = [3i64, 12, 0];
                         for (i, sp) in self_parts.iter().enumerate() {
                             let other_val = t.get(i).and_then(|v| v.as_int()).unwrap_or(0);
                             if *sp < other_val { return Ok(PyObject::bool_val(true)); }
@@ -164,7 +164,7 @@ pub fn create_sys_module() -> PyObjectRef {
                 let gt_fn = PyObject::native_closure("version_info.__gt__", |args: &[PyObjectRef]| {
                     if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
                     if let PyObjectPayload::Tuple(t) = &args[1].payload {
-                        let self_parts = [3i64, 8, 0];
+                        let self_parts = [3i64, 12, 0];
                         let cmp_len = self_parts.len().min(t.len());
                         for i in 0..cmp_len {
                             let other_val = t.get(i).and_then(|v| v.as_int()).unwrap_or(0);
@@ -180,7 +180,7 @@ pub fn create_sys_module() -> PyObjectRef {
                 let le_fn = PyObject::native_closure("version_info.__le__", |args: &[PyObjectRef]| {
                     if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
                     if let PyObjectPayload::Tuple(t) = &args[1].payload {
-                        let self_parts = [3i64, 8, 0];
+                        let self_parts = [3i64, 12, 0];
                         let cmp_len = self_parts.len().min(t.len());
                         for i in 0..cmp_len {
                             let other_val = t.get(i).and_then(|v| v.as_int()).unwrap_or(0);
@@ -195,7 +195,7 @@ pub fn create_sys_module() -> PyObjectRef {
                 let eq_fn = PyObject::native_closure("version_info.__eq__", |args: &[PyObjectRef]| {
                     if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
                     if let PyObjectPayload::Tuple(t) = &args[1].payload {
-                        let self_parts = [3i64, 8, 0];
+                        let self_parts = [3i64, 12, 0];
                         if t.len() != self_parts.len() { return Ok(PyObject::bool_val(false)); }
                         for (i, sp) in self_parts.iter().enumerate() {
                             let other_val = t.get(i).and_then(|v| v.as_int()).unwrap_or(-1);
@@ -838,6 +838,17 @@ pub fn create_os_module() -> PyObjectRef {
             let mut ns = IndexMap::new();
             ns.insert(CompactString::from("__fspath__"), make_builtin(|_args: &[PyObjectRef]| {
                 Err(PyException::not_implemented_error("PathLike.__fspath__() is abstract"))
+            }));
+            // ABC register method — allows PathLike.register(SomeClass)
+            ns.insert(CompactString::from("register"), make_builtin(|args: &[PyObjectRef]| {
+                // register(cls, subclass) — just returns the subclass (no-op registration)
+                if args.len() >= 2 {
+                    Ok(args[1].clone())
+                } else if args.len() == 1 {
+                    Ok(args[0].clone())
+                } else {
+                    Ok(PyObject::none())
+                }
             }));
             ns
         })),
@@ -2228,7 +2239,7 @@ pub fn create_platform_module() -> PyObjectRef {
             Ok(PyObject::str_val(CompactString::from(capitalized)))
         })),
         ("machine", make_builtin(|_| Ok(PyObject::str_val(CompactString::from(std::env::consts::ARCH))))),
-        ("python_version", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("3.8.0"))))),
+        ("python_version", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("3.12.0"))))),
         ("python_implementation", make_builtin(|_| Ok(PyObject::str_val(CompactString::from("Ferrython"))))),
         ("node", make_builtin(|_| {
             #[cfg(unix)]

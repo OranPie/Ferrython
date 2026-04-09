@@ -132,7 +132,6 @@ pub fn load_module(name: &str) -> Option<PyObjectRef> {
         "zoneinfo" => Some(time_modules::create_zoneinfo_module()),
         // Type system
         "typing" => Some(type_modules::create_typing_module()),
-        "typing_extensions" => Some(type_modules::create_typing_module()),
         "abc" => Some(type_modules::create_abc_module()),
         "enum" => Some(type_modules::create_enum_module()),
         "types" => Some(type_modules::create_types_module()),

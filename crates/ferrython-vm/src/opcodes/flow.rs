@@ -9,7 +9,7 @@ use ferrython_bytecode::{CodeObject, Instruction};
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    lookup_in_class_mro,
+    has_descriptor_get, lookup_in_class_mro,
 };
 use ferrython_core::types::{HashableKey, PyFunction};
 use indexmap::IndexMap;
@@ -356,12 +356,22 @@ impl VirtualMachine {
                 let stack_pos = frame.stack.len() - idx;
                 let dict_obj = &frame.stack[stack_pos];
                 if let PyObjectPayload::Dict(target) = &dict_obj.payload {
-                    if let PyObjectPayload::Dict(source) = &update_obj.payload {
-                        let src = source.read();
-                        let mut tgt = target.write();
-                        for (k, v) in src.iter() {
-                            tgt.insert(k.clone(), v.clone());
+                    match &update_obj.payload {
+                        PyObjectPayload::Dict(source) => {
+                            let src = source.read();
+                            let mut tgt = target.write();
+                            for (k, v) in src.iter() {
+                                tgt.insert(k.clone(), v.clone());
+                            }
                         }
+                        PyObjectPayload::InstanceDict(source) => {
+                            let src = source.read();
+                            let mut tgt = target.write();
+                            for (k, v) in src.iter() {
+                                tgt.insert(HashableKey::Str(k.clone()), v.clone());
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -562,14 +572,22 @@ impl VirtualMachine {
                 let pos_args = self.collect_iterable(&args_obj)?;
                 if let Some(kw_obj) = kwargs_obj {
                     let mut kw_vec: Vec<(CompactString, PyObjectRef)> = Vec::new();
-                    if let PyObjectPayload::Dict(map) = &kw_obj.payload {
-                        for (k, v) in map.read().iter() {
-                            let name = match k {
-                                HashableKey::Str(s) => s.clone(),
-                                _ => CompactString::from(format!("{:?}", k)),
-                            };
-                            kw_vec.push((name, v.clone()));
+                    match &kw_obj.payload {
+                        PyObjectPayload::Dict(map) => {
+                            for (k, v) in map.read().iter() {
+                                let name = match k {
+                                    HashableKey::Str(s) => s.clone(),
+                                    _ => CompactString::from(format!("{:?}", k)),
+                                };
+                                kw_vec.push((name, v.clone()));
+                            }
                         }
+                        PyObjectPayload::InstanceDict(map) => {
+                            for (k, v) in map.read().iter() {
+                                kw_vec.push((k.clone(), v.clone()));
+                            }
+                        }
+                        _ => {}
                     }
                     let result = self.call_object_kw(func, pos_args, kw_vec)?;
                     self.vm_push(result);
@@ -869,7 +887,27 @@ impl VirtualMachine {
                     (name, module, mod_name, mod_file, filename)
                 };
                 match module.get_attr(&name) {
-                    Some(v) => { self.vm_frame().push(v); }
+                    Some(v) => {
+                        // Descriptor protocol: if the value has __get__ and was found
+                        // via class lookup (not instance dict), invoke __get__.
+                        // This handles six.moves lazy descriptors.
+                        if has_descriptor_get(&v) {
+                            if let Some(get_method) = v.get_attr("__get__") {
+                                let (instance_arg, owner_arg) = match &module.payload {
+                                    PyObjectPayload::Instance(inst) => (module.clone(), inst.class.clone()),
+                                    _ => (module.clone(), PyObject::none()),
+                                };
+                                match self.call_object(get_method, vec![instance_arg, owner_arg]) {
+                                    Ok(result) => { self.vm_frame().push(result); }
+                                    Err(_) => { self.vm_frame().push(v); }
+                                }
+                            } else {
+                                self.vm_frame().push(v);
+                            }
+                        } else {
+                            self.vm_frame().push(v);
+                        }
+                    }
                     None => {
                         // PEP 562: module-level __getattr__ for ImportFrom
                         if let PyObjectPayload::Module(_) = &module.payload {
@@ -911,6 +949,14 @@ impl VirtualMachine {
                                     self.vm_frame().push(submod);
                                 }
                                 Err(_e) => {
+                                    // If the error itself is an ImportError for a name inside the submodule,
+                                    // bubble it up rather than wrapping it.
+                                    if _e.kind == ferrython_core::error::ExceptionKind::ImportError {
+                                        let msg = _e.message.clone();
+                                        if msg.starts_with("cannot import name") && !msg.contains(&format!("'{}'", name)) {
+                                            return Err(_e);
+                                        }
+                                    }
                                     return Err(PyException::import_error(format!(
                                         "cannot import name '{}' from '{}' ({})",
                                         name, mod_name, mod_file

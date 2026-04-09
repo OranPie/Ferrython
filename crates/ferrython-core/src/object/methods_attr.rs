@@ -661,9 +661,40 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 match name {
                     "__name__" | "__qualname__" => Some(PyObject::str_val(n.clone())),
                     "__dict__" => {
-                        // Return an empty mappingproxy for builtin types
+                        // Return a mappingproxy with common type descriptors
+                        let mut map = IndexMap::new();
+                        if n.as_str() == "type" || n.as_str() == "object" {
+                            // type.__dict__["__dict__"] is a getset_descriptor with __get__
+                            // that returns obj.__dict__ when called as descriptor.__get__(obj)
+                            let desc_cls = PyObject::class(CompactString::from("getset_descriptor"), vec![], IndexMap::new());
+                            let desc = PyObject::instance(desc_cls);
+                            if let PyObjectPayload::Instance(ref inst) = desc.payload {
+                                inst.attrs.write().insert(CompactString::from("__get__"),
+                                    PyObject::native_function("getset_descriptor.__get__", |args: &[PyObjectRef]| {
+                                        // __get__(self, obj, objtype=None) → obj.__dict__
+                                        if args.len() >= 2 {
+                                            if let Some(d) = args[1].get_attr("__dict__") {
+                                                return Ok(d);
+                                            }
+                                        }
+                                        if args.len() >= 1 {
+                                            if let Some(d) = args[0].get_attr("__dict__") {
+                                                return Ok(d);
+                                            }
+                                        }
+                                        Ok(PyObject::dict(IndexMap::new()))
+                                    }),
+                                );
+                            }
+                            map.insert(HashableKey::Str(CompactString::from("__dict__")), desc);
+                            map.insert(HashableKey::Str(CompactString::from("__doc__")), PyObject::none());
+                            map.insert(HashableKey::Str(CompactString::from("__repr__")), 
+                                PyObject::builtin_type(CompactString::from("wrapper_descriptor")));
+                            map.insert(HashableKey::Str(CompactString::from("__subclasshook__")),
+                                PyObject::builtin_type(CompactString::from("method_descriptor")));
+                        }
                         Some(PyObject::wrap(PyObjectPayload::MappingProxy(
-                            Arc::new(RwLock::new(IndexMap::new())),
+                            Arc::new(RwLock::new(map)),
                         )))
                     }
                     "__bases__" => {

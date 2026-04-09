@@ -723,8 +723,59 @@ pub fn create_importlib_resources_module() -> PyObjectRef {
         }
     });
 
+    // as_file(traversable) — context manager that yields a path to the resource
+    let as_file_fn = make_builtin(|args: &[PyObjectRef]| {
+        if args.is_empty() {
+            return Err(PyException::type_error("as_file() requires a traversable argument"));
+        }
+        let traversable = args[0].clone();
+        // Get the path string from the traversable
+        let path_str = traversable.get_attr("_path")
+            .map(|p| p.py_to_string())
+            .or_else(|| Some(traversable.py_to_string()))
+            .unwrap_or_default();
+        // Try to find the actual file in known locations
+        let search = [
+            PathBuf::from(&path_str),
+            PathBuf::from(format!("target/release/lib/ferrython/site-packages/{}", path_str)),
+        ];
+        let resolved = search.iter()
+            .find(|p| p.exists())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(path_str);
+        let resolved_obj = PyObject::str_val(CompactString::from(&resolved));
+        // Create a pathlib.Path-like context manager
+        let cls = PyObject::class(CompactString::from("_AsFilePath"), vec![], IndexMap::new());
+        let inst = PyObject::instance(cls);
+        if let PyObjectPayload::Instance(ref d) = inst.payload {
+            let mut w = d.attrs.write();
+            let p = resolved_obj.clone();
+            w.insert(CompactString::from("__enter__"), PyObject::native_closure("__enter__", move |_| {
+                // Return a pathlib.Path-like object
+                let path_cls = PyObject::class(CompactString::from("PosixPath"), vec![], IndexMap::new());
+                let path_inst = PyObject::instance(path_cls);
+                if let PyObjectPayload::Instance(ref pd) = path_inst.payload {
+                    let mut pw = pd.attrs.write();
+                    pw.insert(CompactString::from("_path"), p.clone());
+                    let ps = p.py_to_string();
+                    pw.insert(CompactString::from("__str__"), PyObject::native_closure("__str__", move |_| {
+                        Ok(PyObject::str_val(CompactString::from(&ps)))
+                    }));
+                    let ps2 = p.py_to_string();
+                    pw.insert(CompactString::from("__fspath__"), PyObject::native_closure("__fspath__", move |_| {
+                        Ok(PyObject::str_val(CompactString::from(&ps2)))
+                    }));
+                }
+                Ok(path_inst)
+            }));
+            w.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
+        }
+        Ok(inst)
+    });
+
     make_module("importlib.resources", vec![
         ("files", files_fn),
+        ("as_file", as_file_fn),
         ("read_text", read_text_fn),
         ("read_binary", read_binary_fn),
         ("path", path_fn),

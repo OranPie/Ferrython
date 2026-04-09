@@ -1098,6 +1098,28 @@ impl VirtualMachine {
                                 return Ok(PyObject::list(items_vec));
                             }
                         }
+                        "globals" => {
+                            if let Some(frame) = self.call_stack.last() {
+                                let globals_arc = frame.globals.clone();
+                                return Ok(PyObject::wrap(PyObjectPayload::InstanceDict(globals_arc)));
+                            }
+                            return Ok(PyObject::dict(IndexMap::new()));
+                        }
+                        "locals" => {
+                            if let Some(frame) = self.call_stack.last() {
+                                let mut map = IndexMap::new();
+                                let g = frame.globals.read();
+                                for (k, v) in g.iter() {
+                                    map.insert(HashableKey::Str(k.clone()), v.clone());
+                                }
+                                drop(g);
+                                for (k, v) in frame.local_names.iter() {
+                                    map.insert(HashableKey::Str(k.clone()), v.clone());
+                                }
+                                return Ok(PyObject::dict(map));
+                            }
+                            return Ok(PyObject::dict(IndexMap::new()));
+                        }
                         "print" => {
                             let sep = kwargs.iter().find(|(k, _)| k.as_str() == "sep")
                                 .map(|(_, v)| v.py_to_string()).unwrap_or_else(|| " ".to_string());
@@ -1741,6 +1763,30 @@ impl VirtualMachine {
                 }
                 // VM-aware builtins that need to call user-defined methods
                 match name.as_str() {
+                    "globals" => {
+                        // Return an InstanceDict that shares the frame's globals Arc.
+                        // This means mutations via globals()['key'] = value propagate directly.
+                        if let Some(frame) = self.call_stack.last() {
+                            let globals_arc = frame.globals.clone();
+                            return Ok(PyObject::wrap(PyObjectPayload::InstanceDict(globals_arc)));
+                        }
+                        return Ok(PyObject::dict(IndexMap::new()));
+                    }
+                    "locals" => {
+                        if let Some(frame) = self.call_stack.last() {
+                            let mut map = IndexMap::new();
+                            let g = frame.globals.read();
+                            for (k, v) in g.iter() {
+                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                            }
+                            drop(g);
+                            for (k, v) in frame.local_names.iter() {
+                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                            }
+                            return Ok(PyObject::dict(map));
+                        }
+                        return Ok(PyObject::dict(IndexMap::new()));
+                    }
                     "print" => {
                         let mut parts = Vec::new();
                         for a in &args {

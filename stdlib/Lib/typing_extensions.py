@@ -22,7 +22,8 @@ __all__ = [
     'dataclass_transform', 'override', 'get_overloads',
     'clear_overloads', 'NamedTuple', 'is_typeddict',
     'get_original_bases', 'get_args', 'get_origin',
-    'Concatenate', 'ReadOnly', 'Buffer',
+    'Concatenate', 'ReadOnly', 'Buffer', 'deprecated',
+    'Doc', 'NoDefault', 'TypeIs', 'Sentinel',
 ]
 
 # Re-export everything from typing
@@ -221,3 +222,123 @@ def clear_overloads():
 def get_original_bases(cls):
     """Get the original bases of a class as specified."""
     return getattr(cls, '__orig_bases__', cls.__bases__)
+
+
+# ── deprecated decorator (PEP 702) ──
+
+import warnings
+
+class deprecated:
+    """Indicate that a class, function or overload is deprecated.
+
+    Usage::
+
+        @deprecated("Use B instead")
+        class A:
+            pass
+
+    """
+    def __init__(self, message, /, *, category=DeprecationWarning, stacklevel=1):
+        if not isinstance(message, str):
+            raise TypeError(
+                f"Expected an object of type str for 'message', not "
+                f"{type(message).__name__!r}"
+            )
+        self.message = message
+        self.category = category
+        self.stacklevel = stacklevel
+
+    def __call__(self, arg):
+        msg = self.message
+        category = self.category
+        stacklevel = self.stacklevel
+        if category is None:
+            arg.__deprecated__ = msg
+            return arg
+        elif isinstance(arg, type):
+            original_new = arg.__new__
+            def __new__(cls, *args, **kwargs):
+                if cls is arg:
+                    warnings.warn(msg, category=category, stacklevel=stacklevel + 1)
+                if original_new is not object.__new__:
+                    return original_new(cls, *args, **kwargs)
+                else:
+                    return original_new(cls)
+            arg.__new__ = __new__
+            arg.__deprecated__ = msg
+            return arg
+        elif callable(arg):
+            def wrapper(*args, **kwargs):
+                warnings.warn(msg, category=category, stacklevel=stacklevel + 1)
+                return arg(*args, **kwargs)
+            wrapper.__wrapped__ = arg
+            wrapper.__deprecated__ = msg
+            wrapper.__name__ = getattr(arg, '__name__', '<unknown>')
+            wrapper.__qualname__ = getattr(arg, '__qualname__', wrapper.__name__)
+            wrapper.__doc__ = getattr(arg, '__doc__', None)
+            return wrapper
+        else:
+            raise TypeError(
+                "@deprecated decorator with non-None category must be applied to "
+                f"a class or callable, not {arg!r}"
+            )
+
+    def __repr__(self):
+        return f"@deprecated({self.message!r})"
+
+
+# ── Doc annotation (PEP 727) ──
+
+class Doc:
+    """Add documentation to a parameter or attribute."""
+    def __init__(self, documentation, /):
+        self.documentation = documentation
+    def __repr__(self):
+        return f"Doc({self.documentation!r})"
+    def __hash__(self):
+        return hash(self.documentation)
+    def __eq__(self, other):
+        if isinstance(other, Doc):
+            return self.documentation == other.documentation
+        return NotImplemented
+
+
+# ── NoDefault sentinel ──
+
+class _NoDefaultType:
+    __instance = None
+    def __new__(cls):
+        if cls.__instance is None:
+            cls.__instance = super().__new__(cls)
+        return cls.__instance
+    def __repr__(self):
+        return 'typing_extensions.NoDefault'
+
+NoDefault = _NoDefaultType()
+
+
+# ── TypeIs (PEP 742) ──
+
+class TypeIs:
+    """Type narrowing predicate — like TypeGuard but narrows in both branches."""
+    def __init__(self, tp):
+        self.__type__ = tp
+    def __class_getitem__(cls, item):
+        return cls(item)
+    def __repr__(self):
+        return f"TypeIs[{self.__type__!r}]"
+
+
+# ── Sentinel (PEP 661) ──
+
+class Sentinel:
+    """Create a unique sentinel object."""
+    def __init__(self, name, repr=None):
+        self._name = name
+        self._repr = repr if repr is not None else f'<{name}>'
+    def __repr__(self):
+        return self._repr
+    def __call__(self, *args, **kwargs):
+        raise TypeError(f"{type(self).__name__!r} object is not callable")
+    def __getstate__(self):
+        raise TypeError(f"Cannot pickle {type(self).__name__!r} object")

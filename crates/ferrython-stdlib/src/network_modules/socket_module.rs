@@ -92,9 +92,17 @@ pub fn create_socket_module() -> PyObjectRef {
         "socket",
         vec![
             // Address families
+            ("AF_UNSPEC", PyObject::int(0)),
+            ("AF_UNIX", PyObject::int(1)),
+            ("AF_LOCAL", PyObject::int(1)),
             ("AF_INET", PyObject::int(2)),
             ("AF_INET6", PyObject::int(10)),
-            ("AF_UNIX", PyObject::int(1)),
+            ("AF_NETLINK", PyObject::int(16)),
+            ("AF_PACKET", PyObject::int(17)),
+            ("AF_TIPC", PyObject::int(30)),
+            ("AF_BLUETOOTH", PyObject::int(31)),
+            ("AF_ALG", PyObject::int(38)),
+            ("AF_VSOCK", PyObject::int(40)),
             // Socket types
             ("SOCK_STREAM", PyObject::int(1)),
             ("SOCK_DGRAM", PyObject::int(2)),
@@ -113,7 +121,6 @@ pub fn create_socket_module() -> PyObjectRef {
             ("SO_ERROR", PyObject::int(4)),
             ("SO_TYPE", PyObject::int(3)),
             // TCP options
-            ("IPPROTO_IP", PyObject::int(0)),
             ("SOL_TCP", PyObject::int(6)),
             ("TCP_NODELAY", PyObject::int(1)),
             ("TCP_KEEPIDLE", PyObject::int(4)),
@@ -124,8 +131,52 @@ pub fn create_socket_module() -> PyObjectRef {
             ("SOCK_NONBLOCK", PyObject::int(2048)),
             ("SOCK_CLOEXEC", PyObject::int(524288)),
             // Protocols
+            ("IPPROTO_IP", PyObject::int(0)),
             ("IPPROTO_TCP", PyObject::int(6)),
             ("IPPROTO_UDP", PyObject::int(17)),
+            ("IPPROTO_IPV6", PyObject::int(41)),
+            ("IPPROTO_RAW", PyObject::int(255)),
+            // IPv6 options
+            ("IPV6_V6ONLY", PyObject::int(26)),
+            // getaddrinfo flags
+            ("AI_PASSIVE", PyObject::int(1)),
+            ("AI_CANONNAME", PyObject::int(2)),
+            ("AI_NUMERICHOST", PyObject::int(4)),
+            ("AI_V4MAPPED", PyObject::int(8)),
+            ("AI_ALL", PyObject::int(16)),
+            ("AI_ADDRCONFIG", PyObject::int(32)),
+            ("AI_NUMERICSERV", PyObject::int(1024)),
+            ("AI_MASK", PyObject::int(0x1407)),
+            // getnameinfo flags
+            ("NI_MAXHOST", PyObject::int(1025)),
+            ("NI_MAXSERV", PyObject::int(32)),
+            ("NI_NUMERICHOST", PyObject::int(1)),
+            ("NI_NUMERICSERV", PyObject::int(2)),
+            ("NI_NOFQDN", PyObject::int(4)),
+            ("NI_NAMEREQD", PyObject::int(8)),
+            ("NI_DGRAM", PyObject::int(16)),
+            // EAI error codes
+            ("EAI_ADDRFAMILY", PyObject::int(1)),
+            ("EAI_AGAIN", PyObject::int(2)),
+            ("EAI_BADFLAGS", PyObject::int(3)),
+            ("EAI_FAIL", PyObject::int(4)),
+            ("EAI_FAMILY", PyObject::int(5)),
+            ("EAI_MEMORY", PyObject::int(6)),
+            ("EAI_NODATA", PyObject::int(7)),
+            ("EAI_NONAME", PyObject::int(8)),
+            ("EAI_SERVICE", PyObject::int(9)),
+            ("EAI_SOCKTYPE", PyObject::int(10)),
+            ("EAI_SYSTEM", PyObject::int(11)),
+            ("EAI_OVERFLOW", PyObject::int(14)),
+            // MSG flags
+            ("MSG_PEEK", PyObject::int(2)),
+            ("MSG_WAITALL", PyObject::int(256)),
+            ("MSG_DONTWAIT", PyObject::int(64)),
+            ("MSG_NOSIGNAL", PyObject::int(16384)),
+            // Maximum backlog
+            ("SOMAXCONN", PyObject::int(4096)),
+            // SO_EXCLUSIVEADDRUSE (Windows-specific, but many packages reference it)
+            ("SO_EXCLUSIVEADDRUSE", PyObject::int(-5)),
             // Shutdown constants
             ("SHUT_RD", PyObject::int(0)),
             ("SHUT_WR", PyObject::int(1)),
@@ -209,29 +260,32 @@ pub fn create_socket_module() -> PyObjectRef {
                 Ok(PyObject::none())
             })),
             ("has_ipv6", PyObject::bool_val(true)),
-            ("SOMAXCONN", PyObject::int(128)),
-            ("AI_PASSIVE", PyObject::int(1)),
-            ("AI_CANONNAME", PyObject::int(2)),
-            ("AI_NUMERICHOST", PyObject::int(4)),
-            ("NI_MAXHOST", PyObject::int(1025)),
-            ("NI_MAXSERV", PyObject::int(32)),
-            ("NI_NUMERICHOST", PyObject::int(1)),
-            ("NI_NUMERICSERV", PyObject::int(2)),
+            ("has_dualstack_ipv6", make_builtin(|_args: &[PyObjectRef]| {
+                Ok(PyObject::bool_val(false))
+            })),
+            ("getnameinfo", make_builtin(|args: &[PyObjectRef]| {
+                // getnameinfo((host, port), flags) -> (hostname, servname)
+                let sockaddr = args.first().ok_or_else(|| PyException::type_error("getnameinfo() argument 1 must be a tuple"))?;
+                let items = sockaddr.to_list().unwrap_or_default();
+                let host = items.first().map(|h| h.py_to_string()).unwrap_or_default();
+                let port = items.get(1).and_then(|p| p.as_int()).unwrap_or(0);
+                Ok(PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from(host.as_str())),
+                    PyObject::str_val(CompactString::from(port.to_string().as_str())),
+                ]))
+            })),
             ("INADDR_ANY", PyObject::int(0)),
             ("INADDR_BROADCAST", PyObject::int(0xFFFFFFFFu32 as i64)),
             ("INADDR_LOOPBACK", PyObject::int(0x7F000001)),
-            ("MSG_PEEK", PyObject::int(2)),
-            ("MSG_OOB", PyObject::int(1)),
-            ("MSG_WAITALL", PyObject::int(256)),
-            ("MSG_DONTWAIT", PyObject::int(64)),
             // AddressFamily and SocketKind IntEnum classes
             ("AddressFamily", {
                 let cls = PyObject::class(CompactString::from("AddressFamily"), vec![], IndexMap::new());
                 if let PyObjectPayload::Class(ref cd) = cls.payload {
                     let mut ns = cd.namespace.write();
+                    ns.insert(CompactString::from("AF_UNSPEC"), PyObject::int(0));
+                    ns.insert(CompactString::from("AF_UNIX"), PyObject::int(1));
                     ns.insert(CompactString::from("AF_INET"), PyObject::int(2));
                     ns.insert(CompactString::from("AF_INET6"), PyObject::int(10));
-                    ns.insert(CompactString::from("AF_UNIX"), PyObject::int(1));
                 }
                 cls
             }),

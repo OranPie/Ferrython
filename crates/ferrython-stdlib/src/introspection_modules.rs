@@ -3429,11 +3429,37 @@ pub fn create_tokenize_module() -> PyObjectRef {
         ]))
     }
 
+    // Build tok_name mapping (same as token.tok_name)
+    let tok_name_entries: Vec<(i64, &str)> = vec![
+        (0, "ENDMARKER"), (1, "NAME"), (2, "NUMBER"), (3, "STRING"),
+        (4, "NEWLINE"), (5, "INDENT"), (6, "DEDENT"),
+        (54, "OP"), (59, "ERRORTOKEN"), (60, "COMMENT"),
+        (61, "NL"), (62, "ENCODING"),
+    ];
+    let mut tok_name_map = IndexMap::new();
+    for (id, name) in &tok_name_entries {
+        tok_name_map.insert(HashableKey::Int(ferrython_core::types::PyInt::Small(*id)), PyObject::str_val(CompactString::from(*name)));
+    }
+    let tok_name = PyObject::dict(tok_name_map);
+
+    // TokenInfo namedtuple-like class
+    let mut ti_ns = IndexMap::new();
+    ti_ns.insert(CompactString::from("_fields"), PyObject::tuple(vec![
+        PyObject::str_val(CompactString::from("type")),
+        PyObject::str_val(CompactString::from("string")),
+        PyObject::str_val(CompactString::from("start")),
+        PyObject::str_val(CompactString::from("end")),
+        PyObject::str_val(CompactString::from("line")),
+    ]));
+    let token_info_cls = PyObject::class(CompactString::from("TokenInfo"), vec![], ti_ns);
+
     make_module("tokenize", vec![
         ("generate_tokens", make_builtin(tokenize_string)),
-        ("tokenize", make_builtin(tokenize_string)),  // bytes readline variant (same impl)
+        ("tokenize", make_builtin(tokenize_string)),
         ("open", make_builtin(tokenize_open)),
         ("detect_encoding", make_builtin(detect_encoding)),
+        ("tok_name", tok_name),
+        ("TokenInfo", token_info_cls),
         ("ENDMARKER", PyObject::int(0)),
         ("NAME", PyObject::int(1)),
         ("NUMBER", PyObject::int(2)),
@@ -3446,6 +3472,7 @@ pub fn create_tokenize_module() -> PyObjectRef {
         ("NL", PyObject::int(61)),
         ("ENCODING", PyObject::int(62)),
         ("ERRORTOKEN", PyObject::int(59)),
+        ("EXACT_TOKEN_TYPES", PyObject::dict(IndexMap::new())),
     ])
 }
 

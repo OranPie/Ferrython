@@ -125,7 +125,16 @@ pub fn create_threading_module() -> PyObjectRef {
                     }
                     _ => {
                         // Python-defined functions: run sequentially (needs VM)
-                        push_deferred_call(target, call_args);
+                        // Skip daemon threads — they block indefinitely and should
+                        // only run alongside a live main thread.
+                        let is_daemon = inst.attrs.read().get("daemon")
+                            .cloned()
+                            .or_else(|| inst.attrs.read().get("_daemon").cloned())
+                            .map(|v| v.is_truthy())
+                            .unwrap_or(false);
+                        if !is_daemon {
+                            push_deferred_call(target, call_args);
+                        }
                     }
                 }
             }
@@ -771,6 +780,28 @@ pub fn create_threading_module() -> PyObjectRef {
             let cls = PyObject::class(CompactString::from("local"), vec![], IndexMap::new());
             Ok(PyObject::instance(cls))
         })),
+        ("get_ident", make_builtin(|_| {
+            let tid = std::thread::current().id();
+            let id_str = format!("{:?}", tid);
+            // Extract numeric id from "ThreadId(N)"
+            let num: i64 = id_str.trim_start_matches("ThreadId(").trim_end_matches(')')
+                .parse().unwrap_or(1);
+            Ok(PyObject::int(num))
+        })),
+        ("get_native_id", make_builtin(|_| {
+            Ok(PyObject::int(std::process::id() as i64))
+        })),
+        ("stack_size", make_builtin(|args: &[PyObjectRef]| {
+            if args.is_empty() {
+                Ok(PyObject::int(0))
+            } else {
+                Ok(PyObject::int(0))
+            }
+        })),
+        ("settrace", make_builtin(|_| Ok(PyObject::none()))),
+        ("setprofile", make_builtin(|_| Ok(PyObject::none()))),
+        ("excepthook", make_builtin(|_| Ok(PyObject::none()))),
+        ("TIMEOUT_MAX", PyObject::float(f64::MAX)),
     ])
 }
 

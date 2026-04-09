@@ -2166,7 +2166,7 @@ pub(super) fn call_queue_method(inst: &ferrython_core::object::InstanceData, met
             if let PyObjectPayload::List(lock) = &items_obj.payload {
                 let mut items = lock.write();
                 if items.is_empty() {
-                    return Err(PyException::runtime_error("queue.Empty"));
+                    return Err(PyException::runtime_error("Empty"));
                 }
                 let result = match kind.as_str() {
                     "LifoQueue" => items.pop().unwrap(),

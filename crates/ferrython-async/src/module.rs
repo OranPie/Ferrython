@@ -9,7 +9,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectPayload, PyObjectRef,
+    PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods,
     make_module, make_builtin, check_args, check_args_min,
 };
 use ferrython_bytecode::code::CodeFlags;
@@ -115,7 +115,97 @@ pub fn create_asyncio_module() -> PyObjectRef {
         ("FIRST_COMPLETED", PyObject::str_val(CompactString::from("FIRST_COMPLETED"))),
         ("FIRST_EXCEPTION", PyObject::str_val(CompactString::from("FIRST_EXCEPTION"))),
         ("ALL_COMPLETED", PyObject::str_val(CompactString::from("ALL_COMPLETED"))),
+
+        // ABC classes (used by aiohttp, anyio, etc.)
+        ("AbstractEventLoop", make_abstract_class("AbstractEventLoop")),
+        ("AbstractServer", make_abstract_class("AbstractServer")),
+        ("AbstractEventLoopPolicy", make_abstract_class("AbstractEventLoopPolicy")),
+        ("BaseProtocol", make_abstract_class("BaseProtocol")),
+        ("Protocol", make_abstract_class("Protocol")),
+        ("DatagramProtocol", make_abstract_class("DatagramProtocol")),
+        ("SubprocessProtocol", make_abstract_class("SubprocessProtocol")),
+        ("BufferedProtocol", make_abstract_class("BufferedProtocol")),
+        ("BaseTransport", make_abstract_class("BaseTransport")),
+        ("Transport", make_abstract_class("Transport")),
+        ("DatagramTransport", make_abstract_class("DatagramTransport")),
+        ("SubprocessTransport", make_abstract_class("SubprocessTransport")),
+        ("ReadTransport", make_abstract_class("ReadTransport")),
+        ("WriteTransport", make_abstract_class("WriteTransport")),
+        ("StreamReader", make_abstract_class("StreamReader")),
+        ("StreamWriter", make_abstract_class("StreamWriter")),
+        ("StreamReaderProtocol", make_abstract_class("StreamReaderProtocol")),
+        ("Server", make_abstract_class("Server")),
+
+        // Timeout context manager (Python 3.11+)
+        ("Timeout", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("__init__"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                        let mut w = d.attrs.write();
+                        w.insert(CompactString::from("_deadline"), args[1].clone());
+                        w.insert(CompactString::from("_expired"), PyObject::bool_val(false));
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+            ns.insert(CompactString::from("__enter__"), make_builtin(|args: &[PyObjectRef]| {
+                Ok(if !args.is_empty() { args[0].clone() } else { PyObject::none() })
+            }));
+            ns.insert(CompactString::from("__exit__"), make_builtin(|_| {
+                Ok(PyObject::bool_val(false))
+            }));
+            ns.insert(CompactString::from("__aenter__"), make_builtin(|args: &[PyObjectRef]| {
+                Ok(if !args.is_empty() { args[0].clone() } else { PyObject::none() })
+            }));
+            ns.insert(CompactString::from("__aexit__"), make_builtin(|_| {
+                Ok(PyObject::bool_val(false))
+            }));
+            ns.insert(CompactString::from("expired"), make_builtin(|args: &[PyObjectRef]| {
+                if !args.is_empty() {
+                    if let Some(v) = args[0].get_attr("_expired") { return Ok(v); }
+                }
+                Ok(PyObject::bool_val(false))
+            }));
+            ns.insert(CompactString::from("when"), make_builtin(|args: &[PyObjectRef]| {
+                if !args.is_empty() {
+                    if let Some(v) = args[0].get_attr("_deadline") { return Ok(v); }
+                }
+                Ok(PyObject::none())
+            }));
+            ns.insert(CompactString::from("reschedule"), make_builtin(|args: &[PyObjectRef]| {
+                if args.len() >= 2 {
+                    if let PyObjectPayload::Instance(ref d) = args[0].payload {
+                        d.attrs.write().insert(CompactString::from("_deadline"), args[1].clone());
+                    }
+                }
+                Ok(PyObject::none())
+            }));
+            PyObject::class(CompactString::from("Timeout"), vec![], ns)
+        }),
+
+        // Subprocess constants
+        ("PIPE", PyObject::int(-1)),
+        ("STDOUT", PyObject::int(-2)),
+        ("DEVNULL", PyObject::int(-3)),
     ])
+}
+
+fn make_abstract_class(name: &str) -> PyObjectRef {
+    let mut ns = IndexMap::new();
+    ns.insert(CompactString::from("register"), make_builtin(|args: &[PyObjectRef]| {
+        if args.len() >= 2 {
+            Ok(args[1].clone())
+        } else if args.len() == 1 {
+            Ok(args[0].clone())
+        } else {
+            Ok(PyObject::none())
+        }
+    }));
+    ns.insert(CompactString::from("__subclasshook__"), make_builtin(|_| {
+        Ok(PyObject::str_val(CompactString::from("NotImplemented")))
+    }));
+    PyObject::class(CompactString::from(name), vec![], ns)
 }
 
 // ── Core functions ──────────────────────────────────────────────────────

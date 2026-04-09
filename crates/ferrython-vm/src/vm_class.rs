@@ -57,7 +57,42 @@ impl VirtualMachine {
                 }
             }
         }
+        // CPython typing behavior: if Generic appears as a base and another base
+        // already inherits from Generic, remove Generic (it's redundant).
+        Self::deduplicate_generic_bases(&mut resolved);
         resolved
+    }
+
+    /// Remove `Generic` from bases if another base already has it in its MRO.
+    fn deduplicate_generic_bases(bases: &mut Vec<PyObjectRef>) {
+        if bases.len() < 2 { return; }
+        // Find which bases are "Generic" (the typing.Generic class)
+        let generic_indices: Vec<usize> = bases.iter().enumerate()
+            .filter_map(|(i, b)| {
+                if let PyObjectPayload::Class(cd) = &b.payload {
+                    if cd.name == "Generic" { return Some(i); }
+                }
+                None
+            })
+            .collect();
+        if generic_indices.is_empty() { return; }
+        // Check if any OTHER base already has Generic in its MRO
+        let other_has_generic = bases.iter().enumerate().any(|(i, b)| {
+            if generic_indices.contains(&i) { return false; }
+            if let PyObjectPayload::Class(cd) = &b.payload {
+                cd.mro.iter().any(|m| {
+                    if let PyObjectPayload::Class(mc) = &m.payload {
+                        mc.name == "Generic"
+                    } else { false }
+                })
+            } else { false }
+        });
+        if other_has_generic {
+            // Remove Generic bases (iterate in reverse to preserve indices)
+            for &idx in generic_indices.iter().rev() {
+                bases.remove(idx);
+            }
+        }
     }
 
     pub(crate) fn build_class(&mut self, args: Vec<PyObjectRef>) -> PyResult<PyObjectRef> {

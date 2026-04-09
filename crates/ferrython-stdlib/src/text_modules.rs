@@ -292,28 +292,53 @@ fn convert_python_regex(pattern: &str) -> String {
     let mut in_char_class = false;
     while i < chars.len() {
         if chars[i] == '\\' && i + 1 < chars.len() {
+            // Octal escapes apply both inside and outside char classes
+            match chars[i + 1] {
+                '0'..='7' => {
+                    let start = i + 1;
+                    let mut end = start + 1;
+                    // Consume up to 3 octal digits total (Python allows \0 through \377)
+                    while end < chars.len() && end < start + 3
+                        && chars[end] >= '0' && chars[end] <= '7' {
+                        end += 1;
+                    }
+                    let oct_str: String = chars[start..end].iter().collect();
+                    // Only treat as octal if the value fits in a byte, or if it starts with 0
+                    // (to distinguish from backreferences like \1..\9 outside char classes)
+                    let is_octal = in_char_class
+                        || chars[i + 1] == '0'
+                        || (end - start >= 2 && chars[i + 1] <= '3');
+                    if is_octal {
+                        if let Ok(val) = u32::from_str_radix(&oct_str, 8) {
+                            if val <= 0x7f {
+                                result.push_str(&format!("\\x{:02x}", val));
+                            } else {
+                                // Unicode escape for values > 127
+                                result.push_str(&format!("\\u{{{:04x}}}", val));
+                            }
+                            i = end;
+                            continue;
+                        }
+                    }
+                    if !in_char_class {
+                        // Not octal — pass through (might be backreference)
+                        result.push(chars[i]);
+                        result.push(chars[i + 1]);
+                        i += 2;
+                        continue;
+                    }
+                    // In char class, pass through
+                    result.push(chars[i]);
+                    result.push(chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
             if !in_char_class {
                 match chars[i + 1] {
                     'Z' => { result.push_str("\\z"); i += 2; continue; }
                     'a' => { result.push_str("\\x07"); i += 2; continue; } // Python \a = bell (BEL)
-                    // Octal escapes: \0, \033, \177, etc.
-                    '0'..='3' => {
-                        let start = i + 1;
-                        let mut end = start + 1;
-                        while end < chars.len() && end < start + 3
-                            && chars[end] >= '0' && chars[end] <= '7' {
-                            end += 1;
-                        }
-                        let oct_str: String = chars[start..end].iter().collect();
-                        if let Ok(val) = u8::from_str_radix(&oct_str, 8) {
-                            result.push_str(&format!("\\x{:02x}", val));
-                        } else {
-                            result.push(chars[i]);
-                            result.push(chars[i + 1]);
-                        }
-                        i = end;
-                        continue;
-                    }
                     _ => {}
                 }
             }

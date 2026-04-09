@@ -519,6 +519,13 @@ impl VirtualMachine {
                             return Err(PyException::key_error(key.py_to_string()));
                         }
                     }
+                } else if let PyObjectPayload::InstanceDict(attrs) = &obj.payload {
+                    let key_str = CompactString::from(key.py_to_string());
+                    if let Some(val) = attrs.read().get(&key_str).cloned() {
+                        self.vm_push(val);
+                    } else {
+                        return Err(PyException::key_error(key.py_to_string()));
+                    }
                 } else {
                     self.vm_push(obj.get_item(&key)?);
                 }

@@ -31,6 +31,8 @@ pub fn create_gzip_module() -> PyObjectRef {
         ("compress", make_builtin(gzip_compress)),
         ("decompress", make_builtin(gzip_decompress)),
         ("open", make_builtin(gzip_open)),
+        ("GzipFile", make_builtin(gzip_file_constructor)),
+        ("BadGzipFile", PyObject::exception_type(ferrython_core::error::ExceptionKind::RuntimeError)),
     ])
 }
 
@@ -307,15 +309,91 @@ fn gzip_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         "rb".to_string()
     };
+    gzip_open_with(&filepath, &mode)
+}
 
+/// GzipFile(filename=None, mode='rb', compresslevel=9, fileobj=None)
+/// Supports both file path and fileobj (BytesIO) arguments.
+fn gzip_file_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    let mut filepath = String::new();
+    let mut mode = "rb".to_string();
+    let mut fileobj: Option<PyObjectRef> = None;
+
+    // Parse positional and keyword arguments
+    for (i, arg) in args.iter().enumerate() {
+        if let PyObjectPayload::Dict(kw_map) = &arg.payload {
+            let r = kw_map.read();
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("filename"))) {
+                if !matches!(&v.payload, PyObjectPayload::None) { filepath = v.py_to_string(); }
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("mode"))) {
+                mode = v.py_to_string();
+            }
+            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("fileobj"))) {
+                if !matches!(&v.payload, PyObjectPayload::None) { fileobj = Some(v.clone()); }
+            }
+        } else {
+            match i {
+                0 => if !matches!(&arg.payload, PyObjectPayload::None) { filepath = arg.py_to_string(); }
+                1 => mode = arg.py_to_string(),
+                _ => {}
+            }
+        }
+    }
+
+    // If fileobj is provided, read/write from it instead of filesystem
+    if let Some(fobj) = fileobj {
+        let buffer = if mode.contains('r') {
+            // Extract bytes from BytesIO-like object via internal buffer attribute
+            if let Some(buf_ref) = fobj.get_attr("_buf") {
+                extract_bytes(&buf_ref).unwrap_or_default()
+            } else if let Some(val_ref) = fobj.get_attr("_value") {
+                extract_bytes(&val_ref).unwrap_or_default()
+            } else {
+                extract_bytes(&fobj).unwrap_or_default()
+            }
+        } else {
+            Vec::new()
+        };
+
+        // For read mode, decompress the buffer
+        let decompressed = if mode.contains('r') && !buffer.is_empty() {
+            let mut decoder = flate2::read::GzDecoder::new(&buffer[..]);
+            let mut out = Vec::new();
+            decoder.read_to_end(&mut out).map_err(|e| {
+                PyException::runtime_error(&format!("GzipFile: {}", e))
+            })?;
+            out
+        } else {
+            buffer
+        };
+
+        let inner = Arc::new(Mutex::new(GzipFileInner {
+            mode: mode.clone(),
+            filepath: filepath.clone(),
+            buffer: decompressed,
+            closed: false,
+        }));
+
+        return Ok(build_gzip_file_object(inner));
+    }
+
+    // File-path based (same as gzip.open)
+    if filepath.is_empty() {
+        return Err(PyException::type_error("GzipFile requires filename or fileobj"));
+    }
+    gzip_open_with(&filepath, &mode)
+}
+
+fn gzip_open_with(filepath: &str, mode: &str) -> PyResult<PyObjectRef> {
     let buffer = if mode.contains('r') {
-        let raw = std::fs::read(&filepath).map_err(|e| {
-            PyException::runtime_error(&format!("gzip.open: {}", e))
+        let raw = std::fs::read(filepath).map_err(|e| {
+            PyException::runtime_error(&format!("GzipFile: {}", e))
         })?;
         let mut decoder = flate2::read::GzDecoder::new(&raw[..]);
         let mut decompressed = Vec::new();
         decoder.read_to_end(&mut decompressed).map_err(|e| {
-            PyException::runtime_error(&format!("gzip.open: {}", e))
+            PyException::runtime_error(&format!("GzipFile: {}", e))
         })?;
         decompressed
     } else {
@@ -323,8 +401,8 @@ fn gzip_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     };
 
     let inner = Arc::new(Mutex::new(GzipFileInner {
-        mode,
-        filepath,
+        mode: mode.to_string(),
+        filepath: filepath.to_string(),
         buffer,
         closed: false,
     }));
