@@ -1426,9 +1426,21 @@ pub fn create_tempfile_module() -> PyObjectRef {
 
 pub fn create_io_module() -> PyObjectRef {
     make_module("io", vec![
-        ("StringIO", make_builtin(io_string_io)),
-        ("BytesIO", make_builtin(io_bytes_io)),
-        ("TextIOWrapper", make_builtin(io_text_io_wrapper)),
+        ("StringIO", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("__init__"), make_builtin(io_string_io_init));
+            PyObject::class(CompactString::from("StringIO"), vec![], ns)
+        }),
+        ("BytesIO", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("__init__"), make_builtin(io_bytes_io_init));
+            PyObject::class(CompactString::from("BytesIO"), vec![], ns)
+        }),
+        ("TextIOWrapper", {
+            let mut ns = IndexMap::new();
+            ns.insert(CompactString::from("__init__"), make_builtin(io_text_io_wrapper_init));
+            PyObject::class(CompactString::from("TextIOWrapper"), vec![], ns)
+        }),
         ("BufferedReader", make_builtin(io_buffered_reader)),
         ("BufferedWriter", make_builtin(io_buffered_writer)),
         ("IOBase", PyObject::class(CompactString::from("IOBase"), vec![], IndexMap::new())),
@@ -1661,12 +1673,17 @@ pub fn create_io_module() -> PyObjectRef {
     ])
 }
 
-/// Build a StringIO instance with methods attached to its instance dict.
-fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let initial = if args.is_empty() { String::new() } else { args[0].py_to_string() };
-    let cls = PyObject::class(CompactString::from("StringIO"), vec![], IndexMap::new());
-    let inst = PyObject::instance(cls);
-    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+/// StringIO.__init__: installs string buffer methods on self.
+/// Called as __init__(self, initial_value="")
+fn io_string_io_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // args[0] = self, args[1] = optional initial value
+    if args.is_empty() {
+        return Err(PyException::type_error("StringIO.__init__() requires self"));
+    }
+    let self_obj = args[0].clone();
+    let initial = if args.len() > 1 { args[1].py_to_string() } else { String::new() };
+
+    if let PyObjectPayload::Instance(inst_data) = &self_obj.payload {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__stringio__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
@@ -1780,7 +1797,7 @@ fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }));
 
         // close()
-        let inst_for_close = inst.clone();
+        let inst_for_close = self_obj.clone();
         attrs.insert(CompactString::from("close"), PyObject::native_closure("StringIO.close", move |_| {
             if let PyObjectPayload::Instance(ref d) = inst_for_close.payload {
                 d.attrs.write().insert(CompactString::from("closed"), PyObject::bool_val(true));
@@ -1803,7 +1820,7 @@ fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
 
         // __enter__ / __exit__ for context manager
-        let inst_ref = inst.clone();
+        let inst_ref = self_obj.clone();
         attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("StringIO.__enter__", move |_: &[PyObjectRef]| {
             Ok(inst_ref.clone())
         }));
@@ -1831,21 +1848,29 @@ fn io_string_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(PyObject::list(lines))
         }));
     }
-    Ok(inst)
+    Ok(PyObject::none())
 }
 
 /// Build a BytesIO instance with methods attached.
-fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let initial = if args.is_empty() {
-        vec![]
-    } else if let PyObjectPayload::Bytes(b) = &args[0].payload {
-        b.clone()
+/// BytesIO.__init__: installs buffer methods on self.
+/// Called as __init__(self, initial_bytes=b"")
+fn io_bytes_io_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // args[0] = self, args[1] = optional initial bytes
+    if args.is_empty() {
+        return Err(PyException::type_error("BytesIO.__init__() requires self"));
+    }
+    let self_obj = args[0].clone();
+    let initial = if args.len() > 1 {
+        if let PyObjectPayload::Bytes(b) = &args[1].payload {
+            b.clone()
+        } else {
+            vec![]
+        }
     } else {
         vec![]
     };
-    let cls = PyObject::class(CompactString::from("BytesIO"), vec![], IndexMap::new());
-    let inst = PyObject::instance(cls);
-    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+
+    if let PyObjectPayload::Instance(inst_data) = &self_obj.payload {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__bytesio__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
@@ -1939,7 +1964,7 @@ fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
         // close()
         let cf = closed_flag.clone();
-        let inst_for_close = inst.clone();
+        let inst_for_close = self_obj.clone();
         attrs.insert(CompactString::from("close"), PyObject::native_closure("BytesIO.close", move |_args: &[PyObjectRef]| {
             *cf.write() = true;
             if let PyObjectPayload::Instance(ref d) = inst_for_close.payload {
@@ -2014,30 +2039,26 @@ fn io_bytes_io(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(PyObject::none())
         }));
 
-        // readable/writable/seekable
-        attrs.insert(CompactString::from("readable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-        attrs.insert(CompactString::from("writable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-        attrs.insert(CompactString::from("seekable"), make_builtin(|_| Ok(PyObject::bool_val(true))));
-        attrs.insert(CompactString::from("isatty"), make_builtin(|_| Ok(PyObject::bool_val(false))));
-
         // __enter__ / __exit__
-        let inst_ref = inst.clone();
+        let inst_ref = self_obj.clone();
         attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("BytesIO.__enter__", move |_: &[PyObjectRef]| {
             Ok(inst_ref.clone())
         }));
         attrs.insert(CompactString::from("__exit__"), make_builtin(|_| Ok(PyObject::bool_val(false))));
     }
-    Ok(inst)
+    Ok(PyObject::none())
 }
 
-/// TextIOWrapper: wraps a binary buffer with text encoding/decoding
-fn io_text_io_wrapper(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    // TextIOWrapper(buffer, encoding='utf-8', errors='strict', newline=None, line_buffering=False)
-    if args.is_empty() {
-        return Err(PyException::type_error("TextIOWrapper() requires a buffer argument"));
+/// TextIOWrapper.__init__: installs buffer-delegating methods on self.
+/// Called as __init__(self, buffer, encoding='utf-8', errors='strict', ...)
+fn io_text_io_wrapper_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // args[0] = self, args[1] = buffer, optional encoding/kwargs
+    if args.len() < 2 {
+        return Err(PyException::type_error("TextIOWrapper.__init__() requires a buffer argument"));
     }
-    let buffer = args[0].clone();
-    let encoding = if args.len() > 1 { args[1].py_to_string() } else { "utf-8".to_string() };
+    let self_obj = args[0].clone();
+    let buffer = args[1].clone();
+    let encoding = if args.len() > 2 { args[2].py_to_string() } else { "utf-8".to_string() };
     // Extract kwargs if trailing dict
     let (enc, _errors) = if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(kw) = &last.payload {
@@ -2054,9 +2075,7 @@ fn io_text_io_wrapper(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         (encoding, "strict".to_string())
     };
 
-    let cls = PyObject::class(CompactString::from("TextIOWrapper"), vec![], IndexMap::new());
-    let inst = PyObject::instance(cls);
-    if let PyObjectPayload::Instance(inst_data) = &inst.payload {
+    if let PyObjectPayload::Instance(inst_data) = &self_obj.payload {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("buffer"), buffer.clone());
         attrs.insert(CompactString::from("encoding"), PyObject::str_val(CompactString::from(&enc)));
@@ -2084,10 +2103,15 @@ fn io_text_io_wrapper(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }));
 
-        // write(s) — encode str to bytes and write to buffer
+        // write(s) — encode str to bytes and write to buffer (rejects bytes like CPython)
         let buf = buffer.clone();
         attrs.insert(CompactString::from("write"), PyObject::native_closure("TextIOWrapper.write", move |a: &[PyObjectRef]| {
             if a.is_empty() { return Err(PyException::type_error("write() requires 1 argument")); }
+            // TextIOWrapper only accepts str, not bytes
+            if matches!(&a[0].payload, PyObjectPayload::Bytes(_)) {
+                return Err(PyException::type_error(
+                    "write() argument must be str, not bytes"));
+            }
             let text = a[0].py_to_string();
             let bytes_obj = PyObject::bytes(text.as_bytes().to_vec());
             if let Some(write_fn) = buf.get_attr("write") {
@@ -2188,7 +2212,7 @@ fn io_text_io_wrapper(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
         // close — delegate to buffer and mark closed
         let buf = buffer.clone();
-        let inst_for_close = inst.clone();
+        let inst_for_close = self_obj.clone();
         attrs.insert(CompactString::from("close"), PyObject::native_closure("TextIOWrapper.close", move |_| {
             if let Some(close_fn) = buf.get_attr("close") {
                 let _ = call_native(&close_fn, &[]);
@@ -2200,9 +2224,9 @@ fn io_text_io_wrapper(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }));
 
         // __enter__ / __exit__
-        let inst_ref = inst.clone();
+        let inst_ref = self_obj.clone();
         attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("TextIOWrapper.__enter__", move |_| Ok(inst_ref.clone())));
-        let inst_for_exit = inst.clone();
+        let inst_for_exit = self_obj.clone();
         let buf = buffer.clone();
         attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("TextIOWrapper.__exit__", move |_| {
             if let Some(close_fn) = buf.get_attr("close") {
@@ -2213,8 +2237,23 @@ fn io_text_io_wrapper(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
             Ok(PyObject::bool_val(false))
         }));
+
+        // getvalue() — delegate to buffer (common for StringIO/BytesIO wrappers)
+        let buf = buffer.clone();
+        attrs.insert(CompactString::from("getvalue"), PyObject::native_closure("TextIOWrapper.getvalue", move |_: &[PyObjectRef]| {
+            if let Some(gv) = buf.get_attr("getvalue") {
+                let result = call_native(&gv, &[])?;
+                if let PyObjectPayload::Bytes(b) = &result.payload {
+                    Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(b).as_ref())))
+                } else {
+                    Ok(result)
+                }
+            } else {
+                Err(PyException::attribute_error("underlying buffer has no getvalue"))
+            }
+        }));
     }
-    Ok(inst)
+    Ok(PyObject::none())
 }
 
 /// BufferedReader: wraps a raw binary stream with buffering
@@ -2363,11 +2402,8 @@ fn io_buffered_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 /// Helper: call a NativeFunction/NativeClosure directly
 fn call_native(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    match &func.payload {
-        PyObjectPayload::NativeFunction { func: f, .. } => f(args),
-        PyObjectPayload::NativeClosure { func: f, .. } => f(args),
-        _ => Err(PyException::type_error("not a callable")),
-    }
+    // Delegate to call_callable which handles native AND Python functions
+    ferrython_core::object::call_callable(func, args)
 }
 
 

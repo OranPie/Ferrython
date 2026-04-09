@@ -633,7 +633,15 @@ fn get_stdio_fd(args: &[PyObjectRef]) -> i64 {
 
 fn stdio_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let fd = get_stdio_fd(args);
-    let text = if args.len() > 1 { args[1].py_to_string() } else { String::new() };
+    let arg = if args.len() > 1 { &args[1] } else {
+        return Err(PyException::type_error("write() requires 1 argument"));
+    };
+    // TextIOWrapper rejects bytes (like CPython)
+    if matches!(&arg.payload, PyObjectPayload::Bytes(_)) {
+        return Err(PyException::type_error(
+            "write() argument must be str, not bytes"));
+    }
+    let text = arg.py_to_string();
     let len = text.len();
     if fd == 2 {
         eprint!("{}", text);

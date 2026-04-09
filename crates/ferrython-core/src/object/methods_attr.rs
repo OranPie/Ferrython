@@ -345,7 +345,16 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
 
                 if !class_has_descriptors {
                     // ── FAST PATH: no data descriptors ──
-                    // Check instance dict first (avoids MRO lookup entirely for instance attrs)
+                    // Check own class for Python Function overrides BEFORE instance dict
+                    // (Python Functions are data descriptors that shadow instance attrs)
+                    if let PyObjectPayload::Class(cd) = &effective_class.payload {
+                        if let Some(v) = cd.namespace.read().get(name) {
+                            if matches!(&v.payload, PyObjectPayload::Function(_)) {
+                                return Some(wrap_class_attr_for_instance(obj, inst, v.clone()));
+                            }
+                        }
+                    }
+                    // Check instance dict
                     if let Some(v) = inst.attrs.read().get(name) {
                         return Some(v.clone());
                     }
@@ -390,6 +399,15 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 // Synthesized class-level attrs
                 if name == "__new__" || name == "__init_subclass__" || name == "__subclasshook__" {
                     return py_get_attr(&effective_class, name);
+                }
+                // __getattr__ fallback: if the class defines __getattr__, invoke it
+                if name != "__getattr__" {
+                    if let Some(getattr_fn) = lookup_in_class_mro(&effective_class, "__getattr__") {
+                        let name_obj = PyObject::str_val(CompactString::from(name));
+                        if let Ok(result) = call_callable(&getattr_fn, &[obj.clone(), name_obj]) {
+                            return Some(result);
+                        }
+                    }
                 }
                 None
             }
@@ -606,6 +624,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 None
             }
             PyObjectPayload::Module(m) => {
+                if name == "__class__" {
+                    return Some(PyObject::builtin_type(CompactString::from("module")));
+                }
                 if name == "__dict__" {
                     // Return module attrs as a dict
                     let attrs = m.attrs.read();
@@ -696,6 +717,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             PyObjectPayload::BuiltinType(n) => {
                 match name {
                     "__name__" | "__qualname__" => Some(PyObject::str_val(n.clone())),
+                    "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
                     "__dict__" => {
                         // Return a mappingproxy with common type descriptors
                         let mut map = IndexMap::new();
@@ -2052,6 +2074,20 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 if args.is_empty() { return Err(PyException::type_error("__new__ requires cls")); }
                                 Ok(PyObject::instance(args[0].clone()))
                             }));
+                        }
+                        // Fallback: check instance attrs for methods installed by
+                        // parent __init__ (e.g., BytesIO.__init__ installs write/read
+                        // as NativeClosure on the instance, not in the class namespace)
+                        if let PyObjectPayload::Instance(inst) = &instance.payload {
+                            if let Some(v) = inst.attrs.read().get(name).cloned() {
+                                if matches!(&v.payload,
+                                    PyObjectPayload::NativeClosure { .. } |
+                                    PyObjectPayload::NativeFunction { .. }
+                                ) {
+                                    return Some(v);
+                                }
+                                return Some(v);
+                            }
                         }
                         // Builtin __init__: object.__init__() is a no-op
                         if name == "__init__" {

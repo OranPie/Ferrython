@@ -40,6 +40,13 @@ impl VirtualMachine {
             }
             None
         });
+
+        // Register VM call dispatch so NativeClosures can call Python functions
+        let vm_ptr3 = self as *mut VirtualMachine;
+        ferrython_core::object::register_vm_call_dispatch(move |func: PyObjectRef, args: Vec<PyObjectRef>| {
+            let vm = unsafe { &mut *vm_ptr3 };
+            vm.call_object(func, args)
+        });
     }
 
     pub(crate) fn is_exception_class(cls: &PyObjectRef) -> bool {

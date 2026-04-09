@@ -1,7 +1,22 @@
 """Utilities for with-statement contexts."""
 
 
-class _GeneratorContextManager:
+class ContextDecorator:
+    """A base class that enables context managers to work as decorators."""
+
+    def _recreate_cm(self):
+        return self
+
+    def __call__(self, func):
+        from functools import wraps
+        @wraps(func)
+        def inner(*args, **kwds):
+            with self._recreate_cm():
+                return func(*args, **kwds)
+        return inner
+
+
+class _GeneratorContextManager(ContextDecorator):
     """Helper for @contextmanager decorator."""
 
     def __init__(self, func, args, kwds):
@@ -9,6 +24,9 @@ class _GeneratorContextManager:
         self.func = func
         self.args = args
         self.kwds = kwds
+
+    def _recreate_cm(self):
+        return self.__class__(self.func, self.args, self.kwds)
 
     def __enter__(self):
         try:
@@ -186,21 +204,6 @@ class nullcontext:
 
     def __exit__(self, *excinfo):
         pass
-
-
-class ContextDecorator:
-    """A base class that enables context managers to work as decorators."""
-
-    def _recreate_cm(self):
-        return self
-
-    def __call__(self, func):
-        from functools import wraps
-        @wraps(func)
-        def inner(*args, **kwds):
-            with self._recreate_cm():
-                return func(*args, **kwds)
-        return inner
 
 
 class AbstractContextManager:

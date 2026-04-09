@@ -628,6 +628,23 @@ impl VirtualMachine {
                             .cloned()
                             .unwrap_or_else(|| inst.class.clone());
 
+                        // Check own class for Python-level method overrides first.
+                        // Class-defined functions (descriptors) take precedence over
+                        // instance attrs installed by a parent __init__.
+                        if let PyObjectPayload::Class(cd) = &effective_class.payload {
+                            if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
+                                if matches!(&class_val.payload, PyObjectPayload::Function(_)) {
+                                    frame.push(Arc::new(PyObject {
+                                        payload: PyObjectPayload::BoundMethod {
+                                            receiver: obj,
+                                            method: class_val,
+                                        }
+                                    }));
+                                    return Ok(None);
+                                }
+                            }
+                        }
+
                         // Instance dict lookup
                         if let Some(v) = inst.attrs.read().get(name.as_str()) {
                             frame.push(v.clone());

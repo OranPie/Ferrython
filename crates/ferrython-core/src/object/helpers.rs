@@ -12,6 +12,60 @@ use super::payload::*;
 use super::methods::PyObjectMethods;
 use super::methods::CompareOp;
 
+// ── Thread-local VM call dispatch ──
+// Allows NativeClosures (which lack VM access) to call arbitrary Python objects
+// (Functions, BoundMethods, etc.) by delegating to the VM through a registered callback.
+thread_local! {
+    static VM_CALL_DISPATCH: std::cell::RefCell<Option<Box<dyn FnMut(PyObjectRef, Vec<PyObjectRef>) -> PyResult<PyObjectRef>>>>
+        = std::cell::RefCell::new(None);
+}
+
+/// Register the VM's call dispatch function. Called once by the VM at startup.
+pub fn register_vm_call_dispatch<F>(f: F)
+where
+    F: FnMut(PyObjectRef, Vec<PyObjectRef>) -> PyResult<PyObjectRef> + 'static,
+{
+    VM_CALL_DISPATCH.with(|cell| {
+        *cell.borrow_mut() = Some(Box::new(f));
+    });
+}
+
+/// Call any Python callable (NativeFunction, NativeClosure, Function, BoundMethod, etc.)
+/// through the VM dispatch. Falls back to direct native calls if no VM is registered.
+pub fn call_callable(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    // Fast path: native functions don't need VM
+    match &func.payload {
+        PyObjectPayload::NativeFunction { func: f, .. } => return f(args),
+        PyObjectPayload::NativeClosure { func: f, .. } => return f(args),
+        PyObjectPayload::BoundMethod { receiver, method } => {
+            // If the underlying method is native, call directly
+            match &method.payload {
+                PyObjectPayload::NativeFunction { func: f, .. } => {
+                    let mut full_args = vec![receiver.clone()];
+                    full_args.extend_from_slice(args);
+                    return f(&full_args);
+                }
+                PyObjectPayload::NativeClosure { func: f, .. } => {
+                    let mut full_args = vec![receiver.clone()];
+                    full_args.extend_from_slice(args);
+                    return f(&full_args);
+                }
+                _ => {} // Fall through to VM dispatch
+            }
+        }
+        _ => {}
+    }
+    // Slow path: delegate to VM for Python functions, classes, etc.
+    VM_CALL_DISPATCH.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        if let Some(dispatch) = borrow.as_mut() {
+            dispatch(func.clone(), args.to_vec())
+        } else {
+            Err(PyException::type_error("not a callable (no VM dispatch registered)"))
+        }
+    })
+}
+
 // ── Recursive repr guard ──
 // Prevents infinite recursion when repr()ing self-referential structures
 // like `lst = []; lst.append(lst)`.

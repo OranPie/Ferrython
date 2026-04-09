@@ -320,6 +320,40 @@ impl VirtualMachine {
                 }
             }
         }
+        // For Instance objects, check if the instance's own class defines
+        // this attribute as a method (Function). Class-level methods act as
+        // data descriptors and take precedence over instance __dict__,
+        // ensuring subclass method overrides work correctly even when a
+        // parent __init__ installs same-named closures as instance attrs.
+        if let PyObjectPayload::Instance(inst) = &obj.payload {
+            if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
+                    if matches!(&class_val.payload,
+                        PyObjectPayload::Function(_) |
+                        PyObjectPayload::Property { .. }
+                    ) {
+                        if let PyObjectPayload::Property { fget, .. } = &class_val.payload {
+                            if let Some(getter) = fget {
+                                let getter = crate::builtins::unwrap_abstract_fget(getter);
+                                let result = self.call_object(getter, vec![obj.clone()])?;
+                                self.vm_push(result);
+                                return Ok(None);
+                            }
+                        } else {
+                            // Wrap as BoundMethod
+                            let bound = Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: obj.clone(),
+                                    method: class_val,
+                                }
+                            });
+                            self.vm_push(bound);
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+        }
         match obj.get_attr(name) {
             Some(v) => {
                 if let PyObjectPayload::Property { fget, .. } = &v.payload {
