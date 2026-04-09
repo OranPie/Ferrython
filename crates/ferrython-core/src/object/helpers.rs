@@ -107,6 +107,8 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
         (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a.partial_cmp(b),
         (PyObjectPayload::Bool(a), PyObjectPayload::Int(b)) => PyInt::Small(*a as i64).partial_cmp(b),
         (PyObjectPayload::Int(a), PyObjectPayload::Bool(b)) => a.partial_cmp(&PyInt::Small(*b as i64)),
+        (PyObjectPayload::Bool(a), PyObjectPayload::Float(b)) => (*a as i64 as f64).partial_cmp(b),
+        (PyObjectPayload::Float(a), PyObjectPayload::Bool(b)) => a.partial_cmp(&(*b as i64 as f64)),
         (PyObjectPayload::List(a), PyObjectPayload::List(b)) => {
             let a = a.read(); let b = b.read();
             for (x, y) in a.iter().zip(b.iter()) {
