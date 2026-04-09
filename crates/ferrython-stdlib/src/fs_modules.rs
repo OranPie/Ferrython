@@ -1111,10 +1111,9 @@ static TMPFILE_BUFFERS: std::sync::LazyLock<Mutex<IndexMap<String, String>>> =
 
 fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Extract keyword args (mode, suffix, prefix, delete)
-    let mut mode = String::from("w");
+    let mut mode = String::from("w+b");
     let mut suffix = String::from("");
     let mut delete = true;
-    // Check for trailing Dict kwargs
     if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(d) = &last.payload {
             let d = d.read();
@@ -1138,70 +1137,156 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let path = std::env::temp_dir()
         .join(format!("ferrython_ntf_{}{}{}", std::process::id(), n, suffix));
     let path_str = path.to_string_lossy().to_string();
+    let is_binary = mode.contains('b');
 
-    // Create the file on disk
-    std::fs::File::create(&path).map_err(|e|
-        PyException::runtime_error(format!("tempfile: {}", e)))?;
+    // Open with read+write so both directions work
+    let file = std::fs::OpenOptions::new()
+        .read(true).write(true).create(true).truncate(true)
+        .open(&path)
+        .map_err(|e| PyException::runtime_error(format!("tempfile: {}", e)))?;
 
-    // Register a write buffer
-    TMPFILE_BUFFERS.lock().unwrap().insert(path_str.clone(), String::new());
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::IntoRawFd;
+        use std::sync::{Arc, RwLock};
+        let fd = file.into_raw_fd();
+        let state = Arc::new(RwLock::new((fd, false))); // (fd, closed)
+        let mut attrs = IndexMap::new();
+        attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&path_str)));
+        attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(&mode)));
+        attrs.insert(CompactString::from("_delete"), PyObject::bool_val(delete));
+        attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
 
-    let ps = path_str.clone();
-    let mut attrs = IndexMap::new();
-    attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(path_str.clone())));
-    attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(mode.clone())));
-    attrs.insert(CompactString::from("_delete"), PyObject::bool_val(delete));
-    attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
+        // write(data)
+        let s1 = state.clone();
+        attrs.insert(CompactString::from("write"), PyObject::native_closure("write", move |a| {
+            let g = s1.read().unwrap();
+            if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
+            let fd = g.0;
+            drop(g);
+            let data_arg = if a.len() > 1 { &a[1] } else if !a.is_empty() { &a[0] } else {
+                return Err(PyException::type_error("write requires data"));
+            };
+            let data_bytes = match &data_arg.payload {
+                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
+                _ => data_arg.py_to_string().into_bytes(),
+            };
+            let n = unsafe { libc::write(fd, data_bytes.as_ptr() as *const libc::c_void, data_bytes.len()) };
+            if n < 0 { return Err(PyException::os_error("write failed".to_string())); }
+            Ok(PyObject::int(n as i64))
+        }));
 
-    // write method
-    let ps_w = ps.clone();
-    attrs.insert(CompactString::from("write"), PyObject::native_closure("write", move |a| {
-        let text = if !a.is_empty() { a[0].py_to_string() } else { String::new() };
-        let mut bufs = TMPFILE_BUFFERS.lock().unwrap();
-        if let Some(buf) = bufs.get_mut(&ps_w) {
-            buf.push_str(&text);
-        }
-        Ok(PyObject::int(text.len() as i64))
-    }));
+        // read([size])
+        let s2 = state.clone();
+        let is_bin_r = is_binary;
+        attrs.insert(CompactString::from("read"), PyObject::native_closure("read", move |a| {
+            let g = s2.read().unwrap();
+            if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
+            let fd = g.0;
+            drop(g);
+            let size: isize = if a.len() > 1 { a[1].as_int().unwrap_or(-1) as isize }
+                else if !a.is_empty() { a[0].as_int().unwrap_or(-1) as isize }
+                else { -1 };
+            let buf = if size < 0 {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 8192];
+                loop {
+                    let n = unsafe { libc::read(fd, tmp.as_mut_ptr() as *mut libc::c_void, tmp.len()) };
+                    if n <= 0 { break; }
+                    buf.extend_from_slice(&tmp[..n as usize]);
+                }
+                buf
+            } else {
+                let mut buf = vec![0u8; size as usize];
+                let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+                if n < 0 { return Err(PyException::os_error("read failed".to_string())); }
+                buf.truncate(n as usize);
+                buf
+            };
+            if is_bin_r {
+                Ok(PyObject::bytes(buf))
+            } else {
+                Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(&buf).as_ref())))
+            }
+        }));
 
-    // flush method — write buffer to disk
-    let ps_f = ps.clone();
-    attrs.insert(CompactString::from("flush"), PyObject::native_closure("flush", move |_| {
-        let bufs = TMPFILE_BUFFERS.lock().unwrap();
-        if let Some(buf) = bufs.get(&ps_f) {
-            std::fs::write(&ps_f, buf).ok();
-        }
-        Ok(PyObject::none())
-    }));
+        // seek(offset, whence=0)
+        let s3 = state.clone();
+        attrs.insert(CompactString::from("seek"), PyObject::native_closure("seek", move |a| {
+            let g = s3.read().unwrap();
+            if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
+            let fd = g.0;
+            drop(g);
+            let offset = if a.len() > 1 { a[1].as_int().unwrap_or(0) as i64 }
+                else if !a.is_empty() { a[0].as_int().unwrap_or(0) as i64 }
+                else { 0i64 };
+            let whence = if a.len() > 2 { a[2].as_int().unwrap_or(0) as i32 } else { 0i32 };
+            let pos = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
+            if pos < 0 { return Err(PyException::os_error("seek failed".to_string())); }
+            Ok(PyObject::int(pos as i64))
+        }));
 
-    // close — flush + mark closed
-    let ps_c = ps.clone();
-    attrs.insert(CompactString::from("close"), PyObject::native_closure("close", move |_| {
-        let content = TMPFILE_BUFFERS.lock().unwrap().shift_remove(&ps_c).unwrap_or_default();
-        std::fs::write(&ps_c, &content).ok();
-        Ok(PyObject::none())
-    }));
+        // tell()
+        let s4 = state.clone();
+        attrs.insert(CompactString::from("tell"), PyObject::native_closure("tell", move |_a| {
+            let g = s4.read().unwrap();
+            if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
+            let pos = unsafe { libc::lseek(g.0, 0, libc::SEEK_CUR) };
+            Ok(PyObject::int(pos as i64))
+        }));
 
-    // __enter__ returns self (arg[0] is self when _bind_methods is set)
-    attrs.insert(CompactString::from("__enter__"), PyObject::native_function("__enter__", |args| {
-        if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
-    }));
+        // flush()
+        let s5 = state.clone();
+        attrs.insert(CompactString::from("flush"), PyObject::native_closure("flush", move |_a| {
+            let g = s5.read().unwrap();
+            if !g.1 { unsafe { libc::fsync(g.0); } }
+            Ok(PyObject::none())
+        }));
 
-    // __exit__ — flush and optionally delete
-    let ps_e = ps.clone();
-    let del_flag = delete;
-    attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("__exit__", move |_| {
-        let content = TMPFILE_BUFFERS.lock().unwrap().shift_remove(&ps_e).unwrap_or_default();
-        std::fs::write(&ps_e, &content).ok();
-        if del_flag {
-            std::fs::remove_file(&ps_e).ok();
-        }
-        Ok(PyObject::bool_val(false))
-    }));
+        // close()
+        let s6 = state.clone();
+        let ps_c = path_str.clone();
+        let del_c = delete;
+        attrs.insert(CompactString::from("close"), PyObject::native_closure("close", move |_| {
+            let mut g = s6.write().unwrap();
+            if !g.1 {
+                g.1 = true;
+                unsafe { libc::close(g.0); }
+                if del_c { std::fs::remove_file(&ps_c).ok(); }
+            }
+            Ok(PyObject::none())
+        }));
 
-    attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
+        // __enter__(self)
+        attrs.insert(CompactString::from("__enter__"), PyObject::native_function("__enter__", |args| {
+            if !args.is_empty() { Ok(args[0].clone()) } else { Ok(PyObject::none()) }
+        }));
 
-    Ok(PyObject::module_with_attrs(CompactString::from("_tempfile"), attrs))
+        // __exit__ — close + optionally delete
+        let s7 = state.clone();
+        let ps_e = path_str.clone();
+        let del_e = delete;
+        attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("__exit__", move |_| {
+            let mut g = s7.write().unwrap();
+            if !g.1 {
+                g.1 = true;
+                unsafe { libc::close(g.0); }
+                if del_e { std::fs::remove_file(&ps_e).ok(); }
+            }
+            Ok(PyObject::bool_val(false))
+        }));
+
+        attrs.insert(CompactString::from("_bind_methods"), PyObject::bool_val(true));
+
+        let class = PyObject::class(CompactString::from("_io.BufferedRandom"), vec![], IndexMap::new());
+        Ok(PyObject::instance_with_attrs(class, attrs))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path_str, is_binary, delete);
+        Err(PyException::not_implemented_error("NamedTemporaryFile not available on this platform"))
+    }
 }
 
 
@@ -1261,7 +1346,12 @@ pub fn create_tempfile_module() -> PyObjectRef {
                 }
             }
             let path = temp_name(&prefix, &suffix);
-            let file = std::fs::File::create(&path)
+            // Open with read+write (O_RDWR | O_CREAT | O_EXCL) like CPython
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
                 .map_err(|e| PyException::runtime_error(format!("mkstemp: {}", e)))?;
             #[cfg(unix)] {
                 use std::os::unix::io::IntoRawFd;

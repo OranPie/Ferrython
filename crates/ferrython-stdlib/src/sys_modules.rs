@@ -929,11 +929,30 @@ pub fn create_os_module() -> PyObjectRef {
         ("O_WRONLY", PyObject::int(1)),
         ("O_RDWR", PyObject::int(2)),
         ("O_CREAT", PyObject::int(0o100)),
+        ("O_EXCL", PyObject::int(0o200)),
+        ("O_NOCTTY", PyObject::int(0o400)),
         ("O_TRUNC", PyObject::int(0o1000)),
         ("O_APPEND", PyObject::int(0o2000)),
+        ("O_NONBLOCK", PyObject::int(0o4000)),
+        ("O_CLOEXEC", PyObject::int(0o2000000)),
         ("SEEK_SET", PyObject::int(0)),
         ("SEEK_CUR", PyObject::int(1)),
         ("SEEK_END", PyObject::int(2)),
+        ("strerror", make_builtin(|args| {
+            if args.is_empty() { return Err(PyException::type_error("strerror requires an error code")); }
+            let code = args[0].as_int().unwrap_or(0) as i32;
+            #[cfg(unix)] {
+                let msg = unsafe {
+                    let p = libc::strerror(code);
+                    if p.is_null() { "Unknown error".to_string() }
+                    else { std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned() }
+                };
+                Ok(PyObject::str_val(CompactString::from(msg)))
+            }
+            #[cfg(not(unix))] {
+                Ok(PyObject::str_val(CompactString::from(format!("Error {}", code))))
+            }
+        })),
         ("scandir", make_builtin(os_scandir)),
         ("putenv", make_builtin(|args| {
             if args.len() < 2 { return Err(PyException::type_error("putenv requires 2 arguments")); }
@@ -1155,75 +1174,141 @@ pub fn create_os_module() -> PyObjectRef {
             let mode = if args.len() > 1 { args[1].py_to_string() } else { "r".to_string() };
             #[cfg(unix)]
             {
-                use std::os::unix::io::FromRawFd;
-                use std::io::Read;
+                use std::sync::{Arc, RwLock};
                 let is_binary = mode.contains('b');
-                let file = unsafe { std::fs::File::from_raw_fd(fd) };
-                let (content, binary) = if mode.contains('r') || mode.contains('+') {
-                    if is_binary {
-                        let mut buf = Vec::new();
-                        let mut f = file;
-                        let _ = f.read_to_end(&mut buf);
-                        std::mem::forget(f);
-                        (String::new(), buf)
-                    } else {
-                        let mut buf = String::new();
-                        let mut f = file;
-                        let _ = f.read_to_string(&mut buf);
-                        std::mem::forget(f);
-                        (buf, Vec::new())
-                    }
-                } else {
-                    std::mem::forget(file);
-                    (String::new(), Vec::new())
-                };
-                // Build a simple file-like object with read/write/close
-                let data = std::sync::Arc::new(std::sync::RwLock::new((content, binary, 0usize, false)));
-                let d1 = data.clone();
-                let d2 = data.clone();
-                let d3 = data.clone();
+                // State: (fd, closed, name)
+                let state = Arc::new(RwLock::new((fd, false)));
+                let mode_str = mode.clone();
+                let name_str = format!("<fdopen fd={}>", fd);
                 let mut attrs = IndexMap::new();
-                attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(&mode)));
+                attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(&mode_str)));
+                attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&name_str)));
                 attrs.insert(CompactString::from("closed"), PyObject::bool_val(false));
-                let is_bin = is_binary;
+                // read([size])
+                let s1 = state.clone();
+                let is_bin_r = is_binary;
                 attrs.insert(CompactString::from("read"), PyObject::native_closure("fdopen.read", move |a| {
-                    let g = d1.read().unwrap();
-                    if is_bin {
-                        Ok(PyObject::bytes(g.1.clone()))
+                    let g = s1.read().unwrap();
+                    if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
+                    let fd = g.0;
+                    drop(g);
+                    let size = if !a.is_empty() && a.len() > 1 {
+                        a[1].as_int().unwrap_or(-1) as isize
+                    } else if !a.is_empty() {
+                        a[0].as_int().unwrap_or(-1) as isize
                     } else {
-                        Ok(PyObject::str_val(CompactString::from(&g.0)))
+                        -1isize
+                    };
+                    let buf = if size < 0 {
+                        // Read all
+                        let mut buf = Vec::new();
+                        let mut tmp = [0u8; 8192];
+                        loop {
+                            let n = unsafe { libc::read(fd, tmp.as_mut_ptr() as *mut libc::c_void, tmp.len()) };
+                            if n <= 0 { break; }
+                            buf.extend_from_slice(&tmp[..n as usize]);
+                        }
+                        buf
+                    } else {
+                        let mut buf = vec![0u8; size as usize];
+                        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+                        if n < 0 { return Err(PyException::os_error("read failed".to_string())); }
+                        buf.truncate(n as usize);
+                        buf
+                    };
+                    if is_bin_r {
+                        Ok(PyObject::bytes(buf))
+                    } else {
+                        Ok(PyObject::str_val(CompactString::from(String::from_utf8_lossy(&buf).as_ref())))
                     }
                 }));
-                let fd_w = fd;
+                // write(data)
+                let s2 = state.clone();
                 attrs.insert(CompactString::from("write"), PyObject::native_closure("fdopen.write", move |a| {
-                    if a.is_empty() { return Err(PyException::type_error("write requires data")); }
-                    let data_bytes = match &a[0].payload {
+                    let g = s2.read().unwrap();
+                    if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
+                    let fd = g.0;
+                    drop(g);
+                    if a.is_empty() || (a.len() == 1 && matches!(a[0].payload, PyObjectPayload::Instance(_))) {
+                        return Err(PyException::type_error("write requires data"));
+                    }
+                    let data_arg = if a.len() > 1 { &a[1] } else { &a[0] };
+                    let data_bytes = match &data_arg.payload {
                         PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
                         PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                         _ => return Err(PyException::type_error("write requires str or bytes")),
                     };
-                    let n = unsafe { libc::write(fd_w, data_bytes.as_ptr() as *const libc::c_void, data_bytes.len()) };
+                    let n = unsafe { libc::write(fd, data_bytes.as_ptr() as *const libc::c_void, data_bytes.len()) };
                     if n < 0 { return Err(PyException::os_error("write failed".to_string())); }
                     Ok(PyObject::int(n as i64))
                 }));
-                let fd_c = fd;
-                attrs.insert(CompactString::from("close"), PyObject::native_closure("fdopen.close", move |_| {
-                    let mut g = d2.write().unwrap();
-                    g.3 = true;
-                    unsafe { libc::close(fd_c); }
+                // seek(offset, whence=0)
+                let s3 = state.clone();
+                attrs.insert(CompactString::from("seek"), PyObject::native_closure("fdopen.seek", move |a| {
+                    let g = s3.read().unwrap();
+                    if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
+                    let fd = g.0;
+                    drop(g);
+                    let offset = if a.len() > 1 {
+                        a[1].as_int().unwrap_or(0) as i64
+                    } else if !a.is_empty() {
+                        a[0].as_int().unwrap_or(0) as i64
+                    } else { 0i64 };
+                    let whence = if a.len() > 2 {
+                        a[2].as_int().unwrap_or(0) as i32
+                    } else { 0i32 };
+                    let pos = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
+                    if pos < 0 { return Err(PyException::os_error("seek failed".to_string())); }
+                    Ok(PyObject::int(pos as i64))
+                }));
+                // tell()
+                let s4 = state.clone();
+                attrs.insert(CompactString::from("tell"), PyObject::native_closure("fdopen.tell", move |_a| {
+                    let g = s4.read().unwrap();
+                    if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
+                    let fd = g.0;
+                    drop(g);
+                    let pos = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
+                    Ok(PyObject::int(pos as i64))
+                }));
+                // flush()
+                let s5 = state.clone();
+                attrs.insert(CompactString::from("flush"), PyObject::native_closure("fdopen.flush", move |_a| {
+                    let g = s5.read().unwrap();
+                    if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
+                    let fd = g.0;
+                    drop(g);
+                    unsafe { libc::fsync(fd); }
                     Ok(PyObject::none())
                 }));
+                // close()
+                let s6 = state.clone();
+                attrs.insert(CompactString::from("close"), PyObject::native_closure("fdopen.close", move |_| {
+                    let mut g = s6.write().unwrap();
+                    if !g.1 {
+                        g.1 = true;
+                        unsafe { libc::close(g.0); }
+                    }
+                    Ok(PyObject::none())
+                }));
+                // __enter__(self) -> self
                 attrs.insert(CompactString::from("__enter__"), PyObject::native_closure("fdopen.__enter__", move |a| {
                     if a.is_empty() { return Ok(PyObject::none()); }
                     Ok(a[0].clone())
                 }));
-                let d4 = d3.clone();
+                // __exit__ -> close
+                let s7 = state.clone();
                 attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("fdopen.__exit__", move |_| {
-                    let mut g = d4.write().unwrap();
-                    g.3 = true;
-                    Ok(PyObject::none())
+                    let mut g = s7.write().unwrap();
+                    if !g.1 {
+                        g.1 = true;
+                        unsafe { libc::close(g.0); }
+                    }
+                    Ok(PyObject::bool_val(false))
                 }));
-                Ok(PyObject::module_with_attrs(CompactString::from("_fdopen"), attrs))
+                // Return as an Instance so it's treated as a file-like object
+                let class = PyObject::class(CompactString::from("_io.FileIO"), vec![], IndexMap::new());
+                Ok(PyObject::instance_with_attrs(class, attrs))
             }
             #[cfg(not(unix))]
             {
