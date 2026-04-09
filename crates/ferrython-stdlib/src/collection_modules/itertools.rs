@@ -50,21 +50,26 @@ pub fn create_itertools_module() -> PyObjectRef {
 fn itertools_count(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let start = if args.is_empty() { 0i64 } else { args[0].to_int()? };
     let step = if args.len() >= 2 { args[1].to_int()? } else { 1 };
-    // Return a list-based iterator with a large range (lazy would be better, but this works)
-    let items: Vec<PyObjectRef> = (0..1000).map(|i| PyObject::int(start + i * step)).collect();
     Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
-        IteratorData::List { items, index: 0 }
+        IteratorData::Count { current: start, step }
     )))))
 }
 
 fn itertools_chain(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let mut all_items = Vec::new();
-    for arg in args {
-        let items = arg.to_list()?;
-        all_items.extend(items);
-    }
+    // Convert each arg into an iterator
+    let sources: Vec<PyObjectRef> = args.iter().map(|a| {
+        if matches!(&a.payload, PyObjectPayload::Iterator(_)) {
+            a.clone()
+        } else {
+            // Materialize non-iterator iterables into list iterators
+            let items = a.to_list().unwrap_or_default();
+            PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+                IteratorData::List { items, index: 0 }
+            ))))
+        }
+    }).collect();
     Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
-        IteratorData::List { items: all_items, index: 0 }
+        IteratorData::Chain { sources, current: 0 }
     )))))
 }
 
@@ -73,10 +78,9 @@ fn itertools_repeat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::type_error("repeat() missing required argument"));
     }
     let item = args[0].clone();
-    let count = if args.len() >= 2 { args[1].to_int()? as usize } else { 100 };
-    let items: Vec<PyObjectRef> = std::iter::repeat(item).take(count).collect();
+    let remaining = if args.len() >= 2 { Some(args[1].to_int()? as usize) } else { None };
     Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
-        IteratorData::List { items, index: 0 }
+        IteratorData::Repeat { item, remaining }
     )))))
 }
 
@@ -84,19 +88,9 @@ fn itertools_cycle(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("cycle() missing required argument"));
     }
-    let base = args[0].to_list()?;
-    if base.is_empty() {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
-            IteratorData::List { items: vec![], index: 0 }
-        )))));
-    }
-    // Materialize a reasonable number of cycles
-    let mut items = Vec::new();
-    for _ in 0..1000 {
-        items.extend(base.iter().cloned());
-    }
+    let items = args[0].to_list()?;
     Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
-        IteratorData::List { items, index: 0 }
+        IteratorData::Cycle { items, index: 0 }
     )))))
 }
 
@@ -556,20 +550,19 @@ fn itertools_filterfalse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn itertools_starmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("starmap requires function and iterable")); }
-    let func = &args[0];
-    let items = args[1].to_list()?;
-    let mut result = Vec::new();
-    for item in &items {
-        let call_args = item.to_list()?;
-        let val = match &func.payload {
-            PyObjectPayload::NativeFunction { func: nf, .. } => nf(&call_args)?,
-            PyObjectPayload::NativeClosure { func: nf, .. } => nf(&call_args)?,
-            _ => return Err(PyException::type_error("starmap with Python functions requires VM dispatch")),
-        };
-        result.push(val);
-    }
+    let func = args[0].clone();
+    let iterable = &args[1];
+    // Convert iterable to an iterator for lazy consumption
+    let source = if matches!(&iterable.payload, PyObjectPayload::Iterator(_)) {
+        iterable.clone()
+    } else {
+        let items = iterable.to_list()?;
+        PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            IteratorData::List { items, index: 0 }
+        ))))
+    };
     Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
-        IteratorData::List { items: result, index: 0 }
+        IteratorData::Starmap { func, source }
     )))))
 }
 

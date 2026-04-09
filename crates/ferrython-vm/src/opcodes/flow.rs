@@ -177,7 +177,12 @@ impl VirtualMachine {
                             | IteratorData::Filter { .. }
                             | IteratorData::Sentinel { .. }
                             | IteratorData::TakeWhile { .. }
-                            | IteratorData::DropWhile { .. })
+                            | IteratorData::DropWhile { .. }
+                            | IteratorData::Count { .. }
+                            | IteratorData::Cycle { .. }
+                            | IteratorData::Repeat { .. }
+                            | IteratorData::Chain { .. }
+                            | IteratorData::Starmap { .. })
                     };
                     if needs_vm {
                         match self.advance_lazy_iterator(&iter) {

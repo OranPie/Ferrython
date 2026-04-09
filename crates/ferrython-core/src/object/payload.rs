@@ -425,5 +425,15 @@ pub enum IteratorData {
     Sentinel { callable: PyObjectRef, sentinel: PyObjectRef },
     TakeWhile { func: PyObjectRef, source: PyObjectRef, done: bool },
     DropWhile { func: PyObjectRef, source: PyObjectRef, dropping: bool },
+    /// Infinite counter: count(start, step)
+    Count { current: i64, step: i64 },
+    /// Infinite cycle over cached items
+    Cycle { items: Vec<PyObjectRef>, index: usize },
+    /// Repeat item n times (None = infinite)
+    Repeat { item: PyObjectRef, remaining: Option<usize> },
+    /// Chain multiple iterators sequentially
+    Chain { sources: Vec<PyObjectRef>, current: usize },
+    /// Starmap: apply func to each tuple of args
+    Starmap { func: PyObjectRef, source: PyObjectRef },
 }
 

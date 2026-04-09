@@ -875,7 +875,12 @@ impl VirtualMachine {
                         | IteratorData::Filter { .. }
                         | IteratorData::Sentinel { .. }
                         | IteratorData::TakeWhile { .. }
-                        | IteratorData::DropWhile { .. })
+                        | IteratorData::DropWhile { .. }
+                        | IteratorData::Count { .. }
+                        | IteratorData::Cycle { .. }
+                        | IteratorData::Repeat { .. }
+                        | IteratorData::Chain { .. }
+                        | IteratorData::Starmap { .. })
                 };
                 if is_lazy {
                     let mut items = Vec::new();
@@ -1237,7 +1242,12 @@ impl VirtualMachine {
                         | IteratorData::Filter { .. }
                         | IteratorData::Sentinel { .. }
                         | IteratorData::TakeWhile { .. }
-                        | IteratorData::DropWhile { .. } => {
+                        | IteratorData::DropWhile { .. }
+                        | IteratorData::Count { .. }
+                        | IteratorData::Cycle { .. }
+                        | IteratorData::Repeat { .. }
+                        | IteratorData::Chain { .. }
+                        | IteratorData::Starmap { .. } => {
                             drop(data);
                             return self.advance_lazy_iterator(iter_obj);
                         }
@@ -1399,6 +1409,81 @@ impl VirtualMachine {
                 } else {
                     // Not dropping anymore, just yield
                     self.vm_iter_next(&src)
+                }
+            }
+            IteratorData::Count { current, step } => {
+                let val = *current;
+                *current += *step;
+                drop(data);
+                Ok(Some(PyObject::int(val)))
+            }
+            IteratorData::Cycle { items, index } => {
+                if items.is_empty() {
+                    drop(data);
+                    return Ok(None);
+                }
+                let val = items[*index].clone();
+                *index = (*index + 1) % items.len();
+                drop(data);
+                Ok(Some(val))
+            }
+            IteratorData::Repeat { item, remaining } => {
+                match remaining {
+                    Some(0) => {
+                        drop(data);
+                        Ok(None)
+                    }
+                    Some(ref mut n) => {
+                        let val = item.clone();
+                        *n -= 1;
+                        drop(data);
+                        Ok(Some(val))
+                    }
+                    None => {
+                        let val = item.clone();
+                        drop(data);
+                        Ok(Some(val))
+                    }
+                }
+            }
+            IteratorData::Chain { sources, current } => {
+                // Clone what we need, then drop lock
+                let srcs = sources.clone();
+                let mut cur = *current;
+                drop(data);
+                while cur < srcs.len() {
+                    match self.vm_iter_next(&srcs[cur])? {
+                        Some(val) => {
+                            // Update current index
+                            let mut d = iter_data_arc.lock().unwrap();
+                            if let IteratorData::Chain { current, .. } = &mut *d {
+                                *current = cur;
+                            }
+                            return Ok(Some(val));
+                        }
+                        None => {
+                            cur += 1;
+                        }
+                    }
+                }
+                // All exhausted
+                let mut d = iter_data_arc.lock().unwrap();
+                if let IteratorData::Chain { current, .. } = &mut *d {
+                    *current = cur;
+                }
+                Ok(None)
+            }
+            IteratorData::Starmap { func, source } => {
+                let f = func.clone();
+                let src = source.clone();
+                drop(data);
+                match self.vm_iter_next(&src)? {
+                    Some(args_tuple) => {
+                        let call_args = args_tuple.to_list().unwrap_or_else(|_| vec![args_tuple.clone()]);
+                        let result = self.call_object(f, call_args)?;
+                        Ok(Some(result))
+                    }
+                    None => Ok(None),
                 }
             }
             _ => {

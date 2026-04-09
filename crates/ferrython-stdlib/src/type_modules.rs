@@ -12,59 +12,75 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 pub fn create_typing_module() -> PyObjectRef {
+    // TypeVar class — shared so isinstance(T, TypeVar) works
+    let typevar_class = PyObject::class(CompactString::from("TypeVar"), vec![], IndexMap::new());
+    let typevar_cls_ref = typevar_class.clone();
+
     // TypeVar(name, *constraints, bound=None, covariant=False, contravariant=False)
-    let typevar_fn = make_builtin(|args: &[PyObjectRef]| {
-        check_args_min("TypeVar", args, 1)?;
+    let typevar_new = {
+        let tv_cls = typevar_cls_ref.clone();
+        PyObject::native_closure("TypeVar.__new__", move |args: &[PyObjectRef]| {
+            // First arg is the class itself (cls), rest are user args
+            let real_args = if !args.is_empty() && matches!(&args[0].payload, PyObjectPayload::Class(_)) {
+                &args[1..]
+            } else {
+                args
+            };
+            check_args_min("TypeVar", real_args, 1)?;
 
-        // Last arg may be a kwargs dict appended by the VM
-        let last_is_kwargs = args.len() >= 2
-            && matches!(&args[args.len() - 1].payload, PyObjectPayload::Dict(_));
+            let last_is_kwargs = real_args.len() >= 2
+                && matches!(&real_args[real_args.len() - 1].payload, PyObjectPayload::Dict(_));
 
-        let kwargs_dict: Option<IndexMap<HashableKey, PyObjectRef>> = if last_is_kwargs {
-            if let PyObjectPayload::Dict(d) = &args[args.len() - 1].payload {
-                Some(d.read().clone())
-            } else { None }
-        } else { None };
+            let kwargs_dict: Option<IndexMap<HashableKey, PyObjectRef>> = if last_is_kwargs {
+                if let PyObjectPayload::Dict(d) = &real_args[real_args.len() - 1].payload {
+                    Some(d.read().clone())
+                } else { None }
+            } else { None };
 
-        let positional_end = if last_is_kwargs { args.len() - 1 } else { args.len() };
-        let name = CompactString::from(args[0].py_to_string());
+            let positional_end = if last_is_kwargs { real_args.len() - 1 } else { real_args.len() };
+            let name = CompactString::from(real_args[0].py_to_string());
 
-        // Constraints are positional args after the name
-        let constraints: Vec<PyObjectRef> = if positional_end > 1 {
-            args[1..positional_end].to_vec()
-        } else {
-            vec![]
-        };
+            let constraints: Vec<PyObjectRef> = if positional_end > 1 {
+                real_args[1..positional_end].to_vec()
+            } else {
+                vec![]
+            };
 
-        // Extract keyword args
-        let get_kwarg = |key: &str| -> Option<PyObjectRef> {
-            kwargs_dict.as_ref().and_then(|kw| {
-                kw.get(&HashableKey::Str(CompactString::from(key))).cloned()
-            })
-        };
-        let bound = get_kwarg("bound").unwrap_or_else(PyObject::none);
-        let covariant = get_kwarg("covariant")
-            .map_or(false, |v| v.is_truthy());
-        let contravariant = get_kwarg("contravariant")
-            .map_or(false, |v| v.is_truthy());
+            let get_kwarg = |key: &str| -> Option<PyObjectRef> {
+                kwargs_dict.as_ref().and_then(|kw| {
+                    kw.get(&HashableKey::Str(CompactString::from(key))).cloned()
+                })
+            };
+            let bound = get_kwarg("bound").unwrap_or_else(PyObject::none);
+            let covariant = get_kwarg("covariant")
+                .map_or(false, |v| v.is_truthy());
+            let contravariant = get_kwarg("contravariant")
+                .map_or(false, |v| v.is_truthy());
 
-        let cls = PyObject::class(CompactString::from("TypeVar"), vec![], IndexMap::new());
-        let mut attrs = IndexMap::new();
-        attrs.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
-        attrs.insert(CompactString::from("__constraints__"), PyObject::tuple(constraints));
-        attrs.insert(CompactString::from("__bound__"), bound);
-        attrs.insert(CompactString::from("__covariant__"), PyObject::bool_val(covariant));
-        attrs.insert(CompactString::from("__contravariant__"), PyObject::bool_val(contravariant));
+            let mut attrs = IndexMap::new();
+            attrs.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
+            attrs.insert(CompactString::from("__constraints__"), PyObject::tuple(constraints));
+            attrs.insert(CompactString::from("__bound__"), bound);
+            attrs.insert(CompactString::from("__covariant__"), PyObject::bool_val(covariant));
+            attrs.insert(CompactString::from("__contravariant__"), PyObject::bool_val(contravariant));
 
-        // __repr__ returns ~T
-        let repr_name = name.clone();
-        attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
-            "__repr__",
-            move |_args| Ok(PyObject::str_val(CompactString::from(format!("~{}", repr_name).as_str()))),
-        ));
+            let repr_name = name.clone();
+            attrs.insert(CompactString::from("__repr__"), PyObject::native_closure(
+                "__repr__",
+                move |_args| Ok(PyObject::str_val(CompactString::from(format!("~{}", repr_name).as_str()))),
+            ));
 
-        Ok(PyObject::instance_with_attrs(cls, attrs))
-    });
+            Ok(PyObject::instance_with_attrs(tv_cls.clone(), attrs))
+        })
+    };
+
+    // Set __new__ on the TypeVar class so TypeVar("T") creates proper instances
+    if let PyObjectPayload::Class(ref data) = typevar_class.payload {
+        data.namespace.write().insert(
+            CompactString::from("__new__"),
+            typevar_new,
+        );
+    }
 
     // Generic — placeholder class
     let generic_class = PyObject::class(
@@ -170,7 +186,7 @@ pub fn create_typing_module() -> PyObjectRef {
         ("Mapping", make_typing_alias("Mapping")),
         ("MutableMapping", make_typing_alias("MutableMapping")),
         ("Iterable", make_typing_alias("Iterable")),
-        ("TypeVar", typevar_fn),
+        ("TypeVar", typevar_class),
         ("Generic", generic_class),
         ("Protocol", protocol_class),
         ("ClassVar", make_typing_alias("ClassVar")),

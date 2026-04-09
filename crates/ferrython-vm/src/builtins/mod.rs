@@ -272,7 +272,12 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 | IteratorData::Filter { .. }
                 | IteratorData::Sentinel { .. }
                 | IteratorData::TakeWhile { .. }
-                | IteratorData::DropWhile { .. } => {
+                | IteratorData::DropWhile { .. }
+                | IteratorData::Count { .. }
+                | IteratorData::Cycle { .. }
+                | IteratorData::Repeat { .. }
+                | IteratorData::Chain { .. }
+                | IteratorData::Starmap { .. } => {
                     Err(PyException::type_error("lazy iterator requires VM-level iteration"))
                 }
             }

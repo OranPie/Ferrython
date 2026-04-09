@@ -50,6 +50,11 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                     IteratorData::Sentinel { .. } => "callable_iterator",
                     IteratorData::TakeWhile { .. } => "itertools.takewhile",
                     IteratorData::DropWhile { .. } => "itertools.dropwhile",
+                    IteratorData::Count { .. } => "itertools.count",
+                    IteratorData::Cycle { .. } => "itertools.cycle",
+                    IteratorData::Repeat { .. } => "itertools.repeat",
+                    IteratorData::Chain { .. } => "itertools.chain",
+                    IteratorData::Starmap { .. } => "itertools.starmap",
                     IteratorData::Range { .. } => "range_iterator",
                     IteratorData::List { .. } => "list_iterator",
                     IteratorData::Tuple { .. } => "tuple_iterator",
@@ -570,7 +575,12 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                     | IteratorData::Filter { .. }
                     | IteratorData::Sentinel { .. }
                     | IteratorData::TakeWhile { .. }
-                    | IteratorData::DropWhile { .. } => {
+                    | IteratorData::DropWhile { .. }
+                    | IteratorData::Count { .. }
+                    | IteratorData::Cycle { .. }
+                    | IteratorData::Repeat { .. }
+                    | IteratorData::Chain { .. }
+                    | IteratorData::Starmap { .. } => {
                         Err(PyException::type_error("lazy iterator requires VM to collect"))
                     }
                 }
