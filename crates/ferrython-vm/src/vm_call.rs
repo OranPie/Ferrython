@@ -2609,7 +2609,19 @@ impl VirtualMachine {
                         }
                         "throw" => {
                             let (exc_kind, msg) = Self::parse_throw_args(&args);
-                            return self.gen_throw(gen_arc, exc_kind, msg);
+                            // Preserve original exception value for identity
+                            let original_value = if args.len() >= 2 {
+                                let v = &args[1];
+                                if matches!(v.payload, PyObjectPayload::ExceptionInstance { .. }
+                                    | PyObjectPayload::Instance(_)) {
+                                    Some(v.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            return self.gen_throw_with_value(gen_arc, exc_kind, msg, original_value);
                         }
                         "close" => {
                             // CPython: throw GeneratorExit into the frame so finally blocks run.
@@ -2755,7 +2767,18 @@ impl VirtualMachine {
                         }
                         "throw" => {
                             let (exc_kind, msg) = Self::parse_throw_args(&args);
-                            return self.gen_throw(gen, exc_kind, msg);
+                            let original_value = if args.len() >= 2 {
+                                let v = &args[1];
+                                if matches!(v.payload, PyObjectPayload::ExceptionInstance { .. }
+                                    | PyObjectPayload::Instance(_)) {
+                                    Some(v.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            return self.gen_throw_with_value(gen, exc_kind, msg, original_value);
                         }
                         "close" => {
                             return Ok(PyObject::none());

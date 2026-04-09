@@ -1004,6 +1004,19 @@ impl VirtualMachine {
         kind: ExceptionKind,
         msg: String,
     ) -> PyResult<PyObjectRef> {
+        self.gen_throw_with_value(gen_arc, kind, msg, None)
+    }
+
+    /// Like gen_throw but preserves an original exception value for identity-
+    /// preserving re-raise (needed by contextlib._GeneratorContextManager.__exit__
+    /// which does `exc is not value`).
+    pub(crate) fn gen_throw_with_value(
+        &mut self,
+        gen_arc: &Arc<RwLock<GeneratorState>>,
+        kind: ExceptionKind,
+        msg: String,
+        original_value: Option<PyObjectRef>,
+    ) -> PyResult<PyObjectRef> {
         let mut gen = gen_arc.write();
         if gen.finished {
             return Err(PyException::new(kind, msg));
@@ -1016,16 +1029,26 @@ impl VirtualMachine {
         drop(gen);
 
         // Set up exception on the frame so VM will unwind to handler
-        let exc = PyException::new(kind.clone(), msg.clone());
+        let mut exc = PyException::new(kind.clone(), msg.clone());
+        // Preserve original exception object for identity-preserving re-raise
+        if let Some(ref orig) = original_value {
+            exc.original = Some(orig.clone());
+        }
         self.call_stack.push(frame);
         let exc_result = Err(exc);
-        let exc_obj = PyObject::exception_instance(kind.clone(), msg.clone());
+        // Use original value if provided (for identity-preserving throws)
+        let exc_obj = original_value.clone()
+            .unwrap_or_else(|| PyObject::exception_instance(kind.clone(), msg.clone()));
         let exc_type = PyObject::exception_type(kind.clone());
         let tb = PyObject::none();
 
         // Try to find an exception handler in the generator's frame
         if let Some(handler_ip) = self.unwind_except() {
-            self.active_exception = Some(PyException::new(kind, msg));
+            let mut active = PyException::new(kind, msg);
+            if let Some(ref orig) = original_value {
+                active.original = Some(orig.clone());
+            }
+            self.active_exception = Some(active);
             let frame_ref = self.call_stack.last_mut().unwrap();
             frame_ref.push(tb);
             frame_ref.push(exc_obj);
@@ -1044,6 +1067,11 @@ impl VirtualMachine {
             } else {
                 gen.finished = true;
                 gen.frame = None;
+                // If the generator raised an exception (not caught), re-raise it
+                // instead of converting to StopIteration.
+                if let Err(e) = result {
+                    return Err(e);
+                }
                 let return_val = result.ok();
                 let msg = return_val.as_ref().map(|v| v.py_to_string()).unwrap_or_default();
                 let mut exc = PyException::new(ExceptionKind::StopIteration, msg);

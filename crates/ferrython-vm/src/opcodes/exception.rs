@@ -150,7 +150,8 @@ impl VirtualMachine {
                             _ => exc_val.py_to_string(),
                         };
                         let gen_arc_clone = gen_arc.clone();
-                        match self.gen_throw(&gen_arc_clone, exc_kind, exc_msg) {
+                        let throw_result = self.gen_throw(&gen_arc_clone, exc_kind.clone(), exc_msg.clone());
+                        match throw_result {
                             Ok(_) | Err(PyException { kind: ExceptionKind::StopIteration, .. })
                                   | Err(PyException { kind: ExceptionKind::StopAsyncIteration, .. }) => {
                                 // Generator handled exception (suppressed)
@@ -268,6 +269,12 @@ impl VirtualMachine {
                             PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
                             _ => value.py_to_string(),
                         };
+                        // Preserve original value for identity-based checks
+                        // (e.g. contextlib's `exc is not value`)
+                        if matches!(value.payload, PyObjectPayload::ExceptionInstance { .. }
+                            | PyObjectPayload::Instance(_)) {
+                            return Err(PyException::with_original(kind, msg, value));
+                        }
                         return Err(PyException::new(kind, msg));
                     }
                     PyObjectPayload::Class(_) => {

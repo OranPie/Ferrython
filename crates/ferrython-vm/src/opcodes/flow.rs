@@ -690,7 +690,26 @@ impl VirtualMachine {
                                     }));
                                     return Ok(None);
                                 }
-                                // For descriptors or other types, fall through to full path
+                                // Descriptor protocol: invoke __get__ for
+                                // user-defined descriptors found in the class MRO
+                                _ if has_descriptor_get(&method) => {
+                                    let get_fn = method.get_attr("__get__").unwrap();
+                                    let owner = effective_class.clone();
+                                    let get_bound = if matches!(&get_fn.payload, PyObjectPayload::BoundMethod { .. }) {
+                                        get_fn
+                                    } else {
+                                        Arc::new(PyObject {
+                                            payload: PyObjectPayload::BoundMethod {
+                                                receiver: method.clone(),
+                                                method: get_fn,
+                                            }
+                                        })
+                                    };
+                                    let result = self.call_object(get_bound, vec![obj.clone(), owner])?;
+                                    self.vm_frame().push(result);
+                                    return Ok(None);
+                                }
+                                // Non-descriptor, non-callable class attr
                                 _ => {
                                     frame.push(method);
                                     return Ok(None);
