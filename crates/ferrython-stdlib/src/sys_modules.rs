@@ -113,15 +113,39 @@ pub fn create_sys_module() -> PyObjectRef {
                         let idx_obj = if args.len() >= 2 { &args[1] } else if !args.is_empty() { &args[0] } else {
                             return Err(PyException::type_error("__getitem__ requires index"));
                         };
+                        let items = vec![
+                            PyObject::int(3), PyObject::int(12), PyObject::int(0),
+                            PyObject::str_val(CompactString::from("final")), PyObject::int(0),
+                        ];
+                        // Handle slice
+                        if let PyObjectPayload::Slice { start, stop, step } = &idx_obj.payload {
+                            let len = 5i64;
+                            let s = start.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
+                            let e = stop.as_ref().and_then(|v| v.as_int()).unwrap_or(len);
+                            let st = step.as_ref().and_then(|v| v.as_int()).unwrap_or(1);
+                            let s = if s < 0 { (len + s).max(0) } else { s.min(len) } as usize;
+                            let e = if e < 0 { (len + e).max(0) } else { e.min(len) } as usize;
+                            if st == 1 && s <= e {
+                                return Ok(PyObject::tuple(items[s..e].to_vec()));
+                            }
+                            // General step
+                            let mut result = Vec::new();
+                            let mut i = s as i64;
+                            while (st > 0 && i < e as i64) || (st < 0 && i > e as i64) {
+                                if i >= 0 && (i as usize) < items.len() {
+                                    result.push(items[i as usize].clone());
+                                }
+                                i += st;
+                            }
+                            return Ok(PyObject::tuple(result));
+                        }
                         let idx = idx_obj.as_int().unwrap_or(0);
-                        Ok(match idx {
-                            0 => PyObject::int(3),
-                            1 => PyObject::int(12),
-                            2 => PyObject::int(0),
-                            3 => PyObject::str_val(CompactString::from("final")),
-                            4 => PyObject::int(0),
-                            _ => return Err(PyException::index_error("version_info index out of range")),
-                        })
+                        let idx = if idx < 0 { 5 + idx } else { idx } as usize;
+                        if idx < items.len() {
+                            Ok(items[idx].clone())
+                        } else {
+                            Err(PyException::index_error("version_info index out of range"))
+                        }
                     }
                 ));
                 attrs.insert(CompactString::from("__len__"), PyObject::native_closure(
