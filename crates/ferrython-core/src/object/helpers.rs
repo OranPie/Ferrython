@@ -12,6 +12,27 @@ use super::payload::*;
 use super::methods::PyObjectMethods;
 use super::methods::CompareOp;
 
+// ── Post-call intercept fast flag ──
+// Set when asyncio.run(), __import__(), importlib.import_module(), or reload()
+// needs to be intercepted after a function call returns. Avoids 4 thread-local
+// checks on every normal function return.
+thread_local! {
+    static INTERCEPT_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark that a post-call intercept is pending.
+pub fn set_intercept_pending() {
+    INTERCEPT_PENDING.with(|c| c.set(true));
+}
+
+/// Check and clear the intercept flag (returns true if intercept was pending).
+#[inline(always)]
+pub fn check_intercept_pending() -> bool {
+    INTERCEPT_PENDING.with(|c| {
+        if c.get() { c.set(false); true } else { false }
+    })
+}
+
 // ── Thread-local VM call dispatch ──
 // Allows NativeClosures (which lack VM access) to call arbitrary Python objects
 // (Functions, BoundMethods, etc.) by delegating to the VM through a registered callback.

@@ -1928,7 +1928,7 @@ impl VirtualMachine {
                         if args.len() == 2 {
                             let source = self.resolve_iterable(&args[1])?;
                             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                                Arc::new(std::sync::Mutex::new(IteratorData::Map { func: func_obj, source }))
+                                Arc::new(parking_lot::Mutex::new(IteratorData::Map { func: func_obj, source }))
                             )));
                         } else {
                             let mut iters: Vec<Vec<PyObjectRef>> = Vec::new();
@@ -1940,7 +1940,7 @@ impl VirtualMachine {
                                 result.push(self.call_object(func_obj.clone(), call_args)?);
                             }
                             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                                Arc::new(std::sync::Mutex::new(IteratorData::List { items: result, index: 0 }))
+                                Arc::new(parking_lot::Mutex::new(IteratorData::List { items: result, index: 0 }))
                             )));
                         }
                     }
@@ -1951,7 +1951,7 @@ impl VirtualMachine {
                         let func_obj = args[0].clone();
                         let source = self.resolve_iterable(&args[1])?;
                         return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                            Arc::new(std::sync::Mutex::new(IteratorData::Filter { func: func_obj, source }))
+                            Arc::new(parking_lot::Mutex::new(IteratorData::Filter { func: func_obj, source }))
                         )));
                     }
                     "iter" => {
@@ -3049,7 +3049,7 @@ impl VirtualMachine {
                     if matches!(receiver.payload, PyObjectPayload::List(_)) {
                         if matches!(args[0].payload, PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_)) ||
                            (matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
-                               let data = d.lock().unwrap();
+                               let data = d.lock();
                                matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
                                    | IteratorData::Map { .. } | IteratorData::Filter { .. }
                                    | IteratorData::Sentinel { .. })
@@ -3511,9 +3511,8 @@ impl VirtualMachine {
         }
 
         self.call_stack.push(frame);
-        // Check recursion limit before running
-        let limit = ferrython_stdlib::get_recursion_limit() as usize;
-        if self.call_stack.len() > limit {
+        // Check recursion limit
+        if self.call_stack.len() > self.recursion_limit {
             if let Some(frame) = self.call_stack.pop() {
                 frame.recycle(&mut self.frame_pool);
             }

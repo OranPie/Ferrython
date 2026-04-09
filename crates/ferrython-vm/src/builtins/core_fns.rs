@@ -907,7 +907,7 @@ pub(super) fn builtin_reversed(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let mut items = args[0].to_list()?;
     items.reverse();
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Arc::new(std::sync::Mutex::new(ferrython_core::object::IteratorData::List { items, index: 0 }))
+        Arc::new(parking_lot::Mutex::new(ferrython_core::object::IteratorData::List { items, index: 0 }))
     )))
 }
 
@@ -919,14 +919,14 @@ pub(super) fn builtin_enumerate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Get an iterator from the source
     let source = get_iter_from_obj(&args[0])?;
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Arc::new(std::sync::Mutex::new(IteratorData::Enumerate { source, index: start }))
+        Arc::new(parking_lot::Mutex::new(IteratorData::Enumerate { source, index: start }))
     )))
 }
 
 pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-            Arc::new(std::sync::Mutex::new(IteratorData::List { items: vec![], index: 0 }))
+            Arc::new(parking_lot::Mutex::new(IteratorData::List { items: vec![], index: 0 }))
         )));
     }
     // Check for trailing kwargs dict with strict=True
@@ -950,7 +950,7 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .map(|a| get_iter_from_obj(a))
         .collect::<PyResult<Vec<_>>>()?;
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Arc::new(std::sync::Mutex::new(IteratorData::Zip { sources, strict }))
+        Arc::new(parking_lot::Mutex::new(IteratorData::Zip { sources, strict }))
     )))
 }
 
@@ -960,36 +960,36 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         PyObjectPayload::Iterator(_) | PyObjectPayload::Generator(_) | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
         PyObjectPayload::Range { start, stop, step } => {
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(std::sync::Mutex::new(IteratorData::Range { current: *start, stop: *stop, step: *step }))
+                Arc::new(parking_lot::Mutex::new(IteratorData::Range { current: *start, stop: *stop, step: *step }))
             )))
         }
         PyObjectPayload::List(items) => {
             let items = items.read().clone();
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(std::sync::Mutex::new(IteratorData::List { items, index: 0 }))
+                Arc::new(parking_lot::Mutex::new(IteratorData::List { items, index: 0 }))
             )))
         }
         PyObjectPayload::Tuple(items) => {
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(std::sync::Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 }))
+                Arc::new(parking_lot::Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 }))
             )))
         }
         PyObjectPayload::Str(s) => {
             let chars: Vec<char> = s.chars().collect();
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(std::sync::Mutex::new(IteratorData::Str { chars, index: 0 }))
+                Arc::new(parking_lot::Mutex::new(IteratorData::Str { chars, index: 0 }))
             )))
         }
         PyObjectPayload::Set(m) => {
             let items: Vec<PyObjectRef> = m.read().values().cloned().collect();
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(std::sync::Mutex::new(IteratorData::List { items, index: 0 }))
+                Arc::new(parking_lot::Mutex::new(IteratorData::List { items, index: 0 }))
             )))
         }
         PyObjectPayload::Dict(m) => {
             let items: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(std::sync::Mutex::new(IteratorData::List { items, index: 0 }))
+                Arc::new(parking_lot::Mutex::new(IteratorData::List { items, index: 0 }))
             )))
         }
         PyObjectPayload::Instance(_) => {
@@ -1265,7 +1265,7 @@ pub(super) fn builtin_iter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() == 2 {
         // iter(callable, sentinel) — creates a lazy sentinel iterator
         return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-            Arc::new(std::sync::Mutex::new(IteratorData::Sentinel {
+            Arc::new(parking_lot::Mutex::new(IteratorData::Sentinel {
                 callable: args[0].clone(),
                 sentinel: args[1].clone(),
             }))
@@ -1920,6 +1920,7 @@ pub(super) fn builtin___import__(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
             level,
         });
     });
+    ferrython_core::object::set_intercept_pending();
     // Return a placeholder — the VM will replace this with the actual module
     Ok(PyObject::none())
 }

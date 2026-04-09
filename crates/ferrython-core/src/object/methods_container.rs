@@ -73,7 +73,7 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 }
             },
             PyObjectPayload::Iterator(iter_data) => {
-                let data = iter_data.lock().unwrap();
+                let data = iter_data.lock();
                 match &*data {
                     IteratorData::Range { current, stop, step } => {
                         if *step > 0 && *current < *stop {
@@ -274,7 +274,7 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                 }
             }
             PyObjectPayload::Iterator(iter_data) => {
-                let data = iter_data.lock().unwrap();
+                let data = iter_data.lock();
                 match &*data {
                     IteratorData::Range { current, stop, step } => {
                         if let Some(val) = item.as_int() {
@@ -322,44 +322,44 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
 pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         use std::sync::Mutex;
         match &obj.payload {
-            PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: items.read().clone(), index: 0 }))))),
-            PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 }))))),
-            PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
+            PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: items.read().clone(), index: 0 }))))),
+            PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 }))))),
+            PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
             PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
                 let keys: Vec<PyObjectRef> = m.read().keys()
                     .filter(|k| !is_hidden_dict_key(k))
                     .map(|k| k.to_object()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: keys, index: 0 })))))
             }
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
                 let keys: Vec<PyObjectRef> = inst.dict_storage.as_ref().unwrap().read().keys().map(|k| k.to_object()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: keys, index: 0 })))))
             }
             PyObjectPayload::Set(m) => {
                 let vals: Vec<PyObjectRef> = m.read().values().cloned().collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: vals, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: vals, index: 0 })))))
             }
             PyObjectPayload::FrozenSet(m) => {
                 let vals: Vec<PyObjectRef> = m.values().cloned().collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: vals, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: vals, index: 0 })))))
             }
             PyObjectPayload::Range { start, stop, step } => {
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Range { current: *start, stop: *stop, step: *step })))))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::Range { current: *start, stop: *stop, step: *step })))))
             }
             PyObjectPayload::Iterator(_) => Ok(obj.clone()),
             PyObjectPayload::Generator(_) => Ok(obj.clone()), // generators are their own iterators
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 let items: Vec<PyObjectRef> = b.iter().map(|byte| PyObject::int(*byte as i64)).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items, index: 0 })))))
             }
             // namedtuple instances: iterate over the underlying _tuple
             PyObjectPayload::Instance(inst) if inst.class.get_attr("__namedtuple__").is_some() => {
                 if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                     if let PyObjectPayload::Tuple(items) = &tup.payload {
-                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 })))));
+                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 })))));
                     }
                 }
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::Tuple { items: vec![], index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::Tuple { items: vec![], index: 0 })))))
             }
             // Builtin base type subclass: delegate to __builtin_value__
             PyObjectPayload::Instance(inst) if inst.attrs.read().contains_key("__builtin_value__") => {
@@ -370,19 +370,19 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 let keys: Vec<PyObjectRef> = m.read().keys()
                     .filter(|k| !is_hidden_dict_key(k))
                     .map(|k| k.to_object()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: keys, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: keys, index: 0 })))))
             }
             PyObjectPayload::DictValues(m) => {
                 let vals: Vec<PyObjectRef> = m.read().iter()
                     .filter(|(k, _)| !is_hidden_dict_key(k))
                     .map(|(_, v)| v.clone()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items: vals, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: vals, index: 0 })))))
             }
             PyObjectPayload::DictItems(m) => {
                 let items: Vec<PyObjectRef> = m.read().iter()
                     .filter(|(k, _)| !is_hidden_dict_key(k))
                     .map(|(k, v)| PyObject::tuple(vec![k.to_object(), v.clone()])).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(IteratorData::List { items, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items, index: 0 })))))
             }
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name()))),
         }

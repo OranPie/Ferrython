@@ -50,7 +50,7 @@ pub fn create_itertools_module() -> PyObjectRef {
 fn itertools_count(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let start = if args.is_empty() { 0i64 } else { args[0].to_int()? };
     let step = if args.len() >= 2 { args[1].to_int()? } else { 1 };
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::Count { current: start, step }
     )))))
 }
@@ -63,12 +63,12 @@ fn itertools_chain(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         } else {
             // Materialize non-iterator iterables into list iterators
             let items = a.to_list().unwrap_or_default();
-            PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
                 IteratorData::List { items, index: 0 }
             ))))
         }
     }).collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::Chain { sources, current: 0 }
     )))))
 }
@@ -79,7 +79,7 @@ fn itertools_repeat(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let item = args[0].clone();
     let remaining = if args.len() >= 2 { Some(args[1].to_int()? as usize) } else { None };
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::Repeat { item, remaining }
     )))))
 }
@@ -89,7 +89,7 @@ fn itertools_cycle(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::type_error("cycle() missing required argument"));
     }
     let items = args[0].to_list()?;
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::Cycle { items, index: 0 }
     )))))
 }
@@ -121,7 +121,7 @@ fn itertools_islice(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .take(stop.saturating_sub(start))
         .step_by(step.max(1))
         .collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: result, index: 0 }
     )))))
 }
@@ -153,14 +153,14 @@ fn itertools_zip_longest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             .collect();
         result.push(PyObject::tuple(tuple));
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: result, index: 0 }
     )))))
 }
 
 fn itertools_product(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: vec![PyObject::tuple(vec![])], index: 0 }
         )))));
     }
@@ -203,7 +203,7 @@ fn itertools_product(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let items: Vec<PyObjectRef> = result.into_iter()
         .map(|combo| PyObject::tuple(combo))
         .collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items, index: 0 }
     )))))
 }
@@ -226,11 +226,11 @@ fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let has_initial = initial.is_some();
     if items.is_empty() {
         return if let Some(init) = initial {
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
                 IteratorData::List { items: vec![init], index: 0 }
             )))))
         } else {
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
                 IteratorData::List { items: vec![], index: 0 }
             )))))
         };
@@ -272,7 +272,7 @@ fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         };
         result.push(acc.clone());
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: result, index: 0 }
     )))))
 }
@@ -282,7 +282,7 @@ fn itertools_dropwhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let func = args[0].clone();
     let source = args[1].get_iter()?;
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Arc::new(std::sync::Mutex::new(IteratorData::DropWhile { func, source, dropping: true }))
+        Arc::new(parking_lot::Mutex::new(IteratorData::DropWhile { func, source, dropping: true }))
     )))
 }
 
@@ -291,7 +291,7 @@ fn itertools_takewhile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let func = args[0].clone();
     let source = args[1].get_iter()?;
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Arc::new(std::sync::Mutex::new(IteratorData::TakeWhile { func, source, done: false }))
+        Arc::new(parking_lot::Mutex::new(IteratorData::TakeWhile { func, source, done: false }))
     )))
 }
 
@@ -301,7 +301,7 @@ fn itertools_combinations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let r = args[1].as_int().unwrap_or(2) as usize;
     let n = items.len();
     if r > n {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: vec![], index: 0 }
         )))));
     }
@@ -323,7 +323,7 @@ fn itertools_combinations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         result.push(PyObject::tuple(indices.iter().map(|&idx| items[idx].clone()).collect()));
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: result, index: 0 }
     )))))
 }
@@ -334,12 +334,12 @@ fn itertools_combinations_with_replacement(args: &[PyObjectRef]) -> PyResult<PyO
     let r = args[1].as_int().unwrap_or(2) as usize;
     let n = items.len();
     if n == 0 && r > 0 {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: vec![], index: 0 }
         )))));
     }
     if r == 0 {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: vec![PyObject::tuple(vec![])], index: 0 }
         )))));
     }
@@ -361,7 +361,7 @@ fn itertools_combinations_with_replacement(args: &[PyObjectRef]) -> PyResult<PyO
         }
         result.push(PyObject::tuple(indices.iter().map(|&idx| items[idx].clone()).collect()));
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: result, index: 0 }
     )))))
 }
@@ -372,7 +372,7 @@ fn itertools_permutations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let r = if args.len() > 1 { args[1].as_int().unwrap_or(items.len() as i64) as usize } else { items.len() };
     let n = items.len();
     if r > n {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: vec![], index: 0 }
         )))));
     }
@@ -398,7 +398,7 @@ fn itertools_permutations(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         break;
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: result, index: 0 }
     )))))
 }
@@ -407,7 +407,7 @@ fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("groupby requires iterable")); }
     let items = args[0].to_list()?;
     if items.is_empty() {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: vec![], index: 0 }
         )))));
     }
@@ -451,7 +451,7 @@ fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if *k == current_key_str {
             current_group.push(item.clone());
         } else {
-            let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
                 IteratorData::List { items: current_group, index: 0 }
             ))));
             result.push(PyObject::tuple(vec![
@@ -471,14 +471,14 @@ fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             current_group = vec![item.clone()];
         }
     }
-    let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: current_group, index: 0 }
     ))));
     result.push(PyObject::tuple(vec![
         current_key_obj,
         group_iter,
     ]));
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: result, index: 0 }
     )))))
 }
@@ -491,7 +491,7 @@ fn itertools_chain_from_iterable(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
         let items = inner.to_list()?;
         result.extend(items);
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: result, index: 0 }
     )))))
 }
@@ -506,7 +506,7 @@ fn itertools_compress(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             result.push(d.clone());
         }
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: result, index: 0 }
     )))))
 }
@@ -526,7 +526,7 @@ fn itertools_filterfalse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // If predicate is None, filter out truthy values
     if matches!(args[0].payload, PyObjectPayload::None) {
         let result: Vec<PyObjectRef> = items.into_iter().filter(|x| !x.is_truthy()).collect();
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: result, index: 0 }
         )))));
     }
@@ -543,7 +543,7 @@ fn itertools_filterfalse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             result.push(item.clone());
         }
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: result, index: 0 }
     )))))
 }
@@ -557,11 +557,11 @@ fn itertools_starmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         iterable.clone()
     } else {
         let items = iterable.to_list()?;
-        PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items, index: 0 }
         ))))
     };
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::Starmap { func, source }
     )))))
 }
@@ -571,14 +571,14 @@ fn itertools_pairwise(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("pairwise requires an iterable")); }
     let items = args[0].to_list()?;
     if items.len() < 2 {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: vec![], index: 0 }
         )))));
     }
     let pairs: Vec<PyObjectRef> = items.windows(2)
         .map(|w| PyObject::tuple(vec![w[0].clone(), w[1].clone()]))
         .collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: pairs, index: 0 }
     )))))
 }
@@ -592,7 +592,7 @@ fn itertools_batched(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let batches: Vec<PyObjectRef> = items.chunks(n)
         .map(|chunk| PyObject::tuple(chunk.to_vec()))
         .collect();
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
         IteratorData::List { items: batches, index: 0 }
     )))))
 }

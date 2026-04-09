@@ -48,6 +48,8 @@ pub struct VirtualMachine {
     pub breakpoints: BreakpointManager,
     /// Pool of reusable frame vectors to reduce allocation.
     pub(crate) frame_pool: FramePool,
+    /// Cached recursion limit (avoids thread-local access on every call).
+    pub(crate) recursion_limit: usize,
 }
 
 impl VirtualMachine {
@@ -69,6 +71,7 @@ impl VirtualMachine {
             profiler: ExecutionProfiler::new(),
             breakpoints: BreakpointManager::new(),
             frame_pool: FramePool::new(),
+            recursion_limit: ferrython_stdlib::get_recursion_limit() as usize,
         }
     }
 
@@ -84,6 +87,7 @@ impl VirtualMachine {
             profiler: ExecutionProfiler::new(),
             breakpoints: BreakpointManager::new(),
             frame_pool: FramePool::new(),
+            recursion_limit: ferrython_stdlib::get_recursion_limit() as usize,
         }
     }
 
@@ -208,42 +212,41 @@ impl VirtualMachine {
         }
 
         let mut last_line: u32 = 0;
+        // Re-check trace/profile periodically (every 64 opcodes) instead of
+        // calling thread-local get_trace_func() on every single iteration.
+        let mut trace_check_counter: u8 = 0;
         loop {
-            // Re-check trace/profile in case settrace/setprofile was called mid-frame
-            if !has_trace {
-                has_trace = ferrython_stdlib::get_trace_func().is_some();
-            }
-            if !has_profile {
-                has_profile = ferrython_stdlib::get_profile_func().is_some();
-            }
-
-            let frame = self.call_stack.last().unwrap();
-            if frame.ip >= frame.code.instructions.len() {
-                return Ok(PyObject::none());
-            }
-
-            let instr = frame.code.instructions[frame.ip];
-
-            // Compute line number for trace event before mutable borrow
-            let fire_line = if has_trace {
-                let current_line = Self::ip_to_line(&frame.code, frame.ip);
-                if current_line != last_line {
-                    last_line = current_line;
-                    true
-                } else {
-                    false
-                }
+            if trace_check_counter == 0 {
+                trace_check_counter = 63;
+                if !has_trace { has_trace = ferrython_stdlib::get_trace_func().is_some(); }
+                if !has_profile { has_profile = ferrython_stdlib::get_profile_func().is_some(); }
             } else {
-                false
+                trace_check_counter -= 1;
+            }
+
+            // When tracing, separate borrows needed for fire_trace_event(&mut self).
+            // When NOT tracing (common case), single mutable borrow is cheaper.
+            let instr = if has_trace {
+                let frame = self.call_stack.last().unwrap();
+                let ip = frame.ip;
+                if ip >= frame.code.instructions.len() { return Ok(PyObject::none()); }
+                let instr = frame.code.instructions[ip];
+                let current_line = Self::ip_to_line(&frame.code, ip);
+                let fire_line = current_line != last_line;
+                if fire_line { last_line = current_line; }
+                self.call_stack.last_mut().unwrap().ip = ip + 1;
+                if fire_line { self.fire_trace_event("line", PyObject::none()); }
+                instr
+            } else {
+                let frame = self.call_stack.last_mut().unwrap();
+                let ip = frame.ip;
+                if ip >= frame.code.instructions.len() { return Ok(PyObject::none()); }
+                let instr = frame.code.instructions[ip];
+                frame.ip = ip + 1;
+                instr
             };
 
-            // Fire "line" event before mutable borrow of frame
-            if fire_line {
-                self.fire_trace_event("line", PyObject::none());
-            }
-
             let frame = self.call_stack.last_mut().unwrap();
-            frame.ip += 1;
 
             if profiling { self.profiler.start_instruction(instr.op); }
 
@@ -299,26 +302,26 @@ impl VirtualMachine {
                                         PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
                                     }
                                 };
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(result);
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = result;
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                 let r = *x + *y;
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::float(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
                                 Ok(None)
                             }
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
                                 let r = *x as f64 + *y;
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::float(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
                                 let r = *x + *y as f64;
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::float(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -343,8 +346,8 @@ impl VirtualMachine {
                                     4 => x > y,  // Gt
                                     _ => x >= y, // Ge (5)
                                 };
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::bool_val(result));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::bool_val(result);
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
@@ -357,16 +360,16 @@ impl VirtualMachine {
                                     4 => xv > yv,
                                     _ => xv >= yv,
                                 };
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::bool_val(result));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::bool_val(result);
                                 Ok(None)
                             }
                             // String equality (hot for dict lookups, isinstance checks)
                             (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) if instr.arg == 2 || instr.arg == 3 => {
                                 let eq = x == y;
                                 let result = if instr.arg == 2 { eq } else { !eq };
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::bool_val(result));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::bool_val(result);
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -442,14 +445,14 @@ impl VirtualMachine {
                                         PyObject::big_int(BigInt::from(*x) - BigInt::from(*y))
                                     }
                                 };
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(result);
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = result;
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                 let r = *x - *y;
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::float(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -473,14 +476,14 @@ impl VirtualMachine {
                                         PyObject::big_int(BigInt::from(*x) * BigInt::from(*y))
                                     }
                                 };
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(result);
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = result;
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                 let r = *x * *y;
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::float(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -499,16 +502,16 @@ impl VirtualMachine {
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                                 // Python modulo: result has same sign as divisor
                                 let r = ((*x % *y) + *y) % *y;
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::int(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::int(r);
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                                 let r = *x % *y;
                                 // Python modulo for floats: adjust sign
                                 let r = if r != 0.0 && (r < 0.0) != (*y < 0.0) { r + *y } else { r };
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::float(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -526,14 +529,14 @@ impl VirtualMachine {
                         match (&a.payload, &b.payload) {
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                                 let r = *x as f64 / *y as f64;
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::float(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                                 let r = *x / *y;
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::float(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -557,14 +560,14 @@ impl VirtualMachine {
                                 } else {
                                     r
                                 };
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::int(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::int(r);
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                                 let r = (*x / *y).floor();
-                                frame.stack.truncate(len - 2);
-                                frame.stack.push(PyObject::float(r));
+                                frame.stack.pop();
+                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -628,8 +631,8 @@ impl VirtualMachine {
                     let stack_len = frame.stack.len();
                     let func_idx = stack_len - 1 - arg_count;
                     // Fast path: Python Function with exact positional match, no closures/cells/generators
-                    let is_simple = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
-                        pf.code.arg_count as usize == arg_count
+                    let fast_data = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                        if pf.code.arg_count as usize == arg_count
                             && pf.code.kwonlyarg_count == 0
                             && !pf.code.flags.contains(CodeFlags::VARARGS)
                             && !pf.code.flags.contains(CodeFlags::VARKEYWORDS)
@@ -638,35 +641,31 @@ impl VirtualMachine {
                             && pf.closure.is_empty()
                             && pf.code.cellvars.is_empty()
                             && pf.code.freevars.is_empty()
+                        {
+                            // Extract Arc-cloned fields directly — avoids cloning the whole func Arc
+                            Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache)))
+                        } else {
+                            None
+                        }
                     } else {
-                        false
+                        None
                     };
-                    if is_simple {
-                        // Extract args directly from stack without intermediate Vec
+                    if let Some((code, globals, constant_cache)) = fast_data {
                         let args_start = func_idx + 1;
-                        let func = frame.stack[func_idx].clone();
-                        let pf = match &func.payload {
-                            PyObjectPayload::Function(pf) => pf,
-                            _ => unreachable!(),
-                        };
                         let mut new_frame = Frame::new_from_pool(
-                            Arc::clone(&pf.code),
-                            pf.globals.clone(),
+                            code,
+                            globals,
                             Arc::clone(&self.builtins),
-                            Arc::clone(&pf.constant_cache),
+                            constant_cache,
                             &mut self.frame_pool,
                         );
-                        // Set locals directly from stack
                         for i in 0..arg_count {
                             new_frame.locals[i] = Some(frame.stack[args_start + i].clone());
                         }
                         new_frame.scope_kind = crate::frame::ScopeKind::Function;
-                        // Pop func+args off stack
                         frame.stack.truncate(func_idx);
-                        // Push frame and run
                         self.call_stack.push(new_frame);
-                        let limit = ferrython_stdlib::get_recursion_limit() as usize;
-                        if self.call_stack.len() > limit {
+                        if self.call_stack.len() > self.recursion_limit {
                             if let Some(frame) = self.call_stack.pop() {
                                 frame.recycle(&mut self.frame_pool);
                             }
@@ -678,8 +677,7 @@ impl VirtualMachine {
                             }
                             match result {
                                 Ok(val) => {
-                                    let mut val = val;
-                                    val = self.post_call_intercept(val)?;
+                                    let val = self.post_call_intercept(val)?;
                                     self.vm_push(val);
                                     Ok(None)
                                 }
@@ -696,7 +694,7 @@ impl VirtualMachine {
                     if stack_len > 0 {
                         let iter = &frame.stack[stack_len - 1];
                         if let PyObjectPayload::Iterator(ref iter_data_arc) = iter.payload {
-                            let mut data = iter_data_arc.lock().unwrap();
+                            let mut data = iter_data_arc.lock();
                             match &mut *data {
                                 IteratorData::Range { current, stop, step } => {
                                     let done = if *step > 0 { *current >= *stop } else { *current <= *stop };

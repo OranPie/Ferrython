@@ -35,6 +35,7 @@ pub fn take_asyncio_run_coro() -> Option<PyObjectRef> {
 /// Store a coroutine for the VM to drive (used internally).
 pub(crate) fn store_asyncio_run_coro(coro: PyObjectRef) {
     ASYNCIO_RUN_CORO.with(|c| *c.borrow_mut() = Some(coro));
+    ferrython_core::object::set_intercept_pending();
 }
 
 pub fn set_wait_for_deadline(deadline: Option<std::time::Instant>) {

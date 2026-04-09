@@ -114,14 +114,14 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
             if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                 if let PyObjectPayload::Tuple(items) = &tup.payload {
                     return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                        Arc::new(std::sync::Mutex::new(
+                        Arc::new(parking_lot::Mutex::new(
                             ferrython_core::object::IteratorData::Tuple { items: items.clone(), index: 0 }
                         ))
                     )));
                 }
             }
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(std::sync::Mutex::new(
+                Arc::new(parking_lot::Mutex::new(
                     ferrython_core::object::IteratorData::Tuple { items: vec![], index: 0 }
                 ))
             )))

@@ -994,7 +994,7 @@ fn re_finditer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 _ => break,
             }
         }
-        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(std::sync::Mutex::new(
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: matches, index: 0 }
         )))))
     } else {
@@ -1002,7 +1002,7 @@ fn re_finditer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let matches: Vec<PyObjectRef> = re.captures_iter(&text)
             .map(|caps| make_match_object_from_captures(&caps, &text, &re))
             .collect();
-        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(std::sync::Mutex::new(
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: matches, index: 0 }
         )))))
     }

@@ -170,7 +170,7 @@ impl VirtualMachine {
                 } else if let PyObjectPayload::Iterator(ref iter_data_arc) = iter.payload {
                     // Check for VM-level lazy iterators
                     let needs_vm = {
-                        let data = iter_data_arc.lock().unwrap();
+                        let data = iter_data_arc.lock();
                         matches!(&*data, IteratorData::Enumerate { .. }
                             | IteratorData::Zip { .. }
                             | IteratorData::Map { .. }

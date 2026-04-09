@@ -282,6 +282,7 @@ fn importlib_import_module(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             package,
         });
     });
+    ferrython_core::object::set_intercept_pending();
     // Return placeholder — VM replaces with actual module
     Ok(PyObject::none())
 }
@@ -300,6 +301,7 @@ fn importlib_reload(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             module: args[0].clone(),
         });
     });
+    ferrython_core::object::set_intercept_pending();
     Ok(args[0].clone())
 }
 
@@ -325,6 +327,7 @@ fn importlib_import_fn(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             package: None,
         });
     });
+    ferrython_core::object::set_intercept_pending();
     Ok(PyObject::none())
 }
 

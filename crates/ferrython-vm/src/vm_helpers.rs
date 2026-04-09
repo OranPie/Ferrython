@@ -751,7 +751,7 @@ impl VirtualMachine {
                 }
             }
             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(std::sync::Mutex::new(IteratorData::List { items: result, index: 0 }))
+                Arc::new(parking_lot::Mutex::new(IteratorData::List { items: result, index: 0 }))
             )));
         }
 
@@ -788,7 +788,7 @@ impl VirtualMachine {
                 }
             }
             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(std::sync::Mutex::new(IteratorData::List { items: result, index: 0 }))
+                Arc::new(parking_lot::Mutex::new(IteratorData::List { items: result, index: 0 }))
             )));
         }
 
@@ -811,7 +811,7 @@ impl VirtualMachine {
             .step_by(step)
             .collect();
         Ok(PyObject::wrap(PyObjectPayload::Iterator(
-            Arc::new(std::sync::Mutex::new(IteratorData::List { items: result, index: 0 }))
+            Arc::new(parking_lot::Mutex::new(IteratorData::List { items: result, index: 0 }))
         )))
     }
 
@@ -936,7 +936,7 @@ impl VirtualMachine {
             PyObjectPayload::Iterator(iter_data_arc) => {
                 // Check for lazy iterators that need VM context
                 let is_lazy = {
-                    let data = iter_data_arc.lock().unwrap();
+                    let data = iter_data_arc.lock();
                     matches!(&*data, IteratorData::Enumerate { .. }
                         | IteratorData::Zip { .. }
                         | IteratorData::Map { .. }
@@ -1330,7 +1330,7 @@ impl VirtualMachine {
             PyObjectPayload::Iterator(iter_data_arc) => {
                 // Check for lazy iterators first
                 {
-                    let data = iter_data_arc.lock().unwrap();
+                    let data = iter_data_arc.lock();
                     match &*data {
                         IteratorData::Enumerate { .. }
                         | IteratorData::Zip { .. }
@@ -1368,7 +1368,7 @@ impl VirtualMachine {
             PyObjectPayload::Iterator(arc) => arc.clone(),
             _ => return Err(PyException::type_error("not an iterator")),
         };
-        let mut data = iter_data_arc.lock().unwrap();
+        let mut data = iter_data_arc.lock();
         match &mut *data {
             IteratorData::Enumerate { source, index } => {
                 let src = source.clone();
@@ -1468,7 +1468,7 @@ impl VirtualMachine {
                         } else {
                             // Mark done
                             if let PyObjectPayload::Iterator(arc) = &iter_obj.payload {
-                                if let IteratorData::TakeWhile { done, .. } = &mut *arc.lock().unwrap() {
+                                if let IteratorData::TakeWhile { done, .. } = &mut *arc.lock() {
                                     *done = true;
                                 }
                             }
@@ -1491,7 +1491,7 @@ impl VirtualMachine {
                                 if !self.vm_is_truthy(&test)? {
                                     // Stop dropping, mark state
                                     if let PyObjectPayload::Iterator(arc) = &iter_obj.payload {
-                                        if let IteratorData::DropWhile { dropping, .. } = &mut *arc.lock().unwrap() {
+                                        if let IteratorData::DropWhile { dropping, .. } = &mut *arc.lock() {
                                             *dropping = false;
                                         }
                                     }
@@ -1551,7 +1551,7 @@ impl VirtualMachine {
                     match self.vm_iter_next(&srcs[cur])? {
                         Some(val) => {
                             // Update current index
-                            let mut d = iter_data_arc.lock().unwrap();
+                            let mut d = iter_data_arc.lock();
                             if let IteratorData::Chain { current, .. } = &mut *d {
                                 *current = cur;
                             }
@@ -1563,7 +1563,7 @@ impl VirtualMachine {
                     }
                 }
                 // All exhausted
-                let mut d = iter_data_arc.lock().unwrap();
+                let mut d = iter_data_arc.lock();
                 if let IteratorData::Chain { current, .. } = &mut *d {
                     *current = cur;
                 }
@@ -1695,6 +1695,10 @@ impl VirtualMachine {
     /// This handles builtins that need VM access but are called through the
     /// generic NativeFunction path (which doesn't pass &mut self).
     pub(crate) fn post_call_intercept(&mut self, mut result: PyObjectRef) -> PyResult<PyObjectRef> {
+        // Fast path: skip all thread-local checks when no intercept is pending
+        if !ferrython_core::object::check_intercept_pending() {
+            return Ok(result);
+        }
         // asyncio.run() intercept: drive coroutine to completion
         if let Some(coro) = ferrython_stdlib::take_asyncio_run_coro() {
             result = self.maybe_await_result(coro)?;
@@ -2120,7 +2124,7 @@ impl VirtualMachine {
         }
         let items = args[0].to_list()?;
         if items.is_empty() {
-            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
                 IteratorData::List { items: vec![], index: 0 }
             )))));
         }
@@ -2143,7 +2147,7 @@ impl VirtualMachine {
             if k.py_to_string() == current_key.py_to_string() {
                 current_group.push(item.clone());
             } else {
-                let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+                let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
                     IteratorData::List { items: current_group, index: 0 }
                 ))));
                 result.push(PyObject::tuple(vec![current_key, group_iter]));
@@ -2151,11 +2155,11 @@ impl VirtualMachine {
                 current_group = vec![item.clone()];
             }
         }
-        let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: current_group, index: 0 }
         ))));
         result.push(PyObject::tuple(vec![current_key, group_iter]));
-        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(Mutex::new(
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
             IteratorData::List { items: result, index: 0 }
         )))))
     }

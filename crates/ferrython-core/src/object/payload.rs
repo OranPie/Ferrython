@@ -52,7 +52,7 @@ pub enum PyObjectPayload {
     Class(ClassData),
     Instance(InstanceData),
     Module(ModuleData),
-    Iterator(Arc<std::sync::Mutex<IteratorData>>),
+    Iterator(Arc<parking_lot::Mutex<IteratorData>>),
     Slice { start: Option<PyObjectRef>, stop: Option<PyObjectRef>, step: Option<PyObjectRef> },
     /// A cell object wrapping a shared mutable reference (for closures).
     Cell(Arc<RwLock<Option<PyObjectRef>>>),
