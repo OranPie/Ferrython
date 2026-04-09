@@ -1163,7 +1163,8 @@ fn copy_copy(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn copy_deepcopy(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("deepcopy() requires 1 argument")); }
-    deep_copy(&args[0])
+    let mut memo = std::collections::HashMap::new();
+    deep_copy_with_memo(&args[0], &mut memo)
 }
 
 fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
@@ -1188,38 +1189,70 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
 }
 
 fn deep_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
+    let mut memo = std::collections::HashMap::new();
+    deep_copy_with_memo(obj, &mut memo)
+}
+
+fn deep_copy_with_memo(obj: &PyObjectRef, memo: &mut std::collections::HashMap<usize, PyObjectRef>) -> PyResult<PyObjectRef> {
+    // Check memo for already-copied objects (handles circular references)
+    let ptr = Arc::as_ptr(obj) as usize;
+    if let Some(existing) = memo.get(&ptr) {
+        return Ok(existing.clone());
+    }
+
     match &obj.payload {
         PyObjectPayload::None | PyObjectPayload::Bool(_) | PyObjectPayload::Int(_)
         | PyObjectPayload::Float(_) | PyObjectPayload::Str(_) | PyObjectPayload::Bytes(_)
         | PyObjectPayload::FrozenSet(_) => Ok(obj.clone()),
         PyObjectPayload::Tuple(items) => {
-            let new_items: Result<Vec<_>, _> = items.iter().map(|x| deep_copy(x)).collect();
-            Ok(PyObject::tuple(new_items?))
+            let new_items: Result<Vec<_>, _> = items.iter().map(|x| deep_copy_with_memo(x, memo)).collect();
+            let result = PyObject::tuple(new_items?);
+            memo.insert(ptr, result.clone());
+            Ok(result)
         }
         PyObjectPayload::List(items) => {
-            let new_items: Result<Vec<_>, _> = items.read().iter().map(|x| deep_copy(x)).collect();
-            Ok(PyObject::list(new_items?))
+            // Pre-insert empty list to handle circular refs
+            let result = PyObject::list(vec![]);
+            memo.insert(ptr, result.clone());
+            let new_items: Result<Vec<_>, _> = items.read().iter().map(|x| deep_copy_with_memo(x, memo)).collect();
+            if let PyObjectPayload::List(new_list) = &result.payload {
+                *new_list.write() = new_items?;
+            }
+            Ok(result)
         }
         PyObjectPayload::Dict(map) => {
+            let result = PyObject::dict(IndexMap::new());
+            memo.insert(ptr, result.clone());
             let mut new_map = IndexMap::new();
             for (k, v) in map.read().iter() {
-                new_map.insert(k.clone(), deep_copy(v)?);
+                new_map.insert(k.clone(), deep_copy_with_memo(v, memo)?);
             }
-            Ok(PyObject::dict(new_map))
+            if let PyObjectPayload::Dict(new_dict) = &result.payload {
+                *new_dict.write() = new_map;
+            }
+            Ok(result)
         }
         PyObjectPayload::Set(set) => {
             let mut new_set = IndexMap::new();
             for (k, v) in set.read().iter() {
-                new_set.insert(k.clone(), deep_copy(v)?);
+                new_set.insert(k.clone(), deep_copy_with_memo(v, memo)?);
             }
-            Ok(PyObject::set(new_set))
+            let result = PyObject::set(new_set);
+            memo.insert(ptr, result.clone());
+            Ok(result)
         }
         PyObjectPayload::Instance(inst) => {
+            // Pre-insert placeholder instance to handle circular refs
+            let result = PyObject::instance_with_attrs(inst.class.clone(), IndexMap::new());
+            memo.insert(ptr, result.clone());
             let mut new_attrs = IndexMap::new();
             for (k, v) in inst.attrs.read().iter() {
-                new_attrs.insert(k.clone(), deep_copy(v)?);
+                new_attrs.insert(k.clone(), deep_copy_with_memo(v, memo)?);
             }
-            Ok(PyObject::instance_with_attrs(inst.class.clone(), new_attrs))
+            if let PyObjectPayload::Instance(new_inst) = &result.payload {
+                *new_inst.attrs.write() = new_attrs;
+            }
+            Ok(result)
         }
         _ => Ok(obj.clone()),
     }

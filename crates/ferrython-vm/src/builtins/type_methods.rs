@@ -185,38 +185,128 @@ pub(super) fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &st
         }
         "__getitem__" => {
             check_args_min("__getitem__", args, 1)?;
-            let idx = args[0].to_int()?;
-            let r = items.read();
-            let len = r.len() as i64;
-            let actual = if idx < 0 { len + idx } else { idx };
-            if actual < 0 || actual >= len {
-                return Err(PyException::index_error("list index out of range"));
+            if let PyObjectPayload::Slice { start, stop, step } = &args[0].payload {
+                let r = items.read();
+                let len = r.len() as i64;
+                let step_val = step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                if step_val == 0 {
+                    return Err(PyException::value_error("slice step cannot be zero"));
+                }
+                let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 })).unwrap_or(if step_val > 0 { 0 } else { len - 1 });
+                let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { len } else { -len - 1 })).unwrap_or(if step_val > 0 { len } else { -len - 1 });
+                let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
+                let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
+                let mut result = Vec::new();
+                if step_val == 1 {
+                    if s < e { result = r[s..e].to_vec(); }
+                } else if step_val > 0 {
+                    let mut i = s;
+                    while i < e { result.push(r[i].clone()); i += step_val as usize; }
+                } else {
+                    let mut i = s as i64;
+                    let end = e as i64;
+                    while i > end { result.push(r[i as usize].clone()); i += step_val; }
+                }
+                Ok(PyObject::list(result))
+            } else {
+                let idx = args[0].to_int()?;
+                let r = items.read();
+                let len = r.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err(PyException::index_error("list index out of range"));
+                }
+                Ok(r[actual as usize].clone())
             }
-            Ok(r[actual as usize].clone())
         }
         "__setitem__" => {
             check_args_min("__setitem__", args, 2)?;
-            let idx = args[0].to_int()?;
-            let mut w = items.write();
-            let len = w.len() as i64;
-            let actual = if idx < 0 { len + idx } else { idx };
-            if actual < 0 || actual >= len {
-                return Err(PyException::index_error("list assignment index out of range"));
+            if let PyObjectPayload::Slice { start, stop, step } = &args[0].payload {
+                let new_items = args[1].to_list()?;
+                let mut w = items.write();
+                let len = w.len() as i64;
+                let step_val = step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                if step_val == 1 || step_val == 0 {
+                    let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
+                    let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
+                    let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
+                    let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
+                    let e = e.max(s);
+                    w.splice(s..e, new_items);
+                } else {
+                    let s_val = if step_val > 0 {
+                        start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
+                    } else {
+                        start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
+                    };
+                    let e_val = if step_val > 0 {
+                        stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
+                    } else {
+                        stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
+                    };
+                    let mut indices = Vec::new();
+                    let mut i = if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) };
+                    let end = if e_val < 0 { (len + e_val).max(-1) } else { e_val.min(len) };
+                    if step_val > 0 {
+                        while i < end { indices.push(i as usize); i += step_val; }
+                    } else {
+                        while i > end { indices.push(i as usize); i += step_val; }
+                    }
+                    if indices.len() != new_items.len() {
+                        return Err(PyException::value_error(format!(
+                            "attempt to assign sequence of size {} to extended slice of size {}",
+                            new_items.len(), indices.len()
+                        )));
+                    }
+                    for (idx, val) in indices.iter().zip(new_items.iter()) {
+                        w[*idx] = val.clone();
+                    }
+                }
+                Ok(PyObject::none())
+            } else {
+                let idx = args[0].to_int()?;
+                let mut w = items.write();
+                let len = w.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err(PyException::index_error("list assignment index out of range"));
+                }
+                w[actual as usize] = args[1].clone();
+                Ok(PyObject::none())
             }
-            w[actual as usize] = args[1].clone();
-            Ok(PyObject::none())
         }
         "__delitem__" => {
             check_args_min("__delitem__", args, 1)?;
-            let idx = args[0].to_int()?;
-            let mut w = items.write();
-            let len = w.len() as i64;
-            let actual = if idx < 0 { len + idx } else { idx };
-            if actual < 0 || actual >= len {
-                return Err(PyException::index_error("list assignment index out of range"));
+            if let PyObjectPayload::Slice { start, stop, step } = &args[0].payload {
+                let mut w = items.write();
+                let len = w.len() as i64;
+                let step_val = step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 })).unwrap_or(if step_val > 0 { 0 } else { len - 1 });
+                let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { len } else { -len - 1 })).unwrap_or(if step_val > 0 { len } else { -len - 1 });
+                let mut indices = Vec::new();
+                let mut i = if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) };
+                let end = if e_val < 0 { (len + e_val).max(if step_val > 0 { 0 } else { -1 }) } else { e_val.min(len) };
+                if step_val > 0 {
+                    while i < end { indices.push(i as usize); i += step_val; }
+                } else if step_val < 0 {
+                    while i > end { indices.push(i as usize); i += step_val; }
+                }
+                // Remove in reverse order to preserve indices
+                indices.sort_unstable();
+                indices.reverse();
+                for idx in indices { if idx < w.len() { w.remove(idx); } }
+                Ok(PyObject::none())
+            } else {
+                let idx = args[0].to_int()?;
+                let mut w = items.write();
+                let len = w.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err(PyException::index_error("list assignment index out of range"));
+                }
+                w.remove(actual as usize);
+                Ok(PyObject::none())
             }
-            w.remove(actual as usize);
-            Ok(PyObject::none())
         }
         "__add__" => {
             check_args_min("__add__", args, 1)?;

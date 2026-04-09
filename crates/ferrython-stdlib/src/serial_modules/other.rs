@@ -932,6 +932,23 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
             }
             buf.extend_from_slice(b"tR");
         }
+        PyObjectPayload::ExceptionInstance { kind, message, args: exc_args, .. } => {
+            // Serialize exceptions as: cbuiltins\nExceptionType\n(args)tR
+            let type_name = format!("{}", kind);
+            buf.extend_from_slice(b"cbuiltins\n");
+            buf.extend_from_slice(type_name.as_bytes());
+            buf.push(b'\n');
+            buf.push(b'(');
+            if exc_args.is_empty() {
+                // Use the message as the sole arg
+                pickle_serialize_p0(&PyObject::str_val(CompactString::from(message.as_str())), buf, memo)?;
+            } else {
+                for arg in exc_args {
+                    pickle_serialize_p0(arg, buf, memo)?;
+                }
+            }
+            buf.extend_from_slice(b"tR");
+        }
         _ => {
             return Err(PyException::runtime_error(
                 format!("PicklingError: can't pickle object of type {}", obj.type_name()),
@@ -1112,6 +1129,21 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
                     pickle_serialize_p2(v, buf, memo)?;
                 }
                 buf.push(b'u');
+            }
+            buf.extend_from_slice(b"tR");
+        }
+        PyObjectPayload::ExceptionInstance { kind, message, args: exc_args, .. } => {
+            let type_name = format!("{}", kind);
+            buf.extend_from_slice(b"cbuiltins\n");
+            buf.extend_from_slice(type_name.as_bytes());
+            buf.push(b'\n');
+            buf.push(b'(');
+            if exc_args.is_empty() {
+                pickle_serialize_p2(&PyObject::str_val(CompactString::from(message.as_str())), buf, memo)?;
+            } else {
+                for arg in exc_args {
+                    pickle_serialize_p2(arg, buf, memo)?;
+                }
             }
             buf.extend_from_slice(b"tR");
         }

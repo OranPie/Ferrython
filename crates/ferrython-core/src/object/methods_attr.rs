@@ -1866,7 +1866,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             // Look in this base's namespace directly
                             if let PyObjectPayload::Class(bcd) = &base.payload {
                                 if let Some(v) = bcd.namespace.read().get(name) {
-                                    if matches!(&v.payload, PyObjectPayload::Function(_) | PyObjectPayload::NativeClosure { .. }) {
+                                    if matches!(&v.payload, PyObjectPayload::Function(_) | PyObjectPayload::NativeClosure { .. } | PyObjectPayload::NativeFunction { .. }) {
                                         return Some(Arc::new(PyObject {
                                             payload: PyObjectPayload::BoundMethod {
                                                 receiver: instance.clone(),
