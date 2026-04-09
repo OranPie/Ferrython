@@ -12,7 +12,7 @@ use ferrython_core::object::{
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 
-static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(1000);
+static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(3000);
 
 // Thread-local active exception info for sys.exc_info().
 // Set by the VM when entering an except block, cleared when leaving.

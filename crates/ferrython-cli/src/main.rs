@@ -43,6 +43,23 @@ impl PipelineError {
 }
 
 fn main() {
+    // Spawn main work on a thread with a larger stack (64 MB) to support
+    // deep Python recursion without hitting Rust stack overflow.
+    let builder = std::thread::Builder::new()
+        .name("ferrython-main".into())
+        .stack_size(64 * 1024 * 1024);
+    let handler = builder.spawn(main_inner).expect("failed to spawn main thread");
+    if let Err(e) = handler.join() {
+        if let Some(msg) = e.downcast_ref::<&str>() {
+            eprintln!("Fatal error: {}", msg);
+        } else if let Some(msg) = e.downcast_ref::<String>() {
+            eprintln!("Fatal error: {}", msg);
+        }
+        process::exit(1);
+    }
+}
+
+fn main_inner() {
     // Initialize GC cycle detection
     ferrython_core::object::init_gc();
     // Initialize import search paths (discovers stdlib, site-packages)
