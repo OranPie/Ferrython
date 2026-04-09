@@ -17,6 +17,8 @@ use std::sync::Arc;
 static ROOT_CONFIGURED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 static ROOT_LEVEL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(30); // WARNING
 static ROOT_FORMAT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// Global disable threshold: logging.disable(level) sets this; messages at or below are suppressed.
+static DISABLE_LEVEL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 use std::collections::HashMap;
 
@@ -524,15 +526,35 @@ pub fn create_logging_module() -> PyObjectRef {
         let inst = PyObject::instance(fmt_cls.clone());
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
-            let fmt_str = if args.is_empty() {
-                CompactString::from("%(levelname)s:%(name)s:%(message)s")
+            // Handle both positional args and kwargs dict
+            let (fmt_str, datefmt) = if !args.is_empty() {
+                if let PyObjectPayload::Dict(kw_map) = &args[0].payload {
+                    // kwargs passed as dict
+                    let r = kw_map.read();
+                    let f = r.get(&HashableKey::Str(CompactString::from("fmt")))
+                        .map(|v| CompactString::from(v.py_to_string()))
+                        .unwrap_or_else(|| CompactString::from("%(levelname)s:%(name)s:%(message)s"));
+                    let d = r.get(&HashableKey::Str(CompactString::from("datefmt")))
+                        .and_then(|v| if matches!(v.payload, PyObjectPayload::None) { None } else { Some(v.py_to_string()) });
+                    (f, d)
+                } else {
+                    let f = CompactString::from(args[0].py_to_string());
+                    let d = if args.len() > 1 && !matches!(args[1].payload, PyObjectPayload::None) {
+                        // Second positional could also be a kwargs dict
+                        if let PyObjectPayload::Dict(kw_map) = &args[1].payload {
+                            let r = kw_map.read();
+                            r.get(&HashableKey::Str(CompactString::from("datefmt")))
+                                .and_then(|v| if matches!(v.payload, PyObjectPayload::None) { None } else { Some(v.py_to_string()) })
+                        } else {
+                            Some(args[1].py_to_string())
+                        }
+                    } else {
+                        None
+                    };
+                    (f, d)
+                }
             } else {
-                CompactString::from(args[0].py_to_string())
-            };
-            let datefmt = if args.len() > 1 && !matches!(args[1].payload, PyObjectPayload::None) {
-                Some(args[1].py_to_string())
-            } else {
-                None
+                (CompactString::from("%(levelname)s:%(name)s:%(message)s"), None)
             };
             let fs = fmt_str.clone();
             let df = datefmt.clone();
@@ -885,7 +907,7 @@ pub fn create_logging_module() -> PyObjectRef {
     // disable(level) — set the global disable level
     let disable_fn = make_builtin(|args: &[PyObjectRef]| {
         if let Some(n) = args.first().and_then(|a| a.as_int()) {
-            ROOT_LEVEL.store(n, std::sync::atomic::Ordering::Relaxed);
+            DISABLE_LEVEL.store(n, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(PyObject::none())
     });
@@ -954,6 +976,9 @@ pub fn create_logging_module() -> PyObjectRef {
 
 fn logging_log(level: i64, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Ok(PyObject::none()); }
+    // Check global disable threshold
+    let disable_level = DISABLE_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
+    if disable_level > 0 && level <= disable_level { return Ok(PyObject::none()); }
     // Respect root logger level from basicConfig
     let root_level = ROOT_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
     if root_level > 0 && level < root_level { return Ok(PyObject::none()); }
@@ -1049,6 +1074,9 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let make_log_method = |level: i64, level_name: &'static str, handlers: PyObjectRef, name: CompactString, eff_level: Arc<RwLock<i64>>| -> PyObjectRef {
         PyObject::native_closure(level_name, move |args: &[PyObjectRef]| {
             if args.is_empty() { return Ok(PyObject::none()); }
+            // Check global disable threshold first
+            let disable_level = DISABLE_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
+            if disable_level > 0 && level <= disable_level { return Ok(PyObject::none()); }
             // Filter: only emit if message level >= logger's effective level
             // If own level is NOTSET (0), walk parent chain to find effective level
             let mut current_level = *eff_level.read();
@@ -1152,28 +1180,48 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
 
             // Propagate to parent loggers by walking the name hierarchy
-            LOGGER_REGISTRY.with(|reg| {
+            // Only propagate if the logger's propagate attribute is True
+            let should_propagate = LOGGER_REGISTRY.with(|reg| {
                 let reg = reg.borrow();
-                let mut current_name = name.to_string();
-                while let Some(dot_pos) = current_name.rfind('.') {
-                    current_name.truncate(dot_pos);
-                    if let Some(parent) = reg.get(&current_name) {
-                        if let Some(parent_handlers) = parent.get_attr("handlers") {
-                            if emit_to_handlers(&parent_handlers, &record, level) {
-                                any_handler_found = true;
+                if let Some(this_logger) = reg.get(name.as_str()) {
+                    this_logger.get_attr("propagate")
+                        .map(|p| p.is_truthy())
+                        .unwrap_or(true)
+                } else {
+                    true
+                }
+            });
+            if should_propagate {
+                LOGGER_REGISTRY.with(|reg| {
+                    let reg = reg.borrow();
+                    let mut current_name = name.to_string();
+                    while let Some(dot_pos) = current_name.rfind('.') {
+                        current_name.truncate(dot_pos);
+                        if let Some(parent) = reg.get(&current_name) {
+                            if let Some(parent_handlers) = parent.get_attr("handlers") {
+                                if emit_to_handlers(&parent_handlers, &record, level) {
+                                    any_handler_found = true;
+                                }
+                            }
+                            // Check parent's propagate for further walking
+                            let parent_propagate = parent.get_attr("propagate")
+                                .map(|p| p.is_truthy())
+                                .unwrap_or(true);
+                            if !parent_propagate { break; }
+                        }
+                    }
+                    // Also propagate to root logger if we haven't stopped
+                    if current_name != "root" {
+                        if let Some(root) = reg.get("root") {
+                            if let Some(root_handlers) = root.get_attr("handlers") {
+                                if emit_to_handlers(&root_handlers, &record, level) {
+                                    any_handler_found = true;
+                                }
                             }
                         }
                     }
-                }
-                // Also propagate to root logger
-                if let Some(root) = reg.get("root") {
-                    if let Some(root_handlers) = root.get_attr("handlers") {
-                        if emit_to_handlers(&root_handlers, &record, level) {
-                            any_handler_found = true;
-                        }
-                    }
-                }
-            });
+                });
+            }
             // Last-resort: only print to stderr if no handlers registered at all
             if !any_handler_found {
                 eprintln!("{}:{}:{}", level_name, name, msg);
@@ -1292,21 +1340,84 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     ));
     let el2 = effective_level.clone();
+    let name_for_enabled = logger_name.clone();
     ns.insert(CompactString::from("isEnabledFor"), PyObject::native_closure(
         "isEnabledFor", move |args: &[PyObjectRef]| {
             if let Some(v) = args.first() {
                 if let Some(n) = v.as_int() {
-                    let current = *el2.read();
-                    return Ok(PyObject::bool_val(current == 0 || n >= current));
+                    // Check disable threshold first
+                    let disable_level = DISABLE_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
+                    if disable_level > 0 && n <= disable_level { return Ok(PyObject::bool_val(false)); }
+                    // Get effective level (walk parents if NOTSET)
+                    let mut current = *el2.read();
+                    if current == 0 {
+                        LOGGER_REGISTRY.with(|reg| {
+                            let reg = reg.borrow();
+                            let mut cur = name_for_enabled.to_string();
+                            while let Some(dot) = cur.rfind('.') {
+                                cur.truncate(dot);
+                                if let Some(parent) = reg.get(&cur) {
+                                    if let Some(plvl) = parent.get_attr("level") {
+                                        if let Some(pn) = plvl.as_int() {
+                                            if pn > 0 { current = pn; return; }
+                                        }
+                                    }
+                                }
+                            }
+                            // Check root logger
+                            if let Some(root) = reg.get("root") {
+                                if let Some(rlvl) = root.get_attr("level") {
+                                    if let Some(rn) = rlvl.as_int() {
+                                        if rn > 0 { current = rn; return; }
+                                    }
+                                }
+                            }
+                        });
+                        if current == 0 {
+                            current = ROOT_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
+                            if current == 0 { current = 30; }
+                        }
+                    }
+                    return Ok(PyObject::bool_val(n >= current));
                 }
             }
             Ok(PyObject::bool_val(true))
         }
     ));
     let el3 = effective_level.clone();
+    let name_for_eff = logger_name.clone();
     ns.insert(CompactString::from("getEffectiveLevel"), PyObject::native_closure(
         "getEffectiveLevel", move |_: &[PyObjectRef]| {
-            Ok(PyObject::int(*el3.read()))
+            let mut current = *el3.read();
+            if current == 0 {
+                LOGGER_REGISTRY.with(|reg| {
+                    let reg = reg.borrow();
+                    let mut cur = name_for_eff.to_string();
+                    while let Some(dot) = cur.rfind('.') {
+                        cur.truncate(dot);
+                        if let Some(parent) = reg.get(&cur) {
+                            if let Some(plvl) = parent.get_attr("level") {
+                                if let Some(pn) = plvl.as_int() {
+                                    if pn > 0 { current = pn; return; }
+                                }
+                            }
+                        }
+                    }
+                    // Check root logger
+                    if let Some(root) = reg.get("root") {
+                        if let Some(rlvl) = root.get_attr("level") {
+                            if let Some(rn) = rlvl.as_int() {
+                                if rn > 0 { current = rn; return; }
+                            }
+                        }
+                    }
+                });
+                if current == 0 {
+                    current = ROOT_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
+                    if current == 0 { current = 30; }
+                }
+            }
+            Ok(PyObject::int(current))
         }
     ));
     // parent — reference to parent logger (None for root, else the parent)
