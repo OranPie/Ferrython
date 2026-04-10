@@ -825,6 +825,143 @@ impl VirtualMachine {
                         }
                     }
                 }
+                // Inline BinarySubscr for list[int], tuple[int], dict[HashableKey]
+                Opcode::BinarySubscr => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let obj = &frame.stack[len - 2];
+                        let key = &frame.stack[len - 1];
+                        match (&obj.payload, &key.payload) {
+                            // list[int] — direct index
+                            (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
+                                let items = items_arc.read();
+                                let i = *idx;
+                                let actual = if i < 0 { i + items.len() as i64 } else { i };
+                                if actual >= 0 && (actual as usize) < items.len() {
+                                    let val = items[actual as usize].clone();
+                                    drop(items);
+                                    frame.stack.pop();
+                                    *frame.stack.last_mut().unwrap() = val;
+                                    Ok(None)
+                                } else {
+                                    drop(items);
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // tuple[int] — direct index
+                            (PyObjectPayload::Tuple(items), PyObjectPayload::Int(PyInt::Small(idx))) => {
+                                let i = *idx;
+                                let actual = if i < 0 { i + items.len() as i64 } else { i };
+                                if actual >= 0 && (actual as usize) < items.len() {
+                                    let val = items[actual as usize].clone();
+                                    frame.stack.pop();
+                                    *frame.stack.last_mut().unwrap() = val;
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // dict[str] — hash lookup (common: kwargs, config dicts)
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
+                                let hk = HashableKey::Str(s.clone());
+                                let val = map.read().get(&hk).cloned();
+                                if let Some(v) = val {
+                                    frame.stack.pop();
+                                    *frame.stack.last_mut().unwrap() = v;
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // dict[int] — hash lookup
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Int(pi @ PyInt::Small(_))) => {
+                                let hk = HashableKey::Int(pi.clone());
+                                let val = map.read().get(&hk).cloned();
+                                if let Some(v) = val {
+                                    frame.stack.pop();
+                                    *frame.stack.last_mut().unwrap() = v;
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // str[int] — character index
+                            (PyObjectPayload::Str(s), PyObjectPayload::Int(PyInt::Small(idx))) => {
+                                let chars: Vec<char> = s.chars().collect();
+                                let i = *idx;
+                                let actual = if i < 0 { i + chars.len() as i64 } else { i };
+                                if actual >= 0 && (actual as usize) < chars.len() {
+                                    let ch = chars[actual as usize];
+                                    let val = PyObject::str_val(CompactString::from(ch.to_string()));
+                                    frame.stack.pop();
+                                    *frame.stack.last_mut().unwrap() = val;
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline StoreSubscr for list[int] and dict[str/int]
+                Opcode::StoreSubscr => {
+                    let len = frame.stack.len();
+                    if len >= 3 {
+                        let key = &frame.stack[len - 1];
+                        let obj = &frame.stack[len - 2];
+                        let val = &frame.stack[len - 3];
+                        match (&obj.payload, &key.payload) {
+                            // list[int] = val
+                            (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
+                                let mut items = items_arc.write();
+                                let i = *idx;
+                                let actual = if i < 0 { i + items.len() as i64 } else { i };
+                                if actual >= 0 && (actual as usize) < items.len() {
+                                    let v = val.clone();
+                                    items[actual as usize] = v;
+                                    drop(items);
+                                    frame.stack.truncate(len - 3);
+                                    Ok(None)
+                                } else {
+                                    drop(items);
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // dict[str] = val
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
+                                let hk = HashableKey::Str(s.clone());
+                                let v = val.clone();
+                                map.write().insert(hk, v);
+                                frame.stack.truncate(len - 3);
+                                Ok(None)
+                            }
+                            // dict[int] = val
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Int(pi @ PyInt::Small(_))) => {
+                                let hk = HashableKey::Int(pi.clone());
+                                let v = val.clone();
+                                map.write().insert(hk, v);
+                                frame.stack.truncate(len - 3);
+                                Ok(None)
+                            }
+                            _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline ListAppend (hot in list comprehensions)
+                Opcode::ListAppend => {
+                    let item = frame.stack.pop().expect("stack underflow");
+                    let idx = instr.arg as usize;
+                    let stack_pos = frame.stack.len() - idx;
+                    if let PyObjectPayload::List(items) = &frame.stack[stack_pos].payload {
+                        items.write().push(item);
+                    }
+                    Ok(None)
+                }
                 _ => self.execute_one(instr),
             };
 

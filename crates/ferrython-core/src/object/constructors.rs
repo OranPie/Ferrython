@@ -220,14 +220,20 @@ fn track_object(obj: &PyObjectRef) {
 // ── PyObject constructors ──
 
 impl PyObject {
+    #[inline]
     pub fn wrap(payload: PyObjectPayload) -> PyObjectRef {
         ferrython_gc::notify_alloc();
         Arc::new(PyObject { payload })
     }
+    #[inline(always)]
     pub fn none() -> PyObjectRef { NONE_SINGLETON.clone() }
+    #[inline(always)]
     pub fn ellipsis() -> PyObjectRef { ELLIPSIS_SINGLETON.clone() }
+    #[inline(always)]
     pub fn not_implemented() -> PyObjectRef { NOT_IMPLEMENTED_SINGLETON.clone() }
+    #[inline(always)]
     pub fn bool_val(v: bool) -> PyObjectRef { if v { TRUE_SINGLETON.clone() } else { FALSE_SINGLETON.clone() } }
+    #[inline]
     pub fn int(v: i64) -> PyObjectRef {
         if v >= SMALL_INT_MIN && v <= SMALL_INT_MAX {
             SMALL_INT_CACHE[(v - SMALL_INT_MIN) as usize].clone()
@@ -236,6 +242,7 @@ impl PyObject {
         }
     }
     pub fn big_int(v: BigInt) -> PyObjectRef { Self::wrap(PyObjectPayload::Int(PyInt::Big(Box::new(v)))) }
+    #[inline]
     pub fn float(v: f64) -> PyObjectRef {
         if v == 0.0 && !v.is_sign_negative() { return FLOAT_ZERO.clone(); }
         if v == 1.0 { return FLOAT_ONE.clone(); }
@@ -243,6 +250,7 @@ impl PyObject {
         Self::wrap(PyObjectPayload::Float(v))
     }
     pub fn complex(real: f64, imag: f64) -> PyObjectRef { Self::wrap(PyObjectPayload::Complex { real, imag }) }
+    #[inline]
     pub fn str_val(v: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::Str(v)) }
     pub fn bytes(v: Vec<u8>) -> PyObjectRef { Self::wrap(PyObjectPayload::Bytes(v)) }
     pub fn bytearray(v: Vec<u8>) -> PyObjectRef { Self::wrap(PyObjectPayload::ByteArray(v)) }
