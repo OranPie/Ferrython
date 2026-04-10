@@ -418,6 +418,19 @@ impl VirtualMachine {
                                 }
                                 Ok(None)
                             }
+                            IteratorData::Tuple { items, index } => {
+                                if *index < items.len() {
+                                    let v = items[*index].clone();
+                                    *index += 1;
+                                    drop(data);
+                                    frame.stack.push(v);
+                                } else {
+                                    drop(data);
+                                    drop(unsafe { frame.pop_unchecked() });
+                                    frame.ip = instr.arg as usize;
+                                }
+                                Ok(None)
+                            }
                             _ => {
                                 drop(data);
                                 self.execute_one(instr)
@@ -888,66 +901,6 @@ impl VirtualMachine {
                                 self.fire_profile_event("call", PyObject::none());
                             }
                             Ok(None)
-                        }
-                    } else {
-                        self.execute_one(instr)
-                    }
-                }
-                // Inline ForIter fast path for simple iterators (Range, List, Tuple)
-                Opcode::ForIter => {
-                    let stack_len = frame.stack.len();
-                    if stack_len > 0 {
-                        let iter = &frame.stack[stack_len - 1];
-                        if let PyObjectPayload::Iterator(ref iter_data_arc) = iter.payload {
-                            let mut data = iter_data_arc.lock();
-                            match &mut *data {
-                                IteratorData::Range { current, stop, step } => {
-                                    let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
-                                    if done {
-                                        drop(data);
-                                        frame.stack.pop();
-                                        frame.ip = instr.arg as usize;
-                                    } else {
-                                        let v = PyObject::int(*current);
-                                        *current += *step;
-                                        drop(data);
-                                        frame.stack.push(v);
-                                    }
-                                    Ok(None)
-                                }
-                                IteratorData::List { items, index } => {
-                                    if *index < items.len() {
-                                        let v = items[*index].clone();
-                                        *index += 1;
-                                        drop(data);
-                                        frame.stack.push(v);
-                                    } else {
-                                        drop(data);
-                                        frame.stack.pop();
-                                        frame.ip = instr.arg as usize;
-                                    }
-                                    Ok(None)
-                                }
-                                IteratorData::Tuple { items, index } => {
-                                    if *index < items.len() {
-                                        let v = items[*index].clone();
-                                        *index += 1;
-                                        drop(data);
-                                        frame.stack.push(v);
-                                    } else {
-                                        drop(data);
-                                        frame.stack.pop();
-                                        frame.ip = instr.arg as usize;
-                                    }
-                                    Ok(None)
-                                }
-                                _ => {
-                                    drop(data);
-                                    self.execute_one(instr)
-                                }
-                            }
-                        } else {
-                            self.execute_one(instr)
                         }
                     } else {
                         self.execute_one(instr)
