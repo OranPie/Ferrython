@@ -8,6 +8,7 @@ use ferrython_bytecode::opcode::Opcode;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
+    lookup_in_class_mro,
 };
 use ferrython_core::types::{HashableKey, PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
@@ -823,6 +824,66 @@ impl VirtualMachine {
                             frame.stack.push(seq);
                             self.execute_one(instr)
                         }
+                    }
+                }
+                // Inline LoadMethod fast path for plain instances:
+                // Skip execute_one dispatch for the common case of instance.method()
+                Opcode::LoadMethod => {
+                    let name_idx = instr.arg as usize;
+                    let stack_len = frame.stack.len();
+                    // 0 = fallback, 1 = bound method (val in fast_val), 2 = instance attr (val in fast_val)
+                    let mut fast_kind: u8 = 0;
+                    let mut fast_val: Option<PyObjectRef> = None;
+                    if stack_len > 0 {
+                        let obj = &frame.stack[stack_len - 1];
+                        if let PyObjectPayload::Instance(inst) = &obj.payload {
+                            let skip_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                                !cd.has_getattribute
+                            } else { false };
+                            if skip_ga && inst.dict_storage.is_none() && !inst.is_special {
+                                let name = &frame.code.names[name_idx];
+                                if name.as_str() != "__class__" && name.as_str() != "__dict__" {
+                                    let class = &inst.class;
+                                    if let PyObjectPayload::Class(cd) = &class.payload {
+                                        if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
+                                            if matches!(&class_val.payload, PyObjectPayload::Function(_)) {
+                                                fast_kind = 1;
+                                                fast_val = Some(class_val);
+                                            }
+                                        } else if let Some(v) = inst.attrs.read().get(name.as_str()).cloned() {
+                                            fast_kind = 2;
+                                            fast_val = Some(v);
+                                        } else if let Some(method) = lookup_in_class_mro(class, name.as_str()) {
+                                            if matches!(&method.payload,
+                                                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                                                fast_kind = 1;
+                                                fast_val = Some(method);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    match fast_kind {
+                        1 => {
+                            // Bind method to receiver
+                            let recv = frame.stack.pop().unwrap();
+                            let method = fast_val.unwrap();
+                            frame.stack.push(Arc::new(PyObject {
+                                payload: PyObjectPayload::BoundMethod {
+                                    receiver: recv,
+                                    method,
+                                }
+                            }));
+                            Ok(None)
+                        }
+                        2 => {
+                            // Instance attribute — replace top of stack
+                            *frame.stack.last_mut().unwrap() = fast_val.unwrap();
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
                     }
                 }
                 // Inline BinarySubscr for list[int], tuple[int], dict[HashableKey]
