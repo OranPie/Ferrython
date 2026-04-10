@@ -758,6 +758,131 @@ impl VirtualMachine {
                         _ => self.execute_one(instr),
                     }
                 }
+                // Inline int/float subtract and multiply (hot in numeric code)
+                Opcode::BinarySubtract | Opcode::InplaceSubtract => {
+                    let len = frame.stack.len();
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                            let result = match x.checked_sub(*y) {
+                                Some(r) => PyObject::int(r),
+                                None => {
+                                    use num_bigint::BigInt;
+                                    PyObject::big_int(BigInt::from(*x) - BigInt::from(*y))
+                                }
+                            };
+                            unsafe { frame.binary_op_result(result) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                            unsafe { frame.binary_op_result(PyObject::float(*x - *y)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
+                            unsafe { frame.binary_op_result(PyObject::float(*x as f64 - *y)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
+                            unsafe { frame.binary_op_result(PyObject::float(*x - *y as f64)) };
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
+                    }
+                }
+                Opcode::BinaryMultiply | Opcode::InplaceMultiply => {
+                    let len = frame.stack.len();
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                            let result = match x.checked_mul(*y) {
+                                Some(r) => PyObject::int(r),
+                                None => {
+                                    use num_bigint::BigInt;
+                                    PyObject::big_int(BigInt::from(*x) * BigInt::from(*y))
+                                }
+                            };
+                            unsafe { frame.binary_op_result(result) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                            unsafe { frame.binary_op_result(PyObject::float(*x * *y)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
+                            unsafe { frame.binary_op_result(PyObject::float(*x as f64 * *y)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
+                            unsafe { frame.binary_op_result(PyObject::float(*x * *y as f64)) };
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
+                    }
+                }
+                Opcode::BinaryModulo | Opcode::InplaceModulo => {
+                    let len = frame.stack.len();
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
+                            // Python modulo: result has same sign as divisor
+                            let r = ((*x % *y) + *y) % *y;
+                            unsafe { frame.binary_op_result(PyObject::int(r)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
+                            let r = *x - (*x / *y).floor() * *y;
+                            unsafe { frame.binary_op_result(PyObject::float(r)) };
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
+                    }
+                }
+                Opcode::BinaryFloorDivide | Opcode::InplaceFloorDivide => {
+                    let len = frame.stack.len();
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
+                            // Python floor division: round towards -infinity
+                            let (d, m) = (x.div_euclid(*y), x.rem_euclid(*y));
+                            let r = if m != 0 && (*x ^ *y) < 0 { d - 1 } else { d };
+                            unsafe { frame.binary_op_result(PyObject::int(r)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
+                            unsafe { frame.binary_op_result(PyObject::float((*x / *y).floor())) };
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
+                    }
+                }
+                Opcode::BinaryTrueDivide | Opcode::InplaceTrueDivide => {
+                    let len = frame.stack.len();
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
+                            unsafe { frame.binary_op_result(PyObject::float(*x as f64 / *y as f64)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
+                            unsafe { frame.binary_op_result(PyObject::float(*x / *y)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) if *y != 0.0 => {
+                            unsafe { frame.binary_op_result(PyObject::float(*x as f64 / *y)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
+                            unsafe { frame.binary_op_result(PyObject::float(*x / *y as f64)) };
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
+                    }
+                }
                 // Inline int comparisons (hot in for-loop range iteration)
                 Opcode::CompareOp if instr.arg <= 5 => {
                     let len = frame.stack.len();
