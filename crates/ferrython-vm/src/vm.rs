@@ -1156,10 +1156,57 @@ impl VirtualMachine {
                                 Ok(None)
                             }
                         } else {
-                            // Not a simple function — decompose to LoadGlobal + CallFunction
-                            frame.stack.push(func_obj.clone());
-                            let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
-                            self.execute_one(call_instr)
+                            // Fast path for builtins (len, range) from global cache
+                            let builtin_name = if let PyObjectPayload::BuiltinFunction(name) = &func_obj.payload {
+                                Some(name.as_str())
+                            } else { None };
+                            match (builtin_name, arg_count) {
+                                (Some("len"), 1) => {
+                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let fast_len = match &arg.payload {
+                                        PyObjectPayload::List(v) => Some(v.read().len() as i64),
+                                        PyObjectPayload::Tuple(v) => Some(v.len() as i64),
+                                        PyObjectPayload::Str(s) => Some(s.chars().count() as i64),
+                                        PyObjectPayload::Dict(m) => Some(m.read().len() as i64),
+                                        PyObjectPayload::Set(m) => Some(m.read().len() as i64),
+                                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Some(b.len() as i64),
+                                        _ => None,
+                                    };
+                                    if let Some(n) = fast_len {
+                                        frame.stack.pop();
+                                        frame.stack.push(PyObject::int(n));
+                                        Ok(None)
+                                    } else {
+                                        frame.stack.push(func_obj.clone());
+                                        let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
+                                        self.execute_one(call_instr)
+                                    }
+                                }
+                                (Some("range"), 1) => {
+                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    if let PyObjectPayload::Int(PyInt::Small(stop)) = &arg.payload {
+                                        let stop = *stop;
+                                        frame.stack.pop();
+                                        let iter = PyObject::wrap(PyObjectPayload::Iterator(
+                                            Arc::new(parking_lot::Mutex::new(IteratorData::Range {
+                                                current: 0, stop, step: 1,
+                                            }))
+                                        ));
+                                        frame.stack.push(iter);
+                                        Ok(None)
+                                    } else {
+                                        frame.stack.push(func_obj.clone());
+                                        let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
+                                        self.execute_one(call_instr)
+                                    }
+                                }
+                                _ => {
+                                    // Not a simple function — decompose to LoadGlobal + CallFunction
+                                    frame.stack.push(func_obj.clone());
+                                    let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
+                                    self.execute_one(call_instr)
+                                }
+                            }
                         }
                     } else {
                         // Cache miss — decompose to LoadGlobal + CallFunction
