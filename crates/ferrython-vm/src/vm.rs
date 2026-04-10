@@ -1531,10 +1531,13 @@ impl VirtualMachine {
                     let call_kind = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
                         if pf.is_simple && pf.code.arg_count as usize == arg_count {
                             // Trivial function: body is just `LoadConst X; ReturnValue`
+                            // or fused `LoadConstReturnValue X`
                             // Skip frame creation entirely — just push the constant.
-                            if pf.code.instructions.len() == 2
+                            if (pf.code.instructions.len() == 2
                                 && pf.code.instructions[0].op == Opcode::LoadConst
-                                && pf.code.instructions[1].op == Opcode::ReturnValue
+                                && pf.code.instructions[1].op == Opcode::ReturnValue)
+                                || (pf.code.instructions.len() == 1
+                                    && pf.code.instructions[0].op == Opcode::LoadConstReturnValue)
                             { 3u8 }
                             else if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
                         } else { 0 }
@@ -1587,25 +1590,46 @@ impl VirtualMachine {
                                         _ => None,
                                     };
                                     if let Some(cmp_val) = cmp_result {
-                                        if cmp_val
-                                            && instrs[1].op == Opcode::LoadFast
-                                            && instrs[2].op == Opcode::ReturnValue
-                                        {
-                                            let ret_local = instrs[1].arg as usize;
-                                            mini_result = Some(if ret_local < arg_count {
-                                                frame.stack[args_start + ret_local].clone()
-                                            } else { PyObject::none() });
-                                        } else if !cmp_val {
-                                            let jt = (packed & 0xFFF) as usize;
-                                            if jt < instrs.len()
-                                                && instrs[jt].op == Opcode::LoadFast
-                                                && jt + 1 < instrs.len()
-                                                && instrs[jt + 1].op == Opcode::ReturnValue
-                                            {
-                                                let ret_local = instrs[jt].arg as usize;
+                                        if cmp_val {
+                                            // True branch: next instruction is return
+                                            if instrs[1].op == Opcode::LoadFastReturnValue {
+                                                let ret_local = instrs[1].arg as usize;
                                                 mini_result = Some(if ret_local < arg_count {
                                                     frame.stack[args_start + ret_local].clone()
                                                 } else { PyObject::none() });
+                                            } else if instrs[1].op == Opcode::LoadFast
+                                                && instrs[2].op == Opcode::ReturnValue
+                                            {
+                                                let ret_local = instrs[1].arg as usize;
+                                                mini_result = Some(if ret_local < arg_count {
+                                                    frame.stack[args_start + ret_local].clone()
+                                                } else { PyObject::none() });
+                                            } else if instrs[1].op == Opcode::LoadConstReturnValue {
+                                                mini_result = Some(unsafe {
+                                                    frame.constant_cache.get_unchecked(instrs[1].arg as usize).clone()
+                                                });
+                                            }
+                                        } else if !cmp_val {
+                                            let jt = (packed & 0xFFF) as usize;
+                                            if jt < instrs.len() {
+                                                if instrs[jt].op == Opcode::LoadFastReturnValue {
+                                                    let ret_local = instrs[jt].arg as usize;
+                                                    mini_result = Some(if ret_local < arg_count {
+                                                        frame.stack[args_start + ret_local].clone()
+                                                    } else { PyObject::none() });
+                                                } else if instrs[jt].op == Opcode::LoadFast
+                                                    && jt + 1 < instrs.len()
+                                                    && instrs[jt + 1].op == Opcode::ReturnValue
+                                                {
+                                                    let ret_local = instrs[jt].arg as usize;
+                                                    mini_result = Some(if ret_local < arg_count {
+                                                        frame.stack[args_start + ret_local].clone()
+                                                    } else { PyObject::none() });
+                                                } else if instrs[jt].op == Opcode::LoadConstReturnValue {
+                                                    mini_result = Some(unsafe {
+                                                        frame.constant_cache.get_unchecked(instrs[jt].arg as usize).clone()
+                                                    });
+                                                }
                                             }
                                         }
                                     }
@@ -1883,9 +1907,12 @@ impl VirtualMachine {
                         let call_kind = if let PyObjectPayload::Function(pf) = &func_obj.payload {
                             if pf.is_simple && pf.code.arg_count as usize == arg_count {
                                 // Trivial function: body is just `LoadConst X; ReturnValue`
-                                if pf.code.instructions.len() == 2
+                                // or fused `LoadConstReturnValue X`
+                                if (pf.code.instructions.len() == 2
                                     && pf.code.instructions[0].op == Opcode::LoadConst
-                                    && pf.code.instructions[1].op == Opcode::ReturnValue
+                                    && pf.code.instructions[1].op == Opcode::ReturnValue)
+                                    || (pf.code.instructions.len() == 1
+                                        && pf.code.instructions[0].op == Opcode::LoadConstReturnValue)
                                 { 3u8 }
                                 else if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
                             } else { 0 }
@@ -1938,25 +1965,45 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(cmp_val) = cmp_result {
-                                            if cmp_val
-                                                && instrs[1].op == Opcode::LoadFast
-                                                && instrs[2].op == Opcode::ReturnValue
-                                            {
-                                                let ret_local = instrs[1].arg as usize;
-                                                mini_result = Some(if ret_local < arg_count {
-                                                    frame.stack[args_start + ret_local].clone()
-                                                } else { PyObject::none() });
-                                            } else if !cmp_val {
-                                                let jt = (packed & 0xFFF) as usize;
-                                                if jt < instrs.len()
-                                                    && instrs[jt].op == Opcode::LoadFast
-                                                    && jt + 1 < instrs.len()
-                                                    && instrs[jt + 1].op == Opcode::ReturnValue
-                                                {
-                                                    let ret_local = instrs[jt].arg as usize;
+                                            if cmp_val {
+                                                if instrs[1].op == Opcode::LoadFastReturnValue {
+                                                    let ret_local = instrs[1].arg as usize;
                                                     mini_result = Some(if ret_local < arg_count {
                                                         frame.stack[args_start + ret_local].clone()
                                                     } else { PyObject::none() });
+                                                } else if instrs[1].op == Opcode::LoadFast
+                                                    && instrs[2].op == Opcode::ReturnValue
+                                                {
+                                                    let ret_local = instrs[1].arg as usize;
+                                                    mini_result = Some(if ret_local < arg_count {
+                                                        frame.stack[args_start + ret_local].clone()
+                                                    } else { PyObject::none() });
+                                                } else if instrs[1].op == Opcode::LoadConstReturnValue {
+                                                    mini_result = Some(unsafe {
+                                                        frame.constant_cache.get_unchecked(instrs[1].arg as usize).clone()
+                                                    });
+                                                }
+                                            } else if !cmp_val {
+                                                let jt = (packed & 0xFFF) as usize;
+                                                if jt < instrs.len() {
+                                                    if instrs[jt].op == Opcode::LoadFastReturnValue {
+                                                        let ret_local = instrs[jt].arg as usize;
+                                                        mini_result = Some(if ret_local < arg_count {
+                                                            frame.stack[args_start + ret_local].clone()
+                                                        } else { PyObject::none() });
+                                                    } else if instrs[jt].op == Opcode::LoadFast
+                                                        && jt + 1 < instrs.len()
+                                                        && instrs[jt + 1].op == Opcode::ReturnValue
+                                                    {
+                                                        let ret_local = instrs[jt].arg as usize;
+                                                        mini_result = Some(if ret_local < arg_count {
+                                                            frame.stack[args_start + ret_local].clone()
+                                                        } else { PyObject::none() });
+                                                    } else if instrs[jt].op == Opcode::LoadConstReturnValue {
+                                                        mini_result = Some(unsafe {
+                                                            frame.constant_cache.get_unchecked(instrs[jt].arg as usize).clone()
+                                                        });
+                                                    }
                                                 }
                                             }
                                         }
