@@ -1540,7 +1540,6 @@ pub(super) fn call_float_method(f: f64, method: &str, _args: &[PyObjectRef]) -> 
         }
         "__ceil__" => Ok(PyObject::int(f.ceil() as i64)),
         "__floor__" => Ok(PyObject::int(f.floor() as i64)),
-        "__trunc__" | "__int__" => Ok(PyObject::int(f as i64)),
         _ => Err(PyException::attribute_error(format!(
             "'float' object has no attribute '{}'", method
         ))),

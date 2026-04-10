@@ -2447,18 +2447,6 @@ impl VirtualMachine {
                         };
                         return self.import_module_simple(&name, level);
                     }
-                    "globals" => {
-                        let frame = self.call_stack.last().unwrap();
-                        let g = frame.globals.read();
-                        let pairs: Vec<(PyObjectRef, PyObjectRef)> = g.iter()
-                            .map(|(k, v)| (PyObject::str_val(CompactString::from(k.as_str())), v.clone()))
-                            .collect();
-                        drop(g);
-                        return Ok(PyObject::dict_from_pairs(pairs));
-                    }
-                    "locals" => {
-                        return self.collect_locals_dict();
-                    }
                     "vars" => {
                         if args.is_empty() {
                             return self.collect_locals_dict();

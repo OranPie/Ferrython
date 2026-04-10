@@ -1575,7 +1575,6 @@ fn ext_to_mime(ext: &str) -> Option<&'static str> {
         "mov" => Some("video/quicktime"), "wmv" => Some("video/x-ms-wmv"),
         "flv" => Some("video/x-flv"), "mkv" => Some("video/x-matroska"),
         "mpeg" | "mpg" => Some("video/mpeg"), "3gp" => Some("video/3gpp"),
-        "ts" if false => Some("video/mp2t"), // conflict with TypeScript
         // Archives
         "zip" => Some("application/zip"), "gz" | "gzip" => Some("application/gzip"),
         "tar" => Some("application/x-tar"), "bz2" => Some("application/x-bzip2"),
