@@ -251,7 +251,9 @@ impl VirtualMachine {
                 if fire_line { self.fire_trace_event("line", PyObject::none()); }
                 instr
             } else {
-                let frame = self.call_stack.last_mut().unwrap();
+                // SAFETY: call_stack is never empty during execution
+                let cs_len = self.call_stack.len();
+                let frame = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
                 let ip = frame.ip;
                 let instructions = &frame.code.instructions;
                 if ip >= instructions.len() { return Ok(PyObject::none()); }
@@ -261,7 +263,9 @@ impl VirtualMachine {
                 instr
             };
 
-            let frame = self.call_stack.last_mut().unwrap();
+            // SAFETY: call_stack is never empty during execution
+            let cs_len = self.call_stack.len();
+            let frame = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
 
             if profiling { self.profiler.start_instruction(instr.op); }
 
@@ -1394,8 +1398,11 @@ impl VirtualMachine {
                         if let Some(child) = self.call_stack.pop() {
                             child.recycle(&mut self.frame_pool);
                         }
-                        let val = self.post_call_intercept(ret)?;
-                        self.call_stack.last_mut().unwrap().stack.push(val);
+                        // Skip post_call_intercept — inline CallFunction/CallMethod
+                        // never triggers import/asyncio intercepts, so flag is always clear.
+                        // SAFETY: we just verified call_stack.len() > initial_depth >= 1, and we popped one
+                        let cs_len = self.call_stack.len();
+                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.stack.push(ret);
                         continue;
                     }
                     // Returning from the initial frame we were called to execute
