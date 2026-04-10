@@ -23,7 +23,9 @@ pub fn optimize(code: &mut CodeObject) {
     while changed {
         changed = false;
         changed |= fold_constants(code);
+        changed |= fold_constant_comparisons(code);
         changed |= fold_constant_tuples(code);
+        changed |= fold_constant_conditionals(code);
         changed |= eliminate_dead_stores(code);
         changed |= eliminate_dead_code(code);
         changed |= collapse_jump_chains(code);
@@ -109,6 +111,79 @@ fn fold_constants(code: &mut CodeObject) -> bool {
     changed
 }
 
+/// Constant comparison folding: `LOAD_CONST a; LOAD_CONST b; COMPARE_OP` → `LOAD_CONST True/False`
+fn fold_constant_comparisons(code: &mut CodeObject) -> bool {
+    let mut changed = false;
+    let n = code.instructions.len();
+    if n < 3 { return false; }
+
+    let mut i = 0;
+    while i + 2 < n {
+        let a_op = code.instructions[i].op;
+        let b_op = code.instructions[i + 1].op;
+        let cmp_op = code.instructions[i + 2].op;
+
+        if a_op == Opcode::LoadConst && b_op == Opcode::LoadConst && cmp_op == Opcode::CompareOp {
+            let a_arg = code.instructions[i].arg as usize;
+            let b_arg = code.instructions[i + 1].arg as usize;
+            let cmp_arg = code.instructions[i + 2].arg;
+            let result = {
+                let ca = &code.constants[a_arg];
+                let cb = &code.constants[b_arg];
+                fold_compare(ca, cb, cmp_arg)
+            };
+            if let Some(folded) = result {
+                let idx = intern_constant(code, ConstantValue::Bool(folded));
+                code.instructions[i] = Instruction::new(Opcode::LoadConst, idx as u32);
+                code.instructions[i + 1] = Instruction::simple(Opcode::Nop);
+                code.instructions[i + 2] = Instruction::simple(Opcode::Nop);
+                changed = true;
+                i += 3;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    changed
+}
+
+/// Constant conditional elimination:
+/// - `LOAD_CONST True; POP_JUMP_IF_FALSE target` → NOP; NOP (always falls through)
+/// - `LOAD_CONST False; POP_JUMP_IF_FALSE target` → NOP; JUMP_ABSOLUTE target
+/// - `LOAD_CONST True; POP_JUMP_IF_TRUE target` → NOP; JUMP_ABSOLUTE target
+/// - `LOAD_CONST False; POP_JUMP_IF_TRUE target` → NOP; NOP (always falls through)
+fn fold_constant_conditionals(code: &mut CodeObject) -> bool {
+    let mut changed = false;
+    let n = code.instructions.len();
+    if n < 2 { return false; }
+
+    let mut i = 0;
+    while i + 1 < n {
+        let load = code.instructions[i];
+        let jump = code.instructions[i + 1];
+        if load.op == Opcode::LoadConst
+            && (jump.op == Opcode::PopJumpIfFalse || jump.op == Opcode::PopJumpIfTrue)
+        {
+            let is_truthy = const_is_truthy(&code.constants[load.arg as usize]);
+            if let Some(truthy) = is_truthy {
+                let jumps = (jump.op == Opcode::PopJumpIfFalse && !truthy)
+                    || (jump.op == Opcode::PopJumpIfTrue && truthy);
+                code.instructions[i] = Instruction::simple(Opcode::Nop);
+                if jumps {
+                    code.instructions[i + 1] = Instruction::new(Opcode::JumpAbsolute, jump.arg);
+                } else {
+                    code.instructions[i + 1] = Instruction::simple(Opcode::Nop);
+                }
+                changed = true;
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    changed
+}
+
 /// Fold constant tuples: `LOAD_CONST a; LOAD_CONST b; ... BUILD_TUPLE n` → `LOAD_CONST (a,b,...)`
 /// Only folds when ALL elements are constants. Handles tuples up to 16 elements.
 fn fold_constant_tuples(code: &mut CodeObject) -> bool {
@@ -154,6 +229,14 @@ fn eliminate_dead_stores(code: &mut CodeObject) -> bool {
         let b = &code.instructions[i + 1];
         // LOAD_CONST followed by POP_TOP with no side effects
         if a.op == Opcode::LoadConst && b.op == Opcode::PopTop {
+            code.instructions[i] = Instruction::simple(Opcode::Nop);
+            code.instructions[i + 1] = Instruction::simple(Opcode::Nop);
+            changed = true;
+            i += 2;
+            continue;
+        }
+        // LOAD_FAST followed by POP_TOP (dead load of local variable)
+        if a.op == Opcode::LoadFast && b.op == Opcode::PopTop {
             code.instructions[i] = Instruction::simple(Opcode::Nop);
             code.instructions[i + 1] = Instruction::simple(Opcode::Nop);
             changed = true;
@@ -473,6 +556,56 @@ fn fold_invert(a: &ConstantValue) -> Option<ConstantValue> {
     match a {
         ConstantValue::Integer(x) => Some(ConstantValue::Integer(!x)),
         ConstantValue::Bool(b) => Some(ConstantValue::Integer(if *b { -2 } else { -1 })),
+        _ => None,
+    }
+}
+
+fn fold_compare(a: &ConstantValue, b: &ConstantValue, cmp: u32) -> Option<bool> {
+    match (a, b) {
+        (ConstantValue::Integer(x), ConstantValue::Integer(y)) => {
+            Some(match cmp {
+                0 => x < y,  // Lt
+                1 => x <= y, // Le
+                2 => x == y, // Eq
+                3 => x != y, // Ne
+                4 => x > y,  // Gt
+                5 => x >= y, // Ge
+                _ => return None,
+            })
+        }
+        (ConstantValue::Float(x), ConstantValue::Float(y)) => {
+            Some(match cmp {
+                0 => x < y,
+                1 => x <= y,
+                2 => x == y,
+                3 => x != y,
+                4 => x > y,
+                5 => x >= y,
+                _ => return None,
+            })
+        }
+        (ConstantValue::Str(x), ConstantValue::Str(y)) if cmp == 2 || cmp == 3 => {
+            let eq = x == y;
+            Some(if cmp == 2 { eq } else { !eq })
+        }
+        (ConstantValue::Bool(x), ConstantValue::Bool(y)) if cmp == 2 || cmp == 3 => {
+            let eq = x == y;
+            Some(if cmp == 2 { eq } else { !eq })
+        }
+        (ConstantValue::None, ConstantValue::None) if cmp == 2 => Some(true),
+        (ConstantValue::None, ConstantValue::None) if cmp == 3 => Some(false),
+        _ => None,
+    }
+}
+
+fn const_is_truthy(val: &ConstantValue) -> Option<bool> {
+    match val {
+        ConstantValue::Bool(b) => Some(*b),
+        ConstantValue::Integer(n) => Some(*n != 0),
+        ConstantValue::Float(f) => Some(*f != 0.0),
+        ConstantValue::None => Some(false),
+        ConstantValue::Str(s) => Some(!s.is_empty()),
+        ConstantValue::Tuple(items) => Some(!items.is_empty()),
         _ => None,
     }
 }
