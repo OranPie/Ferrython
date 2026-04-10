@@ -822,6 +822,53 @@ impl VirtualMachine {
                     frame.ip = instr.arg as usize;
                     Ok(None)
                 }
+                // Inline unary ops for common types
+                Opcode::UnaryNot => {
+                    let v = unsafe { frame.peek_unchecked() };
+                    match &v.payload {
+                        PyObjectPayload::Bool(b) => {
+                            let r = !b;
+                            let len = frame.stack.len();
+                            frame.stack[len - 1] = PyObject::bool_val(r);
+                            Ok(None)
+                        }
+                        PyObjectPayload::Int(PyInt::Small(n)) => {
+                            let r = *n == 0;
+                            let len = frame.stack.len();
+                            frame.stack[len - 1] = PyObject::bool_val(r);
+                            Ok(None)
+                        }
+                        PyObjectPayload::None => {
+                            let len = frame.stack.len();
+                            frame.stack[len - 1] = PyObject::bool_val(true);
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
+                    }
+                }
+                Opcode::UnaryNegative => {
+                    let v = unsafe { frame.peek_unchecked() };
+                    match &v.payload {
+                        PyObjectPayload::Int(PyInt::Small(n)) => {
+                            let r = match n.checked_neg() {
+                                Some(r) => PyObject::int(r),
+                                None => {
+                                    use num_bigint::BigInt;
+                                    PyObject::big_int(-BigInt::from(*n))
+                                }
+                            };
+                            let len = frame.stack.len();
+                            frame.stack[len - 1] = r;
+                            Ok(None)
+                        }
+                        PyObjectPayload::Float(f) => {
+                            let len = frame.stack.len();
+                            frame.stack[len - 1] = PyObject::float(-f);
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
+                    }
+                }
                 // Inline BinarySub int fast path
                 Opcode::BinarySubtract | Opcode::InplaceSubtract => {
                     let len = frame.stack.len();
