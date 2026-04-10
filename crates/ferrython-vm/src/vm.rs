@@ -273,9 +273,9 @@ impl VirtualMachine {
             let result = match instr.op {
                 Opcode::LoadFast => {
                     let idx = instr.arg as usize;
-                    // SAFETY: compiler guarantees idx < locals.len()
+                    // SAFETY: compiler guarantees idx < locals.len(); stack pre-allocated
                     match unsafe { frame.get_local_unchecked(idx) } {
-                        Some(val) => { frame.stack.push(val.clone()); Ok(None) }
+                        Some(val) => { unsafe { frame.push_unchecked(val.clone()) }; Ok(None) }
                         None => Err(PyException::name_error(format!(
                             "local variable '{}' referenced before assignment",
                             frame.code.varnames.get(idx).map(|s| s.as_str()).unwrap_or("?")
@@ -289,9 +289,9 @@ impl VirtualMachine {
                     Ok(None)
                 }
                 Opcode::LoadConst => {
-                    // SAFETY: compiler guarantees arg < constant_cache.len()
+                    // SAFETY: compiler guarantees arg < constant_cache.len(); stack pre-allocated
                     let obj = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize).clone() };
-                    frame.stack.push(obj);
+                    unsafe { frame.push_unchecked(obj) };
                     Ok(None)
                 }
                 // ── Superinstructions: fused opcode pairs ──
@@ -303,8 +303,7 @@ impl VirtualMachine {
                     let b = unsafe { frame.get_local_unchecked(idx2) }.cloned();
                     match (a, b) {
                         (Some(a), Some(b)) => {
-                            frame.stack.push(a);
-                            frame.stack.push(b);
+                            unsafe { frame.push_unchecked(a); frame.push_unchecked(b) };
                             Ok(None)
                         }
                         (None, _) => Err(PyException::name_error(format!(
@@ -323,8 +322,10 @@ impl VirtualMachine {
                     // SAFETY: compiler guarantees indices valid
                     match unsafe { frame.get_local_unchecked(fast_idx) } {
                         Some(val) => {
-                            frame.stack.push(val.clone());
-                            frame.stack.push(unsafe { frame.constant_cache.get_unchecked(const_idx).clone() });
+                            unsafe {
+                                frame.push_unchecked(val.clone());
+                                frame.push_unchecked(frame.constant_cache.get_unchecked(const_idx).clone());
+                            }
                             Ok(None)
                         }
                         None => Err(PyException::name_error(format!(
@@ -340,7 +341,7 @@ impl VirtualMachine {
                     let val = unsafe { frame.pop_unchecked() };
                     unsafe { frame.set_local_unchecked(store_idx, val) };
                     match unsafe { frame.get_local_unchecked(load_idx) } {
-                        Some(val) => { frame.stack.push(val.clone()); Ok(None) }
+                        Some(val) => { unsafe { frame.push_unchecked(val.clone()) }; Ok(None) }
                         None => Err(PyException::name_error(format!(
                             "local variable '{}' referenced before assignment",
                             frame.code.varnames.get(load_idx).map(|s| s.as_str()).unwrap_or("?")
@@ -472,9 +473,9 @@ impl VirtualMachine {
                     Ok(None)
                 }
                 Opcode::DupTop => {
-                    // SAFETY: stack non-empty
+                    // SAFETY: stack non-empty; stack pre-allocated
                     let v = unsafe { frame.peek_unchecked() }.clone();
-                    frame.stack.push(v);
+                    unsafe { frame.push_unchecked(v) };
                     Ok(None)
                 }
                 Opcode::RotTwo => {
@@ -854,7 +855,7 @@ impl VirtualMachine {
                         if let Some(ref cache) = frame.global_cache {
                             // SAFETY: compiler guarantees idx < code.names.len() == cache.len()
                             if let Some(ref v) = unsafe { cache.get_unchecked(idx) } {
-                                frame.stack.push(v.clone());
+                                unsafe { frame.push_unchecked(v.clone()) };
                                 Ok(None)
                             } else {
                                 self.execute_one(instr) // miss — fall through to full handler

@@ -38,6 +38,9 @@ pub fn optimize(code: &mut CodeObject) {
     // This fuses adjacent LoadFast+LoadFast, LoadFast+LoadConst, StoreFast+LoadFast
     // into single instructions, saving one dispatch loop iteration per pair.
     fuse_superinstructions(code);
+
+    // Compute max stack depth so frames can pre-allocate the exact capacity needed
+    compute_max_stack_size(code);
 }
 
 /// Constant folding: replace `LOAD_CONST a; LOAD_CONST b; BINARY_OP` with `LOAD_CONST result`.
@@ -820,4 +823,19 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
     }
     code.instructions.truncate(write);
+}
+
+/// Compute max stack depth by simulating stack effects through the bytecode.
+/// Walks instructions linearly, tracking depth via `Opcode::stack_effect()`,
+/// and records the maximum. For branched code this is conservative (may overestimate).
+fn compute_max_stack_size(code: &mut CodeObject) {
+    let mut depth: i32 = 0;
+    let mut max_depth: i32 = 0;
+    for instr in &code.instructions {
+        depth += instr.op.stack_effect(instr.arg);
+        if depth > max_depth { max_depth = depth; }
+        if depth < 0 { depth = 0; } // safety: branches may converge
+    }
+    // Add margin for temporary values (fused ops, exception handling)
+    code.max_stack_size = (max_depth as u32).saturating_add(8);
 }
