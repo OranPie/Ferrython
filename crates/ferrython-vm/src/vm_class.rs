@@ -727,6 +727,7 @@ impl VirtualMachine {
                             subclasses: Arc::new(RwLock::new(Vec::new())),
                             slots: cd.slots.clone(),
                             has_getattribute: cd.has_getattribute,
+                            has_setattr: cd.has_setattr,
                             has_descriptors: cd.has_descriptors,
                         }))
                     } else {

@@ -1061,6 +1061,32 @@ impl VirtualMachine {
                     crate::frame::bump_globals_version();
                     Ok(None)
                 }
+                // Inline StoreAttr fast path for simple instance attribute writes
+                Opcode::StoreAttr => {
+                    let name = &frame.code.names[instr.arg as usize];
+                    let stack_len = frame.stack.len();
+                    // Fast path: Instance with no __setattr__, no descriptors, no __slots__
+                    let fast = if stack_len >= 2 {
+                        if let PyObjectPayload::Instance(inst) = &frame.stack[stack_len - 1].payload {
+                            if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                                !cd.has_setattr && !cd.has_descriptors && cd.slots.is_none()
+                            } else { false }
+                        } else { false }
+                    } else { false };
+                    if fast {
+                        let obj = frame.stack.pop().expect("stack underflow");
+                        let value = frame.stack.pop().expect("stack underflow");
+                        if let PyObjectPayload::Instance(inst) = &obj.payload {
+                            inst.attrs.write().insert(
+                                ferrython_core::intern::intern_or_new(name.as_str()),
+                                value,
+                            );
+                        }
+                        Ok(None)
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
                 _ => self.execute_one(instr),
             };
 

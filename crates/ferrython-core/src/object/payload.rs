@@ -228,6 +228,9 @@ pub struct ClassData {
     /// Fast-path flag: true if this class (or any base) defines a custom __getattribute__.
     /// When false, the VM skips the expensive MRO lookup on every LoadAttr.
     pub has_getattribute: bool,
+    /// Fast-path flag: true if this class (or any base) defines a custom __setattr__.
+    /// When false, StoreAttr can write directly to instance attrs dict.
+    pub has_setattr: bool,
 }
 
 impl ClassData {
@@ -263,6 +266,14 @@ impl ClassData {
                 false
             }
         });
+        // Detect __setattr__ override in namespace or any base class
+        let has_setattr = namespace.contains_key("__setattr__") || mro.iter().any(|base| {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                bcd.namespace.read().contains_key("__setattr__")
+            } else {
+                false
+            }
+        });
         // Detect data descriptors (Property, __set__, __delete__) in this class or bases
         let has_descriptors = Self::detect_descriptors(&namespace, &mro);
         // If MRO is empty but we have bases, build a simple linearization
@@ -294,6 +305,7 @@ impl ClassData {
             subclasses: Arc::new(RwLock::new(Vec::new())),
             slots,
             has_getattribute,
+            has_setattr,
             has_descriptors,
         }
     }
