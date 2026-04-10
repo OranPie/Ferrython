@@ -226,6 +226,12 @@ impl PyObject {
         ferrython_gc::notify_alloc();
         Arc::new(PyObject { payload })
     }
+    /// Like `wrap` but skips GC allocation tracking.
+    /// Use for leaf types (Int, Float, Str, etc.) that cannot form reference cycles.
+    #[inline(always)]
+    pub fn wrap_leaf(payload: PyObjectPayload) -> PyObjectRef {
+        Arc::new(PyObject { payload })
+    }
     #[inline(always)]
     pub fn none() -> PyObjectRef { NONE_SINGLETON.clone() }
     #[inline(always)]
@@ -240,7 +246,7 @@ impl PyObject {
             // SAFETY: bounds checked above
             unsafe { SMALL_INT_CACHE.get_unchecked((v - SMALL_INT_MIN) as usize).clone() }
         } else {
-            Self::wrap(PyObjectPayload::Int(PyInt::Small(v)))
+            Self::wrap_leaf(PyObjectPayload::Int(PyInt::Small(v)))
         }
     }
     /// Unchecked small-int lookup — caller guarantees SMALL_INT_MIN <= v <= SMALL_INT_MAX.
@@ -251,25 +257,25 @@ impl PyObject {
     /// Returns the small int cache bounds (min, max inclusive).
     #[inline(always)]
     pub const fn small_int_range() -> (i64, i64) { (SMALL_INT_MIN, SMALL_INT_MAX) }
-    pub fn big_int(v: BigInt) -> PyObjectRef { Self::wrap(PyObjectPayload::Int(PyInt::Big(Box::new(v)))) }
+    pub fn big_int(v: BigInt) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Int(PyInt::Big(Box::new(v)))) }
     #[inline(always)]
     pub fn float(v: f64) -> PyObjectRef {
         if v == 0.0 && !v.is_sign_negative() { return FLOAT_ZERO.clone(); }
         if v == 1.0 { return FLOAT_ONE.clone(); }
         if v == -1.0 { return FLOAT_NEG_ONE.clone(); }
-        Self::wrap(PyObjectPayload::Float(v))
+        Self::wrap_leaf(PyObjectPayload::Float(v))
     }
-    pub fn complex(real: f64, imag: f64) -> PyObjectRef { Self::wrap(PyObjectPayload::Complex { real, imag }) }
+    pub fn complex(real: f64, imag: f64) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Complex { real, imag }) }
     #[inline]
-    pub fn str_val(v: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::Str(v)) }
-    pub fn bytes(v: Vec<u8>) -> PyObjectRef { Self::wrap(PyObjectPayload::Bytes(v)) }
-    pub fn bytearray(v: Vec<u8>) -> PyObjectRef { Self::wrap(PyObjectPayload::ByteArray(v)) }
+    pub fn str_val(v: CompactString) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Str(v)) }
+    pub fn bytes(v: Vec<u8>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Bytes(v)) }
+    pub fn bytearray(v: Vec<u8>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::ByteArray(v)) }
     pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef {
         let obj = Self::wrap(PyObjectPayload::List(Arc::new(RwLock::new(items))));
         track_object(&obj);
         obj
     }
-    pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Tuple(items)) }
+    pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Tuple(items)) }
     pub fn set(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(items)))) }
     pub fn dict(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
         let obj = Self::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(items))));
