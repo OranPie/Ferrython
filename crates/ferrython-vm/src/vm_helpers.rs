@@ -756,7 +756,7 @@ impl VirtualMachine {
         }
 
         // For iterators with lazy data: advance one at a time
-        if let PyObjectPayload::Iterator(_) = &iterable.payload {
+        if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } = &iterable.payload {
             let mut result = Vec::new();
             let mut idx = 0usize;
             let mut next_yield = start;
@@ -882,7 +882,7 @@ impl VirtualMachine {
                         return iter_obj.to_list();
                     }
                     // If __iter__ returned a builtin Iterator, use iter_advance
-                    if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_)) {
+                    if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. }) {
                         let mut items = Vec::new();
                         loop {
                             match builtins::iter_advance(&iter_obj)? {
@@ -1602,7 +1602,7 @@ impl VirtualMachine {
         }
         // Get an iterator and collect via VM
         let iter_obj = match &obj.payload {
-            PyObjectPayload::Iterator(_) | PyObjectPayload::Generator(_) => obj.clone(),
+            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::Generator(_) => obj.clone(),
             PyObjectPayload::Instance(_) => {
                 if let Some(iter_fn) = obj.get_attr("__iter__") {
                     let result = self.call_object(iter_fn, vec![])?;

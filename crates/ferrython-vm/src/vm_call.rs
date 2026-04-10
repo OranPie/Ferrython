@@ -2843,7 +2843,7 @@ impl VirtualMachine {
                 }
 
                 // ── Iterator protocol dispatch ──
-                if let PyObjectPayload::Iterator(_) = &receiver.payload {
+                if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } = &receiver.payload {
                     match method_name.as_str() {
                         "__next__" => {
                             match crate::builtins::iter_advance(&receiver)? {

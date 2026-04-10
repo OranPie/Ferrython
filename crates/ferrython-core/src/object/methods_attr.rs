@@ -2243,7 +2243,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("cell"))),
                 _ => None,
             }
-            PyObjectPayload::Iterator(_) => {
+            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } => {
                 match name {
                     "__next__" | "__iter__" | "__length_hint__" => {
                         Some(Arc::new(PyObject {

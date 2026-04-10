@@ -586,6 +586,15 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                     }
                 }
             }
+            PyObjectPayload::RangeIter { current, stop, step } => {
+                let mut result = Vec::new();
+                let mut val = current.get();
+                while (*step > 0 && val < *stop) || (*step < 0 && val > *stop) {
+                    result.push(PyObject::int(val));
+                    val += step;
+                }
+                Ok(result)
+            }
             // namedtuple instances: convert _tuple to list
             PyObjectPayload::Instance(inst) if inst.class.get_attr("__namedtuple__").is_some() => {
                 if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {

@@ -283,6 +283,15 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 }
             }
         }
+        PyObjectPayload::RangeIter { current, stop, step } => {
+            let cur = current.get();
+            let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
+            if done { Ok(None) } else {
+                let v = PyObject::int(cur);
+                current.set(cur + *step);
+                Ok(Some((iter_obj.clone(), v)))
+            }
+        }
         _ => Err(PyException::type_error("iter_advance on non-iterator")),
     }
 }
@@ -325,6 +334,15 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                     } else { Ok(None) }
                 }
                 _ => Err(PyException::type_error("lazy iterator requires VM-level iteration")),
+            }
+        }
+        PyObjectPayload::RangeIter { current, stop, step } => {
+            let cur = current.get();
+            let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
+            if done { Ok(None) } else {
+                let v = PyObject::int(cur);
+                current.set(cur + *step);
+                Ok(Some(v))
             }
         }
         _ => Err(PyException::type_error("iter_next_value on non-iterator")),

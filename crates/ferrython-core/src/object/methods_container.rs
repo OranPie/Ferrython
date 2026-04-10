@@ -90,6 +90,16 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                     _ => Err(PyException::type_error("object of type 'iterator' has no len()")),
                 }
             }
+            PyObjectPayload::RangeIter { current, stop, step } => {
+                let cur = current.get();
+                if *step > 0 && cur < *stop {
+                    Ok(((stop - cur + step - 1) / step) as usize)
+                } else if *step < 0 && cur > *stop {
+                    Ok(((cur - stop - step - 1) / (-step)) as usize)
+                } else {
+                    Ok(0)
+                }
+            }
             PyObjectPayload::DictKeys(m) | PyObjectPayload::DictValues(m) | PyObjectPayload::DictItems(m) => {
                 let map = m.read();
                 let hidden = map.keys().filter(|k| is_hidden_dict_key(k)).count();
@@ -294,6 +304,18 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                     }
                 }
             }
+            PyObjectPayload::RangeIter { current, stop, step } => {
+                if let Some(val) = item.as_int() {
+                    let cur = current.get();
+                    if *step > 0 {
+                        Ok(val >= cur && val < *stop && (val - cur) % step == 0)
+                    } else {
+                        Ok(val <= cur && val > *stop && (cur - val) % (-step) == 0)
+                    }
+                } else {
+                    Ok(false)
+                }
+            }
             PyObjectPayload::DictKeys(m) => {
                 let hk = item.to_hashable_key()?;
                 Ok(m.read().contains_key(&hk))
@@ -346,7 +368,7 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             PyObjectPayload::Range { start, stop, step } => {
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::Range { current: *start, stop: *stop, step: *step })))))
             }
-            PyObjectPayload::Iterator(_) => Ok(obj.clone()),
+            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } => Ok(obj.clone()),
             PyObjectPayload::Generator(_) => Ok(obj.clone()), // generators are their own iterators
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 let items: Vec<PyObjectRef> = b.iter().map(|byte| PyObject::int(*byte as i64)).collect();
