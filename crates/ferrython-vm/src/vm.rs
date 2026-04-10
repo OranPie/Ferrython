@@ -446,7 +446,11 @@ impl VirtualMachine {
                 }
                 // Inline ReturnValue: fast path when no finally blocks are active
                 Opcode::ReturnValue => {
-                    if frame.block_stack.iter().any(|b| b.kind == BlockKind::Finally) {
+                    if frame.block_stack.is_empty() {
+                        // SAFETY: stack non-empty for well-formed bytecode
+                        let val = unsafe { frame.pop_unchecked() };
+                        Ok(Some(val))
+                    } else if frame.block_stack.iter().any(|b| b.kind == BlockKind::Finally) {
                         self.execute_one(instr)
                     } else {
                         // SAFETY: stack non-empty for well-formed bytecode
@@ -603,7 +607,8 @@ impl VirtualMachine {
                         }
                         _ => {
                             if !self.vm_is_truthy(&v)? {
-                                self.call_stack.last_mut().unwrap().ip = instr.arg as usize;
+                                let cs_len = self.call_stack.len();
+                                unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = instr.arg as usize;
                             }
                             Ok(None)
                         }
@@ -624,7 +629,8 @@ impl VirtualMachine {
                         }
                         _ => {
                             if self.vm_is_truthy(&v)? {
-                                self.call_stack.last_mut().unwrap().ip = instr.arg as usize;
+                                let cs_len = self.call_stack.len();
+                                unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = instr.arg as usize;
                             }
                             Ok(None)
                         }
@@ -1353,7 +1359,8 @@ impl VirtualMachine {
                                     _ => !self.vm_is_truthy(&v)?,
                                 };
                                 if is_false {
-                                    self.call_stack.last_mut().unwrap().ip = jump_target;
+                                    let cs_len = self.call_stack.len();
+                                    unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
                                 }
                             }
                             Ok(None)
