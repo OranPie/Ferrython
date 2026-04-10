@@ -48,6 +48,13 @@ macro_rules! sset_local {
     };
 }
 
+/// Unchecked stack index read — only borrows stack field immutably.
+macro_rules! sget {
+    ($frame:expr, $idx:expr) => {
+        unsafe { $frame.stack.get_unchecked($idx) }
+    };
+}
+
 
 use crate::builtins;
 use crate::frame::{BlockKind, Frame, FramePool, SharedBuiltins};
@@ -886,8 +893,8 @@ impl VirtualMachine {
                 Opcode::BinaryAdd | Opcode::InplaceAdd => {
                     let len = frame.stack.len();
                     // SAFETY: well-formed bytecode guarantees stack depth >= 2
-                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
-                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let a = sget!(frame, len - 2);
+                    let b = sget!(frame, len - 1);
                     match (&a.payload, &b.payload) {
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
                             let result = match x.checked_add(*y) {
@@ -940,8 +947,8 @@ impl VirtualMachine {
                 // Inline int/float subtract and multiply (hot in numeric code)
                 Opcode::BinarySubtract | Opcode::InplaceSubtract => {
                     let len = frame.stack.len();
-                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
-                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let a = sget!(frame, len - 2);
+                    let b = sget!(frame, len - 1);
                     match (&a.payload, &b.payload) {
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
                             let result = match x.checked_sub(*y) {
@@ -971,8 +978,8 @@ impl VirtualMachine {
                 }
                 Opcode::BinaryMultiply | Opcode::InplaceMultiply => {
                     let len = frame.stack.len();
-                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
-                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let a = sget!(frame, len - 2);
+                    let b = sget!(frame, len - 1);
                     match (&a.payload, &b.payload) {
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
                             let result = match x.checked_mul(*y) {
@@ -1002,8 +1009,8 @@ impl VirtualMachine {
                 }
                 Opcode::BinaryModulo | Opcode::InplaceModulo => {
                     let len = frame.stack.len();
-                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
-                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let a = sget!(frame, len - 2);
+                    let b = sget!(frame, len - 1);
                     match (&a.payload, &b.payload) {
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                             // Python modulo: result has same sign as divisor
@@ -1021,8 +1028,8 @@ impl VirtualMachine {
                 }
                 Opcode::BinaryFloorDivide | Opcode::InplaceFloorDivide => {
                     let len = frame.stack.len();
-                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
-                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let a = sget!(frame, len - 2);
+                    let b = sget!(frame, len - 1);
                     match (&a.payload, &b.payload) {
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                             // Python floor division: round towards -infinity
@@ -1040,8 +1047,8 @@ impl VirtualMachine {
                 }
                 Opcode::BinaryTrueDivide | Opcode::InplaceTrueDivide => {
                     let len = frame.stack.len();
-                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
-                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let a = sget!(frame, len - 2);
+                    let b = sget!(frame, len - 1);
                     match (&a.payload, &b.payload) {
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                             unsafe { frame.binary_op_result(PyObject::float(*x as f64 / *y as f64)) };
@@ -1066,8 +1073,8 @@ impl VirtualMachine {
                 Opcode::CompareOp if instr.arg <= 5 => {
                     let len = frame.stack.len();
                     // SAFETY: well-formed bytecode guarantees stack depth >= 2
-                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
-                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let a = sget!(frame, len - 2);
+                    let b = sget!(frame, len - 1);
                     // Arc pointer equality fast-path: same object → equal
                     if (instr.arg == 2 || instr.arg == 3) && Arc::ptr_eq(a, b) {
                         let result = instr.arg == 2; // Eq=true, Ne=false
@@ -1115,8 +1122,8 @@ impl VirtualMachine {
                 Opcode::CompareOp if instr.arg == 8 || instr.arg == 9 => {
                     let len = frame.stack.len();
                     // SAFETY: well-formed bytecode guarantees stack depth >= 2
-                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
-                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let a = sget!(frame, len - 2);
+                    let b = sget!(frame, len - 1);
                     let same = Arc::ptr_eq(a, b)
                         || matches!((&a.payload, &b.payload),
                             (PyObjectPayload::BuiltinType(at), PyObjectPayload::BuiltinType(bt)) if at == bt)
@@ -1130,8 +1137,8 @@ impl VirtualMachine {
                 Opcode::CompareOp if instr.arg == 6 || instr.arg == 7 => {
                     let len = frame.stack.len();
                     // SAFETY: well-formed bytecode guarantees stack depth >= 2
-                    let needle = unsafe { frame.stack.get_unchecked(len - 2) }; // a in b
-                    let haystack = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let needle = sget!(frame, len - 2); // a in b
+                    let haystack = sget!(frame, len - 1);
                         let found = match (&haystack.payload, &needle.payload) {
                             // dict: key in dict — direct hashmap contains
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
@@ -1306,18 +1313,18 @@ impl VirtualMachine {
                         PyObjectPayload::Bool(b) => {
                             let r = !b;
                             let len = frame.stack.len();
-                            frame.stack[len - 1] = PyObject::bool_val(r);
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::bool_val(r) };
                             Ok(None)
                         }
                         PyObjectPayload::Int(PyInt::Small(n)) => {
                             let r = *n == 0;
                             let len = frame.stack.len();
-                            frame.stack[len - 1] = PyObject::bool_val(r);
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::bool_val(r) };
                             Ok(None)
                         }
                         PyObjectPayload::None => {
                             let len = frame.stack.len();
-                            frame.stack[len - 1] = PyObject::bool_val(true);
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::bool_val(true) };
                             Ok(None)
                         }
                         _ => self.execute_one(instr),
@@ -1335,12 +1342,12 @@ impl VirtualMachine {
                                 }
                             };
                             let len = frame.stack.len();
-                            frame.stack[len - 1] = r;
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = r };
                             Ok(None)
                         }
                         PyObjectPayload::Float(f) => {
                             let len = frame.stack.len();
-                            frame.stack[len - 1] = PyObject::float(-f);
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::float(-f) };
                             Ok(None)
                         }
                         _ => self.execute_one(instr),
@@ -1463,7 +1470,7 @@ impl VirtualMachine {
                         let mut total_len = 0usize;
                         let mut all_str = true;
                         for i in start..frame.stack.len() {
-                            if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
+                            if let PyObjectPayload::Str(s) = &sget!(frame, i).payload {
                                 total_len += s.len();
                             } else {
                                 all_str = false;
@@ -1473,7 +1480,7 @@ impl VirtualMachine {
                         if all_str {
                             let mut result = String::with_capacity(total_len);
                             for i in start..frame.stack.len() {
-                                if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
+                                if let PyObjectPayload::Str(s) = &sget!(frame, i).payload {
                                     result.push_str(s.as_str());
                                 }
                             }
@@ -1482,10 +1489,10 @@ impl VirtualMachine {
                         } else {
                             let mut result = String::new();
                             for i in start..frame.stack.len() {
-                                if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
+                                if let PyObjectPayload::Str(s) = &sget!(frame, i).payload {
                                     result.push_str(s.as_str());
                                 } else {
-                                    result.push_str(&frame.stack[i].py_to_string());
+                                    result.push_str(&sget!(frame, i).py_to_string());
                                 }
                             }
                             frame.stack.truncate(start);
@@ -1502,7 +1509,7 @@ impl VirtualMachine {
                     let stack_len = frame.stack.len();
                     let func_idx = stack_len - 1 - arg_count;
                     // Single payload check: determine both is_simple and is_recursive
-                    let call_kind = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                    let call_kind = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
                         if pf.is_simple && pf.code.arg_count as usize == arg_count {
                             // Trivial function: body is just `LoadConst X; ReturnValue`
                             // or fused `LoadConstReturnValue X`
@@ -1518,10 +1525,10 @@ impl VirtualMachine {
                     } else { 0 };
                     if call_kind == 3 {
                         // Trivial function: inline the return constant
-                        let const_idx = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                        let const_idx = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
                             pf.code.instructions[0].arg as usize
                         } else { unreachable!() };
-                        let ret_val = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                        let ret_val = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
                             pf.constant_cache[const_idx].clone()
                         } else { unreachable!() };
                         // Drop function + args from stack, push return value
@@ -1550,7 +1557,7 @@ impl VirtualMachine {
                                 let local_idx = ((packed >> 20) & 0xFF) as usize;
                                 let const_idx = ((packed >> 12) & 0xFF) as usize;
                                 if local_idx < arg_count {
-                                    let arg_ref = &frame.stack[args_start + local_idx];
+                                    let arg_ref = sget!(frame, args_start + local_idx);
                                     let const_ref = unsafe { frame.constant_cache.get_unchecked(const_idx) };
                                     let cmp_result = match (&arg_ref.payload, &const_ref.payload) {
                                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
@@ -1569,14 +1576,14 @@ impl VirtualMachine {
                                             if instrs[1].op == Opcode::LoadFastReturnValue {
                                                 let ret_local = instrs[1].arg as usize;
                                                 mini_result = Some(if ret_local < arg_count {
-                                                    frame.stack[args_start + ret_local].clone()
+                                                    sget!(frame, args_start + ret_local).clone()
                                                 } else { PyObject::none() });
                                             } else if instrs[1].op == Opcode::LoadFast
                                                 && instrs[2].op == Opcode::ReturnValue
                                             {
                                                 let ret_local = instrs[1].arg as usize;
                                                 mini_result = Some(if ret_local < arg_count {
-                                                    frame.stack[args_start + ret_local].clone()
+                                                    sget!(frame, args_start + ret_local).clone()
                                                 } else { PyObject::none() });
                                             } else if instrs[1].op == Opcode::LoadConstReturnValue {
                                                 mini_result = Some(unsafe {
@@ -1589,7 +1596,7 @@ impl VirtualMachine {
                                                 if instrs[jt].op == Opcode::LoadFastReturnValue {
                                                     let ret_local = instrs[jt].arg as usize;
                                                     mini_result = Some(if ret_local < arg_count {
-                                                        frame.stack[args_start + ret_local].clone()
+                                                        sget!(frame, args_start + ret_local).clone()
                                                     } else { PyObject::none() });
                                                 } else if instrs[jt].op == Opcode::LoadFast
                                                     && jt + 1 < instrs.len()
@@ -1597,7 +1604,7 @@ impl VirtualMachine {
                                                 {
                                                     let ret_local = instrs[jt].arg as usize;
                                                     mini_result = Some(if ret_local < arg_count {
-                                                        frame.stack[args_start + ret_local].clone()
+                                                        sget!(frame, args_start + ret_local).clone()
                                                     } else { PyObject::none() });
                                                 } else if instrs[jt].op == Opcode::LoadConstReturnValue {
                                                     mini_result = Some(unsafe {
@@ -1628,7 +1635,7 @@ impl VirtualMachine {
                             unsafe { Frame::new_recursive(frame, &mut self.frame_pool) }
                         } else {
                             // Normal path: clone Arcs from function object
-                            let (code, globals, constant_cache) = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                            let (code, globals, constant_cache) = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
                                 (Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache))
                             } else { unreachable!() };
                             let mut f = Frame::new_from_pool(
@@ -1671,12 +1678,12 @@ impl VirtualMachine {
                         } // close the mini-interpreter else (normal frame creation path)
                     } else {
                         // Fast path for common builtins: len(x), range(n)
-                        let builtin_name = if let PyObjectPayload::BuiltinFunction(name) = &frame.stack[func_idx].payload {
+                        let builtin_name = if let PyObjectPayload::BuiltinFunction(name) = &sget!(frame, func_idx).payload {
                             Some(name.as_str())
                         } else { None };
                         match (builtin_name, arg_count) {
                             (Some("len"), 1) => {
-                                let arg = &frame.stack[stack_len - 1];
+                                let arg = sget!(frame, stack_len - 1);
                                 let fast_len = match &arg.payload {
                                     PyObjectPayload::List(v) => Some(v.read().len() as i64),
                                     PyObjectPayload::Tuple(v) => Some(v.len() as i64),
@@ -1695,7 +1702,7 @@ impl VirtualMachine {
                                 }
                             }
                             (Some("range"), 1) => {
-                                let arg = &frame.stack[stack_len - 1];
+                                let arg = sget!(frame, stack_len - 1);
                                 if let PyObjectPayload::Int(PyInt::Small(stop)) = &arg.payload {
                                     let stop = *stop;
                                     unsafe { frame.stack.set_len(func_idx); }
@@ -1710,8 +1717,8 @@ impl VirtualMachine {
                             }
                             // Inline isinstance(obj, cls) — single class check
                             (Some("isinstance"), 2) => {
-                                let obj = &frame.stack[stack_len - 2];
-                                let cls = &frame.stack[stack_len - 1];
+                                let obj = sget!(frame, stack_len - 2);
+                                let cls = sget!(frame, stack_len - 1);
                                 let fast_result = match &cls.payload {
                                     PyObjectPayload::BuiltinType(bt) => {
                                         let bt_str = bt.as_str();
@@ -1756,7 +1763,7 @@ impl VirtualMachine {
                             }
                             // Inline type(obj) for builtin types
                             (Some("type"), 1) => {
-                                let arg = &frame.stack[stack_len - 1];
+                                let arg = sget!(frame, stack_len - 1);
                                 let type_name = match &arg.payload {
                                     PyObjectPayload::Int(_) => Some("int"),
                                     PyObjectPayload::Float(_) => Some("float"),
@@ -1781,7 +1788,7 @@ impl VirtualMachine {
                             }
                             // Inline bool(x) — truthiness conversion
                             (Some("bool"), 1) => {
-                                let arg = &frame.stack[stack_len - 1];
+                                let arg = sget!(frame, stack_len - 1);
                                 let result = match &arg.payload {
                                     PyObjectPayload::Bool(b) => Some(*b),
                                     PyObjectPayload::Int(PyInt::Small(n)) => Some(*n != 0),
@@ -1803,7 +1810,7 @@ impl VirtualMachine {
                             }
                             // Inline int(x) for common conversions
                             (Some("int"), 1) => {
-                                let arg = &frame.stack[stack_len - 1];
+                                let arg = sget!(frame, stack_len - 1);
                                 let result = match &arg.payload {
                                     PyObjectPayload::Int(_) => Some(arg.clone()),
                                     PyObjectPayload::Bool(b) => Some(PyObject::int(if *b { 1 } else { 0 })),
@@ -1820,7 +1827,7 @@ impl VirtualMachine {
                             }
                             // Inline str(x) for common types
                             (Some("str"), 1) => {
-                                let arg = &frame.stack[stack_len - 1];
+                                let arg = sget!(frame, stack_len - 1);
                                 let result = match &arg.payload {
                                     PyObjectPayload::Str(_) => Some(arg.clone()),
                                     PyObjectPayload::Int(PyInt::Small(n)) => {
@@ -1845,7 +1852,7 @@ impl VirtualMachine {
                             }
                             // Inline abs(x) for int/float
                             (Some("abs"), 1) => {
-                                let arg = &frame.stack[stack_len - 1];
+                                let arg = sget!(frame, stack_len - 1);
                                 let result = match &arg.payload {
                                     PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::int(n.abs())),
                                     PyObjectPayload::Float(f) => Some(PyObject::wrap(PyObjectPayload::Float(f.abs()))),
@@ -1925,7 +1932,7 @@ impl VirtualMachine {
                                     let local_idx = ((packed >> 20) & 0xFF) as usize;
                                     let const_idx = ((packed >> 12) & 0xFF) as usize;
                                     if local_idx < arg_count {
-                                        let arg_ref = &frame.stack[args_start + local_idx];
+                                        let arg_ref = sget!(frame, args_start + local_idx);
                                         let const_ref = unsafe { frame.constant_cache.get_unchecked(const_idx) };
                                         let cmp_result = match (&arg_ref.payload, &const_ref.payload) {
                                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
@@ -1943,14 +1950,14 @@ impl VirtualMachine {
                                                 if instrs[1].op == Opcode::LoadFastReturnValue {
                                                     let ret_local = instrs[1].arg as usize;
                                                     mini_result = Some(if ret_local < arg_count {
-                                                        frame.stack[args_start + ret_local].clone()
+                                                        sget!(frame, args_start + ret_local).clone()
                                                     } else { PyObject::none() });
                                                 } else if instrs[1].op == Opcode::LoadFast
                                                     && instrs[2].op == Opcode::ReturnValue
                                                 {
                                                     let ret_local = instrs[1].arg as usize;
                                                     mini_result = Some(if ret_local < arg_count {
-                                                        frame.stack[args_start + ret_local].clone()
+                                                        sget!(frame, args_start + ret_local).clone()
                                                     } else { PyObject::none() });
                                                 } else if instrs[1].op == Opcode::LoadConstReturnValue {
                                                     mini_result = Some(unsafe {
@@ -1963,7 +1970,7 @@ impl VirtualMachine {
                                                     if instrs[jt].op == Opcode::LoadFastReturnValue {
                                                         let ret_local = instrs[jt].arg as usize;
                                                         mini_result = Some(if ret_local < arg_count {
-                                                            frame.stack[args_start + ret_local].clone()
+                                                            sget!(frame, args_start + ret_local).clone()
                                                         } else { PyObject::none() });
                                                     } else if instrs[jt].op == Opcode::LoadFast
                                                         && jt + 1 < instrs.len()
@@ -1971,7 +1978,7 @@ impl VirtualMachine {
                                                     {
                                                         let ret_local = instrs[jt].arg as usize;
                                                         mini_result = Some(if ret_local < arg_count {
-                                                            frame.stack[args_start + ret_local].clone()
+                                                            sget!(frame, args_start + ret_local).clone()
                                                         } else { PyObject::none() });
                                                     } else if instrs[jt].op == Opcode::LoadConstReturnValue {
                                                         mini_result = Some(unsafe {
@@ -2039,7 +2046,7 @@ impl VirtualMachine {
                             } else { None };
                             match (builtin_name, arg_count) {
                                 (Some("len"), 1) => {
-                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let arg = sget!(frame, frame.stack.len() - 1);
                                     let fast_len = match &arg.payload {
                                         PyObjectPayload::List(v) => Some(v.read().len() as i64),
                                         PyObjectPayload::Tuple(v) => Some(v.len() as i64),
@@ -2060,7 +2067,7 @@ impl VirtualMachine {
                                     }
                                 }
                                 (Some("range"), 1) => {
-                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let arg = sget!(frame, frame.stack.len() - 1);
                                     if let PyObjectPayload::Int(PyInt::Small(stop)) = &arg.payload {
                                         let stop = *stop;
                                         { let _ = spop!(frame); }
@@ -2076,7 +2083,7 @@ impl VirtualMachine {
                                     }
                                 }
                                 (Some("str"), 1) => {
-                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let arg = sget!(frame, frame.stack.len() - 1);
                                     let result = match &arg.payload {
                                         PyObjectPayload::Str(_) => Some(arg.clone()),
                                         PyObjectPayload::Int(PyInt::Small(n)) => {
@@ -2103,8 +2110,8 @@ impl VirtualMachine {
                                 }
                                 (Some("isinstance"), 2) => {
                                     let slen = frame.stack.len();
-                                    let obj = &frame.stack[slen - 2];
-                                    let cls = &frame.stack[slen - 1];
+                                    let obj = sget!(frame, slen - 2);
+                                    let cls = sget!(frame, slen - 1);
                                     let result = if let PyObjectPayload::BuiltinType(bt) = &cls.payload {
                                         match bt.as_str() {
                                             "int" => Some(matches!(&obj.payload, PyObjectPayload::Int(_) | PyObjectPayload::Bool(_))),
@@ -2132,7 +2139,7 @@ impl VirtualMachine {
                                     }
                                 }
                                 (Some("type"), 1) => {
-                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let arg = sget!(frame, frame.stack.len() - 1);
                                     let type_obj = match &arg.payload {
                                         PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
                                         _ => None,
@@ -2148,7 +2155,7 @@ impl VirtualMachine {
                                     }
                                 }
                                 (Some("int"), 1) => {
-                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let arg = sget!(frame, frame.stack.len() - 1);
                                     let result = match &arg.payload {
                                         PyObjectPayload::Int(_) => Some(arg.clone()),
                                         PyObjectPayload::Bool(b) => Some(PyObject::int(*b as i64)),
@@ -2165,7 +2172,7 @@ impl VirtualMachine {
                                     }
                                 }
                                 (Some("float"), 1) => {
-                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let arg = sget!(frame, frame.stack.len() - 1);
                                     let result = match &arg.payload {
                                         PyObjectPayload::Float(_) => Some(arg.clone()),
                                         PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::float(*n as f64)),
@@ -2182,7 +2189,7 @@ impl VirtualMachine {
                                     }
                                 }
                                 (Some("bool"), 1) => {
-                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let arg = sget!(frame, frame.stack.len() - 1);
                                     let result = match &arg.payload {
                                         PyObjectPayload::Bool(_) => Some(arg.clone()),
                                         PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::bool_val(*n != 0)),
@@ -2204,7 +2211,7 @@ impl VirtualMachine {
                                     }
                                 }
                                 (Some("abs"), 1) => {
-                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let arg = sget!(frame, frame.stack.len() - 1);
                                     let result = match &arg.payload {
                                         PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::int(n.abs())),
                                         PyObjectPayload::Float(f) => Some(PyObject::float(f.abs())),
@@ -2246,7 +2253,7 @@ impl VirtualMachine {
                     let mut fast_kind: u8 = 0;
                     let mut fast_val: Option<PyObjectRef> = None;
                     if stack_len > 0 {
-                        let obj = &frame.stack[stack_len - 1];
+                        let obj = sget!(frame, stack_len - 1);
                         match &obj.payload {
                             PyObjectPayload::Instance(inst) => {
                                 let skip_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
@@ -2329,7 +2336,7 @@ impl VirtualMachine {
                     let arg_count = instr.arg as usize;
                     let stack_len = frame.stack.len();
                     let base_idx = stack_len - arg_count - 2;
-                    let slot_0 = &frame.stack[base_idx];
+                    let slot_0 = sget!(frame, base_idx);
                     // Fast path: slot_0 is a Python function (unbound method)
                     let fast_data = if !matches!(&slot_0.payload, PyObjectPayload::None) {
                         if let PyObjectPayload::Function(pf) = &slot_0.payload {
@@ -2384,14 +2391,14 @@ impl VirtualMachine {
                     } else {
                         // Fast path for builtin type methods (list.append, dict.get, etc.)
                         // LoadMethod pushes [name_as_Str, receiver] for builtin types
-                        let is_builtin_str = matches!(&frame.stack[base_idx].payload, PyObjectPayload::Str(_));
+                        let is_builtin_str = matches!(&sget!(frame, base_idx).payload, PyObjectPayload::Str(_));
                         if is_builtin_str {
                             // Check for ultra-fast inline list.append / list.pop
                             let is_list_append = arg_count == 1
-                                && matches!((&frame.stack[base_idx].payload, &frame.stack[base_idx + 1].payload),
+                                && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
                                     (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "append");
                             let is_list_pop = !is_list_append && arg_count == 0
-                                && matches!((&frame.stack[base_idx].payload, &frame.stack[base_idx + 1].payload),
+                                && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
                                     (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "pop");
                             if is_list_append {
                                 // Stack: [name, receiver, val] — peek receiver, pop val + truncate
@@ -2427,7 +2434,7 @@ impl VirtualMachine {
                                     } else { unreachable!() }
                                 }
                             } else if arg_count == 1
-                                && matches!((&frame.stack[base_idx].payload, &frame.stack[base_idx + 1].payload),
+                                && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
                                     (PyObjectPayload::Str(n), PyObjectPayload::Dict(_)) if n.as_str() == "get")
                             {
                                 // Inline dict.get(key) — returns None for missing keys
@@ -2453,10 +2460,10 @@ impl VirtualMachine {
                             } else {
                                 // Inline fast paths for common methods — check type+name first, then pop
                                 let inline_kind: u8 = {
-                                    let name_s = if let PyObjectPayload::Str(n) = &frame.stack[base_idx].payload {
+                                    let name_s = if let PyObjectPayload::Str(n) = &sget!(frame, base_idx).payload {
                                         n.as_str()
                                     } else { "" };
-                                    let recv = &frame.stack[base_idx + 1].payload;
+                                    let recv = &sget!(frame, base_idx + 1).payload;
                                     match (name_s, recv, arg_count) {
                                         ("strip", PyObjectPayload::Str(_), 0) => 1,
                                         ("lstrip", PyObjectPayload::Str(_), 0) => 2,
@@ -2550,8 +2557,8 @@ impl VirtualMachine {
                 Opcode::BinarySubscr => {
                     let len = frame.stack.len();
                     // SAFETY: well-formed bytecode guarantees stack depth >= 2
-                    let obj = unsafe { frame.stack.get_unchecked(len - 2) };
-                    let key = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let obj = sget!(frame, len - 2);
+                    let key = sget!(frame, len - 1);
                     match (&obj.payload, &key.payload) {
                             // list[int] — direct index
                             (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
@@ -2623,8 +2630,8 @@ impl VirtualMachine {
                 Opcode::StoreSubscr => {
                     let len = frame.stack.len();
                     // SAFETY: well-formed bytecode guarantees stack depth >= 3
-                    let key = unsafe { frame.stack.get_unchecked(len - 1) };
-                    let obj = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let key = sget!(frame, len - 1);
+                    let obj = sget!(frame, len - 2);
                         match (&obj.payload, &key.payload) {
                             // list[int] = val
                             (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
@@ -2632,7 +2639,7 @@ impl VirtualMachine {
                                 let i = *idx;
                                 let actual = if i < 0 { i + items.len() as i64 } else { i };
                                 if actual >= 0 && (actual as usize) < items.len() {
-                                    let v = unsafe { frame.stack.get_unchecked(len - 3) }.clone();
+                                    let v = sget!(frame, len - 3).clone();
                                     items[actual as usize] = v;
                                     drop(items);
                                     frame.stack.truncate(len - 3);
@@ -2645,7 +2652,7 @@ impl VirtualMachine {
                             // dict[str] = val
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
                                 let hk = HashableKey::Str(s.clone());
-                                let v = unsafe { frame.stack.get_unchecked(len - 3) }.clone();
+                                let v = sget!(frame, len - 3).clone();
                                 map.write().insert(hk, v);
                                 frame.stack.truncate(len - 3);
                                 Ok(None)
@@ -2653,7 +2660,7 @@ impl VirtualMachine {
                             // dict[int] = val
                             (PyObjectPayload::Dict(map), PyObjectPayload::Int(PyInt::Small(n))) => {
                                 let hk = HashableKey::Int(PyInt::Small(*n));
-                                let v = unsafe { frame.stack.get_unchecked(len - 3) }.clone();
+                                let v = sget!(frame, len - 3).clone();
                                 map.write().insert(hk, v);
                                 frame.stack.truncate(len - 3);
                                 Ok(None)
@@ -2661,7 +2668,7 @@ impl VirtualMachine {
                             // dict[bool] = val
                             (PyObjectPayload::Dict(map), PyObjectPayload::Bool(b)) => {
                                 let hk = HashableKey::Int(PyInt::Small(*b as i64));
-                                let v = unsafe { frame.stack.get_unchecked(len - 3) }.clone();
+                                let v = sget!(frame, len - 3).clone();
                                 map.write().insert(hk, v);
                                 frame.stack.truncate(len - 3);
                                 Ok(None)
@@ -2674,7 +2681,7 @@ impl VirtualMachine {
                     let item = spop!(frame);
                     let idx = instr.arg as usize;
                     let stack_pos = frame.stack.len() - idx;
-                    if let PyObjectPayload::List(items) = &frame.stack[stack_pos].payload {
+                    if let PyObjectPayload::List(items) = &sget!(frame, stack_pos).payload {
                         items.write().push(item);
                     }
                     Ok(None)
@@ -2803,7 +2810,7 @@ impl VirtualMachine {
                 }
                 Opcode::LoadAttr => {
                     let name = &frame.code.names[instr.arg as usize];
-                    let obj = &frame.stack[frame.stack.len() - 1];
+                    let obj = sget!(frame, frame.stack.len() - 1);
                     // Fast path: Instance with no __getattribute__ override, attr in instance dict,
                     // and attr is not a Function/Property (those need BoundMethod wrapping)
                     let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
@@ -2823,7 +2830,7 @@ impl VirtualMachine {
                     } else { None };
                     if let Some(val) = fast_val {
                         let len = frame.stack.len();
-                        frame.stack[len - 1] = val;
+                        unsafe { *frame.stack.get_unchecked_mut(len - 1) = val };
                         Ok(None)
                     } else {
                         self.execute_one(instr)
@@ -2837,7 +2844,7 @@ impl VirtualMachine {
                     let stack_len = frame.stack.len();
                     // Fast path: Instance with no __setattr__, no descriptors, no __slots__
                     let fast = if stack_len >= 2 {
-                        if let PyObjectPayload::Instance(inst) = &frame.stack[stack_len - 1].payload {
+                        if let PyObjectPayload::Instance(inst) = &sget!(frame, stack_len - 1).payload {
                             if let PyObjectPayload::Class(cd) = &inst.class.payload {
                                 !cd.has_setattr && !cd.has_descriptors && cd.slots.is_none()
                             } else { false }
@@ -2865,8 +2872,8 @@ impl VirtualMachine {
                     let jump_target = (instr.arg & 0x00FF_FFFF) as usize;
                     let len = frame.stack.len();
                     if len >= 2 {
-                        let a = &frame.stack[len - 2];
-                        let b = &frame.stack[len - 1];
+                        let a = sget!(frame, len - 2);
+                        let b = sget!(frame, len - 1);
                         let fast_result = match (&a.payload, &b.payload) {
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
                                 match cmp_op {
