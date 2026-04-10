@@ -237,11 +237,20 @@ impl PyObject {
     #[inline(always)]
     pub fn int(v: i64) -> PyObjectRef {
         if v >= SMALL_INT_MIN && v <= SMALL_INT_MAX {
-            SMALL_INT_CACHE[(v - SMALL_INT_MIN) as usize].clone()
+            // SAFETY: bounds checked above
+            unsafe { SMALL_INT_CACHE.get_unchecked((v - SMALL_INT_MIN) as usize).clone() }
         } else {
             Self::wrap(PyObjectPayload::Int(PyInt::Small(v)))
         }
     }
+    /// Unchecked small-int lookup — caller guarantees SMALL_INT_MIN <= v <= SMALL_INT_MAX.
+    #[inline(always)]
+    pub unsafe fn int_cached_unchecked(v: i64) -> PyObjectRef {
+        SMALL_INT_CACHE.get_unchecked((v - SMALL_INT_MIN) as usize).clone()
+    }
+    /// Returns the small int cache bounds (min, max inclusive).
+    #[inline(always)]
+    pub const fn small_int_range() -> (i64, i64) { (SMALL_INT_MIN, SMALL_INT_MAX) }
     pub fn big_int(v: BigInt) -> PyObjectRef { Self::wrap(PyObjectPayload::Int(PyInt::Big(Box::new(v)))) }
     #[inline(always)]
     pub fn float(v: f64) -> PyObjectRef {
