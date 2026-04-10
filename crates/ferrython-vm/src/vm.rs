@@ -1341,9 +1341,29 @@ impl VirtualMachine {
                     frame.pop_block();
                     Ok(None)
                 }
+                Opcode::PopExcept => {
+                    frame.pop_block();
+                    self.active_exception = None;
+                    ferrython_stdlib::clear_exc_info();
+                    ferrython_core::error::clear_thread_exc_info();
+                    Ok(None)
+                }
                 Opcode::BeginFinally => {
                     spush!(frame, PyObject::none());
                     Ok(None)
+                }
+                // EndFinally fast path: TOS is None → no exception, no pending return
+                Opcode::EndFinally => {
+                    if frame.pending_return.is_none() && !frame.stack.is_empty() {
+                        if matches!(unsafe { frame.peek_unchecked() }.payload, PyObjectPayload::None) {
+                            let _ = spop!(frame);
+                            Ok(None)
+                        } else {
+                            self.execute_one(instr)
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
                 }
                 // Inline unary ops for common types
                 Opcode::UnaryNot => {
