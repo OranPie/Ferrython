@@ -653,6 +653,25 @@ impl VirtualMachine {
                                 unsafe { frame.binary_op_result(PyObject::float(r)) };
                                 Ok(None)
                             }
+                            (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
+                                let mut s = String::with_capacity(x.len() + y.len());
+                                s.push_str(x);
+                                s.push_str(y);
+                                unsafe { frame.binary_op_result(PyObject::str_val(s.into())) };
+                                Ok(None)
+                            }
+                            (PyObjectPayload::List(x), PyObjectPayload::List(y)) => {
+                                let mut items = x.read().clone();
+                                items.extend(y.read().iter().cloned());
+                                unsafe { frame.binary_op_result(PyObject::list(items)) };
+                                Ok(None)
+                            }
+                            (PyObjectPayload::Tuple(x), PyObjectPayload::Tuple(y)) => {
+                                let mut items = x.to_vec();
+                                items.extend(y.iter().cloned());
+                                unsafe { frame.binary_op_result(PyObject::tuple(items)) };
+                                Ok(None)
+                            }
                             _ => self.execute_one(instr),
                         }
                     } else {
@@ -934,6 +953,54 @@ impl VirtualMachine {
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline bitwise and power ops for ints
+                Opcode::BinaryAnd | Opcode::InplaceAnd
+                | Opcode::BinaryOr | Opcode::InplaceOr
+                | Opcode::BinaryXor | Opcode::InplaceXor
+                | Opcode::BinaryLshift | Opcode::InplaceLshift
+                | Opcode::BinaryRshift | Opcode::InplaceRshift
+                | Opcode::BinaryPower | Opcode::InplacePower => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) =
+                            (&frame.stack[len - 2].payload, &frame.stack[len - 1].payload)
+                        {
+                            let (xv, yv) = (*x, *y);
+                            let result = match instr.op {
+                                Opcode::BinaryAnd | Opcode::InplaceAnd => Some(PyObject::int(xv & yv)),
+                                Opcode::BinaryOr | Opcode::InplaceOr => Some(PyObject::int(xv | yv)),
+                                Opcode::BinaryXor | Opcode::InplaceXor => Some(PyObject::int(xv ^ yv)),
+                                Opcode::BinaryLshift | Opcode::InplaceLshift if yv >= 0 && yv < 64 =>
+                                    xv.checked_shl(yv as u32).map(PyObject::int),
+                                Opcode::BinaryRshift | Opcode::InplaceRshift if yv >= 0 && yv < 64 =>
+                                    Some(PyObject::int(xv >> yv as u32)),
+                                Opcode::BinaryPower | Opcode::InplacePower if yv >= 0 && yv <= 63 => {
+                                    // Fast small-exponent path
+                                    let mut r: i64 = 1;
+                                    let mut overflow = false;
+                                    for _ in 0..yv {
+                                        match r.checked_mul(xv) {
+                                            Some(v) => r = v,
+                                            None => { overflow = true; break; }
+                                        }
+                                    }
+                                    if overflow { None } else { Some(PyObject::int(r)) }
+                                }
+                                _ => None,
+                            };
+                            if let Some(val) = result {
+                                unsafe { frame.binary_op_result(val) };
+                                Ok(None)
+                            } else {
+                                self.execute_one(instr)
+                            }
+                        } else {
+                            self.execute_one(instr)
                         }
                     } else {
                         self.execute_one(instr)
