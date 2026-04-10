@@ -1165,37 +1165,52 @@ impl VirtualMachine {
                     let name_idx = instr.arg as usize;
                     let stack_len = frame.stack.len();
                     // 0 = fallback, 1 = bound method (val in fast_val), 2 = instance attr (val in fast_val)
+                    // 3 = builtin bound method (method_name in fast_name, receiver on TOS)
                     let mut fast_kind: u8 = 0;
                     let mut fast_val: Option<PyObjectRef> = None;
                     if stack_len > 0 {
                         let obj = &frame.stack[stack_len - 1];
-                        if let PyObjectPayload::Instance(inst) = &obj.payload {
-                            let skip_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                !cd.has_getattribute
-                            } else { false };
-                            if skip_ga && inst.dict_storage.is_none() && !inst.is_special {
-                                let name = &frame.code.names[name_idx];
-                                if name.as_str() != "__class__" && name.as_str() != "__dict__" {
-                                    let class = &inst.class;
-                                    if let PyObjectPayload::Class(cd) = &class.payload {
-                                        if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
-                                            if matches!(&class_val.payload, PyObjectPayload::Function(_)) {
-                                                fast_kind = 1;
-                                                fast_val = Some(class_val);
-                                            }
-                                        } else if let Some(v) = inst.attrs.read().get(name.as_str()).cloned() {
-                                            fast_kind = 2;
-                                            fast_val = Some(v);
-                                        } else if let Some(method) = lookup_in_class_mro(class, name.as_str()) {
-                                            if matches!(&method.payload,
-                                                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
-                                                fast_kind = 1;
-                                                fast_val = Some(method);
+                        match &obj.payload {
+                            PyObjectPayload::Instance(inst) => {
+                                let skip_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                                    !cd.has_getattribute
+                                } else { false };
+                                if skip_ga && inst.dict_storage.is_none() && !inst.is_special {
+                                    let name = &frame.code.names[name_idx];
+                                    if name.as_str() != "__class__" && name.as_str() != "__dict__" {
+                                        let class = &inst.class;
+                                        if let PyObjectPayload::Class(cd) = &class.payload {
+                                            if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
+                                                if matches!(&class_val.payload, PyObjectPayload::Function(_)) {
+                                                    fast_kind = 1;
+                                                    fast_val = Some(class_val);
+                                                }
+                                            } else if let Some(v) = inst.attrs.read().get(name.as_str()).cloned() {
+                                                fast_kind = 2;
+                                                fast_val = Some(v);
+                                            } else if let Some(method) = lookup_in_class_mro(class, name.as_str()) {
+                                                if matches!(&method.payload,
+                                                    PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                                                    fast_kind = 1;
+                                                    fast_val = Some(method);
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
+                            // Fast path for builtin type method calls (list.append, dict.get, etc.)
+                            // Creates BuiltinBoundMethod inline to avoid full get_attr dispatch
+                            PyObjectPayload::List(_) | PyObjectPayload::Dict(_)
+                            | PyObjectPayload::Str(_) | PyObjectPayload::Tuple(_)
+                            | PyObjectPayload::Set(_) | PyObjectPayload::ByteArray(_)
+                            | PyObjectPayload::Bytes(_) | PyObjectPayload::InstanceDict(_) => {
+                                let name = &frame.code.names[name_idx];
+                                if name.as_str() != "__class__" {
+                                    fast_kind = 3;
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     match fast_kind {
@@ -1215,6 +1230,20 @@ impl VirtualMachine {
                             let val = fast_val.unwrap();
                             *frame.stack.last_mut().unwrap() = PyObject::none();
                             frame.stack.push(val);
+                            Ok(None)
+                        }
+                        3 => {
+                            // Builtin type method: create BuiltinBoundMethod and use slow protocol
+                            let name = frame.code.names[name_idx].clone();
+                            let recv = frame.stack.pop().unwrap();
+                            let bound = Arc::new(PyObject {
+                                payload: PyObjectPayload::BuiltinBoundMethod {
+                                    receiver: recv,
+                                    method_name: name,
+                                }
+                            });
+                            frame.stack.push(PyObject::none());
+                            frame.stack.push(bound);
                             Ok(None)
                         }
                         _ => self.execute_one(instr),
