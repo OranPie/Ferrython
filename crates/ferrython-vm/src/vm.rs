@@ -1233,17 +1233,15 @@ impl VirtualMachine {
                             Ok(None)
                         }
                         3 => {
-                            // Builtin type method: create BuiltinBoundMethod and use slow protocol
+                            // Builtin type method: use unbound protocol with Str tag
+                            // Stack: [name_as_Str, receiver] — CallMethod detects Str in slot_0
+                            // Avoids Arc allocation for BuiltinBoundMethod entirely
                             let name = frame.code.names[name_idx].clone();
-                            let recv = frame.stack.pop().unwrap();
-                            let bound = Arc::new(PyObject {
-                                payload: PyObjectPayload::BuiltinBoundMethod {
-                                    receiver: recv,
-                                    method_name: name,
-                                }
-                            });
-                            frame.stack.push(PyObject::none());
-                            frame.stack.push(bound);
+                            let name_obj = PyObject::str_val(name);
+                            // receiver is already TOS, insert name below it
+                            let recv_idx = frame.stack.len() - 1;
+                            frame.stack.push(name_obj);
+                            frame.stack.swap(recv_idx, recv_idx + 1);
                             Ok(None)
                         }
                         _ => self.execute_one(instr),
@@ -1307,23 +1305,19 @@ impl VirtualMachine {
                             Ok(None)
                         }
                     } else {
-                        // Fast path for BuiltinBoundMethod (list.append, dict.get, etc.)
-                        // Avoids execute_one → call_object → long dispatch chain
-                        let is_builtin_bound = {
-                            let slot_1 = &frame.stack[base_idx + 1];
-                            matches!(&slot_1.payload, PyObjectPayload::BuiltinBoundMethod { .. })
-                        };
-                        if is_builtin_bound {
-                            // Extract args, then destructure the bound method
+                        // Fast path for builtin type methods (list.append, dict.get, etc.)
+                        // LoadMethod pushes [name_as_Str, receiver] for builtin types
+                        let is_builtin_str = matches!(&frame.stack[base_idx].payload, PyObjectPayload::Str(_));
+                        if is_builtin_str {
                             let mut args = Vec::with_capacity(arg_count);
                             for _ in 0..arg_count {
                                 args.push(frame.stack.pop().unwrap());
                             }
                             args.reverse();
-                            let slot_1 = frame.stack.pop().unwrap(); // BuiltinBoundMethod
-                            frame.stack.pop(); // None sentinel
-                            if let PyObjectPayload::BuiltinBoundMethod { ref receiver, ref method_name } = slot_1.payload {
-                                let result = crate::builtins::call_method(receiver, method_name.as_str(), &args)?;
+                            let receiver = frame.stack.pop().unwrap();
+                            let name_obj = frame.stack.pop().unwrap();
+                            if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                let result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
                                 frame.stack.push(result);
                                 Ok(None)
                             } else {
