@@ -966,6 +966,54 @@ impl VirtualMachine {
                     return Ok(Some(value));
                 }
             }
+            Opcode::LoadFastReturnValue => {
+                let frame = self.vm_frame();
+                let val = match frame.locals.get(instr.arg as usize).and_then(|v| v.as_ref()) {
+                    Some(v) => v.clone(),
+                    None => return Err(PyException::name_error(
+                        format!("local variable '{}' referenced before assignment",
+                            frame.code.varnames.get(instr.arg as usize).map(|s| s.as_str()).unwrap_or("?")))),
+                };
+                // Handle finally blocks
+                let mut found_finally = false;
+                while let Some(block) = frame.block_stack.last() {
+                    if block.kind == BlockKind::Finally {
+                        let handler = block.handler;
+                        frame.block_stack.pop();
+                        frame.pending_return = Some(val.clone());
+                        frame.push(PyObject::none());
+                        frame.ip = handler;
+                        found_finally = true;
+                        break;
+                    } else {
+                        frame.block_stack.pop();
+                    }
+                }
+                if !found_finally {
+                    return Ok(Some(val));
+                }
+            }
+            Opcode::LoadConstReturnValue => {
+                let frame = self.vm_frame();
+                let val = frame.constant_cache[instr.arg as usize].clone();
+                let mut found_finally = false;
+                while let Some(block) = frame.block_stack.last() {
+                    if block.kind == BlockKind::Finally {
+                        let handler = block.handler;
+                        frame.block_stack.pop();
+                        frame.pending_return = Some(val.clone());
+                        frame.push(PyObject::none());
+                        frame.ip = handler;
+                        found_finally = true;
+                        break;
+                    } else {
+                        frame.block_stack.pop();
+                    }
+                }
+                if !found_finally {
+                    return Ok(Some(val));
+                }
+            }
             Opcode::ImportName => {
                 let frame = self.vm_frame();
                 let fromlist = frame.pop();

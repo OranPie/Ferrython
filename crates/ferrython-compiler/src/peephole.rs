@@ -829,6 +829,22 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // LoadFast + ReturnValue → LoadFastReturnValue (common function return)
+        if a.op == Opcode::LoadFast && b.op == Opcode::ReturnValue {
+            code.instructions[i] = Instruction::new(Opcode::LoadFastReturnValue, a.arg);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
+        // LoadConst + ReturnValue → LoadConstReturnValue (return literal)
+        if a.op == Opcode::LoadConst && b.op == Opcode::ReturnValue {
+            code.instructions[i] = Instruction::new(Opcode::LoadConstReturnValue, a.arg);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
         if a.arg > 0xFFFF || b.arg > 0xFFFF {
             i += 1;
             continue;

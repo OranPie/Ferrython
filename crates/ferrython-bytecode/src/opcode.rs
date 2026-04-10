@@ -220,6 +220,12 @@ pub enum Opcode {
     /// Fused LoadFast + LoadConst + BinaryAdd + StoreFast — hot constant-add pattern (x = x + 1.0).
     /// arg encoding: (local_idx << 16) | (const_idx << 8) | dest
     LoadFastLoadConstBinaryAddStoreFast = 225,
+    /// Fused LoadFast + ReturnValue — common function return pattern (`return x`).
+    /// arg = local_idx
+    LoadFastReturnValue = 226,
+    /// Fused LoadConst + ReturnValue — common literal return (`return 0`, `return None`).
+    /// arg = const_idx
+    LoadConstReturnValue = 227,
 }
 
 impl Opcode {
@@ -347,6 +353,8 @@ impl Opcode {
             Self::LoadFastLoadMethod => 2, // pushes [slot_0, slot_1] like LoadMethod
             Self::LoadFastLoadFastBinaryAddStoreFast => 0,
             Self::LoadFastLoadConstBinaryAddStoreFast => 0,
+            Self::LoadFastReturnValue => 0, // reads local, returns it (no net stack change)
+            Self::LoadConstReturnValue => 0, // reads const, returns it
         }
     }
 

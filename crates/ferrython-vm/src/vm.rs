@@ -815,6 +815,37 @@ impl VirtualMachine {
                         Ok(Some(val))
                     }
                 }
+                // Fused LoadFast + ReturnValue — common `return x` pattern
+                Opcode::LoadFastReturnValue => {
+                    if frame.block_stack.is_empty() {
+                        match unsafe { frame.get_local_unchecked(instr.arg as usize) } {
+                            Some(val) => Ok(Some(val.clone())),
+                            None => Self::err_unbound_local(&frame.code.varnames, instr.arg as usize),
+                        }
+                    } else {
+                        // Fallback: push to stack and use normal ReturnValue
+                        match unsafe { frame.get_local_unchecked(instr.arg as usize) } {
+                            Some(val) => {
+                                frame.stack.push(val.clone());
+                                self.execute_one(ferrython_bytecode::Instruction::new(
+                                    Opcode::ReturnValue, 0))
+                            }
+                            None => Self::err_unbound_local(&frame.code.varnames, instr.arg as usize),
+                        }
+                    }
+                }
+                // Fused LoadConst + ReturnValue — common `return 0`, `return None`
+                Opcode::LoadConstReturnValue => {
+                    if frame.block_stack.is_empty() {
+                        let val = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize) };
+                        Ok(Some(val.clone()))
+                    } else {
+                        let val = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize) };
+                        frame.stack.push(val.clone());
+                        self.execute_one(ferrython_bytecode::Instruction::new(
+                            Opcode::ReturnValue, 0))
+                    }
+                }
 
                 // Inline int+int for BinaryAdd (hot in arithmetic loops)
                 Opcode::BinaryAdd | Opcode::InplaceAdd => {
@@ -3381,7 +3412,8 @@ impl VirtualMachine {
             | Opcode::LoadFastLoadMethod
                 => self.exec_call_ops(instr),
 
-            Opcode::ReturnValue | Opcode::ImportName | Opcode::ImportFrom
+            Opcode::ReturnValue | Opcode::LoadFastReturnValue
+            | Opcode::LoadConstReturnValue | Opcode::ImportName | Opcode::ImportFrom
             | Opcode::ImportStar
                 => self.exec_return_import(instr),
 
