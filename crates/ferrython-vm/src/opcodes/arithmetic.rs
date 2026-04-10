@@ -361,7 +361,7 @@ impl VirtualMachine {
                 else { with_enum_fallback!(a, b, sub) }
             }
             // LoadFastLoadConstBinaryAdd fallback: operands already on stack, treat as add
-            Opcode::LoadFastLoadConstBinaryAdd => {
+            Opcode::LoadFastLoadConstBinaryAdd | Opcode::LoadFastLoadFastBinaryAdd => {
                 if let Some(r) = self.try_binary_dunder(&a, &b, "__add__", Some("__radd__"))? { r }
                 else { with_enum_fallback!(a, b, add) }
             }

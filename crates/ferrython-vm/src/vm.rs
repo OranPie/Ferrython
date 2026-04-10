@@ -431,6 +431,41 @@ impl VirtualMachine {
                         ))),
                     }
                 }
+                Opcode::LoadFastLoadFastBinaryAdd => {
+                    let idx1 = (instr.arg >> 16) as usize;
+                    let idx2 = (instr.arg & 0xFFFF) as usize;
+                    let a = unsafe { frame.get_local_unchecked(idx1) }.cloned();
+                    let b = unsafe { frame.get_local_unchecked(idx2) }.cloned();
+                    match (a, b) {
+                        (Some(a), Some(b)) => {
+                            match (&a.payload, &b.payload) {
+                                (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                    let result = match x.checked_add(*y) {
+                                        Some(r) => PyObject::int(r),
+                                        None => {
+                                            use num_bigint::BigInt;
+                                            PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
+                                        }
+                                    };
+                                    frame.stack.push(result);
+                                    Ok(None)
+                                }
+                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                    frame.stack.push(PyObject::float(*x + *y));
+                                    Ok(None)
+                                }
+                                _ => {
+                                    frame.stack.push(a);
+                                    frame.stack.push(b);
+                                    self.execute_one(ferrython_bytecode::Instruction::new(
+                                        Opcode::BinaryAdd, 0))
+                                }
+                            }
+                        }
+                        (None, _) | (_, None) => Err(PyException::name_error(
+                            String::from("local variable referenced before assignment"))),
+                    }
+                }
                 Opcode::PopTop => {
                     // SAFETY: stack non-empty for well-formed bytecode
                     drop(unsafe { frame.pop_unchecked() });
@@ -2291,6 +2326,7 @@ impl VirtualMachine {
             | Opcode::BinaryMatrixMultiply | Opcode::InplaceMatrixMultiply
             | Opcode::LoadFastLoadConstBinarySub
             | Opcode::LoadFastLoadConstBinaryAdd
+            | Opcode::LoadFastLoadFastBinaryAdd
                 => self.exec_binary_ops(instr),
 
             Opcode::BinarySubscr | Opcode::StoreSubscr | Opcode::DeleteSubscr

@@ -198,6 +198,8 @@ pub enum Opcode {
     /// Fused LoadFast + LoadAttr — load local variable then read attribute.
     /// arg encoding: (local_idx << 16) | name_idx.
     LoadFastLoadAttr = 218,
+    /// Fused LoadFast + LoadFast + BinaryAdd (a + b where both are locals)
+    LoadFastLoadFastBinaryAdd = 219,
 }
 
 impl Opcode {
@@ -311,6 +313,7 @@ impl Opcode {
             Self::CompareOpPopJumpIfFalse => -2, // pops 2 operands, pushes nothing
             Self::LoadFastLoadConstBinarySub => 1, // loads local + const, subtracts, pushes result
             Self::LoadFastLoadConstBinaryAdd => 1, // loads local + const, adds, pushes result
+            Self::LoadFastLoadFastBinaryAdd => 1, // loads two locals, adds, pushes result
             Self::ForIterStoreFast => 0, // either jumps (pops iter) or stores to local (net 0)
             Self::LoadGlobalCallFunction => {
                 // Pops arg_count args from stack, pushes result (function never on stack)
