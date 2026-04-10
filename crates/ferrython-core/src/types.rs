@@ -4,6 +4,7 @@ use crate::error::{PyException, PyResult};
 use crate::object::{PyObject, PyObjectMethods, PyObjectRef};
 use compact_str::CompactString;
 use ferrython_bytecode::CodeObject;
+use ferrython_bytecode::code::CodeFlags;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
@@ -240,30 +241,57 @@ pub struct PyFunction {
     pub annotations: IndexMap<CompactString, PyObjectRef>,
     /// User-settable attributes (e.g., __name__, __doc__, __wrapped__)
     pub attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
+    /// Cached: true if function can use the fast inline CallFunction path
+    /// (exact positional args, no *args/**kwargs/generators/closures/cells)
+    pub is_simple: bool,
 }
 
 impl PyFunction {
+    /// Check if function supports fast inline CallFunction
+    /// (exact positional args, no *args/**kwargs/generators/closures/cells).
+    #[inline]
+    fn compute_is_simple(code: &CodeObject, closure: &[Arc<RwLock<Option<PyObjectRef>>>]) -> bool {
+        code.kwonlyarg_count == 0
+            && !code.flags.contains(CodeFlags::VARARGS)
+            && !code.flags.contains(CodeFlags::VARKEYWORDS)
+            && !code.flags.contains(CodeFlags::GENERATOR)
+            && !code.flags.contains(CodeFlags::COROUTINE)
+            && closure.is_empty()
+            && code.cellvars.is_empty()
+            && code.freevars.is_empty()
+    }
+
+    /// Public static version for external construction sites.
+    #[inline]
+    pub fn compute_is_simple_static(code: &CodeObject, closure: &[Arc<RwLock<Option<PyObjectRef>>>]) -> bool {
+        Self::compute_is_simple(code, closure)
+    }
+
     pub fn new(name: CompactString, code: CodeObject) -> Self {
         let code = Arc::new(code);
         let constant_cache = Arc::new(Self::build_constant_cache(&code));
+        let is_simple = Self::compute_is_simple(&code, &[]);
         Self {
             qualname: name.clone(), name, code, constant_cache,
             defaults: Vec::new(), kw_defaults: IndexMap::new(),
             globals: Arc::new(RwLock::new(IndexMap::new())),
             closure: Vec::new(), annotations: IndexMap::new(),
             attrs: Arc::new(RwLock::new(IndexMap::new())),
+            is_simple,
         }
     }
 
     /// Build from a pre-existing Arc<CodeObject> (avoids double-wrapping).
     pub fn with_arc_code(name: CompactString, code: Arc<CodeObject>) -> Self {
         let constant_cache = Arc::new(Self::build_constant_cache(&code));
+        let is_simple = Self::compute_is_simple(&code, &[]);
         Self {
             qualname: name.clone(), name, code, constant_cache,
             defaults: Vec::new(), kw_defaults: IndexMap::new(),
             globals: Arc::new(RwLock::new(IndexMap::new())),
             closure: Vec::new(), annotations: IndexMap::new(),
             attrs: Arc::new(RwLock::new(IndexMap::new())),
+            is_simple,
         }
     }
 

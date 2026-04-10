@@ -846,17 +846,9 @@ impl VirtualMachine {
                     let arg_count = instr.arg as usize;
                     let stack_len = frame.stack.len();
                     let func_idx = stack_len - 1 - arg_count;
-                    // Check if it's a simple Python function with exact positional match
+                    // Use pre-computed is_simple flag + check arg_count matches
                     let is_simple_func = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
-                        pf.code.arg_count as usize == arg_count
-                            && pf.code.kwonlyarg_count == 0
-                            && !pf.code.flags.contains(CodeFlags::VARARGS)
-                            && !pf.code.flags.contains(CodeFlags::VARKEYWORDS)
-                            && !pf.code.flags.contains(CodeFlags::GENERATOR)
-                            && !pf.code.flags.contains(CodeFlags::COROUTINE)
-                            && pf.closure.is_empty()
-                            && pf.code.cellvars.is_empty()
-                            && pf.code.freevars.is_empty()
+                        pf.is_simple && pf.code.arg_count as usize == arg_count
                     } else {
                         false
                     };
@@ -1007,16 +999,7 @@ impl VirtualMachine {
                     // Fast path: slot_0 is a Python function (unbound method)
                     let fast_data = if !matches!(&slot_0.payload, PyObjectPayload::None) {
                         if let PyObjectPayload::Function(pf) = &slot_0.payload {
-                            if pf.code.arg_count as usize == arg_count + 1
-                                && pf.code.kwonlyarg_count == 0
-                                && !pf.code.flags.contains(CodeFlags::VARARGS)
-                                && !pf.code.flags.contains(CodeFlags::VARKEYWORDS)
-                                && !pf.code.flags.contains(CodeFlags::GENERATOR)
-                                && !pf.code.flags.contains(CodeFlags::COROUTINE)
-                                && pf.closure.is_empty()
-                                && pf.code.cellvars.is_empty()
-                                && pf.code.freevars.is_empty()
-                            {
+                            if pf.is_simple && pf.code.arg_count as usize == arg_count + 1 {
                                 Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache)))
                             } else { None }
                         } else { None }

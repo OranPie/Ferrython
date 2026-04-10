@@ -570,16 +570,7 @@ impl VirtualMachine {
                     if !matches!(&slot_0.payload, PyObjectPayload::None) {
                         // Unbound method path: slot_0 = method
                         if let PyObjectPayload::Function(pf) = &slot_0.payload {
-                            if pf.code.arg_count as usize == arg_count + 1
-                                && pf.code.kwonlyarg_count == 0
-                                && !pf.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARARGS)
-                                && !pf.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARKEYWORDS)
-                                && !pf.code.flags.contains(ferrython_bytecode::code::CodeFlags::GENERATOR)
-                                && !pf.code.flags.contains(ferrython_bytecode::code::CodeFlags::COROUTINE)
-                                && pf.closure.is_empty()
-                                && pf.code.cellvars.is_empty()
-                                && pf.code.freevars.is_empty()
-                            {
+                            if pf.is_simple && pf.code.arg_count as usize == arg_count + 1 {
                                 Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache)))
                             } else {
                                 None
@@ -896,6 +887,7 @@ impl VirtualMachine {
                 let qualname_str = qualname.as_str().map(CompactString::from)
                     .unwrap_or_else(|| code.name.clone());
                 let constant_cache = Arc::new(PyFunction::build_constant_cache(&code));
+                let is_simple = PyFunction::compute_is_simple_static(&code, &closure_cells);
                 let func = PyFunction {
                     name: code.name.clone(),
                     qualname: qualname_str,
@@ -907,6 +899,7 @@ impl VirtualMachine {
                     closure: closure_cells,
                     annotations,
                     attrs: Arc::new(RwLock::new(IndexMap::new())),
+                    is_simple,
                 };
                 frame.push(PyObject::function(func));
             }
