@@ -366,13 +366,7 @@ fn resolve_jump_target(instr: &Instruction) -> usize {
 }
 
 fn is_jump(op: Opcode) -> bool {
-    matches!(op,
-        Opcode::JumpForward | Opcode::JumpAbsolute |
-        Opcode::PopJumpIfFalse | Opcode::PopJumpIfTrue |
-        Opcode::JumpIfFalseOrPop | Opcode::JumpIfTrueOrPop |
-        Opcode::ForIter | Opcode::SetupFinally | Opcode::SetupExcept |
-        Opcode::SetupWith | Opcode::SetupAsyncWith
-    )
+    op.is_jump()
 }
 
 fn intern_constant(code: &mut CodeObject, val: ConstantValue) -> usize {
@@ -640,11 +634,16 @@ fn fuse_superinstructions(code: &mut CodeObject) {
     let mut is_nop = vec![false; n];
     let mut i = 0;
     while i + 1 < n {
+        // Skip instructions already marked as NOP by prior fusions
+        if is_nop[i] {
+            i += 1;
+            continue;
+        }
         let a = code.instructions[i];
         let b = code.instructions[i + 1];
 
-        // Don't fuse if the second instruction is a jump target
-        if jump_targets[i + 1] {
+        // Don't fuse if the second instruction is a jump target or already NOP
+        if jump_targets[i + 1] || is_nop[i + 1] {
             i += 1;
             continue;
         }
@@ -653,6 +652,7 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         // Zero-clone: reads local and constant by reference, compares, jumps if false.
         // Encoding: (cmp_op << 28) | (local_idx << 20) | (const_idx << 12) | jump_target
         if i + 3 < n && !jump_targets[i + 2] && !jump_targets[i + 3]
+            && !is_nop[i + 2] && !is_nop[i + 3]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
             && code.instructions[i + 2].op == Opcode::CompareOp
             && code.instructions[i + 3].op == Opcode::PopJumpIfFalse
@@ -672,7 +672,7 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // 3-way fusion: LoadFast + LoadConst + BinarySubtract → LoadFastLoadConstBinarySub
-        if i + 2 < n && !jump_targets[i + 2]
+        if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
             && code.instructions[i + 2].op == Opcode::BinarySubtract
             && a.arg <= 0xFFFF && b.arg <= 0xFFFF
@@ -686,7 +686,7 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // 3-way fusion: LoadFast + LoadConst + BinaryAdd → LoadFastLoadConstBinaryAdd
-        if i + 2 < n && !jump_targets[i + 2]
+        if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
             && code.instructions[i + 2].op == Opcode::BinaryAdd
             && a.arg <= 0xFFFF && b.arg <= 0xFFFF
@@ -700,7 +700,7 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         }
 
         // 3-way fusion: LoadFast + LoadFast + BinaryAdd/InplaceAdd → LoadFastLoadFastBinaryAdd
-        if i + 2 < n && !jump_targets[i + 2]
+        if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
             && matches!(code.instructions[i + 2].op, Opcode::BinaryAdd | Opcode::InplaceAdd)
             && a.arg <= 0xFFFF && b.arg <= 0xFFFF
