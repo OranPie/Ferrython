@@ -1386,6 +1386,72 @@ impl VirtualMachine {
                         Ok(None)
                     } else if call_kind > 0 {
                         let args_start = func_idx + 1;
+                        // ── Mini-interpreter: inline base-case returns ──
+                        // Pattern: LoadFastCompareConstJump → LoadFast → ReturnValue
+                        // Skips frame creation entirely for leaf returns (e.g., fib base case)
+                        let mut mini_result: Option<PyObjectRef> = None;
+                        if call_kind == 2 {
+                            let instrs = &frame.code.instructions;
+                            if instrs.len() > 2
+                                && instrs[0].op == Opcode::LoadFastCompareConstJump
+                            {
+                                let packed = instrs[0].arg;
+                                let cmp_op = packed >> 28;
+                                let local_idx = ((packed >> 20) & 0xFF) as usize;
+                                let const_idx = ((packed >> 12) & 0xFF) as usize;
+                                if local_idx < arg_count {
+                                    let arg_ref = &frame.stack[args_start + local_idx];
+                                    let const_ref = unsafe { frame.constant_cache.get_unchecked(const_idx) };
+                                    let cmp_result = match (&arg_ref.payload, &const_ref.payload) {
+                                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                            match cmp_op {
+                                                0 => Some(*x < *y), 1 => Some(*x <= *y),
+                                                2 => Some(*x == *y), 3 => Some(*x != *y),
+                                                4 => Some(*x > *y), 5 => Some(*x >= *y),
+                                                _ => None,
+                                            }
+                                        }
+                                        _ => None,
+                                    };
+                                    if let Some(cmp_val) = cmp_result {
+                                        if cmp_val
+                                            && instrs[1].op == Opcode::LoadFast
+                                            && instrs[2].op == Opcode::ReturnValue
+                                        {
+                                            let ret_local = instrs[1].arg as usize;
+                                            mini_result = Some(if ret_local < arg_count {
+                                                frame.stack[args_start + ret_local].clone()
+                                            } else { PyObject::none() });
+                                        } else if !cmp_val {
+                                            let jt = (packed & 0xFFF) as usize;
+                                            if jt < instrs.len()
+                                                && instrs[jt].op == Opcode::LoadFast
+                                                && jt + 1 < instrs.len()
+                                                && instrs[jt + 1].op == Opcode::ReturnValue
+                                            {
+                                                let ret_local = instrs[jt].arg as usize;
+                                                mini_result = Some(if ret_local < arg_count {
+                                                    frame.stack[args_start + ret_local].clone()
+                                                } else { PyObject::none() });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(ret_val) = mini_result {
+                            // Base case resolved without frame creation
+                            unsafe {
+                                let base = frame.stack.as_ptr();
+                                for i in 0..=arg_count {
+                                    let _ = std::ptr::read(base.add(func_idx + i));
+                                }
+                                frame.stack.set_len(func_idx);
+                            }
+                            frame.stack.push(ret_val);
+                            Ok(None)
+                        } else {
+                        // Normal path: create frame
                         let mut new_frame = if call_kind == 2 {
                             // SAFETY: parent frame outlives child in iterative dispatch
                             unsafe { Frame::new_recursive(frame, &mut self.frame_pool) }
@@ -1431,6 +1497,7 @@ impl VirtualMachine {
                             }
                             Ok(None)
                         }
+                        } // close the mini-interpreter else (normal frame creation path)
                     } else {
                         // Fast path for common builtins: len(x), range(n)
                         let builtin_name = if let PyObjectPayload::BuiltinFunction(name) = &frame.stack[func_idx].payload {
