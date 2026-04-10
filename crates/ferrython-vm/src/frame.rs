@@ -249,7 +249,9 @@ impl Frame {
     #[inline(always)]
     pub unsafe fn binary_op_result(&mut self, val: PyObjectRef) {
         let len = self.stack.len();
-        // Overwrite TOS-1 with result (drops old value), then truncate
+        // Read TOS out (takes ownership → dropped at scope end)
+        let _tos = std::ptr::read(self.stack.as_ptr().add(len - 1));
+        // Overwrite TOS-1 with result (assignment drops old TOS-1 value)
         *self.stack.get_unchecked_mut(len - 2) = val;
         self.stack.set_len(len - 1);
     }
