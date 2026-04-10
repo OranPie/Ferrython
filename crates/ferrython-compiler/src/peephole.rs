@@ -646,6 +646,20 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // 3-way fusion: LoadFast + LoadConst + BinarySubtract → LoadFastLoadConstBinarySub
+        if i + 2 < n && !jump_targets[i + 2]
+            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+            && code.instructions[i + 2].op == Opcode::BinarySubtract
+            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        {
+            let packed_arg = (a.arg << 16) | b.arg;
+            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstBinarySub, packed_arg);
+            is_nop[i + 1] = true;
+            is_nop[i + 2] = true;
+            i += 3;
+            continue;
+        }
+
         // CompareOp + PopJumpIfFalse → CompareOpPopJumpIfFalse
         // Special encoding: (cmp_op << 24) | jump_target
         if a.op == Opcode::CompareOp && b.op == Opcode::PopJumpIfFalse

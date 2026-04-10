@@ -178,6 +178,10 @@ pub enum Opcode {
     /// CompareOp then PopJumpIfFalse. arg = (cmp_op << 24) | jump_target.
     /// Fast-paths int/float comparisons without intermediate bool push/pop.
     CompareOpPopJumpIfFalse = 213,
+    /// LoadFast + LoadConst + BinarySubtract fused.
+    /// arg = (fast_idx << 16) | const_idx.
+    /// Fast-paths int-int subtraction without intermediate stack pushes.
+    LoadFastLoadConstBinarySub = 214,
 }
 
 impl Opcode {
@@ -289,6 +293,7 @@ impl Opcode {
             Self::LoadFastLoadConst => 2,
             Self::StoreFastLoadFast => 0, // -1 (store) + 1 (load) = 0
             Self::CompareOpPopJumpIfFalse => -2, // pops 2 operands, pushes nothing
+            Self::LoadFastLoadConstBinarySub => 1, // loads local + const, subtracts, pushes result
         }
     }
 

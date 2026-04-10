@@ -355,6 +355,11 @@ impl VirtualMachine {
                     )));
                 }
             }
+            // LoadFastLoadConstBinarySub fallback: operands already on stack, treat as subtract
+            Opcode::LoadFastLoadConstBinarySub => {
+                if let Some(r) = self.try_binary_dunder(&a, &b, "__sub__", Some("__rsub__"))? { r }
+                else { with_enum_fallback!(a, b, sub) }
+            }
             _ => unreachable!(),
         };
         self.vm_push(result);
