@@ -1224,6 +1224,97 @@ impl VirtualMachine {
                     }
                     Ok(None)
                 }
+                // Inline FormatValue for primitive types (hot in f-strings)
+                Opcode::FormatValue => {
+                    let has_fmt_spec = instr.arg & 0x04 != 0;
+                    let conversion = (instr.arg & 0x03) as u8;
+                    // Fast path: no format spec, no/!s conversion, primitive value
+                    if !has_fmt_spec && (conversion == 0 || conversion == 1) {
+                        let val = frame.stack.last().unwrap();
+                        let fast_str = match &val.payload {
+                            PyObjectPayload::Str(s) => Some(s.clone()),
+                            PyObjectPayload::Int(PyInt::Small(n)) => Some(CompactString::from(n.to_string())),
+                            PyObjectPayload::Float(f) => Some(CompactString::from(format!("{}", f))),
+                            PyObjectPayload::Bool(b) => Some(CompactString::from(if *b { "True" } else { "False" })),
+                            PyObjectPayload::None => Some(CompactString::from("None")),
+                            _ => None,
+                        };
+                        if let Some(s) = fast_str {
+                            frame.stack.pop();
+                            frame.stack.push(PyObject::str_val(s));
+                            Ok(None)
+                        } else {
+                            self.execute_one(instr)
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline BuildString — concatenate string fragments from stack (f-strings)
+                Opcode::BuildString => {
+                    let count = instr.arg as usize;
+                    if count == 0 {
+                        frame.stack.push(PyObject::str_val(CompactString::from("")));
+                        Ok(None)
+                    } else if count == 1 {
+                        // Single element: already a string from FormatValue
+                        Ok(None)
+                    } else {
+                        let start = frame.stack.len() - count;
+                        // All elements should be strings from FormatValue
+                        let mut result = String::new();
+                        for i in start..frame.stack.len() {
+                            if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
+                                result.push_str(s.as_str());
+                            } else {
+                                result.push_str(&frame.stack[i].py_to_string());
+                            }
+                        }
+                        frame.stack.truncate(start);
+                        frame.stack.push(PyObject::str_val(CompactString::from(result)));
+                        Ok(None)
+                    }
+                }
+                // Inline UnpackSequence for tuple/list with exact count
+                Opcode::UnpackSequence => {
+                    let count = instr.arg as usize;
+                    let val = frame.stack.last().unwrap();
+                    match &val.payload {
+                        PyObjectPayload::Tuple(items) if items.len() == count => {
+                            let items_clone: Vec<_> = items.iter().rev().cloned().collect();
+                            frame.stack.pop();
+                            for item in items_clone {
+                                frame.stack.push(item);
+                            }
+                            Ok(None)
+                        }
+                        PyObjectPayload::List(items_arc) => {
+                            let items = items_arc.read();
+                            if items.len() == count {
+                                let items_clone: Vec<_> = items.iter().rev().cloned().collect();
+                                drop(items);
+                                frame.stack.pop();
+                                for item in items_clone {
+                                    frame.stack.push(item);
+                                }
+                                Ok(None)
+                            } else {
+                                drop(items);
+                                self.execute_one(instr)
+                            }
+                        }
+                        _ => self.execute_one(instr),
+                    }
+                }
+                // Inline BuildMap for empty dicts
+                Opcode::BuildMap => {
+                    if instr.arg == 0 {
+                        frame.stack.push(PyObject::dict(Default::default()));
+                        Ok(None)
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
                 // Inline CallFunction fast path for simple Python function calls
                 Opcode::CallFunction => {
                     let arg_count = instr.arg as usize;
