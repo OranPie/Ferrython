@@ -1047,7 +1047,48 @@ impl VirtualMachine {
                             Ok(None)
                         }
                     } else {
-                        self.execute_one(instr)
+                        // Fast path for common builtins: len(x), range(n)
+                        let builtin_name = if let PyObjectPayload::BuiltinFunction(name) = &frame.stack[func_idx].payload {
+                            Some(name.as_str())
+                        } else { None };
+                        match (builtin_name, arg_count) {
+                            (Some("len"), 1) => {
+                                let arg = &frame.stack[stack_len - 1];
+                                let fast_len = match &arg.payload {
+                                    PyObjectPayload::List(v) => Some(v.read().len() as i64),
+                                    PyObjectPayload::Tuple(v) => Some(v.len() as i64),
+                                    PyObjectPayload::Str(s) => Some(s.chars().count() as i64),
+                                    PyObjectPayload::Dict(m) => Some(m.read().len() as i64),
+                                    PyObjectPayload::Set(m) => Some(m.read().len() as i64),
+                                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Some(b.len() as i64),
+                                    _ => None,
+                                };
+                                if let Some(n) = fast_len {
+                                    unsafe { frame.stack.set_len(func_idx); }
+                                    frame.stack.push(PyObject::int(n));
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            (Some("range"), 1) => {
+                                let arg = &frame.stack[stack_len - 1];
+                                if let PyObjectPayload::Int(PyInt::Small(stop)) = &arg.payload {
+                                    let stop = *stop;
+                                    unsafe { frame.stack.set_len(func_idx); }
+                                    let iter = PyObject::wrap(PyObjectPayload::Iterator(
+                                        Arc::new(parking_lot::Mutex::new(IteratorData::Range {
+                                            current: 0, stop, step: 1,
+                                        }))
+                                    ));
+                                    frame.stack.push(iter);
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            _ => self.execute_one(instr),
+                        }
                     }
                 }
                 // Inline LoadGlobal + CallFunction fused: load global, then call
