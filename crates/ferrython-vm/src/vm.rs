@@ -1239,6 +1239,56 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
+                // Inline CompareOp for int/int, float/float, is/is_not
+                Opcode::CompareOp => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let op = instr.arg;
+                        let a = &frame.stack[len - 2];
+                        let b = &frame.stack[len - 1];
+                        let fast_result = match (&a.payload, &b.payload) {
+                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                match op {
+                                    0 => Some(*x < *y),  // lt
+                                    1 => Some(*x <= *y), // le
+                                    2 => Some(*x == *y), // eq
+                                    3 => Some(*x != *y), // ne
+                                    4 => Some(*x > *y),  // gt
+                                    5 => Some(*x >= *y), // ge
+                                    _ => None,
+                                }
+                            }
+                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                match op {
+                                    0 => Some(*x < *y),
+                                    1 => Some(*x <= *y),
+                                    2 => Some(*x == *y),
+                                    3 => Some(*x != *y),
+                                    4 => Some(*x > *y),
+                                    5 => Some(*x >= *y),
+                                    _ => None,
+                                }
+                            }
+                            (PyObjectPayload::Bool(x), PyObjectPayload::Bool(y)) if op == 2 || op == 3 => {
+                                if op == 2 { Some(*x == *y) } else { Some(*x != *y) }
+                            }
+                            _ => {
+                                // is / is not: pointer identity
+                                if op == 8 { Some(std::sync::Arc::ptr_eq(a, b)) }
+                                else if op == 9 { Some(!std::sync::Arc::ptr_eq(a, b)) }
+                                else { None }
+                            }
+                        };
+                        if let Some(val) = fast_result {
+                            frame.binary_op_result(PyObject::bool_val(val));
+                            Ok(None)
+                        } else {
+                            self.execute_one(instr)
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
                 _ => self.execute_one(instr),
             };
 
