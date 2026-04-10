@@ -1050,6 +1050,85 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
+                // Inline LoadGlobal + CallFunction fused: load global, then call
+                // arg = (name_idx << 16) | arg_count
+                Opcode::LoadGlobalCallFunction => {
+                    let name_idx = (instr.arg >> 16) as usize;
+                    let arg_count = (instr.arg & 0xFFFF) as usize;
+                    let ver = crate::frame::globals_version();
+                    // Fast path: cache hit for the global
+                    let func_ref = if frame.global_cache_version == ver {
+                        if let Some(ref cache) = frame.global_cache {
+                            // SAFETY: compiler guarantees name_idx < code.names.len() == cache.len()
+                            unsafe { cache.get_unchecked(name_idx) }.as_ref()
+                        } else { None }
+                    } else { None };
+                    if let Some(func_obj) = func_ref {
+                        // Check if simple function with matching arg count
+                        let call_kind = if let PyObjectPayload::Function(pf) = &func_obj.payload {
+                            if pf.is_simple && pf.code.arg_count as usize == arg_count {
+                                if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
+                            } else { 0 }
+                        } else { 0 };
+                        if call_kind > 0 {
+                            let stack_len = frame.stack.len();
+                            let args_start = stack_len - arg_count;
+                            let mut new_frame = if call_kind == 2 {
+                                // SAFETY: parent frame outlives child in iterative dispatch
+                                unsafe { Frame::new_recursive(frame, &mut self.frame_pool) }
+                            } else {
+                                let (code, globals, constant_cache) = if let PyObjectPayload::Function(pf) = &func_obj.payload {
+                                    (Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache))
+                                } else { unreachable!() };
+                                let mut f = Frame::new_from_pool(
+                                    code, globals, Arc::clone(&self.builtins), constant_cache,
+                                    &mut self.frame_pool,
+                                );
+                                f.scope_kind = crate::frame::ScopeKind::Function;
+                                f
+                            };
+                            // Move args directly from parent stack to new frame locals
+                            unsafe {
+                                let base = frame.stack.as_ptr();
+                                for i in 0..arg_count {
+                                    new_frame.locals[i] = Some(
+                                        std::ptr::read(base.add(args_start + i))
+                                    );
+                                }
+                                frame.stack.set_len(args_start);
+                            }
+                            self.call_stack.push(new_frame);
+                            if self.call_stack.len() > self.recursion_limit {
+                                if let Some(frame) = self.call_stack.pop() {
+                                    frame.recycle(&mut self.frame_pool);
+                                }
+                                Err(PyException::recursion_error("maximum recursion depth exceeded"))
+                            } else {
+                                if has_trace {
+                                    let frame_obj = self.make_trace_frame();
+                                    ferrython_stdlib::set_current_frame(Some(frame_obj));
+                                    self.fire_trace_event("call", PyObject::none());
+                                }
+                                if has_profile {
+                                    self.fire_profile_event("call", PyObject::none());
+                                }
+                                Ok(None)
+                            }
+                        } else {
+                            // Not a simple function — decompose to LoadGlobal + CallFunction
+                            frame.stack.push(func_obj.clone());
+                            let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
+                            self.execute_one(call_instr)
+                        }
+                    } else {
+                        // Cache miss — decompose to LoadGlobal + CallFunction
+                        let load_instr = Instruction::new(Opcode::LoadGlobal, name_idx as u32);
+                        let res = self.execute_one(load_instr)?;
+                        if res.is_some() { return Ok(res.unwrap()); }
+                        let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
+                        self.execute_one(call_instr)
+                    }
+                }
                 // Inline UnpackSequence for tuples and lists
                 Opcode::UnpackSequence => {
                     let count = instr.arg as usize;
@@ -1892,6 +1971,7 @@ impl VirtualMachine {
 
             Opcode::CallFunction | Opcode::CallFunctionKw | Opcode::CallMethod
             | Opcode::CallFunctionEx | Opcode::LoadMethod | Opcode::MakeFunction
+            | Opcode::LoadGlobalCallFunction
                 => self.exec_call_ops(instr),
 
             Opcode::ReturnValue | Opcode::ImportName | Opcode::ImportFrom

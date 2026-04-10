@@ -915,6 +915,15 @@ impl VirtualMachine {
                 };
                 frame.push(PyObject::function(func));
             }
+            // Fallback: decompose LoadGlobalCallFunction into LoadGlobal + CallFunction
+            Opcode::LoadGlobalCallFunction => {
+                let name_idx = (instr.arg >> 16) as usize;
+                let arg_count = (instr.arg & 0xFFFF) as u32;
+                let load_instr = Instruction::new(Opcode::LoadGlobal, name_idx as u32);
+                self.exec_name_ops(load_instr)?;
+                let call_instr = Instruction::new(Opcode::CallFunction, arg_count);
+                return self.exec_call_ops(call_instr);
+            }
             _ => unreachable!(),
         }
         Ok(None)

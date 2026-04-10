@@ -190,6 +190,10 @@ pub enum Opcode {
     /// arg encoding: (jump_target << 16) | store_idx.
     /// Avoids intermediate stack push/pop in `for i in range(n)` loops.
     ForIterStoreFast = 216,
+    /// LoadGlobal + CallFunction fused.
+    /// arg encoding: (name_idx << 16) | arg_count.
+    /// Avoids intermediate stack push of the function object.
+    LoadGlobalCallFunction = 217,
 }
 
 impl Opcode {
@@ -304,6 +308,11 @@ impl Opcode {
             Self::LoadFastLoadConstBinarySub => 1, // loads local + const, subtracts, pushes result
             Self::LoadFastLoadConstBinaryAdd => 1, // loads local + const, adds, pushes result
             Self::ForIterStoreFast => 0, // either jumps (pops iter) or stores to local (net 0)
+            Self::LoadGlobalCallFunction => {
+                // Pops arg_count args from stack, pushes result (function never on stack)
+                let arg_count = (arg & 0xFFFF) as i32;
+                -arg_count + 1
+            }
         }
     }
 

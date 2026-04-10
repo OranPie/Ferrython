@@ -699,6 +699,18 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // LoadGlobal + CallFunction → LoadGlobalCallFunction
+        // Encoding: (name_idx << 16) | arg_count
+        if a.op == Opcode::LoadGlobal && b.op == Opcode::CallFunction
+            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        {
+            let packed = (a.arg << 16) | b.arg;
+            code.instructions[i] = Instruction::new(Opcode::LoadGlobalCallFunction, packed);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
         if a.arg > 0xFFFF || b.arg > 0xFFFF {
             i += 1;
             continue;
