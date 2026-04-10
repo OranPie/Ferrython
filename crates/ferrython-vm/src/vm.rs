@@ -900,20 +900,21 @@ impl VirtualMachine {
                     }
                     match fast_kind {
                         1 => {
-                            // Bind method to receiver
-                            let recv = frame.stack.pop().unwrap();
+                            // Two-item protocol: push method, then receiver
+                            // CallMethod will detect method (non-None) at base slot
                             let method = fast_val.unwrap();
-                            frame.stack.push(Arc::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: recv,
-                                    method,
-                                }
-                            }));
+                            // TOS is the object — it becomes slot_1 (receiver)
+                            // Insert method below it as slot_0
+                            let recv = frame.stack.pop().unwrap();
+                            frame.stack.push(method);
+                            frame.stack.push(recv);
                             Ok(None)
                         }
                         2 => {
-                            // Instance attribute — replace top of stack
-                            *frame.stack.last_mut().unwrap() = fast_val.unwrap();
+                            // Two-item protocol slow path: push None sentinel + callable
+                            let val = fast_val.unwrap();
+                            *frame.stack.last_mut().unwrap() = PyObject::none();
+                            frame.stack.push(val);
                             Ok(None)
                         }
                         _ => self.execute_one(instr),

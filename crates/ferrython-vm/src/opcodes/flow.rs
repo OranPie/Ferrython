@@ -556,15 +556,20 @@ impl VirtualMachine {
                 result = self.post_call_intercept(result)?;
                 self.vm_push(result);
             }
+            // Two-item stack protocol: stack = [..., slot_0, slot_1, arg0, ..., argN-1]
+            // slot_0 = method (non-None) or None sentinel
+            // slot_1 = receiver (fast) or callable (slow)
             Opcode::CallMethod => {
                 let arg_count = instr.arg as usize;
-                // Two-phase: extract fast_data, then drain args (avoids Vec alloc)
+                // Phase 1: peek at slot_0 to determine if unbound method + check for direct frame creation
                 let fast_data = {
                     let frame = self.call_stack.last().unwrap();
                     let stack_len = frame.stack.len();
-                    let callable_idx = stack_len - 1 - arg_count;
-                    if let PyObjectPayload::BoundMethod { ref receiver, ref method } = frame.stack[callable_idx].payload {
-                        if let PyObjectPayload::Function(pf) = &method.payload {
+                    let base_idx = stack_len - arg_count - 2;
+                    let slot_0 = &frame.stack[base_idx];
+                    if !matches!(&slot_0.payload, PyObjectPayload::None) {
+                        // Unbound method path: slot_0 = method
+                        if let PyObjectPayload::Function(pf) = &slot_0.payload {
                             if pf.code.arg_count as usize == arg_count + 1
                                 && pf.code.kwonlyarg_count == 0
                                 && !pf.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARARGS)
@@ -575,7 +580,7 @@ impl VirtualMachine {
                                 && pf.code.cellvars.is_empty()
                                 && pf.code.freevars.is_empty()
                             {
-                                Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache), receiver.clone()))
+                                Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache)))
                             } else {
                                 None
                             }
@@ -586,19 +591,19 @@ impl VirtualMachine {
                         None
                     }
                 };
-                let result = if let Some((code, globals, cc, recv)) = fast_data {
+                let result = if let Some((code, globals, cc)) = fast_data {
+                    // Super-fast: direct frame creation, move args from stack
                     let mut new_frame = crate::frame::Frame::new_from_pool(
                         code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool,
                     );
-                    new_frame.locals[0] = Some(recv);
-                    // Move args directly from stack (avoids Vec alloc + reverse)
                     {
                         let frame = self.call_stack.last_mut().unwrap();
-                        let callable_idx = frame.stack.len() - arg_count;
-                        for (i, arg) in frame.stack.drain(callable_idx..).enumerate() {
+                        let arg_start = frame.stack.len() - arg_count;
+                        for (i, arg) in frame.stack.drain(arg_start..).enumerate() {
                             new_frame.locals[i + 1] = Some(arg);
                         }
-                        frame.stack.pop(); // drop the callable
+                        new_frame.locals[0] = frame.stack.pop(); // receiver (slot_1) — moved, not cloned
+                        frame.stack.pop(); // drop method (slot_0)
                     }
                     new_frame.scope_kind = crate::frame::ScopeKind::Function;
                     self.call_stack.push(new_frame);
@@ -610,17 +615,28 @@ impl VirtualMachine {
                     if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
                     r?
                 } else {
+                    // General path: pop all items from two-item protocol
                     let frame = self.vm_frame();
                     let mut args = Vec::with_capacity(arg_count);
                     for _ in 0..arg_count { args.push(frame.pop()); }
                     args.reverse();
-                    let callable = frame.pop();
-                    if let PyObjectPayload::BoundMethod { ref receiver, ref method } = callable.payload {
-                        let mut bound_args = vec![receiver.clone()];
-                        bound_args.extend(args);
-                        self.call_object(method.clone(), bound_args)?
+                    let slot_1 = frame.pop(); // receiver or callable
+                    let slot_0 = frame.pop(); // method or None sentinel
+
+                    if matches!(&slot_0.payload, PyObjectPayload::None) {
+                        // Slow path: slot_1 is the callable
+                        if let PyObjectPayload::BoundMethod { ref receiver, ref method } = slot_1.payload {
+                            let mut bound_args = vec![receiver.clone()];
+                            bound_args.extend(args);
+                            self.call_object(method.clone(), bound_args)?
+                        } else {
+                            self.call_object(slot_1, args)?
+                        }
                     } else {
-                        self.call_object(callable, args)?
+                        // Unbound method: slot_0 = method, slot_1 = receiver
+                        let mut bound_args = vec![slot_1];
+                        bound_args.extend(args);
+                        self.call_object(slot_0, bound_args)?
                     }
                 };
                 let result = self.post_call_intercept(result)?;
@@ -660,20 +676,22 @@ impl VirtualMachine {
                     self.vm_push(result);
                 }
             }
+            // Two-item stack protocol: LoadMethod pushes exactly 2 items.
+            // Fast path (unbound method found): push method, then receiver
+            // Slow path (callable/attr): push None sentinel, then callable
+            // CallMethod checks slot_0 to distinguish.
             Opcode::LoadMethod => {
                 let frame = self.vm_frame();
                 let name = frame.code.names[instr.arg as usize].clone();
                 let obj = frame.pop();
 
-                // Fast path for simple instance method calls:
-                // Skip __getattribute__ check and descriptor protocol for plain instances
+                // Fast path for simple instance method calls
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
                     let skip_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
                         !cd.has_getattribute
                     } else {
                         false
                     };
-                    // Only use fast path for plain instances (no dict_storage, no special markers)
                     let is_plain = skip_ga
                         && inst.dict_storage.is_none()
                         && !inst.is_special
@@ -681,93 +699,70 @@ impl VirtualMachine {
                         && name.as_str() != "__dict__";
 
                     if is_plain {
-                        // Use the compile-time class directly (fast path).
-                        // __class__ overrides go through the slow path since
-                        // they're very rare (metaclass magic only).
                         let effective_class = inst.class.clone();
 
-                        // Check own class for Python-level method overrides first.
-                        // Class-defined functions (descriptors) take precedence over
-                        // instance attrs installed by a parent __init__.
+                        // Class namespace function → two-item: method + receiver
                         if let PyObjectPayload::Class(cd) = &effective_class.payload {
                             if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
                                 if matches!(&class_val.payload, PyObjectPayload::Function(_)) {
-                                    frame.push(Arc::new(PyObject {
-                                        payload: PyObjectPayload::BoundMethod {
-                                            receiver: obj,
-                                            method: class_val,
-                                        }
-                                    }));
+                                    frame.push(class_val);
+                                    frame.push(obj);
                                     return Ok(None);
                                 }
                             }
                         }
 
-                        // Instance dict lookup
+                        // Instance dict → two-item slow: None + value
                         if let Some(v) = inst.attrs.read().get(name.as_str()) {
-                            frame.push(v.clone());
+                            let v = v.clone();
+                            frame.push(PyObject::none());
+                            frame.push(v);
                             return Ok(None);
                         }
-                        // Class MRO lookup (uses method cache)
+                        // MRO lookup
                         if let Some(method) = lookup_in_class_mro(&effective_class, &name) {
                             match &method.payload {
                                 PyObjectPayload::Function(_)
                                 | PyObjectPayload::NativeFunction { .. } => {
-                                    frame.push(Arc::new(PyObject {
-                                        payload: PyObjectPayload::BoundMethod {
-                                            receiver: obj,
-                                            method,
-                                        }
-                                    }));
+                                    // Two-item: method + receiver
+                                    frame.push(method);
+                                    frame.push(obj);
                                     return Ok(None);
                                 }
-                                // NativeClosure in class namespace: bind only if marked as method
-                                // (name contains '.' like "ClassName.method")
                                 PyObjectPayload::NativeClosure { ref name, .. } if name.contains('.') => {
-                                    frame.push(Arc::new(PyObject {
-                                        payload: PyObjectPayload::BoundMethod {
-                                            receiver: obj,
-                                            method,
-                                        }
-                                    }));
+                                    frame.push(method);
+                                    frame.push(obj);
                                     return Ok(None);
                                 }
                                 PyObjectPayload::StaticMethod(func) => {
+                                    frame.push(PyObject::none());
                                     frame.push(func.clone());
                                     return Ok(None);
                                 }
                                 PyObjectPayload::ClassMethod(func) => {
-                                    frame.push(Arc::new(PyObject {
-                                        payload: PyObjectPayload::BoundMethod {
-                                            receiver: effective_class.clone(),
-                                            method: func.clone(),
-                                        }
-                                    }));
+                                    // Two-item: func + class-as-receiver
+                                    frame.push(func.clone());
+                                    frame.push(effective_class.clone());
                                     return Ok(None);
                                 }
                                 PyObjectPayload::Property { fget, .. } => {
                                     if let Some(getter) = fget {
                                         let getter = crate::builtins::unwrap_abstract_fget(getter);
                                         let result = self.call_object(getter, vec![obj])?;
-                                        self.vm_push(result);
+                                        let frame = self.vm_frame();
+                                        frame.push(PyObject::none());
+                                        frame.push(result);
                                         return Ok(None);
                                     }
                                     return Err(PyException::attribute_error(format!(
                                         "unreadable attribute '{}'", name
                                     )));
                                 }
-                                // lru_cache wrapper (Instance with __wrapped__) → bind self
                                 PyObjectPayload::Instance(ref ci) if ci.attrs.read().contains_key("__wrapped__") => {
-                                    frame.push(Arc::new(PyObject {
-                                        payload: PyObjectPayload::BoundMethod {
-                                            receiver: obj,
-                                            method,
-                                        }
-                                    }));
+                                    frame.push(method);
+                                    frame.push(obj);
                                     return Ok(None);
                                 }
-                                // Descriptor protocol: invoke __get__ for
-                                // user-defined descriptors found in the class MRO
                                 _ if has_descriptor_get(&method) => {
                                     let get_fn = method.get_attr("__get__").unwrap();
                                     let owner = effective_class.clone();
@@ -782,39 +777,39 @@ impl VirtualMachine {
                                         })
                                     };
                                     let result = self.call_object(get_bound, vec![obj.clone(), owner])?;
-                                    self.vm_frame().push(result);
+                                    let frame = self.vm_frame();
+                                    frame.push(PyObject::none());
+                                    frame.push(result);
                                     return Ok(None);
                                 }
-                                // Non-descriptor, non-callable class attr
                                 _ => {
+                                    frame.push(PyObject::none());
                                     frame.push(method);
                                     return Ok(None);
                                 }
                             }
                         }
-                        // Fall through to full get_attr for __getattr__ and other cases
+                        // Fall through to full get_attr
                     }
                 }
 
-                // Full path: handles all cases including __getattribute__, special instances, etc.
+                // Full path: handles __getattribute__, special instances, etc.
                 match obj.get_attr(&name) {
                     Some(method) => {
                         if matches!(&obj.payload, PyObjectPayload::Module(_))
                             && matches!(&method.payload, PyObjectPayload::NativeFunction { .. })
                             && obj.get_attr("_bind_methods").is_some()
                         {
-                            frame.push(Arc::new(PyObject {
-                                payload: PyObjectPayload::BoundMethod {
-                                    receiver: obj,
-                                    method,
-                                }
-                            }));
+                            // Module method binding → two-item: method + module
+                            frame.push(method);
+                            frame.push(obj);
                         } else {
+                            // Already-resolved callable → slow path
+                            frame.push(PyObject::none());
                             frame.push(method);
                         }
                     }
                     None => {
-                        // Fallback: resolve_type_class_method for BuiltinType
                         let type_name = match &obj.payload {
                             PyObjectPayload::BuiltinType(tn) => Some(tn.as_str()),
                             PyObjectPayload::NativeFunction { name: fn_name, .. } => Some(fn_name.as_str()),
@@ -822,16 +817,18 @@ impl VirtualMachine {
                         };
                         if let Some(tn) = type_name {
                             if let Some(type_method) = crate::builtins::resolve_type_class_method(tn, &name) {
+                                self.vm_frame().push(PyObject::none());
                                 self.vm_push(type_method);
                                 return Ok(None);
                             }
                         }
-                        // Fallback: check __getattr__ on instances
                         if let PyObjectPayload::Instance(_) = &obj.payload {
                             if let Some(ga) = obj.get_attr("__getattr__") {
                                 let name_arg = PyObject::str_val(CompactString::from(name.as_str()));
                                 let result = self.call_object(ga, vec![name_arg])?;
-                                self.vm_push(result);
+                                let frame = self.vm_frame();
+                                frame.push(PyObject::none());
+                                frame.push(result);
                                 return Ok(None);
                             }
                         }
