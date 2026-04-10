@@ -1,5 +1,54 @@
 //! The main virtual machine — executes bytecode instructions.
 
+/// Unchecked push to frame.stack — only borrows stack field, not entire Frame.
+/// SAFETY: caller guarantees stack has capacity (stack pre-allocated to max_stack_size).
+macro_rules! spush {
+    ($frame:expr, $val:expr) => {
+        unsafe {
+            let stack = &mut $frame.stack;
+            let len = stack.len();
+            debug_assert!(len < stack.capacity());
+            std::ptr::write(stack.as_mut_ptr().add(len), $val);
+            stack.set_len(len + 1);
+        }
+    };
+}
+
+/// Unchecked pop from frame.stack — only borrows stack field, not entire Frame.
+/// SAFETY: caller guarantees stack is non-empty.
+macro_rules! spop {
+    ($frame:expr) => {
+        unsafe {
+            let stack = &mut $frame.stack;
+            let new_len = stack.len() - 1;
+            stack.set_len(new_len);
+            std::ptr::read(stack.as_ptr().add(new_len))
+        }
+    };
+}
+
+/// Unchecked peek at TOS — only borrows stack field immutably.
+macro_rules! speek {
+    ($frame:expr) => {
+        unsafe { $frame.stack.get_unchecked($frame.stack.len() - 1) }
+    };
+}
+
+/// Unchecked local read — only borrows locals field, not entire Frame.
+macro_rules! slocal {
+    ($frame:expr, $idx:expr) => {
+        unsafe { $frame.locals.get_unchecked($idx).as_ref() }
+    };
+}
+
+/// Unchecked local write — only borrows locals field, not entire Frame.
+macro_rules! sset_local {
+    ($frame:expr, $idx:expr, $val:expr) => {
+        unsafe { *$frame.locals.get_unchecked_mut($idx) = Some($val) }
+    };
+}
+
+
 use crate::builtins;
 use crate::frame::{BlockKind, Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
@@ -299,30 +348,30 @@ impl VirtualMachine {
                 Opcode::LoadFast => {
                     let idx = instr.arg as usize;
                     // SAFETY: compiler guarantees idx < locals.len(); stack pre-allocated
-                    match unsafe { frame.get_local_unchecked(idx) } {
-                        Some(val) => { unsafe { frame.push_unchecked(val.clone()) }; Ok(None) }
+                    match slocal!(frame, idx) {
+                        Some(val) => { spush!(frame, val.clone()); Ok(None) }
                         None => Self::err_unbound_local(&frame.code.varnames, idx),
                     }
                 }
                 Opcode::StoreFast => {
                     // SAFETY: stack non-empty (compiler guarantees), idx < locals.len()
-                    let val = unsafe { frame.pop_unchecked() };
-                    unsafe { frame.set_local_unchecked(instr.arg as usize, val) };
+                    let val = spop!(frame);
+                    sset_local!(frame, instr.arg as usize, val);
                     Ok(None)
                 }
                 // Fused StoreFast + JumpAbsolute — saves one dispatch per loop iteration
                 Opcode::StoreFastJumpAbsolute => {
                     let store_idx = (instr.arg >> 16) as usize;
                     let jump_target = (instr.arg & 0xFFFF) as usize;
-                    let val = unsafe { frame.pop_unchecked() };
-                    unsafe { frame.set_local_unchecked(store_idx, val) };
+                    let val = spop!(frame);
+                    sset_local!(frame, store_idx, val);
                     frame.ip = jump_target;
                     Ok(None)
                 }
                 Opcode::LoadConst => {
                     // SAFETY: compiler guarantees arg < constant_cache.len(); stack pre-allocated
                     let obj = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize).clone() };
-                    unsafe { frame.push_unchecked(obj) };
+                    spush!(frame, obj);
                     Ok(None)
                 }
                 // ── Superinstructions: fused opcode pairs ──
@@ -330,11 +379,11 @@ impl VirtualMachine {
                     let idx1 = (instr.arg >> 16) as usize;
                     let idx2 = (instr.arg & 0xFFFF) as usize;
                     // SAFETY: compiler guarantees indices < locals.len()
-                    let a = unsafe { frame.get_local_unchecked(idx1) }.cloned();
-                    let b = unsafe { frame.get_local_unchecked(idx2) }.cloned();
+                    let a = slocal!(frame, idx1).cloned();
+                    let b = slocal!(frame, idx2).cloned();
                     match (a, b) {
                         (Some(a), Some(b)) => {
-                            unsafe { frame.push_unchecked(a); frame.push_unchecked(b) };
+                            spush!(frame, a); spush!(frame, b);
                             Ok(None)
                         }
                         (None, _) => Self::err_unbound_local(&frame.code.varnames, idx1),
@@ -345,12 +394,11 @@ impl VirtualMachine {
                     let fast_idx = (instr.arg >> 16) as usize;
                     let const_idx = (instr.arg & 0xFFFF) as usize;
                     // SAFETY: compiler guarantees indices valid
-                    match unsafe { frame.get_local_unchecked(fast_idx) } {
+                    match slocal!(frame, fast_idx) {
                         Some(val) => {
-                            unsafe {
-                                frame.push_unchecked(val.clone());
-                                frame.push_unchecked(frame.constant_cache.get_unchecked(const_idx).clone());
-                            }
+                            spush!(frame, val.clone());
+                            let c = unsafe { frame.constant_cache.get_unchecked(const_idx) }.clone();
+                            spush!(frame, c);
                             Ok(None)
                         }
                         None => Self::err_unbound_local(&frame.code.varnames, fast_idx),
@@ -360,10 +408,10 @@ impl VirtualMachine {
                     let store_idx = (instr.arg >> 16) as usize;
                     let load_idx = (instr.arg & 0xFFFF) as usize;
                     // SAFETY: stack non-empty, indices < locals.len()
-                    let val = unsafe { frame.pop_unchecked() };
-                    unsafe { frame.set_local_unchecked(store_idx, val) };
-                    match unsafe { frame.get_local_unchecked(load_idx) } {
-                        Some(val) => { unsafe { frame.push_unchecked(val.clone()) }; Ok(None) }
+                    let val = spop!(frame);
+                    sset_local!(frame, store_idx, val);
+                    match slocal!(frame, load_idx) {
+                        Some(val) => { spush!(frame, val.clone()); Ok(None) }
                         None => Self::err_unbound_local(&frame.code.varnames, load_idx),
                     }
                 }
@@ -372,7 +420,7 @@ impl VirtualMachine {
                     let fast_idx = (instr.arg >> 16) as usize;
                     let const_idx = (instr.arg & 0xFFFF) as usize;
                     // SAFETY: compiler guarantees indices valid
-                    match unsafe { frame.get_local_unchecked(fast_idx) } {
+                    match slocal!(frame, fast_idx) {
                         Some(local) => {
                             let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
                             match (&local.payload, &c.payload) {
@@ -384,17 +432,17 @@ impl VirtualMachine {
                                             PyObject::big_int(BigInt::from(*x) - BigInt::from(*y))
                                         }
                                     };
-                                    frame.stack.push(result);
+                                    spush!(frame, result);
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    frame.stack.push(PyObject::float(*x - *y));
+                                    spush!(frame, PyObject::float(*x - *y));
                                     Ok(None)
                                 }
                                 _ => {
                                     // Fallback: push both and let execute_one handle BinarySub
-                                    frame.stack.push(local.clone());
-                                    frame.stack.push(c.clone());
+                                    spush!(frame, local.clone());
+                                    spush!(frame, c.clone());
                                     self.execute_one(ferrython_bytecode::Instruction::new(
                                         Opcode::BinarySubtract, 0))
                                 }
@@ -407,7 +455,7 @@ impl VirtualMachine {
                 Opcode::LoadFastLoadConstBinaryAdd => {
                     let fast_idx = (instr.arg >> 16) as usize;
                     let const_idx = (instr.arg & 0xFFFF) as usize;
-                    match unsafe { frame.get_local_unchecked(fast_idx) } {
+                    match slocal!(frame, fast_idx) {
                         Some(local) => {
                             let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
                             match (&local.payload, &c.payload) {
@@ -419,24 +467,24 @@ impl VirtualMachine {
                                             PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
                                         }
                                     };
-                                    frame.stack.push(result);
+                                    spush!(frame, result);
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    frame.stack.push(PyObject::float(*x + *y));
+                                    spush!(frame, PyObject::float(*x + *y));
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
-                                    frame.stack.push(PyObject::float(*x as f64 + *y));
+                                    spush!(frame, PyObject::float(*x as f64 + *y));
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                    frame.stack.push(PyObject::float(*x + *y as f64));
+                                    spush!(frame, PyObject::float(*x + *y as f64));
                                     Ok(None)
                                 }
                                 _ => {
-                                    frame.stack.push(local.clone());
-                                    frame.stack.push(c.clone());
+                                    spush!(frame, local.clone());
+                                    spush!(frame, c.clone());
                                     self.execute_one(ferrython_bytecode::Instruction::new(
                                         Opcode::BinaryAdd, 0))
                                 }
@@ -449,8 +497,8 @@ impl VirtualMachine {
                     let idx1 = (instr.arg >> 16) as usize;
                     let idx2 = (instr.arg & 0xFFFF) as usize;
                     // Borrow locals without cloning — only clone on fallback
-                    let a = unsafe { frame.get_local_unchecked(idx1) };
-                    let b = unsafe { frame.get_local_unchecked(idx2) };
+                    let a = slocal!(frame, idx1);
+                    let b = slocal!(frame, idx2);
                     match (a, b) {
                         (Some(a), Some(b)) => {
                             match (&a.payload, &b.payload) {
@@ -463,18 +511,18 @@ impl VirtualMachine {
                                             PyObject::big_int(BigInt::from(x) + BigInt::from(y))
                                         }
                                     };
-                                    frame.stack.push(result);
+                                    spush!(frame, result);
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     let r = *x + *y;
-                                    frame.stack.push(PyObject::float(r));
+                                    spush!(frame, PyObject::float(r));
                                     Ok(None)
                                 }
                                 _ => {
                                     let (ac, bc) = (a.clone(), b.clone());
-                                    frame.stack.push(ac);
-                                    frame.stack.push(bc);
+                                    spush!(frame, ac);
+                                    spush!(frame, bc);
                                     self.execute_one(ferrython_bytecode::Instruction::new(
                                         Opcode::BinaryAdd, 0))
                                 }
@@ -489,8 +537,8 @@ impl VirtualMachine {
                     let idx1 = (instr.arg >> 16) as usize;
                     let idx2 = ((instr.arg >> 8) & 0xFF) as usize;
                     let dest = (instr.arg & 0xFF) as usize;
-                    let a = unsafe { frame.get_local_unchecked(idx1) };
-                    let b = unsafe { frame.get_local_unchecked(idx2) };
+                    let a = slocal!(frame, idx1);
+                    let b = slocal!(frame, idx2);
                     match (a, b) {
                         (Some(a), Some(b)) => {
                             match (&a.payload, &b.payload) {
@@ -503,25 +551,25 @@ impl VirtualMachine {
                                             PyObject::big_int(BigInt::from(x) + BigInt::from(y))
                                         }
                                     };
-                                    unsafe { frame.set_local_unchecked(dest, result) };
+                                    sset_local!(frame, dest, result);
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     let r = *x + *y;
-                                    unsafe { frame.set_local_unchecked(dest, PyObject::float(r)) };
+                                    sset_local!(frame, dest, PyObject::float(r));
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
                                     let mut s = String::with_capacity(x.len() + y.len());
                                     s.push_str(x);
                                     s.push_str(y);
-                                    unsafe { frame.set_local_unchecked(dest, PyObject::str_val(CompactString::from(s))) };
+                                    sset_local!(frame, dest, PyObject::str_val(CompactString::from(s)));
                                     Ok(None)
                                 }
                                 _ => {
                                     let (ac, bc) = (a.clone(), b.clone());
-                                    frame.stack.push(ac);
-                                    frame.stack.push(bc);
+                                    spush!(frame, ac);
+                                    spush!(frame, bc);
                                     let r = self.execute_one(ferrython_bytecode::Instruction::new(
                                         Opcode::BinaryAdd, 0));
                                     // Re-borrow frame after execute_one
@@ -546,7 +594,7 @@ impl VirtualMachine {
                     let local_idx = (instr.arg >> 16) as usize;
                     let const_idx = ((instr.arg >> 8) & 0xFF) as usize;
                     let dest = (instr.arg & 0xFF) as usize;
-                    let a = unsafe { frame.get_local_unchecked(local_idx) };
+                    let a = slocal!(frame, local_idx);
                     let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
                     match a {
                         Some(a) => {
@@ -560,25 +608,25 @@ impl VirtualMachine {
                                             PyObject::big_int(BigInt::from(x) + BigInt::from(y))
                                         }
                                     };
-                                    unsafe { frame.set_local_unchecked(dest, result) };
+                                    sset_local!(frame, dest, result);
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    unsafe { frame.set_local_unchecked(dest, PyObject::float(*x + *y)) };
+                                    sset_local!(frame, dest, PyObject::float(*x + *y));
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
-                                    unsafe { frame.set_local_unchecked(dest, PyObject::float(*x as f64 + *y)) };
+                                    sset_local!(frame, dest, PyObject::float(*x as f64 + *y));
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                    unsafe { frame.set_local_unchecked(dest, PyObject::float(*x + *y as f64)) };
+                                    sset_local!(frame, dest, PyObject::float(*x + *y as f64));
                                     Ok(None)
                                 }
                                 _ => {
                                     let (ac, cc) = (a.clone(), c.clone());
-                                    frame.stack.push(ac);
-                                    frame.stack.push(cc);
+                                    spush!(frame, ac);
+                                    spush!(frame, cc);
                                     let r = self.execute_one(ferrython_bytecode::Instruction::new(
                                         Opcode::BinaryAdd, 0));
                                     if r.is_ok() {
@@ -599,18 +647,18 @@ impl VirtualMachine {
                 }
                 Opcode::PopTop => {
                     // SAFETY: stack non-empty for well-formed bytecode
-                    drop(unsafe { frame.pop_unchecked() });
+                    drop(spop!(frame));
                     Ok(None)
                 }
                 Opcode::PopTopJumpAbsolute => {
-                    drop(unsafe { frame.pop_unchecked() });
+                    drop(spop!(frame));
                     frame.ip = instr.arg as usize;
                     Ok(None)
                 }
                 Opcode::DupTop => {
                     // SAFETY: stack non-empty; stack pre-allocated
                     let v = unsafe { frame.peek_unchecked() }.clone();
-                    unsafe { frame.push_unchecked(v) };
+                    spush!(frame, v);
                     Ok(None)
                 }
                 Opcode::RotTwo => {
@@ -623,7 +671,7 @@ impl VirtualMachine {
                 Opcode::Nop => Ok(None),
                 // Inline GetIter for common types
                 Opcode::GetIter => {
-                    let obj = frame.stack.last().unwrap();
+                    let obj = speek!(frame);
                     match &obj.payload {
                         PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } => Ok(None),
                         _ => self.execute_one(instr),
@@ -638,12 +686,12 @@ impl VirtualMachine {
                         let cur = current.get();
                         let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
                         if done {
-                            drop(unsafe { frame.pop_unchecked() });
+                            drop(spop!(frame));
                             frame.ip = instr.arg as usize;
                         } else {
                             let v = PyObject::int(cur);
                             current.set(cur + *step);
-                            frame.stack.push(v);
+                            spush!(frame, v);
                         }
                         Ok(None)
                     } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
@@ -653,13 +701,13 @@ impl VirtualMachine {
                                 let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
                                 if done {
                                     drop(data);
-                                    drop(unsafe { frame.pop_unchecked() });
+                                    drop(spop!(frame));
                                     frame.ip = instr.arg as usize;
                                 } else {
                                     let v = PyObject::int(*current);
                                     *current += *step;
                                     drop(data);
-                                    frame.stack.push(v);
+                                    spush!(frame, v);
                                 }
                                 Ok(None)
                             }
@@ -668,10 +716,10 @@ impl VirtualMachine {
                                     let v = items[*index].clone();
                                     *index += 1;
                                     drop(data);
-                                    frame.stack.push(v);
+                                    spush!(frame, v);
                                 } else {
                                     drop(data);
-                                    drop(unsafe { frame.pop_unchecked() });
+                                    drop(spop!(frame));
                                     frame.ip = instr.arg as usize;
                                 }
                                 Ok(None)
@@ -681,10 +729,10 @@ impl VirtualMachine {
                                     let v = items[*index].clone();
                                     *index += 1;
                                     drop(data);
-                                    frame.stack.push(v);
+                                    spush!(frame, v);
                                 } else {
                                     drop(data);
-                                    drop(unsafe { frame.pop_unchecked() });
+                                    drop(spop!(frame));
                                     frame.ip = instr.arg as usize;
                                 }
                                 Ok(None)
@@ -708,12 +756,12 @@ impl VirtualMachine {
                         let cur = current.get();
                         let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
                         if done {
-                            drop(unsafe { frame.pop_unchecked() });
+                            drop(spop!(frame));
                             frame.ip = jump_target;
                         } else {
                             let v = PyObject::int(cur);
                             current.set(cur + *step);
-                            unsafe { frame.set_local_unchecked(store_idx, v) };
+                            sset_local!(frame, store_idx, v);
                         }
                         Ok(None)
                     } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
@@ -723,14 +771,14 @@ impl VirtualMachine {
                                 let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
                                 if done {
                                     drop(data);
-                                    drop(unsafe { frame.pop_unchecked() });
+                                    drop(spop!(frame));
                                     frame.ip = jump_target;
                                 } else {
                                     let v = PyObject::int(*current);
                                     *current += *step;
                                     drop(data);
                                     // Store directly to local — no stack push/pop!
-                                    unsafe { frame.set_local_unchecked(store_idx, v) };
+                                    sset_local!(frame, store_idx, v);
                                 }
                                 Ok(None)
                             }
@@ -739,10 +787,10 @@ impl VirtualMachine {
                                     let v = items[*index].clone();
                                     *index += 1;
                                     drop(data);
-                                    unsafe { frame.set_local_unchecked(store_idx, v) };
+                                    sset_local!(frame, store_idx, v);
                                 } else {
                                     drop(data);
-                                    drop(unsafe { frame.pop_unchecked() });
+                                    drop(spop!(frame));
                                     frame.ip = jump_target;
                                 }
                                 Ok(None)
@@ -752,10 +800,10 @@ impl VirtualMachine {
                                     let v = items[*index].clone();
                                     *index += 1;
                                     drop(data);
-                                    unsafe { frame.set_local_unchecked(store_idx, v) };
+                                    sset_local!(frame, store_idx, v);
                                 } else {
                                     drop(data);
-                                    drop(unsafe { frame.pop_unchecked() });
+                                    drop(spop!(frame));
                                     frame.ip = jump_target;
                                 }
                                 Ok(None)
@@ -769,8 +817,8 @@ impl VirtualMachine {
                                 let frame = self.call_stack.last_mut().unwrap();
                                 // If ForIter didn't jump (value was pushed), store it
                                 if frame.ip != jump_target {
-                                    let v = unsafe { frame.pop_unchecked() };
-                                    unsafe { frame.set_local_unchecked(store_idx, v) };
+                                    let v = spop!(frame);
+                                    sset_local!(frame, store_idx, v);
                                 }
                                 Ok(None)
                             }
@@ -782,8 +830,8 @@ impl VirtualMachine {
                         self.execute_one(for_instr)?;
                         let frame = self.call_stack.last_mut().unwrap();
                         if frame.ip != jump_target {
-                            let v = unsafe { frame.pop_unchecked() };
-                            unsafe { frame.set_local_unchecked(store_idx, v) };
+                            let v = spop!(frame);
+                            sset_local!(frame, store_idx, v);
                         }
                         Ok(None)
                     }
@@ -792,28 +840,28 @@ impl VirtualMachine {
                 Opcode::ReturnValue => {
                     if frame.block_stack.is_empty() {
                         // SAFETY: stack non-empty for well-formed bytecode
-                        let val = unsafe { frame.pop_unchecked() };
+                        let val = spop!(frame);
                         Ok(Some(val))
                     } else if frame.block_stack.iter().any(|b| b.kind == BlockKind::Finally) {
                         self.execute_one(instr)
                     } else {
                         // SAFETY: stack non-empty for well-formed bytecode
-                        let val = unsafe { frame.pop_unchecked() };
+                        let val = spop!(frame);
                         Ok(Some(val))
                     }
                 }
                 // Fused LoadFast + ReturnValue — common `return x` pattern
                 Opcode::LoadFastReturnValue => {
                     if frame.block_stack.is_empty() {
-                        match unsafe { frame.get_local_unchecked(instr.arg as usize) } {
+                        match slocal!(frame, instr.arg as usize) {
                             Some(val) => Ok(Some(val.clone())),
                             None => Self::err_unbound_local(&frame.code.varnames, instr.arg as usize),
                         }
                     } else {
                         // Fallback: push to stack and use normal ReturnValue
-                        match unsafe { frame.get_local_unchecked(instr.arg as usize) } {
+                        match slocal!(frame, instr.arg as usize) {
                             Some(val) => {
-                                frame.stack.push(val.clone());
+                                spush!(frame, val.clone());
                                 self.execute_one(ferrython_bytecode::Instruction::new(
                                     Opcode::ReturnValue, 0))
                             }
@@ -828,7 +876,7 @@ impl VirtualMachine {
                         Ok(Some(val.clone()))
                     } else {
                         let val = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize) };
-                        frame.stack.push(val.clone());
+                        spush!(frame, val.clone());
                         self.execute_one(ferrython_bytecode::Instruction::new(
                             Opcode::ReturnValue, 0))
                     }
@@ -1146,7 +1194,7 @@ impl VirtualMachine {
                         if let Some(ref cache) = frame.global_cache {
                             // SAFETY: compiler guarantees idx < code.names.len() == cache.len()
                             if let Some(ref v) = unsafe { cache.get_unchecked(idx) } {
-                                unsafe { frame.push_unchecked(v.clone()) };
+                                spush!(frame, v.clone());
                                 Ok(None)
                             } else {
                                 self.execute_one(instr) // miss — fall through to full handler
@@ -1161,7 +1209,7 @@ impl VirtualMachine {
                 // Inline PopJumpIfFalse for primitive types (hot in conditionals/loops)
                 Opcode::PopJumpIfFalse => {
                     // SAFETY: stack non-empty for well-formed bytecode
-                    let v = unsafe { frame.pop_unchecked() };
+                    let v = spop!(frame);
                     match &v.payload {
                         PyObjectPayload::Bool(b) => {
                             if !b { frame.ip = instr.arg as usize; }
@@ -1206,7 +1254,7 @@ impl VirtualMachine {
                 }
                 Opcode::PopJumpIfTrue => {
                     // SAFETY: stack non-empty for well-formed bytecode
-                    let v = unsafe { frame.pop_unchecked() };
+                    let v = spop!(frame);
                     match &v.payload {
                         PyObjectPayload::Bool(b) => {
                             if *b { frame.ip = instr.arg as usize; }
@@ -1350,11 +1398,11 @@ impl VirtualMachine {
                 Opcode::BuildTuple => {
                     let count = instr.arg as usize;
                     if count == 0 {
-                        frame.stack.push(PyObject::tuple(vec![]));
+                        spush!(frame, PyObject::tuple(vec![]));
                     } else {
                         let start = frame.stack.len() - count;
                         let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
-                        frame.stack.push(PyObject::tuple(items));
+                        spush!(frame, PyObject::tuple(items));
                     }
                     Ok(None)
                 }
@@ -1362,11 +1410,11 @@ impl VirtualMachine {
                 Opcode::BuildList => {
                     let count = instr.arg as usize;
                     if count == 0 {
-                        frame.stack.push(PyObject::list(vec![]));
+                        spush!(frame, PyObject::list(vec![]));
                     } else {
                         let start = frame.stack.len() - count;
                         let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
-                        frame.stack.push(PyObject::list(items));
+                        spush!(frame, PyObject::list(items));
                     }
                     Ok(None)
                 }
@@ -1376,7 +1424,7 @@ impl VirtualMachine {
                     let conversion = (instr.arg & 0x03) as u8;
                     // Fast path: no format spec, no/!s conversion, primitive value
                     if !has_fmt_spec && (conversion == 0 || conversion == 1) {
-                        let val = frame.stack.last().unwrap();
+                        let val = speek!(frame);
                         let fast_str = match &val.payload {
                             PyObjectPayload::Str(s) => Some(s.clone()),
                             PyObjectPayload::Int(PyInt::Small(n)) => {
@@ -1392,8 +1440,8 @@ impl VirtualMachine {
                             _ => None,
                         };
                         if let Some(s) = fast_str {
-                            frame.stack.pop();
-                            frame.stack.push(PyObject::str_val(s));
+                            { let _ = spop!(frame); }
+                            spush!(frame, PyObject::str_val(s));
                             Ok(None)
                         } else {
                             self.execute_one(instr)
@@ -1406,7 +1454,7 @@ impl VirtualMachine {
                 Opcode::BuildString => {
                     let count = instr.arg as usize;
                     if count == 0 {
-                        frame.stack.push(PyObject::str_val(CompactString::from("")));
+                        spush!(frame, PyObject::str_val(CompactString::from("")));
                         Ok(None)
                     } else if count == 1 {
                         Ok(None)
@@ -1430,7 +1478,7 @@ impl VirtualMachine {
                                 }
                             }
                             frame.stack.truncate(start);
-                            frame.stack.push(PyObject::str_val(CompactString::from(result)));
+                            spush!(frame, PyObject::str_val(CompactString::from(result)));
                         } else {
                             let mut result = String::new();
                             for i in start..frame.stack.len() {
@@ -1441,7 +1489,7 @@ impl VirtualMachine {
                                 }
                             }
                             frame.stack.truncate(start);
-                            frame.stack.push(PyObject::str_val(CompactString::from(result)));
+                            spush!(frame, PyObject::str_val(CompactString::from(result)));
                         }
                         Ok(None)
                     }
@@ -1484,7 +1532,7 @@ impl VirtualMachine {
                             }
                             frame.stack.set_len(func_idx);
                         }
-                        frame.stack.push(ret_val);
+                        spush!(frame, ret_val);
                         Ok(None)
                     } else if call_kind > 0 {
                         let args_start = func_idx + 1;
@@ -1571,7 +1619,7 @@ impl VirtualMachine {
                                 }
                                 frame.stack.set_len(func_idx);
                             }
-                            frame.stack.push(ret_val);
+                            spush!(frame, ret_val);
                             Ok(None)
                         } else {
                         // Normal path: create frame
@@ -1640,7 +1688,7 @@ impl VirtualMachine {
                                 };
                                 if let Some(n) = fast_len {
                                     unsafe { frame.stack.set_len(func_idx); }
-                                    frame.stack.push(PyObject::int(n));
+                                    spush!(frame, PyObject::int(n));
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1654,7 +1702,7 @@ impl VirtualMachine {
                                     let iter = PyObject::wrap(PyObjectPayload::RangeIter {
                                         current: SyncI64::new(0), stop, step: 1,
                                     });
-                                    frame.stack.push(iter);
+                                    spush!(frame, iter);
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1700,7 +1748,7 @@ impl VirtualMachine {
                                 };
                                 if let Some(result) = fast_result {
                                     unsafe { frame.stack.set_len(func_idx); }
-                                    frame.stack.push(PyObject::bool_val(result));
+                                    spush!(frame, PyObject::bool_val(result));
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1725,7 +1773,7 @@ impl VirtualMachine {
                                 };
                                 if let Some(name) = type_name {
                                     unsafe { frame.stack.set_len(func_idx); }
-                                    frame.stack.push(PyObject::wrap(PyObjectPayload::BuiltinType(name.into())));
+                                    spush!(frame, PyObject::wrap(PyObjectPayload::BuiltinType(name.into())));
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1747,7 +1795,7 @@ impl VirtualMachine {
                                 };
                                 if let Some(b) = result {
                                     unsafe { frame.stack.set_len(func_idx); }
-                                    frame.stack.push(PyObject::bool_val(b));
+                                    spush!(frame, PyObject::bool_val(b));
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1764,7 +1812,7 @@ impl VirtualMachine {
                                 };
                                 if let Some(v) = result {
                                     unsafe { frame.stack.set_len(func_idx); }
-                                    frame.stack.push(v);
+                                    spush!(frame, v);
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1789,7 +1837,7 @@ impl VirtualMachine {
                                 };
                                 if let Some(v) = result {
                                     unsafe { frame.stack.set_len(func_idx); }
-                                    frame.stack.push(v);
+                                    spush!(frame, v);
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1805,7 +1853,7 @@ impl VirtualMachine {
                                 };
                                 if let Some(v) = result {
                                     unsafe { frame.stack.set_len(func_idx); }
-                                    frame.stack.push(v);
+                                    spush!(frame, v);
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1858,7 +1906,7 @@ impl VirtualMachine {
                                 }
                                 frame.stack.set_len(stack_len - arg_count);
                             }
-                            frame.stack.push(ret_val);
+                            spush!(frame, ret_val);
                             Ok(None)
                         } else if call_kind > 0 {
                             let stack_len = frame.stack.len();
@@ -1939,7 +1987,7 @@ impl VirtualMachine {
                             if let Some(ret_val) = mini_result {
                                 // Base case resolved without frame creation
                                 frame.stack.truncate(args_start);
-                                frame.stack.push(ret_val);
+                                spush!(frame, ret_val);
                                 Ok(None)
                             } else {
                             let mut new_frame = if call_kind == 2 {
@@ -2002,11 +2050,11 @@ impl VirtualMachine {
                                         _ => None,
                                     };
                                     if let Some(n) = fast_len {
-                                        frame.stack.pop();
-                                        frame.stack.push(PyObject::int(n));
+                                        { let _ = spop!(frame); }
+                                        spush!(frame, PyObject::int(n));
                                         Ok(None)
                                     } else {
-                                        frame.stack.push(func_obj.clone());
+                                        spush!(frame, func_obj.clone());
                                         let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
                                         self.execute_one(call_instr)
                                     }
@@ -2015,14 +2063,14 @@ impl VirtualMachine {
                                     let arg = &frame.stack[frame.stack.len() - 1];
                                     if let PyObjectPayload::Int(PyInt::Small(stop)) = &arg.payload {
                                         let stop = *stop;
-                                        frame.stack.pop();
+                                        { let _ = spop!(frame); }
                                         let iter = PyObject::wrap(PyObjectPayload::RangeIter {
                                             current: SyncI64::new(0), stop, step: 1,
                                         });
-                                        frame.stack.push(iter);
+                                        spush!(frame, iter);
                                         Ok(None)
                                     } else {
-                                        frame.stack.push(func_obj.clone());
+                                        spush!(frame, func_obj.clone());
                                         let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
                                         self.execute_one(call_instr)
                                     }
@@ -2044,11 +2092,11 @@ impl VirtualMachine {
                                         _ => None,
                                     };
                                     if let Some(v) = result {
-                                        frame.stack.pop();
-                                        frame.stack.push(v);
+                                        { let _ = spop!(frame); }
+                                        spush!(frame, v);
                                         Ok(None)
                                     } else {
-                                        frame.stack.push(func_obj.clone());
+                                        spush!(frame, func_obj.clone());
                                         let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
                                         self.execute_one(call_instr)
                                     }
@@ -2076,10 +2124,10 @@ impl VirtualMachine {
                                     };
                                     if let Some(matched) = result {
                                         frame.stack.truncate(slen - 2);
-                                        frame.stack.push(PyObject::bool_val(matched));
+                                        spush!(frame, PyObject::bool_val(matched));
                                         Ok(None)
                                     } else {
-                                        frame.stack.push(func_obj.clone());
+                                        spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 2))
                                     }
                                 }
@@ -2090,11 +2138,11 @@ impl VirtualMachine {
                                         _ => None,
                                     };
                                     if let Some(t) = type_obj {
-                                        frame.stack.pop();
-                                        frame.stack.push(t);
+                                        { let _ = spop!(frame); }
+                                        spush!(frame, t);
                                         Ok(None)
                                     } else {
-                                        frame.stack.push(func_obj.clone());
+                                        spush!(frame, func_obj.clone());
                                         let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
                                         self.execute_one(call_instr)
                                     }
@@ -2108,11 +2156,11 @@ impl VirtualMachine {
                                         _ => None,
                                     };
                                     if let Some(v) = result {
-                                        frame.stack.pop();
-                                        frame.stack.push(v);
+                                        { let _ = spop!(frame); }
+                                        spush!(frame, v);
                                         Ok(None)
                                     } else {
-                                        frame.stack.push(func_obj.clone());
+                                        spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 1))
                                     }
                                 }
@@ -2125,11 +2173,11 @@ impl VirtualMachine {
                                         _ => None,
                                     };
                                     if let Some(v) = result {
-                                        frame.stack.pop();
-                                        frame.stack.push(v);
+                                        { let _ = spop!(frame); }
+                                        spush!(frame, v);
                                         Ok(None)
                                     } else {
-                                        frame.stack.push(func_obj.clone());
+                                        spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 1))
                                     }
                                 }
@@ -2147,11 +2195,11 @@ impl VirtualMachine {
                                         _ => None,
                                     };
                                     if let Some(v) = result {
-                                        frame.stack.pop();
-                                        frame.stack.push(v);
+                                        { let _ = spop!(frame); }
+                                        spush!(frame, v);
                                         Ok(None)
                                     } else {
-                                        frame.stack.push(func_obj.clone());
+                                        spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 1))
                                     }
                                 }
@@ -2163,17 +2211,17 @@ impl VirtualMachine {
                                         _ => None,
                                     };
                                     if let Some(v) = result {
-                                        frame.stack.pop();
-                                        frame.stack.push(v);
+                                        { let _ = spop!(frame); }
+                                        spush!(frame, v);
                                         Ok(None)
                                     } else {
-                                        frame.stack.push(func_obj.clone());
+                                        spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 1))
                                     }
                                 }
                                 _ => {
                                     // Not a simple function — decompose to LoadGlobal + CallFunction
-                                    frame.stack.push(func_obj.clone());
+                                    spush!(frame, func_obj.clone());
                                     let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
                                     self.execute_one(call_instr)
                                 }
@@ -2249,16 +2297,16 @@ impl VirtualMachine {
                             let method = fast_val.unwrap();
                             // TOS is the object — it becomes slot_1 (receiver)
                             // Insert method below it as slot_0
-                            let recv = frame.stack.pop().unwrap();
-                            frame.stack.push(method);
-                            frame.stack.push(recv);
+                            let recv = spop!(frame);
+                            spush!(frame, method);
+                            spush!(frame, recv);
                             Ok(None)
                         }
                         2 => {
                             // Two-item protocol slow path: push None sentinel + callable
                             let val = fast_val.unwrap();
                             *frame.stack.last_mut().unwrap() = PyObject::none();
-                            frame.stack.push(val);
+                            spush!(frame, val);
                             Ok(None)
                         }
                         3 => {
@@ -2269,7 +2317,7 @@ impl VirtualMachine {
                             let name_obj = PyObject::str_val(name);
                             // receiver is already TOS, insert name below it
                             let recv_idx = frame.stack.len() - 1;
-                            frame.stack.push(name_obj);
+                            spush!(frame, name_obj);
                             frame.stack.swap(recv_idx, recv_idx + 1);
                             Ok(None)
                         }
@@ -2359,7 +2407,7 @@ impl VirtualMachine {
                                     let _name = std::ptr::read(frame.stack.as_ptr().add(len - 3));
                                     frame.stack.set_len(len - 3);
                                 }
-                                frame.stack.push(PyObject::none());
+                                spush!(frame, PyObject::none());
                                 Ok(None)
                             } else if is_list_pop {
                                 let len = frame.stack.len();
@@ -2371,7 +2419,7 @@ impl VirtualMachine {
                                                 let _receiver = std::ptr::read(frame.stack.as_ptr().add(len - 1));
                                                 let _name = std::ptr::read(frame.stack.as_ptr().add(len - 2));
                                                 frame.stack.set_len(len - 2);
-                                                frame.stack.push(val);
+                                                spush!(frame, val);
                                                 Ok(None)
                                             }
                                             None => Err(PyException::index_error("pop from empty list")),
@@ -2383,9 +2431,9 @@ impl VirtualMachine {
                                     (PyObjectPayload::Str(n), PyObjectPayload::Dict(_)) if n.as_str() == "get")
                             {
                                 // Inline dict.get(key) — returns None for missing keys
-                                let key_obj = frame.stack.pop().unwrap();
-                                let receiver = frame.stack.pop().unwrap();
-                                frame.stack.pop(); // name
+                                let key_obj = spop!(frame);
+                                let receiver = spop!(frame);
+                                { let _ = spop!(frame); } // name
                                 if let PyObjectPayload::Dict(map) = &receiver.payload {
                                     let hk = match &key_obj.payload {
                                         PyObjectPayload::Str(s) => Some(HashableKey::Str(s.clone())),
@@ -2395,10 +2443,10 @@ impl VirtualMachine {
                                     };
                                     if let Some(k) = hk {
                                         let val = map.read().get(&k).cloned().unwrap_or_else(PyObject::none);
-                                        frame.stack.push(val);
+                                        spush!(frame, val);
                                     } else {
                                         let val = PyObject::none();
-                                        frame.stack.push(val);
+                                        spush!(frame, val);
                                     }
                                     Ok(None)
                                 } else { unreachable!() }
@@ -2423,8 +2471,8 @@ impl VirtualMachine {
                                 };
                                 if inline_kind >= 1 && inline_kind <= 5 {
                                     // 0-arg str methods
-                                    let receiver = frame.stack.pop().unwrap();
-                                    frame.stack.pop(); // name
+                                    let receiver = spop!(frame);
+                                    { let _ = spop!(frame); } // name
                                     if let PyObjectPayload::Str(s) = &receiver.payload {
                                         let result = match inline_kind {
                                             1 => PyObject::str_val(CompactString::from(s.trim())),
@@ -2433,14 +2481,14 @@ impl VirtualMachine {
                                             4 => PyObject::str_val(CompactString::from(s.to_lowercase())),
                                             _ => PyObject::str_val(CompactString::from(s.to_uppercase())),
                                         };
-                                        frame.stack.push(result);
+                                        spush!(frame, result);
                                     }
                                     Ok(None)
                                 } else if inline_kind == 6 {
                                     // set.add(item)
-                                    let item = frame.stack.pop().unwrap();
-                                    let receiver = frame.stack.pop().unwrap();
-                                    frame.stack.pop(); // name
+                                    let item = spop!(frame);
+                                    let receiver = spop!(frame);
+                                    { let _ = spop!(frame); } // name
                                     if let PyObjectPayload::Set(set) = &receiver.payload {
                                         let hk = match &item.payload {
                                             PyObjectPayload::Str(s) => Some(HashableKey::Str(s.clone())),
@@ -2450,43 +2498,43 @@ impl VirtualMachine {
                                         };
                                         if let Some(k) = hk {
                                             set.write().insert(k, item);
-                                            frame.stack.push(PyObject::none());
+                                            spush!(frame, PyObject::none());
                                             Ok(None)
                                         } else {
                                             // Non-hashable: use general dispatch
                                             let result = crate::builtins::call_method(&receiver, "add", &[item])?;
-                                            frame.stack.push(result);
+                                            spush!(frame, result);
                                             Ok(None)
                                         }
                                     } else { unreachable!() }
                                 } else if inline_kind == 7 || inline_kind == 8 {
                                     // str.startswith / str.endswith
-                                    let arg = frame.stack.pop().unwrap();
-                                    let receiver = frame.stack.pop().unwrap();
-                                    frame.stack.pop(); // name
+                                    let arg = spop!(frame);
+                                    let receiver = spop!(frame);
+                                    { let _ = spop!(frame); } // name
                                     if let (PyObjectPayload::Str(s), PyObjectPayload::Str(prefix)) = (&receiver.payload, &arg.payload) {
                                         let result = if inline_kind == 7 { s.starts_with(prefix.as_str()) } else { s.ends_with(prefix.as_str()) };
-                                        frame.stack.push(PyObject::bool_val(result));
+                                        spush!(frame, PyObject::bool_val(result));
                                         Ok(None)
                                     } else {
                                         // Not both strings — use general dispatch
                                         let name = if inline_kind == 7 { "startswith" } else { "endswith" };
                                         let result = crate::builtins::call_method(&receiver, name, &[arg])?;
-                                        frame.stack.push(result);
+                                        spush!(frame, result);
                                         Ok(None)
                                     }
                                 } else {
                                     // General builtin method dispatch
                                     let mut args = Vec::with_capacity(arg_count);
                                     for _ in 0..arg_count {
-                                        args.push(frame.stack.pop().unwrap());
+                                        args.push(spop!(frame));
                                     }
                                     args.reverse();
-                                    let receiver = frame.stack.pop().unwrap();
-                                    let name_obj = frame.stack.pop().unwrap();
+                                    let receiver = spop!(frame);
+                                    let name_obj = spop!(frame);
                                     if let PyObjectPayload::Str(ref name) = name_obj.payload {
                                         let result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
-                                        frame.stack.push(result);
+                                        spush!(frame, result);
                                         Ok(None)
                                     } else {
                                         unreachable!()
@@ -2623,7 +2671,7 @@ impl VirtualMachine {
                 }
                 // Inline ListAppend (hot in list comprehensions)
                 Opcode::ListAppend => {
-                    let item = frame.stack.pop().expect("stack underflow");
+                    let item = spop!(frame);
                     let idx = instr.arg as usize;
                     let stack_pos = frame.stack.len() - idx;
                     if let PyObjectPayload::List(items) = &frame.stack[stack_pos].payload {
@@ -2637,7 +2685,7 @@ impl VirtualMachine {
                     let local_idx = (instr.arg >> 16) as usize;
                     let name_idx = (instr.arg & 0xFFFF) as usize;
                     let name = &frame.code.names[name_idx];
-                    let obj = match unsafe { frame.get_local_unchecked(local_idx) } {
+                    let obj = match slocal!(frame, local_idx) {
                         Some(val) => val,
                         None => {
                             return Self::err_unbound_local(&frame.code.varnames, local_idx)
@@ -2661,11 +2709,11 @@ impl VirtualMachine {
                         } else { None }
                     } else { None };
                     if let Some(val) = fast_val {
-                        frame.stack.push(val);
+                        spush!(frame, val);
                         Ok(None)
                     } else {
                         // Decompose: push local, then execute LoadAttr
-                        frame.stack.push(obj.clone());
+                        spush!(frame, obj.clone());
                         let attr_instr = Instruction::new(Opcode::LoadAttr, name_idx as u32);
                         self.execute_one(attr_instr)
                     }
@@ -2674,7 +2722,7 @@ impl VirtualMachine {
                 Opcode::LoadFastLoadMethod => {
                     let local_idx = (instr.arg >> 16) as usize;
                     let name_idx = (instr.arg & 0xFFFF) as usize;
-                    let obj = match unsafe { frame.get_local_unchecked(local_idx) } {
+                    let obj = match slocal!(frame, local_idx) {
                         Some(val) => val.clone(),
                         None => {
                             return Self::err_unbound_local(&frame.code.varnames, local_idx)
@@ -2727,27 +2775,27 @@ impl VirtualMachine {
                     match fast_kind {
                         1 => {
                             // method + receiver protocol
-                            frame.stack.push(fast_val.unwrap());
-                            frame.stack.push(obj);
+                            spush!(frame, fast_val.unwrap());
+                            spush!(frame, obj);
                             Ok(None)
                         }
                         2 => {
                             // None sentinel + callable
-                            frame.stack.push(PyObject::none());
-                            frame.stack.push(fast_val.unwrap());
+                            spush!(frame, PyObject::none());
+                            spush!(frame, fast_val.unwrap());
                             Ok(None)
                         }
                         3 => {
                             // Builtin: Str name tag + receiver
                             let name = frame.code.names[name_idx].clone();
                             let name_obj = PyObject::str_val(name);
-                            frame.stack.push(name_obj);
-                            frame.stack.push(obj);
+                            spush!(frame, name_obj);
+                            spush!(frame, obj);
                             Ok(None)
                         }
                         _ => {
                             // Fallback: push local to stack, execute LoadMethod
-                            frame.stack.push(obj);
+                            spush!(frame, obj);
                             let method_instr = Instruction::new(Opcode::LoadMethod, name_idx as u32);
                             self.execute_one(method_instr)
                         }
@@ -2796,8 +2844,8 @@ impl VirtualMachine {
                         } else { false }
                     } else { false };
                     if fast {
-                        let obj = frame.stack.pop().expect("stack underflow");
-                        let value = frame.stack.pop().expect("stack underflow");
+                        let obj = spop!(frame);
+                        let value = spop!(frame);
                         if let PyObjectPayload::Instance(inst) = &obj.payload {
                             inst.attrs.write().insert(
                                 ferrython_core::intern::intern_or_new(name.as_str()),
@@ -2860,7 +2908,7 @@ impl VirtualMachine {
                             let result = self.exec_compare_ops(cmp_instr)?;
                             if result.is_none() {
                                 let frame = self.call_stack.last_mut().unwrap();
-                                let v = frame.stack.pop().expect("stack underflow");
+                                let v = spop!(frame);
                                 let is_false = match &v.payload {
                                     PyObjectPayload::Bool(b) => !b,
                                     PyObjectPayload::None => true,
@@ -2886,7 +2934,7 @@ impl VirtualMachine {
                     let const_idx = ((instr.arg >> 12) & 0xFF) as usize;
                     let jump_target = (instr.arg & 0xFFF) as usize;
                     // Read local by reference — no clone
-                    match unsafe { frame.get_local_unchecked(local_idx) } {
+                    match slocal!(frame, local_idx) {
                         Some(local) => {
                             let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
                             let fast_result = match (&local.payload, &c.payload) {
@@ -2919,13 +2967,13 @@ impl VirtualMachine {
                                 Ok(None)
                             } else {
                                 // Fallback: push both, decompose to CompareOp + PopJumpIfFalse
-                                frame.stack.push(local.clone());
-                                frame.stack.push(c.clone());
+                                spush!(frame, local.clone());
+                                spush!(frame, c.clone());
                                 let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
                                 let result = self.exec_compare_ops(cmp_instr)?;
                                 if result.is_none() {
                                     let frame = self.call_stack.last_mut().unwrap();
-                                    let v = frame.stack.pop().expect("stack underflow");
+                                    let v = spop!(frame);
                                     let is_false = match &v.payload {
                                         PyObjectPayload::Bool(b) => !b,
                                         PyObjectPayload::None => true,
