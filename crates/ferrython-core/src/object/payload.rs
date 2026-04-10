@@ -67,14 +67,14 @@ pub enum PyObjectPayload {
     InstanceDict(Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>),
     /// Read-only view of a class namespace (types.MappingProxyType)
     MappingProxy(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
-    Function(PyFunction),
+    Function(Box<PyFunction>),
     BuiltinFunction(CompactString),
     /// Built-in type object (int, str, float, etc.) — callable as constructor
     BuiltinType(CompactString),
     BoundMethod { receiver: PyObjectRef, method: PyObjectRef },
     BuiltinBoundMethod { receiver: PyObjectRef, method_name: CompactString },
     Code(std::sync::Arc<ferrython_bytecode::CodeObject>),
-    Class(ClassData),
+    Class(Box<ClassData>),
     Instance(InstanceData),
     Module(ModuleData),
     Iterator(Arc<parking_lot::Mutex<IteratorData>>),

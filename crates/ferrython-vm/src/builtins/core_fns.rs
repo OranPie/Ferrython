@@ -120,7 +120,7 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 let is_plain_type = matches!(&mcs.payload, PyObjectPayload::BuiltinType(n) if n.as_str() == "type");
                 if !is_plain_type {
                     // Re-create with metaclass set
-                    return Ok(PyObject::wrap(PyObjectPayload::Class(ferrython_core::object::ClassData {
+                    return Ok(PyObject::wrap(PyObjectPayload::Class(Box::new(ferrython_core::object::ClassData {
                         name: cd.name.clone(),
                         bases: cd.bases.clone(),
                         namespace: cd.namespace.clone(),
@@ -132,7 +132,7 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         has_getattribute: cd.has_getattribute,
                         has_setattr: cd.has_setattr,
                         has_descriptors: cd.has_descriptors,
-                    })));
+                    }))));
                 }
             }
         }
@@ -193,13 +193,13 @@ fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj
             }
         }
     }
-    Ok(PyObject::wrap(PyObjectPayload::Class(ferrython_core::object::ClassData::new(
+    Ok(PyObject::wrap(PyObjectPayload::Class(Box::new(ferrython_core::object::ClassData::new(
         CompactString::from(name),
         bases,
         namespace,
         mro,
         None,
-    ))))
+    )))))
 }
 
 pub(super) fn builtin_id(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

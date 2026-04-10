@@ -276,12 +276,12 @@ impl PyObject {
         track_object(&obj);
         obj
     }
-    pub fn function(func: PyFunction) -> PyObjectRef { Self::wrap(PyObjectPayload::Function(func)) }
+    pub fn function(func: PyFunction) -> PyObjectRef { Self::wrap(PyObjectPayload::Function(Box::new(func))) }
     pub fn builtin_function(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinFunction(name)) }
     pub fn builtin_type(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinType(name)) }
     pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef { Self::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))) }
     pub fn class(name: CompactString, bases: Vec<PyObjectRef>, namespace: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Class(ClassData::new(name, bases, namespace, Vec::new(), None)))
+        Self::wrap(PyObjectPayload::Class(Box::new(ClassData::new(name, bases, namespace, Vec::new(), None))))
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
         let dict_storage = Self::detect_dict_subclass(&class);

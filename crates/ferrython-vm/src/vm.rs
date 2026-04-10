@@ -670,7 +670,7 @@ impl VirtualMachine {
                 }
                 Opcode::RotTwo => {
                     let len = frame.stack.len();
-                    frame.stack.swap(len - 1, len - 2);
+                    unsafe { frame.stack.as_mut_ptr().add(len - 1).swap(frame.stack.as_mut_ptr().add(len - 2)) };
                     Ok(None)
                 }
                 // RotThree and DupTopTwo: cold, delegate to execute_one

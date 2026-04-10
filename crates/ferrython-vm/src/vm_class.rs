@@ -144,9 +144,9 @@ impl VirtualMachine {
         // Build MRO: [self_class, ...linearized_parents, object]
         // Simple C3-like: for single inheritance just chain; for multiple use bases order
         let mro = Self::compute_mro(&bases)?;
-        let cls = PyObject::wrap(PyObjectPayload::Class(ClassData::new(
+        let cls = PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
             class_name, bases.clone(), namespace, mro, None,
-        )));
+        ))));
 
         // Populate __class__ cell so methods can access it via super() (PEP 3135)
         if let Some((ref cellvar_names, ref cells)) = class_cell_info {
@@ -717,7 +717,7 @@ impl VirtualMachine {
                 // Ensure metaclass is set on the class returned by __new__
                 if let PyObjectPayload::Class(cd) = &result.payload {
                     if cd.metaclass.is_none() {
-                        PyObject::wrap(PyObjectPayload::Class(ClassData {
+                        PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData {
                             name: cd.name.clone(),
                             bases: cd.bases.clone(),
                             namespace: cd.namespace.clone(),
@@ -729,7 +729,7 @@ impl VirtualMachine {
                             has_getattribute: cd.has_getattribute,
                             has_setattr: cd.has_setattr,
                             has_descriptors: cd.has_descriptors,
-                        }))
+                        })))
                     } else {
                         result
                     }
@@ -738,13 +738,13 @@ impl VirtualMachine {
                 }
             } else {
                 // No __new__ — create class directly (like type.__new__)
-                PyObject::wrap(PyObjectPayload::Class(ClassData::new(
+                PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
                     class_name.clone(),
                     bases_list.clone(),
                     namespace,
                     mro,
                     Some(meta.clone()),
-                )))
+                ))))
             };
             
             // Ensure metaclass is set on the returned class
@@ -848,9 +848,9 @@ impl VirtualMachine {
             Ok(cls)
         } else {
             // No metaclass: build normally
-            let mro = Self::compute_mro(&bases)?;            let cls = PyObject::wrap(PyObjectPayload::Class(ClassData::new(
+            let mro = Self::compute_mro(&bases)?;            let cls = PyObject::wrap(PyObjectPayload::Class(Box::new(ClassData::new(
                 class_name, bases.clone(), namespace, mro, None,
-            )));
+            ))));
             // __init_subclass__: bind to new subclass (cls), not parent
             // Forward non-metaclass kwargs to __init_subclass__
             let init_sub_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs.iter()
