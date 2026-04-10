@@ -618,21 +618,8 @@ impl VirtualMachine {
                     frame.stack.swap(len - 1, len - 2);
                     Ok(None)
                 }
-                Opcode::RotThree => {
-                    let len = frame.stack.len();
-                    // TOS moves to TOS2, TOS1→TOS, TOS2→TOS1
-                    frame.stack.swap(len - 1, len - 3);
-                    frame.stack.swap(len - 1, len - 2);
-                    Ok(None)
-                }
-                Opcode::DupTopTwo => {
-                    let len = frame.stack.len();
-                    let a = frame.stack[len - 2].clone();
-                    let b = frame.stack[len - 1].clone();
-                    frame.stack.push(a);
-                    frame.stack.push(b);
-                    Ok(None)
-                }
+                // RotThree and DupTopTwo: cold, delegate to execute_one
+                Opcode::RotThree | Opcode::DupTopTwo => self.execute_one(instr),
                 Opcode::Nop => Ok(None),
                 // Inline GetIter for common types
                 Opcode::GetIter => {
@@ -1357,30 +1344,8 @@ impl VirtualMachine {
                         }
                 }
                 // Inline LoadDeref (closure variable load — common in functional code)
-                Opcode::LoadDeref => {
-                    let idx = instr.arg as usize;
-                    let val = frame.cells[idx].read().clone();
-                    match val {
-                        Some(v) => { frame.stack.push(v); Ok(None) }
-                        None => {
-                            let n_cell = frame.code.cellvars.len();
-                            let name = if idx < n_cell {
-                                frame.code.cellvars[idx].clone()
-                            } else {
-                                frame.code.freevars[idx - n_cell].clone()
-                            };
-                            Self::err_name_error_msg(format!(
-                                "free variable '{}' referenced before assignment in enclosing scope", name
-                            ))
-                        }
-                    }
-                }
-                // Inline StoreDeref
-                Opcode::StoreDeref => {
-                    let val = frame.stack.pop().expect("stack underflow");
-                    *frame.cells[instr.arg as usize].write() = Some(val);
-                    Ok(None)
-                }
+                // LoadDeref/StoreDeref: closure variable access, cold path
+                Opcode::LoadDeref | Opcode::StoreDeref => self.execute_one(instr),
                 // Inline BuildTuple (very common for returns, unpacking)
                 Opcode::BuildTuple => {
                     let count = instr.arg as usize;
@@ -1447,7 +1412,6 @@ impl VirtualMachine {
                         Ok(None)
                     } else {
                         let start = frame.stack.len() - count;
-                        // Pre-compute total length to avoid reallocations
                         let mut total_len = 0usize;
                         let mut all_str = true;
                         for i in start..frame.stack.len() {
@@ -1482,46 +1446,8 @@ impl VirtualMachine {
                         Ok(None)
                     }
                 }
-                // Inline UnpackSequence for tuple/list with exact count
-                Opcode::UnpackSequence => {
-                    let count = instr.arg as usize;
-                    let val = frame.stack.last().unwrap();
-                    match &val.payload {
-                        PyObjectPayload::Tuple(items) if items.len() == count => {
-                            let items_clone: Vec<_> = items.iter().rev().cloned().collect();
-                            frame.stack.pop();
-                            for item in items_clone {
-                                frame.stack.push(item);
-                            }
-                            Ok(None)
-                        }
-                        PyObjectPayload::List(items_arc) => {
-                            let items = items_arc.read();
-                            if items.len() == count {
-                                let items_clone: Vec<_> = items.iter().rev().cloned().collect();
-                                drop(items);
-                                frame.stack.pop();
-                                for item in items_clone {
-                                    frame.stack.push(item);
-                                }
-                                Ok(None)
-                            } else {
-                                drop(items);
-                                self.execute_one(instr)
-                            }
-                        }
-                        _ => self.execute_one(instr),
-                    }
-                }
-                // Inline BuildMap for empty dicts
-                Opcode::BuildMap => {
-                    if instr.arg == 0 {
-                        frame.stack.push(PyObject::dict(Default::default()));
-                        Ok(None)
-                    } else {
-                        self.execute_one(instr)
-                    }
-                }
+                // UnpackSequence/BuildMap: cold, delegate to execute_one
+                Opcode::UnpackSequence | Opcode::BuildMap => self.execute_one(instr),
                 // Inline CallFunction fast path for simple Python function calls
                 Opcode::CallFunction => {
                     let arg_count = instr.arg as usize;
@@ -2855,27 +2781,8 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
-                // Inline StoreGlobal to avoid execute_one dispatch
-                Opcode::StoreGlobal => {
-                    let name = frame.code.names[instr.arg as usize].clone();
-                    let value = frame.stack.pop().expect("stack underflow");
-                    frame.globals.write().insert(name, value);
-                    crate::frame::bump_globals_version();
-                    Ok(None)
-                }
-                // Inline StoreName for module/class scope
-                Opcode::StoreName => {
-                    let name = frame.code.names[instr.arg as usize].clone();
-                    let value = frame.stack.pop().expect("stack underflow");
-                    match frame.scope_kind {
-                        crate::frame::ScopeKind::Module => {
-                            frame.globals.write().insert(name, value);
-                            crate::frame::bump_globals_version();
-                        }
-                        _ => { frame.local_names_insert(name, value); }
-                    }
-                    Ok(None)
-                }
+                // StoreGlobal/StoreName: not in tight loops, delegate to cold path
+                Opcode::StoreGlobal | Opcode::StoreName => self.execute_one(instr),
                 // Inline StoreAttr fast path for simple instance attribute writes
                 Opcode::StoreAttr => {
                     let name = &frame.code.names[instr.arg as usize];
@@ -2902,56 +2809,8 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
-                // Inline CompareOp for int/int, float/float, is/is_not
-                Opcode::CompareOp => {
-                    let len = frame.stack.len();
-                    if len >= 2 {
-                        let op = instr.arg;
-                        let a = &frame.stack[len - 2];
-                        let b = &frame.stack[len - 1];
-                        let fast_result = match (&a.payload, &b.payload) {
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                match op {
-                                    0 => Some(*x < *y),  // lt
-                                    1 => Some(*x <= *y), // le
-                                    2 => Some(*x == *y), // eq
-                                    3 => Some(*x != *y), // ne
-                                    4 => Some(*x > *y),  // gt
-                                    5 => Some(*x >= *y), // ge
-                                    _ => None,
-                                }
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                match op {
-                                    0 => Some(*x < *y),
-                                    1 => Some(*x <= *y),
-                                    2 => Some(*x == *y),
-                                    3 => Some(*x != *y),
-                                    4 => Some(*x > *y),
-                                    5 => Some(*x >= *y),
-                                    _ => None,
-                                }
-                            }
-                            (PyObjectPayload::Bool(x), PyObjectPayload::Bool(y)) if op == 2 || op == 3 => {
-                                if op == 2 { Some(*x == *y) } else { Some(*x != *y) }
-                            }
-                            _ => {
-                                // is / is not: pointer identity
-                                if op == 8 { Some(std::sync::Arc::ptr_eq(a, b)) }
-                                else if op == 9 { Some(!std::sync::Arc::ptr_eq(a, b)) }
-                                else { None }
-                            }
-                        };
-                        if let Some(val) = fast_result {
-                            unsafe { frame.binary_op_result(PyObject::bool_val(val)) };
-                            Ok(None)
-                        } else {
-                            self.execute_one(instr)
-                        }
-                    } else {
-                        self.execute_one(instr)
-                    }
-                }
+                // CompareOp catch-all: all common cases handled by guarded arms above
+                Opcode::CompareOp => self.execute_one(instr),
                 // Fused CompareOp + PopJumpIfFalse: avoids intermediate bool allocation
                 Opcode::CompareOpPopJumpIfFalse => {
                     let cmp_op = instr.arg >> 24;
