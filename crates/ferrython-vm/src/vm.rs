@@ -64,7 +64,7 @@ impl VirtualMachine {
             ferrython_core::error::register_thread_spawn(spawn_python_thread_impl);
         }
         Self {
-            call_stack: Vec::new(),
+            call_stack: Vec::with_capacity(64),
             builtins,
             modules: IndexMap::new(),
             active_exception: None,
@@ -80,7 +80,7 @@ impl VirtualMachine {
     /// Shares the same builtins map (Arc) so builtin lookup is free.
     pub fn new_for_thread(builtins: SharedBuiltins) -> Self {
         Self {
-            call_stack: Vec::new(),
+            call_stack: Vec::with_capacity(64),
             builtins,
             modules: IndexMap::new(),
             active_exception: None,
@@ -1233,8 +1233,14 @@ impl VirtualMachine {
                         let val = frame.stack.last().unwrap();
                         let fast_str = match &val.payload {
                             PyObjectPayload::Str(s) => Some(s.clone()),
-                            PyObjectPayload::Int(PyInt::Small(n)) => Some(CompactString::from(n.to_string())),
-                            PyObjectPayload::Float(f) => Some(CompactString::from(format!("{}", f))),
+                            PyObjectPayload::Int(PyInt::Small(n)) => {
+                                let mut buf = itoa::Buffer::new();
+                                Some(CompactString::from(buf.format(*n)))
+                            }
+                            PyObjectPayload::Float(f) => {
+                                let mut buf = ryu::Buffer::new();
+                                Some(CompactString::from(buf.format(*f)))
+                            }
                             PyObjectPayload::Bool(b) => Some(CompactString::from(if *b { "True" } else { "False" })),
                             PyObjectPayload::None => Some(CompactString::from("None")),
                             _ => None,
