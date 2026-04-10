@@ -288,6 +288,15 @@ impl VirtualMachine {
                     unsafe { frame.set_local_unchecked(instr.arg as usize, val) };
                     Ok(None)
                 }
+                // Fused StoreFast + JumpAbsolute — saves one dispatch per loop iteration
+                Opcode::StoreFastJumpAbsolute => {
+                    let store_idx = (instr.arg >> 16) as usize;
+                    let jump_target = (instr.arg & 0xFFFF) as usize;
+                    let val = unsafe { frame.pop_unchecked() };
+                    unsafe { frame.set_local_unchecked(store_idx, val) };
+                    frame.ip = jump_target;
+                    Ok(None)
+                }
                 Opcode::LoadConst => {
                     // SAFETY: compiler guarantees arg < constant_cache.len(); stack pre-allocated
                     let obj = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize).clone() };
@@ -2701,7 +2710,7 @@ impl VirtualMachine {
             | Opcode::LoadClosure | Opcode::LoadClassderef
             | Opcode::LoadGlobal | Opcode::StoreGlobal | Opcode::DeleteGlobal
             | Opcode::LoadFastLoadFast | Opcode::LoadFastLoadConst
-            | Opcode::StoreFastLoadFast
+            | Opcode::StoreFastLoadFast | Opcode::StoreFastJumpAbsolute
                 => self.exec_name_ops(instr),
 
             Opcode::LoadAttr | Opcode::StoreAttr | Opcode::DeleteAttr

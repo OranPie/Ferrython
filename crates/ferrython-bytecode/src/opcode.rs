@@ -205,6 +205,9 @@ pub enum Opcode {
     /// arg encoding: (cmp_op << 28) | (local_idx << 20) | (const_idx << 12) | jump_target
     /// Limits: local_idx < 256, const_idx < 256, jump_target < 4096, cmp_op < 16
     LoadFastCompareConstJump = 220,
+    /// Fused StoreFast + JumpAbsolute — hot at end of loop bodies.
+    /// arg encoding: (store_idx << 16) | jump_target
+    StoreFastJumpAbsolute = 221,
 }
 
 impl Opcode {
@@ -327,6 +330,7 @@ impl Opcode {
             }
             Self::LoadFastLoadAttr => 1, // push local, replace TOS with attr → net +1
             Self::LoadFastCompareConstJump => 0, // reads local+const by ref, compares, no stack change
+            Self::StoreFastJumpAbsolute => -1, // pops TOS and stores to local, then jumps
         }
     }
 
@@ -348,6 +352,7 @@ impl Opcode {
                 | Self::CompareOpPopJumpIfFalse
                 | Self::ForIterStoreFast
                 | Self::LoadFastCompareConstJump
+                | Self::StoreFastJumpAbsolute
         )
     }
 }

@@ -762,6 +762,17 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // StoreFast + JumpAbsolute → StoreFastJumpAbsolute (hot at loop body end)
+        if a.op == Opcode::StoreFast && b.op == Opcode::JumpAbsolute
+            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        {
+            let packed = (a.arg << 16) | b.arg;
+            code.instructions[i] = Instruction::new(Opcode::StoreFastJumpAbsolute, packed);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
         if a.arg > 0xFFFF || b.arg > 0xFFFF {
             i += 1;
             continue;
@@ -828,6 +839,16 @@ fn fuse_superinstructions(code: &mut CodeObject) {
                 final_len as u32
             };
             instr.arg = (new_target << 16) | store_idx;
+        } else if instr.op == Opcode::StoreFastJumpAbsolute {
+            // store_idx in high 16 bits; jump_target in low 16 bits
+            let store_idx = instr.arg >> 16;
+            let jump_target = (instr.arg & 0xFFFF) as usize;
+            let new_target = if jump_target < old_to_new.len() {
+                old_to_new[jump_target] as u32
+            } else {
+                final_len as u32
+            };
+            instr.arg = (store_idx << 16) | new_target;
         } else if is_jump(instr.op) {
             let target = instr.arg as usize;
             if target < old_to_new.len() {
