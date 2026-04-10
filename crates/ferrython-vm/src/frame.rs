@@ -180,14 +180,41 @@ impl Frame {
     #[inline] pub fn pop(&mut self) -> PyObjectRef { self.stack.pop().expect("stack underflow") }
     #[inline] pub fn peek(&self) -> &PyObjectRef { self.stack.last().expect("stack underflow") }
 
+    /// Unchecked pop — caller guarantees stack is non-empty.
+    #[inline(always)]
+    pub unsafe fn pop_unchecked(&mut self) -> PyObjectRef {
+        let new_len = self.stack.len() - 1;
+        self.stack.set_len(new_len);
+        std::ptr::read(self.stack.as_ptr().add(new_len))
+    }
+
+    /// Unchecked peek at TOS — caller guarantees stack is non-empty.
+    #[inline(always)]
+    pub unsafe fn peek_unchecked(&self) -> &PyObjectRef {
+        self.stack.get_unchecked(self.stack.len() - 1)
+    }
+
+    /// Unchecked local get — caller guarantees idx < locals.len().
+    #[inline(always)]
+    pub unsafe fn get_local_unchecked(&self, idx: usize) -> Option<&PyObjectRef> {
+        self.locals.get_unchecked(idx).as_ref()
+    }
+
+    /// Unchecked local set — caller guarantees idx < locals.len().
+    #[inline(always)]
+    pub unsafe fn set_local_unchecked(&mut self, idx: usize, v: PyObjectRef) {
+        *self.locals.get_unchecked_mut(idx) = Some(v);
+    }
+
     /// Replace TOS-1 with `val` and pop TOS in one operation (binary op result).
     /// Avoids separate pop() + last_mut().unwrap() bounds checks.
+    /// SAFETY: caller guarantees stack has at least 2 elements.
     #[inline(always)]
-    pub fn binary_op_result(&mut self, val: PyObjectRef) {
+    pub unsafe fn binary_op_result(&mut self, val: PyObjectRef) {
         let len = self.stack.len();
-        // Overwrite TOS-1 with result (drops old value), then pop TOS
-        self.stack[len - 2] = val;
-        self.stack.pop();
+        // Overwrite TOS-1 with result (drops old value), then truncate
+        *self.stack.get_unchecked_mut(len - 2) = val;
+        self.stack.set_len(len - 1);
     }
     pub fn get_local(&self, idx: usize) -> Option<&PyObjectRef> { self.locals[idx].as_ref() }
     pub fn set_local(&mut self, idx: usize, v: PyObjectRef) { self.locals[idx] = Some(v); }

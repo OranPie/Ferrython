@@ -269,7 +269,8 @@ impl VirtualMachine {
             let result = match instr.op {
                 Opcode::LoadFast => {
                     let idx = instr.arg as usize;
-                    match frame.locals.get(idx).and_then(|v| v.as_ref()) {
+                    // SAFETY: compiler guarantees idx < locals.len()
+                    match unsafe { frame.get_local_unchecked(idx) } {
                         Some(val) => { frame.stack.push(val.clone()); Ok(None) }
                         None => Err(PyException::name_error(format!(
                             "local variable '{}' referenced before assignment",
@@ -278,12 +279,14 @@ impl VirtualMachine {
                     }
                 }
                 Opcode::StoreFast => {
-                    let val = frame.stack.pop().expect("stack underflow");
-                    frame.locals[instr.arg as usize] = Some(val);
+                    // SAFETY: stack non-empty (compiler guarantees), idx < locals.len()
+                    let val = unsafe { frame.pop_unchecked() };
+                    unsafe { frame.set_local_unchecked(instr.arg as usize, val) };
                     Ok(None)
                 }
                 Opcode::LoadConst => {
-                    let obj = frame.constant_cache[instr.arg as usize].clone();
+                    // SAFETY: compiler guarantees arg < constant_cache.len()
+                    let obj = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize).clone() };
                     frame.stack.push(obj);
                     Ok(None)
                 }
@@ -291,11 +294,13 @@ impl VirtualMachine {
                 Opcode::LoadFastLoadFast => {
                     let idx1 = (instr.arg >> 16) as usize;
                     let idx2 = (instr.arg & 0xFFFF) as usize;
-                    match (frame.locals.get(idx1).and_then(|v| v.as_ref()),
-                           frame.locals.get(idx2).and_then(|v| v.as_ref())) {
+                    // SAFETY: compiler guarantees indices < locals.len()
+                    let a = unsafe { frame.get_local_unchecked(idx1) }.cloned();
+                    let b = unsafe { frame.get_local_unchecked(idx2) }.cloned();
+                    match (a, b) {
                         (Some(a), Some(b)) => {
-                            frame.stack.push(a.clone());
-                            frame.stack.push(b.clone());
+                            frame.stack.push(a);
+                            frame.stack.push(b);
                             Ok(None)
                         }
                         (None, _) => Err(PyException::name_error(format!(
@@ -311,10 +316,11 @@ impl VirtualMachine {
                 Opcode::LoadFastLoadConst => {
                     let fast_idx = (instr.arg >> 16) as usize;
                     let const_idx = (instr.arg & 0xFFFF) as usize;
-                    match frame.locals.get(fast_idx).and_then(|v| v.as_ref()) {
+                    // SAFETY: compiler guarantees indices valid
+                    match unsafe { frame.get_local_unchecked(fast_idx) } {
                         Some(val) => {
                             frame.stack.push(val.clone());
-                            frame.stack.push(frame.constant_cache[const_idx].clone());
+                            frame.stack.push(unsafe { frame.constant_cache.get_unchecked(const_idx).clone() });
                             Ok(None)
                         }
                         None => Err(PyException::name_error(format!(
@@ -326,9 +332,10 @@ impl VirtualMachine {
                 Opcode::StoreFastLoadFast => {
                     let store_idx = (instr.arg >> 16) as usize;
                     let load_idx = (instr.arg & 0xFFFF) as usize;
-                    let val = frame.stack.pop().expect("stack underflow");
-                    frame.locals[store_idx] = Some(val);
-                    match frame.locals.get(load_idx).and_then(|v| v.as_ref()) {
+                    // SAFETY: stack non-empty, indices < locals.len()
+                    let val = unsafe { frame.pop_unchecked() };
+                    unsafe { frame.set_local_unchecked(store_idx, val) };
+                    match unsafe { frame.get_local_unchecked(load_idx) } {
                         Some(val) => { frame.stack.push(val.clone()); Ok(None) }
                         None => Err(PyException::name_error(format!(
                             "local variable '{}' referenced before assignment",
@@ -337,11 +344,13 @@ impl VirtualMachine {
                     }
                 }
                 Opcode::PopTop => {
-                    frame.stack.pop();
+                    // SAFETY: stack non-empty for well-formed bytecode
+                    drop(unsafe { frame.pop_unchecked() });
                     Ok(None)
                 }
                 Opcode::DupTop => {
-                    let v = frame.stack.last().expect("stack underflow").clone();
+                    // SAFETY: stack non-empty
+                    let v = unsafe { frame.peek_unchecked() }.clone();
                     frame.stack.push(v);
                     Ok(None)
                 }
@@ -378,10 +387,10 @@ impl VirtualMachine {
                 // Inline ReturnValue: fast path when no finally blocks are active
                 Opcode::ReturnValue => {
                     if frame.block_stack.iter().any(|b| b.kind == BlockKind::Finally) {
-                        // Must go through full handler for finally unwinding
                         self.execute_one(instr)
                     } else {
-                        let val = frame.stack.pop().expect("stack underflow");
+                        // SAFETY: stack non-empty for well-formed bytecode
+                        let val = unsafe { frame.pop_unchecked() };
                         Ok(Some(val))
                     }
                 }
@@ -401,22 +410,22 @@ impl VirtualMachine {
                                         PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
                                     }
                                 };
-                                frame.binary_op_result(result);
+                                unsafe { frame.binary_op_result(result) };
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                 let r = *x + *y;
-                                frame.binary_op_result(PyObject::float(r));
+                                unsafe { frame.binary_op_result(PyObject::float(r)) };
                                 Ok(None)
                             }
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
                                 let r = *x as f64 + *y;
-                                frame.binary_op_result(PyObject::float(r));
+                                unsafe { frame.binary_op_result(PyObject::float(r)) };
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
                                 let r = *x + *y as f64;
-                                frame.binary_op_result(PyObject::float(r));
+                                unsafe { frame.binary_op_result(PyObject::float(r)) };
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -434,7 +443,7 @@ impl VirtualMachine {
                         // Arc pointer equality fast-path: same object → equal
                         if (instr.arg == 2 || instr.arg == 3) && Arc::ptr_eq(a, b) {
                             let result = instr.arg == 2; // Eq=true, Ne=false
-                            frame.binary_op_result(PyObject::bool_val(result));
+                            unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
                             Ok(None)
                         } else {
                         match (&a.payload, &b.payload) {
@@ -447,7 +456,7 @@ impl VirtualMachine {
                                     4 => x > y,  // Gt
                                     _ => x >= y, // Ge (5)
                                 };
-                                frame.binary_op_result(PyObject::bool_val(result));
+                                unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
@@ -460,14 +469,14 @@ impl VirtualMachine {
                                     4 => xv > yv,
                                     _ => xv >= yv,
                                 };
-                                frame.binary_op_result(PyObject::bool_val(result));
+                                unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
                                 Ok(None)
                             }
                             // String equality (hot for dict lookups, isinstance checks)
                             (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) if instr.arg == 2 || instr.arg == 3 => {
                                 let eq = x == y;
                                 let result = if instr.arg == 2 { eq } else { !eq };
-                                frame.binary_op_result(PyObject::bool_val(result));
+                                unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -489,7 +498,7 @@ impl VirtualMachine {
                             || matches!((&a.payload, &b.payload),
                                 (PyObjectPayload::ExceptionType(at), PyObjectPayload::ExceptionType(bt)) if at == bt);
                         let result = if instr.arg == 8 { same } else { !same };
-                        frame.binary_op_result(PyObject::bool_val(result));
+                        unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
                         Ok(None)
                     } else {
                         self.execute_one(instr)
@@ -579,12 +588,12 @@ impl VirtualMachine {
                                         PyObject::big_int(BigInt::from(*x) - BigInt::from(*y))
                                     }
                                 };
-                                frame.binary_op_result(result);
+                                unsafe { frame.binary_op_result(result) };
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                 let r = *x - *y;
-                                frame.binary_op_result(PyObject::float(r));
+                                unsafe { frame.binary_op_result(PyObject::float(r)) };
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -608,12 +617,12 @@ impl VirtualMachine {
                                         PyObject::big_int(BigInt::from(*x) * BigInt::from(*y))
                                     }
                                 };
-                                frame.binary_op_result(result);
+                                unsafe { frame.binary_op_result(result) };
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                 let r = *x * *y;
-                                frame.binary_op_result(PyObject::float(r));
+                                unsafe { frame.binary_op_result(PyObject::float(r)) };
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -632,14 +641,14 @@ impl VirtualMachine {
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                                 // Python modulo: result has same sign as divisor
                                 let r = ((*x % *y) + *y) % *y;
-                                frame.binary_op_result(PyObject::int(r));
+                                unsafe { frame.binary_op_result(PyObject::int(r)) };
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                                 let r = *x % *y;
                                 // Python modulo for floats: adjust sign
                                 let r = if r != 0.0 && (r < 0.0) != (*y < 0.0) { r + *y } else { r };
-                                frame.binary_op_result(PyObject::float(r));
+                                unsafe { frame.binary_op_result(PyObject::float(r)) };
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -657,12 +666,12 @@ impl VirtualMachine {
                         match (&a.payload, &b.payload) {
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                                 let r = *x as f64 / *y as f64;
-                                frame.binary_op_result(PyObject::float(r));
+                                unsafe { frame.binary_op_result(PyObject::float(r)) };
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                                 let r = *x / *y;
-                                frame.binary_op_result(PyObject::float(r));
+                                unsafe { frame.binary_op_result(PyObject::float(r)) };
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -686,12 +695,12 @@ impl VirtualMachine {
                                 } else {
                                     r
                                 };
-                                frame.binary_op_result(PyObject::int(r));
+                                unsafe { frame.binary_op_result(PyObject::int(r)) };
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                                 let r = (*x / *y).floor();
-                                frame.binary_op_result(PyObject::float(r));
+                                unsafe { frame.binary_op_result(PyObject::float(r)) };
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -1046,7 +1055,7 @@ impl VirtualMachine {
                                 if actual >= 0 && (actual as usize) < items.len() {
                                     let val = items[actual as usize].clone();
                                     drop(items);
-                                    frame.binary_op_result(val);
+                                    unsafe { frame.binary_op_result(val) };
                                     Ok(None)
                                 } else {
                                     drop(items);
@@ -1059,7 +1068,7 @@ impl VirtualMachine {
                                 let actual = if i < 0 { i + items.len() as i64 } else { i };
                                 if actual >= 0 && (actual as usize) < items.len() {
                                     let val = items[actual as usize].clone();
-                                    frame.binary_op_result(val);
+                                    unsafe { frame.binary_op_result(val) };
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1070,7 +1079,7 @@ impl VirtualMachine {
                                 let hk = HashableKey::Str(s.clone());
                                 let val = map.read().get(&hk).cloned();
                                 if let Some(v) = val {
-                                    frame.binary_op_result(v);
+                                    unsafe { frame.binary_op_result(v) };
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1081,7 +1090,7 @@ impl VirtualMachine {
                                 let hk = HashableKey::Int(pi.clone());
                                 let val = map.read().get(&hk).cloned();
                                 if let Some(v) = val {
-                                    frame.binary_op_result(v);
+                                    unsafe { frame.binary_op_result(v) };
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1095,7 +1104,7 @@ impl VirtualMachine {
                                 if actual >= 0 && (actual as usize) < chars.len() {
                                     let ch = chars[actual as usize];
                                     let val = PyObject::str_val(CompactString::from(ch.to_string()));
-                                    frame.binary_op_result(val);
+                                    unsafe { frame.binary_op_result(val) };
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1280,7 +1289,7 @@ impl VirtualMachine {
                             }
                         };
                         if let Some(val) = fast_result {
-                            frame.binary_op_result(PyObject::bool_val(val));
+                            unsafe { frame.binary_op_result(PyObject::bool_val(val)) };
                             Ok(None)
                         } else {
                             self.execute_one(instr)
