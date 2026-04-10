@@ -1014,21 +1014,15 @@ impl VirtualMachine {
                     let arg_count = instr.arg as usize;
                     let stack_len = frame.stack.len();
                     let func_idx = stack_len - 1 - arg_count;
-                    // Use pre-computed is_simple flag + check arg_count matches
-                    let is_simple_func = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
-                        pf.is_simple && pf.code.arg_count as usize == arg_count
-                    } else {
-                        false
-                    };
-                    if is_simple_func {
-                        // Check if this is a recursive call (same code object)
-                        let is_recursive = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
-                            Arc::ptr_eq(&pf.code, &frame.code)
-                        } else { false };
-
+                    // Single payload check: determine both is_simple and is_recursive
+                    let call_kind = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                        if pf.is_simple && pf.code.arg_count as usize == arg_count {
+                            if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
+                        } else { 0 }
+                    } else { 0 };
+                    if call_kind > 0 {
                         let args_start = func_idx + 1;
-                        let mut new_frame = if is_recursive {
-                            // Lightweight path: reuse parent's Arcs, inherit global cache
+                        let mut new_frame = if call_kind == 2 {
                             Frame::new_recursive(frame, &mut self.frame_pool)
                         } else {
                             // Normal path: clone Arcs from function object
@@ -1569,12 +1563,15 @@ impl VirtualMachine {
                         if has_profile {
                             self.fire_profile_event("return", ret.clone());
                         }
-                        if let Some(child) = self.call_stack.pop() {
-                            child.recycle(&mut self.frame_pool);
-                        }
-                        // Skip post_call_intercept — inline CallFunction/CallMethod
-                        // never triggers import/asyncio intercepts, so flag is always clear.
-                        // SAFETY: we just verified call_stack.len() > initial_depth >= 1, and we popped one
+                        // SAFETY: call_stack.len() > initial_depth >= 1, so non-empty
+                        let child = unsafe {
+                            let new_len = self.call_stack.len() - 1;
+                            let child = std::ptr::read(self.call_stack.as_ptr().add(new_len));
+                            self.call_stack.set_len(new_len);
+                            child
+                        };
+                        child.recycle(&mut self.frame_pool);
+                        // SAFETY: we verified len > initial_depth >= 1 and popped one
                         let cs_len = self.call_stack.len();
                         unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.stack.push(ret);
                         continue;
