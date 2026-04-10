@@ -659,137 +659,128 @@ impl VirtualMachine {
                 // Inline int+int for BinaryAdd (hot in arithmetic loops)
                 Opcode::BinaryAdd | Opcode::InplaceAdd => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        let a = &frame.stack[len - 2];
-                        let b = &frame.stack[len - 1];
-                        match (&a.payload, &b.payload) {
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                let result = match x.checked_add(*y) {
-                                    Some(r) => PyObject::int(r),
-                                    None => {
-                                        use num_bigint::BigInt;
-                                        PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
-                                    }
-                                };
-                                unsafe { frame.binary_op_result(result) };
-                                Ok(None)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                let r = *x + *y;
-                                unsafe { frame.binary_op_result(PyObject::float(r)) };
-                                Ok(None)
-                            }
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
-                                let r = *x as f64 + *y;
-                                unsafe { frame.binary_op_result(PyObject::float(r)) };
-                                Ok(None)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                let r = *x + *y as f64;
-                                unsafe { frame.binary_op_result(PyObject::float(r)) };
-                                Ok(None)
-                            }
-                            (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
-                                let mut s = String::with_capacity(x.len() + y.len());
-                                s.push_str(x);
-                                s.push_str(y);
-                                unsafe { frame.binary_op_result(PyObject::str_val(s.into())) };
-                                Ok(None)
-                            }
-                            (PyObjectPayload::List(x), PyObjectPayload::List(y)) => {
-                                let mut items = x.read().clone();
-                                items.extend(y.read().iter().cloned());
-                                unsafe { frame.binary_op_result(PyObject::list(items)) };
-                                Ok(None)
-                            }
-                            (PyObjectPayload::Tuple(x), PyObjectPayload::Tuple(y)) => {
-                                let mut items = x.to_vec();
-                                items.extend(y.iter().cloned());
-                                unsafe { frame.binary_op_result(PyObject::tuple(items)) };
-                                Ok(None)
-                            }
-                            _ => self.execute_one(instr),
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                            let result = match x.checked_add(*y) {
+                                Some(r) => PyObject::int(r),
+                                None => {
+                                    use num_bigint::BigInt;
+                                    PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
+                                }
+                            };
+                            unsafe { frame.binary_op_result(result) };
+                            Ok(None)
                         }
-                    } else {
-                        self.execute_one(instr)
+                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                            let r = *x + *y;
+                            unsafe { frame.binary_op_result(PyObject::float(r)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
+                            let r = *x as f64 + *y;
+                            unsafe { frame.binary_op_result(PyObject::float(r)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
+                            let r = *x + *y as f64;
+                            unsafe { frame.binary_op_result(PyObject::float(r)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
+                            let mut s = String::with_capacity(x.len() + y.len());
+                            s.push_str(x);
+                            s.push_str(y);
+                            unsafe { frame.binary_op_result(PyObject::str_val(s.into())) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::List(x), PyObjectPayload::List(y)) => {
+                            let mut items = x.read().clone();
+                            items.extend(y.read().iter().cloned());
+                            unsafe { frame.binary_op_result(PyObject::list(items)) };
+                            Ok(None)
+                        }
+                        (PyObjectPayload::Tuple(x), PyObjectPayload::Tuple(y)) => {
+                            let mut items = x.to_vec();
+                            items.extend(y.iter().cloned());
+                            unsafe { frame.binary_op_result(PyObject::tuple(items)) };
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
                     }
                 }
                 // Inline int comparisons (hot in for-loop range iteration)
                 Opcode::CompareOp if instr.arg <= 5 => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        let a = &frame.stack[len - 2];
-                        let b = &frame.stack[len - 1];
-                        // Arc pointer equality fast-path: same object → equal
-                        if (instr.arg == 2 || instr.arg == 3) && Arc::ptr_eq(a, b) {
-                            let result = instr.arg == 2; // Eq=true, Ne=false
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    // Arc pointer equality fast-path: same object → equal
+                    if (instr.arg == 2 || instr.arg == 3) && Arc::ptr_eq(a, b) {
+                        let result = instr.arg == 2; // Eq=true, Ne=false
+                        unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
+                        Ok(None)
+                    } else {
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                            let result = match instr.arg {
+                                0 => x < y,  // Lt
+                                1 => x <= y, // Le
+                                2 => x == y, // Eq
+                                3 => x != y, // Ne
+                                4 => x > y,  // Gt
+                                _ => x >= y, // Ge (5)
+                            };
                             unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
                             Ok(None)
-                        } else {
-                        match (&a.payload, &b.payload) {
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                let result = match instr.arg {
-                                    0 => x < y,  // Lt
-                                    1 => x <= y, // Le
-                                    2 => x == y, // Eq
-                                    3 => x != y, // Ne
-                                    4 => x > y,  // Gt
-                                    _ => x >= y, // Ge (5)
-                                };
-                                unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                                Ok(None)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                let (xv, yv) = (*x, *y);
-                                let result = match instr.arg {
-                                    0 => xv < yv,
-                                    1 => xv <= yv,
-                                    2 => xv == yv,
-                                    3 => xv != yv,
-                                    4 => xv > yv,
-                                    _ => xv >= yv,
-                                };
-                                unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                                Ok(None)
-                            }
-                            // String equality (hot for dict lookups, isinstance checks)
-                            (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) if instr.arg == 2 || instr.arg == 3 => {
-                                let eq = x == y;
-                                let result = if instr.arg == 2 { eq } else { !eq };
-                                unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                                Ok(None)
-                            }
-                            _ => self.execute_one(instr),
                         }
+                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                            let (xv, yv) = (*x, *y);
+                            let result = match instr.arg {
+                                0 => xv < yv,
+                                1 => xv <= yv,
+                                2 => xv == yv,
+                                3 => xv != yv,
+                                4 => xv > yv,
+                                _ => xv >= yv,
+                            };
+                            unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
+                            Ok(None)
                         }
-                    } else {
-                        self.execute_one(instr)
+                        // String equality (hot for dict lookups, isinstance checks)
+                        (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) if instr.arg == 2 || instr.arg == 3 => {
+                            let eq = x == y;
+                            let result = if instr.arg == 2 { eq } else { !eq };
+                            unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
+                    }
                     }
                 }
                 // Inline is/is not comparisons (CompareOp arg 8/9)
                 Opcode::CompareOp if instr.arg == 8 || instr.arg == 9 => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        let a = &frame.stack[len - 2];
-                        let b = &frame.stack[len - 1];
-                        let same = Arc::ptr_eq(a, b)
-                            || matches!((&a.payload, &b.payload),
-                                (PyObjectPayload::BuiltinType(at), PyObjectPayload::BuiltinType(bt)) if at == bt)
-                            || matches!((&a.payload, &b.payload),
-                                (PyObjectPayload::ExceptionType(at), PyObjectPayload::ExceptionType(bt)) if at == bt);
-                        let result = if instr.arg == 8 { same } else { !same };
-                        unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                        Ok(None)
-                    } else {
-                        self.execute_one(instr)
-                    }
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let same = Arc::ptr_eq(a, b)
+                        || matches!((&a.payload, &b.payload),
+                            (PyObjectPayload::BuiltinType(at), PyObjectPayload::BuiltinType(bt)) if at == bt)
+                        || matches!((&a.payload, &b.payload),
+                            (PyObjectPayload::ExceptionType(at), PyObjectPayload::ExceptionType(bt)) if at == bt);
+                    let result = if instr.arg == 8 { same } else { !same };
+                    unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
+                    Ok(None)
                 }
                 // Inline 'in' / 'not in' for dict, set, list, tuple, str (CompareOp arg 6/7)
                 Opcode::CompareOp if instr.arg == 6 || instr.arg == 7 => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        let needle = &frame.stack[len - 2]; // a in b
-                        let haystack = &frame.stack[len - 1];
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    let needle = unsafe { frame.stack.get_unchecked(len - 2) }; // a in b
+                    let haystack = unsafe { frame.stack.get_unchecked(len - 1) };
                         let found = match (&haystack.payload, &needle.payload) {
                             // dict: key in dict — direct hashmap contains
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
@@ -842,9 +833,6 @@ impl VirtualMachine {
                         } else {
                             self.execute_one(instr)
                         }
-                    } else {
-                        self.execute_one(instr)
-                    }
                 }
                 // Inline LoadGlobal: check per-frame cache, then globals, then builtins
                 Opcode::LoadGlobal => {
@@ -1010,69 +998,63 @@ impl VirtualMachine {
                 // Inline BinarySub int fast path
                 Opcode::BinarySubtract | Opcode::InplaceSubtract => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        let a = &frame.stack[len - 2];
-                        let b = &frame.stack[len - 1];
-                        match (&a.payload, &b.payload) {
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                let result = match x.checked_sub(*y) {
-                                    Some(r) => PyObject::int(r),
-                                    None => {
-                                        use num_bigint::BigInt;
-                                        PyObject::big_int(BigInt::from(*x) - BigInt::from(*y))
-                                    }
-                                };
-                                unsafe { frame.binary_op_result(result) };
-                                Ok(None)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                let r = *x - *y;
-                                unsafe { frame.binary_op_result(PyObject::float(r)) };
-                                Ok(None)
-                            }
-                            _ => self.execute_one(instr),
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                            let result = match x.checked_sub(*y) {
+                                Some(r) => PyObject::int(r),
+                                None => {
+                                    use num_bigint::BigInt;
+                                    PyObject::big_int(BigInt::from(*x) - BigInt::from(*y))
+                                }
+                            };
+                            unsafe { frame.binary_op_result(result) };
+                            Ok(None)
                         }
-                    } else {
-                        self.execute_one(instr)
+                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                            let r = *x - *y;
+                            unsafe { frame.binary_op_result(PyObject::float(r)) };
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
                     }
                 }
                 // Inline BinaryMul int/float fast path
                 Opcode::BinaryMultiply | Opcode::InplaceMultiply => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        let a = &frame.stack[len - 2];
-                        let b = &frame.stack[len - 1];
-                        match (&a.payload, &b.payload) {
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                let result = match x.checked_mul(*y) {
-                                    Some(r) => PyObject::int(r),
-                                    None => {
-                                        use num_bigint::BigInt;
-                                        PyObject::big_int(BigInt::from(*x) * BigInt::from(*y))
-                                    }
-                                };
-                                unsafe { frame.binary_op_result(result) };
-                                Ok(None)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                let r = *x * *y;
-                                unsafe { frame.binary_op_result(PyObject::float(r)) };
-                                Ok(None)
-                            }
-                            _ => self.execute_one(instr),
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                            let result = match x.checked_mul(*y) {
+                                Some(r) => PyObject::int(r),
+                                None => {
+                                    use num_bigint::BigInt;
+                                    PyObject::big_int(BigInt::from(*x) * BigInt::from(*y))
+                                }
+                            };
+                            unsafe { frame.binary_op_result(result) };
+                            Ok(None)
                         }
-                    } else {
-                        self.execute_one(instr)
+                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                            let r = *x * *y;
+                            unsafe { frame.binary_op_result(PyObject::float(r)) };
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
                     }
                 }
                 // Inline BinaryModulo int fast path (hot in fib, loops)
                 Opcode::BinaryModulo | Opcode::InplaceModulo => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        let a = &frame.stack[len - 2];
-                        let b = &frame.stack[len - 1];
-                        match (&a.payload, &b.payload) {
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                                 // Python modulo: result has same sign as divisor
                                 let r = ((*x % *y) + *y) % *y;
                                 unsafe { frame.binary_op_result(PyObject::int(r)) };
@@ -1087,16 +1069,13 @@ impl VirtualMachine {
                             }
                             _ => self.execute_one(instr),
                         }
-                    } else {
-                        self.execute_one(instr)
-                    }
                 }
                 // Inline BinaryTrueDivide fast path
                 Opcode::BinaryTrueDivide | Opcode::InplaceTrueDivide => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        let a = &frame.stack[len - 2];
-                        let b = &frame.stack[len - 1];
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
                         match (&a.payload, &b.payload) {
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                                 let r = *x as f64 / *y as f64;
@@ -1110,37 +1089,31 @@ impl VirtualMachine {
                             }
                             _ => self.execute_one(instr),
                         }
-                    } else {
-                        self.execute_one(instr)
-                    }
                 }
                 // Inline BinaryFloorDivide fast path
                 Opcode::BinaryFloorDivide | Opcode::InplaceFloorDivide => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        let a = &frame.stack[len - 2];
-                        let b = &frame.stack[len - 1];
-                        match (&a.payload, &b.payload) {
-                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
-                                // Python floor division: rounds towards negative infinity
-                                let r = x.div_euclid(*y);
-                                let r = if (*x ^ *y) < 0 && *x % *y != 0 {
-                                    r - 1
-                                } else {
-                                    r
-                                };
-                                unsafe { frame.binary_op_result(PyObject::int(r)) };
-                                Ok(None)
-                            }
-                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
-                                let r = (*x / *y).floor();
-                                unsafe { frame.binary_op_result(PyObject::float(r)) };
-                                Ok(None)
-                            }
-                            _ => self.execute_one(instr),
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    let a = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let b = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&a.payload, &b.payload) {
+                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
+                            // Python floor division: rounds towards negative infinity
+                            let r = x.div_euclid(*y);
+                            let r = if (*x ^ *y) < 0 && *x % *y != 0 {
+                                r - 1
+                            } else {
+                                r
+                            };
+                            unsafe { frame.binary_op_result(PyObject::int(r)) };
+                            Ok(None)
                         }
-                    } else {
-                        self.execute_one(instr)
+                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
+                            let r = (*x / *y).floor();
+                            unsafe { frame.binary_op_result(PyObject::float(r)) };
+                            Ok(None)
+                        }
+                        _ => self.execute_one(instr),
                     }
                 }
                 // Inline bitwise and power ops for ints
@@ -1151,9 +1124,9 @@ impl VirtualMachine {
                 | Opcode::BinaryRshift | Opcode::InplaceRshift
                 | Opcode::BinaryPower | Opcode::InplacePower => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) =
-                            (&frame.stack[len - 2].payload, &frame.stack[len - 1].payload)
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) =
+                        (unsafe { &frame.stack.get_unchecked(len - 2).payload }, unsafe { &frame.stack.get_unchecked(len - 1).payload })
                         {
                             let (xv, yv) = (*x, *y);
                             let result = match instr.op {
@@ -1187,9 +1160,6 @@ impl VirtualMachine {
                         } else {
                             self.execute_one(instr)
                         }
-                    } else {
-                        self.execute_one(instr)
-                    }
                 }
                 // Inline LoadDeref (closure variable load — common in functional code)
                 Opcode::LoadDeref => {
@@ -1946,10 +1916,10 @@ impl VirtualMachine {
                 // Inline BinarySubscr for list[int], tuple[int], dict[HashableKey]
                 Opcode::BinarySubscr => {
                     let len = frame.stack.len();
-                    if len >= 2 {
-                        let obj = &frame.stack[len - 2];
-                        let key = &frame.stack[len - 1];
-                        match (&obj.payload, &key.payload) {
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
+                    let obj = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let key = unsafe { frame.stack.get_unchecked(len - 1) };
+                    match (&obj.payload, &key.payload) {
                             // list[int] — direct index
                             (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
                                 let items = items_arc.read();
@@ -2015,17 +1985,14 @@ impl VirtualMachine {
                             }
                             _ => self.execute_one(instr),
                         }
-                    } else {
-                        self.execute_one(instr)
-                    }
                 }
                 // Inline StoreSubscr for list[int] and dict[str/int]
                 Opcode::StoreSubscr => {
                     let len = frame.stack.len();
-                    if len >= 3 {
-                        let key = &frame.stack[len - 1];
-                        let obj = &frame.stack[len - 2];
-                        let val = &frame.stack[len - 3];
+                    // SAFETY: well-formed bytecode guarantees stack depth >= 3
+                    let key = unsafe { frame.stack.get_unchecked(len - 1) };
+                    let obj = unsafe { frame.stack.get_unchecked(len - 2) };
+                    let val = unsafe { frame.stack.get_unchecked(len - 3) };
                         match (&obj.payload, &key.payload) {
                             // list[int] = val
                             (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
@@ -2061,9 +2028,6 @@ impl VirtualMachine {
                             }
                             _ => self.execute_one(instr),
                         }
-                    } else {
-                        self.execute_one(instr)
-                    }
                 }
                 // Inline ListAppend (hot in list comprehensions)
                 Opcode::ListAppend => {
