@@ -1024,6 +1024,43 @@ impl VirtualMachine {
                     }
                     Ok(None)
                 }
+                // Inline LoadAttr fast path for simple instance attribute reads
+                Opcode::LoadAttr => {
+                    let name = &frame.code.names[instr.arg as usize];
+                    let obj = &frame.stack[frame.stack.len() - 1];
+                    // Fast path: Instance with no __getattribute__ override, attr in instance dict,
+                    // and attr is not a Function/Property (those need BoundMethod wrapping)
+                    let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
+                        let has_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            cd.has_getattribute
+                        } else { false };
+                        if !has_ga {
+                            let attrs = inst.attrs.read();
+                            if let Some(v) = attrs.get(name.as_str()) {
+                                match &v.payload {
+                                    PyObjectPayload::Function(_)
+                                    | PyObjectPayload::Property { .. } => None,
+                                    _ => Some(v.clone()),
+                                }
+                            } else { None }
+                        } else { None }
+                    } else { None };
+                    if let Some(val) = fast_val {
+                        let len = frame.stack.len();
+                        frame.stack[len - 1] = val;
+                        Ok(None)
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline StoreGlobal to avoid execute_one dispatch
+                Opcode::StoreGlobal => {
+                    let name = frame.code.names[instr.arg as usize].clone();
+                    let value = frame.stack.pop().expect("stack underflow");
+                    frame.globals.write().insert(name, value);
+                    crate::frame::bump_globals_version();
+                    Ok(None)
+                }
                 _ => self.execute_one(instr),
             };
 
