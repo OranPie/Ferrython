@@ -84,7 +84,7 @@ rustyline = { version = "15", features = ["derive"] }
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
 
