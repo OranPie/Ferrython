@@ -484,6 +484,63 @@ impl VirtualMachine {
                             String::from("local variable referenced before assignment"))),
                     }
                 }
+                // 4-way fused: load two locals, add, store result — no stack touch
+                Opcode::LoadFastLoadFastBinaryAddStoreFast => {
+                    let idx1 = (instr.arg >> 16) as usize;
+                    let idx2 = ((instr.arg >> 8) & 0xFF) as usize;
+                    let dest = (instr.arg & 0xFF) as usize;
+                    let a = unsafe { frame.get_local_unchecked(idx1) };
+                    let b = unsafe { frame.get_local_unchecked(idx2) };
+                    match (a, b) {
+                        (Some(a), Some(b)) => {
+                            match (&a.payload, &b.payload) {
+                                (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                    let (x, y) = (*x, *y);
+                                    let result = match x.checked_add(y) {
+                                        Some(r) => PyObject::int(r),
+                                        None => {
+                                            use num_bigint::BigInt;
+                                            PyObject::big_int(BigInt::from(x) + BigInt::from(y))
+                                        }
+                                    };
+                                    unsafe { frame.set_local_unchecked(dest, result) };
+                                    Ok(None)
+                                }
+                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                    let r = *x + *y;
+                                    unsafe { frame.set_local_unchecked(dest, PyObject::float(r)) };
+                                    Ok(None)
+                                }
+                                (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
+                                    let mut s = String::with_capacity(x.len() + y.len());
+                                    s.push_str(x);
+                                    s.push_str(y);
+                                    unsafe { frame.set_local_unchecked(dest, PyObject::str_val(CompactString::from(s))) };
+                                    Ok(None)
+                                }
+                                _ => {
+                                    let (ac, bc) = (a.clone(), b.clone());
+                                    frame.stack.push(ac);
+                                    frame.stack.push(bc);
+                                    let r = self.execute_one(ferrython_bytecode::Instruction::new(
+                                        Opcode::BinaryAdd, 0));
+                                    // Re-borrow frame after execute_one
+                                    if r.is_ok() {
+                                        let cs_len2 = self.call_stack.len();
+                                        let frame2 = unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
+                                        if !frame2.stack.is_empty() {
+                                            let val = frame2.stack.pop().unwrap();
+                                            unsafe { frame2.set_local_unchecked(dest, val) };
+                                        }
+                                    }
+                                    r
+                                }
+                            }
+                        }
+                        (None, _) | (_, None) => Err(PyException::name_error(
+                            String::from("local variable referenced before assignment"))),
+                    }
+                }
                 Opcode::PopTop => {
                     // SAFETY: stack non-empty for well-formed bytecode
                     drop(unsafe { frame.pop_unchecked() });
@@ -3237,6 +3294,7 @@ impl VirtualMachine {
             | Opcode::LoadFastLoadConstBinarySub
             | Opcode::LoadFastLoadConstBinaryAdd
             | Opcode::LoadFastLoadFastBinaryAdd
+            | Opcode::LoadFastLoadFastBinaryAddStoreFast
                 => self.exec_binary_ops(instr),
 
             Opcode::BinarySubscr | Opcode::StoreSubscr | Opcode::DeleteSubscr

@@ -214,6 +214,9 @@ pub enum Opcode {
     /// Fused LoadFast + LoadMethod — common in method call patterns.
     /// arg encoding: (local_idx << 16) | name_idx
     LoadFastLoadMethod = 223,
+    /// Fused LoadFast + LoadFast + BinaryAdd + StoreFast — hot accumulator pattern (x = x + i).
+    /// arg encoding: (src1 << 16) | (src2 << 8) | dest
+    LoadFastLoadFastBinaryAddStoreFast = 224,
 }
 
 impl Opcode {
@@ -339,6 +342,7 @@ impl Opcode {
             Self::StoreFastJumpAbsolute => -1, // pops TOS and stores to local, then jumps
             Self::PopTopJumpAbsolute => -1, // pops TOS, then jumps
             Self::LoadFastLoadMethod => 2, // pushes [slot_0, slot_1] like LoadMethod
+            Self::LoadFastLoadFastBinaryAddStoreFast => 0, // loads two, adds, stores — net 0 stack change
         }
     }
 
