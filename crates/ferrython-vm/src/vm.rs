@@ -481,6 +481,11 @@ impl VirtualMachine {
                     drop(unsafe { frame.pop_unchecked() });
                     Ok(None)
                 }
+                Opcode::PopTopJumpAbsolute => {
+                    drop(unsafe { frame.pop_unchecked() });
+                    frame.ip = instr.arg as usize;
+                    Ok(None)
+                }
                 Opcode::DupTop => {
                     // SAFETY: stack non-empty; stack pre-allocated
                     let v = unsafe { frame.peek_unchecked() }.clone();
@@ -2134,6 +2139,90 @@ impl VirtualMachine {
                         self.execute_one(attr_instr)
                     }
                 }
+                // Fused LoadFast + LoadMethod — avoids one dispatch per method call
+                Opcode::LoadFastLoadMethod => {
+                    let local_idx = (instr.arg >> 16) as usize;
+                    let name_idx = (instr.arg & 0xFFFF) as usize;
+                    let obj = match unsafe { frame.get_local_unchecked(local_idx) } {
+                        Some(val) => val.clone(),
+                        None => {
+                            return Err(PyException::name_error(format!(
+                                "local variable referenced before assignment"
+                            )));
+                        }
+                    };
+                    // Determine fast_kind based on object type
+                    let mut fast_kind: u8 = 0;
+                    let mut fast_val: Option<PyObjectRef> = None;
+                    match &obj.payload {
+                        PyObjectPayload::Instance(inst) => {
+                            let skip_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                                !cd.has_getattribute
+                            } else { false };
+                            if skip_ga && inst.dict_storage.is_none() && !inst.is_special {
+                                let name = &frame.code.names[name_idx];
+                                if name.as_str() != "__class__" && name.as_str() != "__dict__" {
+                                    let class = &inst.class;
+                                    if let PyObjectPayload::Class(cd) = &class.payload {
+                                        if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
+                                            if matches!(&class_val.payload, PyObjectPayload::Function(_)) {
+                                                fast_kind = 1;
+                                                fast_val = Some(class_val);
+                                            }
+                                        } else if let Some(v) = inst.attrs.read().get(name.as_str()).cloned() {
+                                            fast_kind = 2;
+                                            fast_val = Some(v);
+                                        } else if let Some(method) = lookup_in_class_mro(class, name.as_str()) {
+                                            if matches!(&method.payload,
+                                                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                                                fast_kind = 1;
+                                                fast_val = Some(method);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        PyObjectPayload::List(_) | PyObjectPayload::Dict(_)
+                        | PyObjectPayload::Str(_) | PyObjectPayload::Tuple(_)
+                        | PyObjectPayload::Set(_) | PyObjectPayload::ByteArray(_)
+                        | PyObjectPayload::Bytes(_) | PyObjectPayload::InstanceDict(_) => {
+                            let name = &frame.code.names[name_idx];
+                            if name.as_str() != "__class__" {
+                                fast_kind = 3;
+                            }
+                        }
+                        _ => {}
+                    }
+                    match fast_kind {
+                        1 => {
+                            // method + receiver protocol
+                            frame.stack.push(fast_val.unwrap());
+                            frame.stack.push(obj);
+                            Ok(None)
+                        }
+                        2 => {
+                            // None sentinel + callable
+                            frame.stack.push(PyObject::none());
+                            frame.stack.push(fast_val.unwrap());
+                            Ok(None)
+                        }
+                        3 => {
+                            // Builtin: Str name tag + receiver
+                            let name = frame.code.names[name_idx].clone();
+                            let name_obj = PyObject::str_val(name);
+                            frame.stack.push(name_obj);
+                            frame.stack.push(obj);
+                            Ok(None)
+                        }
+                        _ => {
+                            // Fallback: push local to stack, execute LoadMethod
+                            frame.stack.push(obj);
+                            let method_instr = Instruction::new(Opcode::LoadMethod, name_idx as u32);
+                            self.execute_one(method_instr)
+                        }
+                    }
+                }
                 Opcode::LoadAttr => {
                     let name = &frame.code.names[instr.arg as usize];
                     let obj = &frame.stack[frame.stack.len() - 1];
@@ -2700,7 +2789,8 @@ impl VirtualMachine {
     fn execute_one(&mut self, instr: ferrython_bytecode::Instruction) -> Result<Option<PyObjectRef>, PyException> {
         use ferrython_bytecode::opcode::Opcode;
         match instr.op {
-            Opcode::Nop | Opcode::PopTop | Opcode::RotTwo | Opcode::RotThree
+            Opcode::Nop | Opcode::PopTop | Opcode::PopTopJumpAbsolute
+            | Opcode::RotTwo | Opcode::RotThree
             | Opcode::RotFour | Opcode::DupTop | Opcode::DupTopTwo | Opcode::LoadConst
                 => self.exec_stack_ops(instr),
 
@@ -2762,6 +2852,7 @@ impl VirtualMachine {
             Opcode::CallFunction | Opcode::CallFunctionKw | Opcode::CallMethod
             | Opcode::CallFunctionEx | Opcode::LoadMethod | Opcode::MakeFunction
             | Opcode::LoadGlobalCallFunction | Opcode::LoadFastLoadAttr
+            | Opcode::LoadFastLoadMethod
                 => self.exec_call_ops(instr),
 
             Opcode::ReturnValue | Opcode::ImportName | Opcode::ImportFrom

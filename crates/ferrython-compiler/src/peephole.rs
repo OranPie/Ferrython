@@ -773,6 +773,25 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // PopTop + JumpAbsolute → PopTopJumpAbsolute (void call loop end)
+        if a.op == Opcode::PopTop && b.op == Opcode::JumpAbsolute {
+            code.instructions[i] = Instruction::new(Opcode::PopTopJumpAbsolute, b.arg);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
+        // LoadFast + LoadMethod → LoadFastLoadMethod
+        if a.op == Opcode::LoadFast && b.op == Opcode::LoadMethod
+            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        {
+            let packed = (a.arg << 16) | b.arg;
+            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadMethod, packed);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
         if a.arg > 0xFFFF || b.arg > 0xFFFF {
             i += 1;
             continue;

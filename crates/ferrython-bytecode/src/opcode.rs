@@ -208,6 +208,12 @@ pub enum Opcode {
     /// Fused StoreFast + JumpAbsolute — hot at end of loop bodies.
     /// arg encoding: (store_idx << 16) | jump_target
     StoreFastJumpAbsolute = 221,
+    /// Fused PopTop + JumpAbsolute — hot at end of loop bodies with void calls.
+    /// arg = jump_target
+    PopTopJumpAbsolute = 222,
+    /// Fused LoadFast + LoadMethod — common in method call patterns.
+    /// arg encoding: (local_idx << 16) | name_idx
+    LoadFastLoadMethod = 223,
 }
 
 impl Opcode {
@@ -331,6 +337,8 @@ impl Opcode {
             Self::LoadFastLoadAttr => 1, // push local, replace TOS with attr → net +1
             Self::LoadFastCompareConstJump => 0, // reads local+const by ref, compares, no stack change
             Self::StoreFastJumpAbsolute => -1, // pops TOS and stores to local, then jumps
+            Self::PopTopJumpAbsolute => -1, // pops TOS, then jumps
+            Self::LoadFastLoadMethod => 2, // pushes [slot_0, slot_1] like LoadMethod
         }
     }
 
@@ -353,6 +361,7 @@ impl Opcode {
                 | Self::ForIterStoreFast
                 | Self::LoadFastCompareConstJump
                 | Self::StoreFastJumpAbsolute
+                | Self::PopTopJumpAbsolute
         )
     }
 }
