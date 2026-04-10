@@ -924,6 +924,15 @@ impl VirtualMachine {
                 let call_instr = Instruction::new(Opcode::CallFunction, arg_count);
                 return self.exec_call_ops(call_instr);
             }
+            // Fallback: decompose LoadFastLoadAttr into LoadFast + LoadAttr
+            Opcode::LoadFastLoadAttr => {
+                let local_idx = (instr.arg >> 16) as usize;
+                let name_idx = (instr.arg & 0xFFFF) as u32;
+                let load_instr = Instruction::new(Opcode::LoadFast, local_idx as u32);
+                self.exec_name_ops(load_instr)?;
+                let attr_instr = Instruction::new(Opcode::LoadAttr, name_idx);
+                return self.exec_attr_ops(attr_instr);
+            }
             _ => unreachable!(),
         }
         Ok(None)

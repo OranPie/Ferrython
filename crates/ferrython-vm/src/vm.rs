@@ -1493,6 +1493,45 @@ impl VirtualMachine {
                     Ok(None)
                 }
                 // Inline LoadAttr fast path for simple instance attribute reads
+                // Fused LoadFast + LoadAttr — common in `x = obj.attr` patterns
+                Opcode::LoadFastLoadAttr => {
+                    let local_idx = (instr.arg >> 16) as usize;
+                    let name_idx = (instr.arg & 0xFFFF) as usize;
+                    let name = &frame.code.names[name_idx];
+                    let obj = match unsafe { frame.get_local_unchecked(local_idx) } {
+                        Some(val) => val,
+                        None => {
+                            return Err(PyException::name_error(format!(
+                                "local variable referenced before assignment"
+                            )));
+                        }
+                    };
+                    // Inline Instance attr fast path
+                    let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
+                        let has_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            cd.has_getattribute
+                        } else { false };
+                        if !has_ga {
+                            let attrs = inst.attrs.read();
+                            if let Some(v) = attrs.get(name.as_str()) {
+                                match &v.payload {
+                                    PyObjectPayload::Function(_)
+                                    | PyObjectPayload::Property { .. } => None,
+                                    _ => Some(v.clone()),
+                                }
+                            } else { None }
+                        } else { None }
+                    } else { None };
+                    if let Some(val) = fast_val {
+                        frame.stack.push(val);
+                        Ok(None)
+                    } else {
+                        // Decompose: push local, then execute LoadAttr
+                        frame.stack.push(obj.clone());
+                        let attr_instr = Instruction::new(Opcode::LoadAttr, name_idx as u32);
+                        self.execute_one(attr_instr)
+                    }
+                }
                 Opcode::LoadAttr => {
                     let name = &frame.code.names[instr.arg as usize];
                     let obj = &frame.stack[frame.stack.len() - 1];
@@ -2050,7 +2089,7 @@ impl VirtualMachine {
 
             Opcode::CallFunction | Opcode::CallFunctionKw | Opcode::CallMethod
             | Opcode::CallFunctionEx | Opcode::LoadMethod | Opcode::MakeFunction
-            | Opcode::LoadGlobalCallFunction
+            | Opcode::LoadGlobalCallFunction | Opcode::LoadFastLoadAttr
                 => self.exec_call_ops(instr),
 
             Opcode::ReturnValue | Opcode::ImportName | Opcode::ImportFrom

@@ -194,6 +194,10 @@ pub enum Opcode {
     /// arg encoding: (name_idx << 16) | arg_count.
     /// Avoids intermediate stack push of the function object.
     LoadGlobalCallFunction = 217,
+
+    /// Fused LoadFast + LoadAttr — load local variable then read attribute.
+    /// arg encoding: (local_idx << 16) | name_idx.
+    LoadFastLoadAttr = 218,
 }
 
 impl Opcode {
@@ -313,6 +317,7 @@ impl Opcode {
                 let arg_count = (arg & 0xFFFF) as i32;
                 -arg_count + 1
             }
+            Self::LoadFastLoadAttr => 1, // push local, replace TOS with attr → net +1
         }
     }
 

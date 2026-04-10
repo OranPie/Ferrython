@@ -711,6 +711,18 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // LoadFast + LoadAttr → LoadFastLoadAttr
+        // Encoding: (local_idx << 16) | name_idx
+        if a.op == Opcode::LoadFast && b.op == Opcode::LoadAttr
+            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        {
+            let packed = (a.arg << 16) | b.arg;
+            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadAttr, packed);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
         if a.arg > 0xFFFF || b.arg > 0xFFFF {
             i += 1;
             continue;
