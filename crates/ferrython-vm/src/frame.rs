@@ -169,8 +169,13 @@ impl Frame {
         stack.clear();
 
         let mut locals = pool.take_locals();
-        locals.clear();
-        locals.resize(nl, None);
+        // Fast path: if pooled locals already has the right length and all None
+        // (guaranteed by recycle()), skip clear+resize entirely
+        if locals.len() != nl {
+            locals.clear();
+            locals.resize(nl, None);
+        }
+        // else: locals is already len=nl with all None from recycle()
 
         let block_stack = pool.take_block_stack();
 
@@ -207,7 +212,10 @@ impl Frame {
     #[inline]
     pub fn recycle(mut self, pool: &mut FramePool) {
         self.stack.clear();
-        self.locals.clear();
+        // Zero out locals in place (keep length) so pool can reuse without resize
+        for slot in self.locals.iter_mut() {
+            *slot = None;
+        }
         self.block_stack.clear();
         pool.return_stack(self.stack);
         pool.return_locals(self.locals);
@@ -290,14 +298,17 @@ impl FramePool {
         }
     }
 
+    #[inline(always)]
     fn take_stack(&mut self) -> Vec<PyObjectRef> {
         self.stacks.pop().unwrap_or_else(|| Vec::with_capacity(32))
     }
 
+    #[inline(always)]
     fn take_locals(&mut self) -> Vec<Option<PyObjectRef>> {
         self.locals.pop().unwrap_or_default()
     }
 
+    #[inline(always)]
     fn take_block_stack(&mut self) -> Vec<Block> {
         if let Some(mut bs) = self.block_stacks.pop() {
             bs.clear();
@@ -307,12 +318,14 @@ impl FramePool {
         }
     }
 
+    #[inline(always)]
     fn return_stack(&mut self, v: Vec<PyObjectRef>) {
         if self.stacks.len() < MAX_POOL_SIZE {
             self.stacks.push(v);
         }
     }
 
+    #[inline(always)]
     fn return_locals(&mut self, v: Vec<Option<PyObjectRef>>) {
         if self.locals.len() < MAX_POOL_SIZE {
             self.locals.push(v);
