@@ -614,7 +614,8 @@ impl VirtualMachine {
                     // Fast path: cache hit
                     if frame.global_cache_version == ver {
                         if let Some(ref cache) = frame.global_cache {
-                            if let Some(ref v) = cache[idx] {
+                            // SAFETY: compiler guarantees idx < code.names.len() == cache.len()
+                            if let Some(ref v) = unsafe { cache.get_unchecked(idx) } {
                                 frame.stack.push(v.clone());
                                 Ok(None)
                             } else {
@@ -1380,8 +1381,13 @@ impl VirtualMachine {
                             _ => None,
                         };
                         if let Some(is_true) = fast_result {
-                            frame.stack.pop();
-                            frame.stack.pop();
+                            // Pop both operands without intermediate Arc operations
+                            let len = frame.stack.len();
+                            unsafe {
+                                let _a = std::ptr::read(frame.stack.as_ptr().add(len - 1));
+                                let _b = std::ptr::read(frame.stack.as_ptr().add(len - 2));
+                                frame.stack.set_len(len - 2);
+                            }
                             if !is_true { frame.ip = jump_target; }
                             Ok(None)
                         } else {

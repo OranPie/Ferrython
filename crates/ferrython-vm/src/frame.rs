@@ -64,7 +64,8 @@ pub struct Frame {
     /// Pre-boxed constants — shared from PyFunction or built for module-level code.
     pub constant_cache: SharedConstantCache,
     /// Per-frame inline cache for LoadGlobal: lazily allocated on first miss.
-    pub global_cache: Option<Vec<Option<PyObjectRef>>>,
+    /// Arc-wrapped so recursive frames can share the cache cheaply.
+    pub global_cache: Option<Arc<Vec<Option<PyObjectRef>>>>,
     /// The globals_version at which global_cache was populated.
     pub global_cache_version: u64,
     /// The dict returned by metaclass.__prepare__() (PEP 3115).

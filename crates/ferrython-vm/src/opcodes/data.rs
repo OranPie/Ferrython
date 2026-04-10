@@ -200,8 +200,9 @@ impl VirtualMachine {
                         }
                     }
                 } else if frame.global_cache.is_some() {
-                    // Version mismatch — invalidate
-                    for slot in frame.global_cache.as_mut().unwrap().iter_mut() { *slot = None; }
+                    // Version mismatch — invalidate (clone-on-write if shared)
+                    let cache = Arc::make_mut(frame.global_cache.as_mut().unwrap());
+                    for slot in cache.iter_mut() { *slot = None; }
                     frame.global_cache_version = ver;
                 }
                 let name = &frame.code.names[idx];
@@ -215,11 +216,11 @@ impl VirtualMachine {
                         "name '{}' is not defined", name
                     )));
                 };
-                // Lazily allocate and populate cache
+                // Lazily allocate and populate cache (clone-on-write if shared)
                 let cache = frame.global_cache.get_or_insert_with(|| {
-                    vec![None; frame.code.names.len()]
+                    Arc::new(vec![None; frame.code.names.len()])
                 });
-                cache[idx] = Some(resolved.clone());
+                Arc::make_mut(cache)[idx] = Some(resolved.clone());
                 frame.global_cache_version = ver;
                 frame.push(resolved);
             }
