@@ -1540,6 +1540,30 @@ impl VirtualMachine {
                                         None => Err(PyException::index_error("pop from empty list")),
                                     }
                                 } else { unreachable!() }
+                            } else if arg_count == 1
+                                && matches!((&frame.stack[base_idx].payload, &frame.stack[base_idx + 1].payload),
+                                    (PyObjectPayload::Str(n), PyObjectPayload::Dict(_)) if n.as_str() == "get")
+                            {
+                                // Inline dict.get(key) — returns None for missing keys
+                                let key_obj = frame.stack.pop().unwrap();
+                                let receiver = frame.stack.pop().unwrap();
+                                frame.stack.pop(); // name
+                                if let PyObjectPayload::Dict(map) = &receiver.payload {
+                                    let hk = match &key_obj.payload {
+                                        PyObjectPayload::Str(s) => Some(HashableKey::Str(s.clone())),
+                                        PyObjectPayload::Int(i) => Some(HashableKey::Int(i.clone())),
+                                        PyObjectPayload::Bool(b) => Some(HashableKey::Bool(*b)),
+                                        _ => None,
+                                    };
+                                    if let Some(k) = hk {
+                                        let val = map.read().get(&k).cloned().unwrap_or_else(PyObject::none);
+                                        frame.stack.push(val);
+                                    } else {
+                                        let val = PyObject::none();
+                                        frame.stack.push(val);
+                                    }
+                                    Ok(None)
+                                } else { unreachable!() }
                             } else {
                                 // General builtin method dispatch
                                 let mut args = Vec::with_capacity(arg_count);
