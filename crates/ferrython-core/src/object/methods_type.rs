@@ -40,6 +40,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                 } else { "object" }
             }
             PyObjectPayload::Module(_) => "module",
+            PyObjectPayload::RangeIter { .. } => "range_iterator",
             PyObjectPayload::Iterator(iter_data) => {
                 let guard = iter_data.lock();
                 match &*guard {

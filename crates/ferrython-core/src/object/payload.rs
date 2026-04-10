@@ -10,9 +10,34 @@ use rustc_hash::FxHashMap;
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// A reference-counted handle to a Python object.
 pub type PyObjectRef = Arc<PyObject>;
+
+/// Wrapper around AtomicI64 that implements Clone (loads current value).
+#[repr(transparent)]
+pub struct SyncI64(pub AtomicI64);
+
+impl SyncI64 {
+    #[inline(always)]
+    pub fn new(v: i64) -> Self { Self(AtomicI64::new(v)) }
+    #[inline(always)]
+    pub fn get(&self) -> i64 { self.0.load(Ordering::Relaxed) }
+    #[inline(always)]
+    pub fn set(&self, v: i64) { self.0.store(v, Ordering::Relaxed) }
+}
+
+impl Clone for SyncI64 {
+    #[inline(always)]
+    fn clone(&self) -> Self { Self::new(self.get()) }
+}
+
+impl fmt::Debug for SyncI64 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SyncI64({})", self.get())
+    }
+}
 
 /// A Python object.
 #[derive(Debug, Clone)]
@@ -53,6 +78,8 @@ pub enum PyObjectPayload {
     Instance(InstanceData),
     Module(ModuleData),
     Iterator(Arc<parking_lot::Mutex<IteratorData>>),
+    /// Lock-free range iterator — avoids Mutex overhead for `for i in range(n)`.
+    RangeIter { current: SyncI64, stop: i64, step: i64 },
     Slice { start: Option<PyObjectRef>, stop: Option<PyObjectRef>, step: Option<PyObjectRef> },
     /// A cell object wrapping a shared mutable reference (for closures).
     Cell(Arc<RwLock<Option<PyObjectRef>>>),
@@ -140,6 +167,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::Instance(id) => write!(f, "Instance(class={:?})", id.class.payload),
             Self::Module(md) => write!(f, "Module({})", md.name),
             Self::Iterator(_) => write!(f, "Iterator(...)"),
+            Self::RangeIter { current, stop, step } => write!(f, "RangeIter({}, {stop}, {step})", current.get()),
             Self::Slice { .. } => write!(f, "Slice(...)"),
             Self::Cell(_) => write!(f, "Cell(...)"),
             Self::ExceptionType(k) => write!(f, "ExceptionType({k:?})"),

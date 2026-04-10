@@ -8,7 +8,7 @@ use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
-    lookup_in_class_mro,
+    lookup_in_class_mro, SyncI64,
 };
 use ferrython_core::types::{HashableKey, PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
@@ -525,8 +525,7 @@ impl VirtualMachine {
                 Opcode::GetIter => {
                     let obj = frame.stack.last().unwrap();
                     match &obj.payload {
-                        // Range/list/tuple iterators are already iterators
-                        PyObjectPayload::Iterator(_) => Ok(None),
+                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } => Ok(None),
                         _ => self.execute_one(instr),
                     }
                 }
@@ -534,7 +533,20 @@ impl VirtualMachine {
                 Opcode::ForIter => {
                     // SAFETY: stack non-empty (iterator on TOS)
                     let iter = unsafe { frame.peek_unchecked() };
-                    if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
+                    // Lock-free fast path for RangeIter
+                    if let PyObjectPayload::RangeIter { current, stop, step } = &iter.payload {
+                        let cur = current.get();
+                        let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
+                        if done {
+                            drop(unsafe { frame.pop_unchecked() });
+                            frame.ip = instr.arg as usize;
+                        } else {
+                            let v = PyObject::int(cur);
+                            current.set(cur + *step);
+                            frame.stack.push(v);
+                        }
+                        Ok(None)
+                    } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
                         let mut data = iter_data.lock();
                         match &mut *data {
                             IteratorData::Range { current, stop, step } => {
@@ -591,7 +603,20 @@ impl VirtualMachine {
                     let jump_target = (instr.arg >> 16) as usize;
                     let store_idx = (instr.arg & 0xFFFF) as usize;
                     let iter = unsafe { frame.peek_unchecked() };
-                    if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
+                    // Lock-free fast path for RangeIter
+                    if let PyObjectPayload::RangeIter { current, stop, step } = &iter.payload {
+                        let cur = current.get();
+                        let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
+                        if done {
+                            drop(unsafe { frame.pop_unchecked() });
+                            frame.ip = jump_target;
+                        } else {
+                            let v = PyObject::int(cur);
+                            current.set(cur + *step);
+                            unsafe { frame.set_local_unchecked(store_idx, v) };
+                        }
+                        Ok(None)
+                    } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
                         let mut data = iter_data.lock();
                         match &mut *data {
                             IteratorData::Range { current, stop, step } => {
@@ -1528,11 +1553,9 @@ impl VirtualMachine {
                                 if let PyObjectPayload::Int(PyInt::Small(stop)) = &arg.payload {
                                     let stop = *stop;
                                     unsafe { frame.stack.set_len(func_idx); }
-                                    let iter = PyObject::wrap(PyObjectPayload::Iterator(
-                                        Arc::new(parking_lot::Mutex::new(IteratorData::Range {
-                                            current: 0, stop, step: 1,
-                                        }))
-                                    ));
+                                    let iter = PyObject::wrap(PyObjectPayload::RangeIter {
+                                        current: SyncI64::new(0), stop, step: 1,
+                                    });
                                     frame.stack.push(iter);
                                     Ok(None)
                                 } else {
@@ -1812,11 +1835,9 @@ impl VirtualMachine {
                                     if let PyObjectPayload::Int(PyInt::Small(stop)) = &arg.payload {
                                         let stop = *stop;
                                         frame.stack.pop();
-                                        let iter = PyObject::wrap(PyObjectPayload::Iterator(
-                                            Arc::new(parking_lot::Mutex::new(IteratorData::Range {
-                                                current: 0, stop, step: 1,
-                                            }))
-                                        ));
+                                        let iter = PyObject::wrap(PyObjectPayload::RangeIter {
+                                            current: SyncI64::new(0), stop, step: 1,
+                                        });
                                         frame.stack.push(iter);
                                         Ok(None)
                                     } else {
