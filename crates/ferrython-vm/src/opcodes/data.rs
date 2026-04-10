@@ -234,6 +234,42 @@ impl VirtualMachine {
                 frame.globals.write().shift_remove(name.as_str());
                 crate::frame::bump_globals_version();
             }
+            // Superinstructions (fallback path — normally handled inline in dispatch loop)
+            Opcode::LoadFastLoadFast => {
+                let idx1 = (instr.arg >> 16) as usize;
+                let idx2 = (instr.arg & 0xFFFF) as usize;
+                let v1 = frame.get_local(idx1).cloned().ok_or_else(|| PyException::name_error(format!(
+                    "local variable '{}' referenced before assignment",
+                    frame.code.varnames.get(idx1).map(|s| s.as_str()).unwrap_or("?")
+                )))?;
+                let v2 = frame.get_local(idx2).cloned().ok_or_else(|| PyException::name_error(format!(
+                    "local variable '{}' referenced before assignment",
+                    frame.code.varnames.get(idx2).map(|s| s.as_str()).unwrap_or("?")
+                )))?;
+                frame.push(v1);
+                frame.push(v2);
+            }
+            Opcode::LoadFastLoadConst => {
+                let fast_idx = (instr.arg >> 16) as usize;
+                let const_idx = (instr.arg & 0xFFFF) as usize;
+                let v = frame.get_local(fast_idx).cloned().ok_or_else(|| PyException::name_error(format!(
+                    "local variable '{}' referenced before assignment",
+                    frame.code.varnames.get(fast_idx).map(|s| s.as_str()).unwrap_or("?")
+                )))?;
+                frame.push(v);
+                frame.push(frame.constant_cache[const_idx].clone());
+            }
+            Opcode::StoreFastLoadFast => {
+                let store_idx = (instr.arg >> 16) as usize;
+                let load_idx = (instr.arg & 0xFFFF) as usize;
+                let val = frame.pop();
+                frame.set_local(store_idx, val);
+                let v = frame.get_local(load_idx).cloned().ok_or_else(|| PyException::name_error(format!(
+                    "local variable '{}' referenced before assignment",
+                    frame.code.varnames.get(load_idx).map(|s| s.as_str()).unwrap_or("?")
+                )))?;
+                frame.push(v);
+            }
             _ => unreachable!(),
         }
         } // drop frame borrow

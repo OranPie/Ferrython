@@ -198,8 +198,10 @@ impl VirtualMachine {
     /// Execute a code object as a function call with arguments.
     pub(crate) fn run_frame(&mut self) -> PyResult<PyObjectRef> {
         let profiling = self.profiler.is_enabled();
-        let mut has_trace = ferrython_stdlib::get_trace_func().is_some();
-        let mut has_profile = ferrython_stdlib::get_profile_func().is_some();
+        // Use fast atomic flags instead of thread-local RefCell access.
+        // These are ~1ns (atomic load) vs ~15ns (thread-local + RefCell borrow + Option clone).
+        let mut has_trace = ferrython_stdlib::is_trace_active();
+        let mut has_profile = ferrython_stdlib::is_profile_active();
 
         // Fire "call" event at frame entry
         if has_trace {
@@ -217,12 +219,16 @@ impl VirtualMachine {
         // calling thread-local get_trace_func() on every single iteration.
         let mut trace_check_counter: u8 = 0;
         loop {
-            if trace_check_counter == 0 {
-                trace_check_counter = 63;
-                if !has_trace { has_trace = ferrython_stdlib::get_trace_func().is_some(); }
-                if !has_profile { has_profile = ferrython_stdlib::get_profile_func().is_some(); }
-            } else {
-                trace_check_counter -= 1;
+            // Only check trace/profile state when trace might be active, to avoid
+            // even the counter decrement overhead in the common non-tracing case.
+            if has_trace || has_profile {
+                if trace_check_counter == 0 {
+                    trace_check_counter = 63;
+                    has_trace = ferrython_stdlib::is_trace_active();
+                    has_profile = ferrython_stdlib::is_profile_active();
+                } else {
+                    trace_check_counter -= 1;
+                }
             }
 
             // When tracing, separate borrows needed for fire_trace_event(&mut self).
@@ -241,8 +247,10 @@ impl VirtualMachine {
             } else {
                 let frame = self.call_stack.last_mut().unwrap();
                 let ip = frame.ip;
-                if ip >= frame.code.instructions.len() { return Ok(PyObject::none()); }
-                let instr = frame.code.instructions[ip];
+                let instructions = &frame.code.instructions;
+                if ip >= instructions.len() { return Ok(PyObject::none()); }
+                // SAFETY: bounds check above guarantees ip < instructions.len()
+                let instr = unsafe { *instructions.get_unchecked(ip) };
                 frame.ip = ip + 1;
                 instr
             };
@@ -272,6 +280,55 @@ impl VirtualMachine {
                     let obj = frame.constant_cache[instr.arg as usize].clone();
                     frame.stack.push(obj);
                     Ok(None)
+                }
+                // ── Superinstructions: fused opcode pairs ──
+                Opcode::LoadFastLoadFast => {
+                    let idx1 = (instr.arg >> 16) as usize;
+                    let idx2 = (instr.arg & 0xFFFF) as usize;
+                    match (frame.locals.get(idx1).and_then(|v| v.as_ref()),
+                           frame.locals.get(idx2).and_then(|v| v.as_ref())) {
+                        (Some(a), Some(b)) => {
+                            frame.stack.push(a.clone());
+                            frame.stack.push(b.clone());
+                            Ok(None)
+                        }
+                        (None, _) => Err(PyException::name_error(format!(
+                            "local variable '{}' referenced before assignment",
+                            frame.code.varnames.get(idx1).map(|s| s.as_str()).unwrap_or("?")
+                        ))),
+                        (_, None) => Err(PyException::name_error(format!(
+                            "local variable '{}' referenced before assignment",
+                            frame.code.varnames.get(idx2).map(|s| s.as_str()).unwrap_or("?")
+                        ))),
+                    }
+                }
+                Opcode::LoadFastLoadConst => {
+                    let fast_idx = (instr.arg >> 16) as usize;
+                    let const_idx = (instr.arg & 0xFFFF) as usize;
+                    match frame.locals.get(fast_idx).and_then(|v| v.as_ref()) {
+                        Some(val) => {
+                            frame.stack.push(val.clone());
+                            frame.stack.push(frame.constant_cache[const_idx].clone());
+                            Ok(None)
+                        }
+                        None => Err(PyException::name_error(format!(
+                            "local variable '{}' referenced before assignment",
+                            frame.code.varnames.get(fast_idx).map(|s| s.as_str()).unwrap_or("?")
+                        ))),
+                    }
+                }
+                Opcode::StoreFastLoadFast => {
+                    let store_idx = (instr.arg >> 16) as usize;
+                    let load_idx = (instr.arg & 0xFFFF) as usize;
+                    let val = frame.stack.pop().expect("stack underflow");
+                    frame.locals[store_idx] = Some(val);
+                    match frame.locals.get(load_idx).and_then(|v| v.as_ref()) {
+                        Some(val) => { frame.stack.push(val.clone()); Ok(None) }
+                        None => Err(PyException::name_error(format!(
+                            "local variable '{}' referenced before assignment",
+                            frame.code.varnames.get(load_idx).map(|s| s.as_str()).unwrap_or("?")
+                        ))),
+                    }
                 }
                 Opcode::PopTop => {
                     frame.stack.pop();
@@ -338,26 +395,22 @@ impl VirtualMachine {
                                         PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
                                     }
                                 };
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = result;
+                                frame.binary_op_result(result);
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                 let r = *x + *y;
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
+                                frame.binary_op_result(PyObject::float(r));
                                 Ok(None)
                             }
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
                                 let r = *x as f64 + *y;
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
+                                frame.binary_op_result(PyObject::float(r));
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
                                 let r = *x + *y as f64;
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
+                                frame.binary_op_result(PyObject::float(r));
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -375,8 +428,7 @@ impl VirtualMachine {
                         // Arc pointer equality fast-path: same object → equal
                         if (instr.arg == 2 || instr.arg == 3) && Arc::ptr_eq(a, b) {
                             let result = instr.arg == 2; // Eq=true, Ne=false
-                            frame.stack.pop();
-                            *frame.stack.last_mut().unwrap() = PyObject::bool_val(result);
+                            frame.binary_op_result(PyObject::bool_val(result));
                             Ok(None)
                         } else {
                         match (&a.payload, &b.payload) {
@@ -389,8 +441,7 @@ impl VirtualMachine {
                                     4 => x > y,  // Gt
                                     _ => x >= y, // Ge (5)
                                 };
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::bool_val(result);
+                                frame.binary_op_result(PyObject::bool_val(result));
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
@@ -403,16 +454,14 @@ impl VirtualMachine {
                                     4 => xv > yv,
                                     _ => xv >= yv,
                                 };
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::bool_val(result);
+                                frame.binary_op_result(PyObject::bool_val(result));
                                 Ok(None)
                             }
                             // String equality (hot for dict lookups, isinstance checks)
                             (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) if instr.arg == 2 || instr.arg == 3 => {
                                 let eq = x == y;
                                 let result = if instr.arg == 2 { eq } else { !eq };
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::bool_val(result);
+                                frame.binary_op_result(PyObject::bool_val(result));
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -434,8 +483,7 @@ impl VirtualMachine {
                             || matches!((&a.payload, &b.payload),
                                 (PyObjectPayload::ExceptionType(at), PyObjectPayload::ExceptionType(bt)) if at == bt);
                         let result = if instr.arg == 8 { same } else { !same };
-                        frame.stack.pop();
-                        *frame.stack.last_mut().unwrap() = PyObject::bool_val(result);
+                        frame.binary_op_result(PyObject::bool_val(result));
                         Ok(None)
                     } else {
                         self.execute_one(instr)
@@ -525,14 +573,12 @@ impl VirtualMachine {
                                         PyObject::big_int(BigInt::from(*x) - BigInt::from(*y))
                                     }
                                 };
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = result;
+                                frame.binary_op_result(result);
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                 let r = *x - *y;
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
+                                frame.binary_op_result(PyObject::float(r));
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -556,14 +602,12 @@ impl VirtualMachine {
                                         PyObject::big_int(BigInt::from(*x) * BigInt::from(*y))
                                     }
                                 };
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = result;
+                                frame.binary_op_result(result);
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                 let r = *x * *y;
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
+                                frame.binary_op_result(PyObject::float(r));
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -582,16 +626,14 @@ impl VirtualMachine {
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                                 // Python modulo: result has same sign as divisor
                                 let r = ((*x % *y) + *y) % *y;
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::int(r);
+                                frame.binary_op_result(PyObject::int(r));
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                                 let r = *x % *y;
                                 // Python modulo for floats: adjust sign
                                 let r = if r != 0.0 && (r < 0.0) != (*y < 0.0) { r + *y } else { r };
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
+                                frame.binary_op_result(PyObject::float(r));
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -609,14 +651,12 @@ impl VirtualMachine {
                         match (&a.payload, &b.payload) {
                             (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                                 let r = *x as f64 / *y as f64;
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
+                                frame.binary_op_result(PyObject::float(r));
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                                 let r = *x / *y;
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
+                                frame.binary_op_result(PyObject::float(r));
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -640,14 +680,12 @@ impl VirtualMachine {
                                 } else {
                                     r
                                 };
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::int(r);
+                                frame.binary_op_result(PyObject::int(r));
                                 Ok(None)
                             }
                             (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                                 let r = (*x / *y).floor();
-                                frame.stack.pop();
-                                *frame.stack.last_mut().unwrap() = PyObject::float(r);
+                                frame.binary_op_result(PyObject::float(r));
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
@@ -990,8 +1028,7 @@ impl VirtualMachine {
                                 if actual >= 0 && (actual as usize) < items.len() {
                                     let val = items[actual as usize].clone();
                                     drop(items);
-                                    frame.stack.pop();
-                                    *frame.stack.last_mut().unwrap() = val;
+                                    frame.binary_op_result(val);
                                     Ok(None)
                                 } else {
                                     drop(items);
@@ -1004,8 +1041,7 @@ impl VirtualMachine {
                                 let actual = if i < 0 { i + items.len() as i64 } else { i };
                                 if actual >= 0 && (actual as usize) < items.len() {
                                     let val = items[actual as usize].clone();
-                                    frame.stack.pop();
-                                    *frame.stack.last_mut().unwrap() = val;
+                                    frame.binary_op_result(val);
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1016,8 +1052,7 @@ impl VirtualMachine {
                                 let hk = HashableKey::Str(s.clone());
                                 let val = map.read().get(&hk).cloned();
                                 if let Some(v) = val {
-                                    frame.stack.pop();
-                                    *frame.stack.last_mut().unwrap() = v;
+                                    frame.binary_op_result(v);
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1028,8 +1063,7 @@ impl VirtualMachine {
                                 let hk = HashableKey::Int(pi.clone());
                                 let val = map.read().get(&hk).cloned();
                                 if let Some(v) = val {
-                                    frame.stack.pop();
-                                    *frame.stack.last_mut().unwrap() = v;
+                                    frame.binary_op_result(v);
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1043,8 +1077,7 @@ impl VirtualMachine {
                                 if actual >= 0 && (actual as usize) < chars.len() {
                                     let ch = chars[actual as usize];
                                     let val = PyObject::str_val(CompactString::from(ch.to_string()));
-                                    frame.stack.pop();
-                                    *frame.stack.last_mut().unwrap() = val;
+                                    frame.binary_op_result(val);
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
@@ -1469,6 +1502,8 @@ impl VirtualMachine {
             | Opcode::LoadDeref | Opcode::StoreDeref | Opcode::DeleteDeref
             | Opcode::LoadClosure | Opcode::LoadClassderef
             | Opcode::LoadGlobal | Opcode::StoreGlobal | Opcode::DeleteGlobal
+            | Opcode::LoadFastLoadFast | Opcode::LoadFastLoadConst
+            | Opcode::StoreFastLoadFast
                 => self.exec_name_ops(instr),
 
             Opcode::LoadAttr | Opcode::StoreAttr | Opcode::DeleteAttr

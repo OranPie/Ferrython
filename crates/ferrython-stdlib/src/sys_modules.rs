@@ -1,7 +1,7 @@
 //! System, OS, and platform stdlib modules
 
 use compact_str::CompactString;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use parking_lot::RwLock;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
@@ -13,6 +13,23 @@ use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 
 static RECURSION_LIMIT: AtomicI64 = AtomicI64::new(3000);
+
+/// Fast atomic flags indicating whether trace/profile functions are installed.
+/// The VM reads these instead of doing thread-local RefCell access per frame.
+static TRACE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static PROFILE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Check if any trace function is active (atomic load — ~1ns vs ~15ns for thread-local).
+#[inline(always)]
+pub fn is_trace_active() -> bool {
+    TRACE_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Check if any profile function is active (atomic load).
+#[inline(always)]
+pub fn is_profile_active() -> bool {
+    PROFILE_ACTIVE.load(Ordering::Relaxed)
+}
 
 // Thread-local active exception info for sys.exc_info().
 // Set by the VM when entering an except block, cleared when leaving.
@@ -53,6 +70,7 @@ pub fn get_trace_func() -> Option<PyObjectRef> {
 
 /// Set the trace function (called by sys.settrace).
 pub fn set_trace_func(func: Option<PyObjectRef>) {
+    TRACE_ACTIVE.store(func.is_some(), Ordering::Relaxed);
     TRACE_FUNC.with(|c| *c.borrow_mut() = func);
 }
 
@@ -63,6 +81,7 @@ pub fn get_profile_func() -> Option<PyObjectRef> {
 
 /// Set the profile function (called by sys.setprofile).
 pub fn set_profile_func(func: Option<PyObjectRef>) {
+    PROFILE_ACTIVE.store(func.is_some(), Ordering::Relaxed);
     PROFILE_FUNC.with(|c| *c.borrow_mut() = func);
 }
 

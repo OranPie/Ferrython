@@ -30,6 +30,7 @@ use parking_lot::RwLock;
 pub use sys_modules::get_recursion_limit;
 pub use sys_modules::{set_exc_info, clear_exc_info, get_exc_info};
 pub use sys_modules::{get_trace_func, set_trace_func, get_profile_func, set_profile_func, get_excepthook, set_excepthook};
+pub use sys_modules::{is_trace_active, is_profile_active};
 pub use sys_modules::{set_current_frame, get_current_frame};
 pub use concurrency_modules::drain_deferred_calls;
 pub use ferrython_async::take_asyncio_run_coro;

@@ -179,6 +179,16 @@ impl Frame {
     #[inline] pub fn push(&mut self, v: PyObjectRef) { self.stack.push(v); }
     #[inline] pub fn pop(&mut self) -> PyObjectRef { self.stack.pop().expect("stack underflow") }
     #[inline] pub fn peek(&self) -> &PyObjectRef { self.stack.last().expect("stack underflow") }
+
+    /// Replace TOS-1 with `val` and pop TOS in one operation (binary op result).
+    /// Avoids separate pop() + last_mut().unwrap() bounds checks.
+    #[inline(always)]
+    pub fn binary_op_result(&mut self, val: PyObjectRef) {
+        let len = self.stack.len();
+        // Overwrite TOS-1 with result (drops old value), then pop TOS
+        self.stack[len - 2] = val;
+        self.stack.pop();
+    }
     pub fn get_local(&self, idx: usize) -> Option<&PyObjectRef> { self.locals[idx].as_ref() }
     pub fn set_local(&mut self, idx: usize, v: PyObjectRef) { self.locals[idx] = Some(v); }
     pub fn push_block(&mut self, kind: BlockKind, handler: usize) {

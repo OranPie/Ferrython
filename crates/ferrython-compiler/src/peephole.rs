@@ -33,6 +33,11 @@ pub fn optimize(code: &mut CodeObject) {
 
     // Final cleanup: remove NOP instructions and fix jump targets
     remove_nops(code);
+
+    // Superinstruction fusion (after NOPs are removed, after jump targets are final).
+    // This fuses adjacent LoadFast+LoadFast, LoadFast+LoadConst, StoreFast+LoadFast
+    // into single instructions, saving one dispatch loop iteration per pair.
+    fuse_superinstructions(code);
 }
 
 /// Constant folding: replace `LOAD_CONST a; LOAD_CONST b; BINARY_OP` with `LOAD_CONST result`.
@@ -608,4 +613,95 @@ fn const_is_truthy(val: &ConstantValue) -> Option<bool> {
         ConstantValue::Tuple(items) => Some(!items.is_empty()),
         _ => None,
     }
+}
+
+/// Fuse adjacent opcode pairs into superinstructions.
+/// Must run AFTER remove_nops (jump targets are finalized).
+/// Superinstructions pack two small args into one u32: (arg1 << 16) | arg2.
+fn fuse_superinstructions(code: &mut CodeObject) {
+    let n = code.instructions.len();
+    if n < 2 { return; }
+
+    // Collect all jump targets so we don't fuse across them
+    let mut jump_targets = vec![false; n];
+    for instr in &code.instructions {
+        if is_jump(instr.op) {
+            let target = instr.arg as usize;
+            if target < n {
+                jump_targets[target] = true;
+            }
+        }
+    }
+
+    // Phase 1: Mark which positions get fused (second instruction → NOP)
+    let mut is_nop = vec![false; n];
+    let mut i = 0;
+    while i + 1 < n {
+        let a = code.instructions[i];
+        let b = code.instructions[i + 1];
+
+        // Don't fuse if the second instruction is a jump target
+        if jump_targets[i + 1] || a.arg > 0xFFFF || b.arg > 0xFFFF {
+            i += 1;
+            continue;
+        }
+
+        let fused = match (a.op, b.op) {
+            (Opcode::LoadFast, Opcode::LoadFast) => Some(Opcode::LoadFastLoadFast),
+            (Opcode::LoadFast, Opcode::LoadConst) => Some(Opcode::LoadFastLoadConst),
+            (Opcode::StoreFast, Opcode::LoadFast) => Some(Opcode::StoreFastLoadFast),
+            _ => None,
+        };
+
+        if let Some(super_op) = fused {
+            let packed_arg = (a.arg << 16) | b.arg;
+            code.instructions[i] = Instruction::new(super_op, packed_arg);
+            is_nop[i + 1] = true;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    // Phase 2: Build old→new index mapping
+    let mut old_to_new: Vec<usize> = Vec::with_capacity(n);
+    let mut new_idx: usize = 0;
+    for nop in &is_nop {
+        old_to_new.push(new_idx);
+        if !nop { new_idx += 1; }
+    }
+    // Sentinel for targets pointing past the end
+    let final_len = new_idx;
+
+    if final_len == n { return; } // nothing was fused
+
+    // Phase 3: Rewrite all jump targets
+    for instr in &mut code.instructions {
+        if is_jump(instr.op) {
+            let target = instr.arg as usize;
+            if target < old_to_new.len() {
+                instr.arg = old_to_new[target] as u32;
+            } else {
+                instr.arg = final_len as u32;
+            }
+        }
+    }
+
+    // Phase 4: Rewrite line number table
+    for entry in &mut code.line_number_table {
+        let old_idx = entry.0 as usize;
+        if old_idx < old_to_new.len() {
+            entry.0 = old_to_new[old_idx] as u32;
+        }
+    }
+
+    // Phase 5: Remove NOP'd positions
+    let mut write = 0;
+    for read in 0..n {
+        if !is_nop[read] {
+            code.instructions[write] = code.instructions[read];
+            write += 1;
+        }
+    }
+    code.instructions.truncate(write);
 }

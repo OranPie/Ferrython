@@ -167,6 +167,14 @@ pub enum Opcode {
     /// Pop iterator from stack and call close() if it's a generator.
     /// Used by `break` in for-loops to ensure generator finally blocks run.
     EndForLoop = 202,
+
+    // ── Superinstructions (peephole fused pairs) ──
+    /// Two consecutive LoadFast. arg = (idx1 << 16) | idx2.
+    LoadFastLoadFast = 210,
+    /// LoadFast then LoadConst. arg = (fast_idx << 16) | const_idx.
+    LoadFastLoadConst = 211,
+    /// StoreFast then LoadFast. arg = (store_idx << 16) | load_idx.
+    StoreFastLoadFast = 212,
 }
 
 impl Opcode {
@@ -274,6 +282,9 @@ impl Opcode {
             Self::WithCleanupFinish => -1,
             Self::SetupAnnotations => 0,
             Self::ExtendedArg => 0,
+            Self::LoadFastLoadFast => 2,
+            Self::LoadFastLoadConst => 2,
+            Self::StoreFastLoadFast => 0, // -1 (store) + 1 (load) = 0
         }
     }
 
