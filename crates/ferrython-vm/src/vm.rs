@@ -1218,10 +1218,34 @@ impl VirtualMachine {
                     // Single payload check: determine both is_simple and is_recursive
                     let call_kind = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
                         if pf.is_simple && pf.code.arg_count as usize == arg_count {
-                            if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
+                            // Trivial function: body is just `LoadConst X; ReturnValue`
+                            // Skip frame creation entirely — just push the constant.
+                            if pf.code.instructions.len() == 2
+                                && pf.code.instructions[0].op == Opcode::LoadConst
+                                && pf.code.instructions[1].op == Opcode::ReturnValue
+                            { 3u8 }
+                            else if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
                         } else { 0 }
                     } else { 0 };
-                    if call_kind > 0 {
+                    if call_kind == 3 {
+                        // Trivial function: inline the return constant
+                        let const_idx = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                            pf.code.instructions[0].arg as usize
+                        } else { unreachable!() };
+                        let ret_val = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                            pf.constant_cache[const_idx].clone()
+                        } else { unreachable!() };
+                        // Drop function + args from stack, push return value
+                        unsafe {
+                            let base = frame.stack.as_ptr();
+                            for i in 0..=arg_count {
+                                let _ = std::ptr::read(base.add(func_idx + i));
+                            }
+                            frame.stack.set_len(func_idx);
+                        }
+                        frame.stack.push(ret_val);
+                        Ok(None)
+                    } else if call_kind > 0 {
                         let args_start = func_idx + 1;
                         let mut new_frame = if call_kind == 2 {
                             // SAFETY: parent frame outlives child in iterative dispatch
@@ -1475,10 +1499,32 @@ impl VirtualMachine {
                         // Check if simple function with matching arg count
                         let call_kind = if let PyObjectPayload::Function(pf) = &func_obj.payload {
                             if pf.is_simple && pf.code.arg_count as usize == arg_count {
-                                if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
+                                // Trivial function: body is just `LoadConst X; ReturnValue`
+                                if pf.code.instructions.len() == 2
+                                    && pf.code.instructions[0].op == Opcode::LoadConst
+                                    && pf.code.instructions[1].op == Opcode::ReturnValue
+                                { 3u8 }
+                                else if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
                             } else { 0 }
                         } else { 0 };
-                        if call_kind > 0 {
+                        if call_kind == 3 {
+                            // Trivial function: inline the return constant
+                            let ret_val = if let PyObjectPayload::Function(pf) = &func_obj.payload {
+                                let ci = pf.code.instructions[0].arg as usize;
+                                pf.constant_cache[ci].clone()
+                            } else { unreachable!() };
+                            // Drop args from stack, push return value
+                            let stack_len = frame.stack.len();
+                            unsafe {
+                                let base = frame.stack.as_ptr();
+                                for i in 0..arg_count {
+                                    let _ = std::ptr::read(base.add(stack_len - arg_count + i));
+                                }
+                                frame.stack.set_len(stack_len - arg_count);
+                            }
+                            frame.stack.push(ret_val);
+                            Ok(None)
+                        } else if call_kind > 0 {
                             let stack_len = frame.stack.len();
                             let args_start = stack_len - arg_count;
                             let mut new_frame = if call_kind == 2 {
