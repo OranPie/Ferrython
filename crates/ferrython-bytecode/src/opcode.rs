@@ -200,6 +200,11 @@ pub enum Opcode {
     LoadFastLoadAttr = 218,
     /// Fused LoadFast + LoadFast + BinaryAdd (a + b where both are locals)
     LoadFastLoadFastBinaryAdd = 219,
+    /// Fused LoadFastLoadConst + CompareOpPopJumpIfFalse — 4-way zero-clone.
+    /// Reads local and constant by reference, compares, jumps if false.
+    /// arg encoding: (cmp_op << 28) | (local_idx << 20) | (const_idx << 12) | jump_target
+    /// Limits: local_idx < 256, const_idx < 256, jump_target < 4096, cmp_op < 16
+    LoadFastCompareConstJump = 220,
 }
 
 impl Opcode {
@@ -321,6 +326,7 @@ impl Opcode {
                 -arg_count + 1
             }
             Self::LoadFastLoadAttr => 1, // push local, replace TOS with attr → net +1
+            Self::LoadFastCompareConstJump => 0, // reads local+const by ref, compares, no stack change
         }
     }
 
@@ -341,6 +347,7 @@ impl Opcode {
                 | Self::SetupAsyncWith
                 | Self::CompareOpPopJumpIfFalse
                 | Self::ForIterStoreFast
+                | Self::LoadFastCompareConstJump
         )
     }
 }

@@ -2271,6 +2271,74 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
+                // 4-way superinstruction: LoadFast + LoadConst + CompareOp + PopJumpIfFalse
+                // Zero-clone — reads local and constant by reference, no stack ops at all
+                Opcode::LoadFastCompareConstJump => {
+                    let cmp_op = instr.arg >> 28;
+                    let local_idx = ((instr.arg >> 20) & 0xFF) as usize;
+                    let const_idx = ((instr.arg >> 12) & 0xFF) as usize;
+                    let jump_target = (instr.arg & 0xFFF) as usize;
+                    // Read local by reference — no clone
+                    match unsafe { frame.get_local_unchecked(local_idx) } {
+                        Some(local) => {
+                            let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
+                            let fast_result = match (&local.payload, &c.payload) {
+                                (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                    match cmp_op {
+                                        0 => Some(*x < *y),
+                                        1 => Some(*x <= *y),
+                                        2 => Some(*x == *y),
+                                        3 => Some(*x != *y),
+                                        4 => Some(*x > *y),
+                                        5 => Some(*x >= *y),
+                                        _ => None,
+                                    }
+                                }
+                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                    match cmp_op {
+                                        0 => Some(*x < *y),
+                                        1 => Some(*x <= *y),
+                                        2 => Some(*x == *y),
+                                        3 => Some(*x != *y),
+                                        4 => Some(*x > *y),
+                                        5 => Some(*x >= *y),
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            };
+                            if let Some(is_true) = fast_result {
+                                if !is_true { frame.ip = jump_target; }
+                                Ok(None)
+                            } else {
+                                // Fallback: push both, decompose to CompareOp + PopJumpIfFalse
+                                frame.stack.push(local.clone());
+                                frame.stack.push(c.clone());
+                                let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
+                                let result = self.exec_compare_ops(cmp_instr)?;
+                                if result.is_none() {
+                                    let frame = self.call_stack.last_mut().unwrap();
+                                    let v = frame.stack.pop().expect("stack underflow");
+                                    let is_false = match &v.payload {
+                                        PyObjectPayload::Bool(b) => !b,
+                                        PyObjectPayload::None => true,
+                                        PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                                        _ => !self.vm_is_truthy(&v)?,
+                                    };
+                                    if is_false {
+                                        let cs_len = self.call_stack.len();
+                                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
+                                    }
+                                }
+                                Ok(None)
+                            }
+                        }
+                        None => Err(PyException::name_error(format!(
+                            "local variable '{}' referenced before assignment",
+                            frame.code.varnames.get(local_idx).map(|s| s.as_str()).unwrap_or("?")
+                        ))),
+                    }
+                }
                 _ => self.execute_one(instr),
             };
 
@@ -2618,7 +2686,8 @@ impl VirtualMachine {
             Opcode::BinarySubscr | Opcode::StoreSubscr | Opcode::DeleteSubscr
                 => self.exec_subscript_ops(instr),
 
-            Opcode::CompareOp | Opcode::CompareOpPopJumpIfFalse => self.exec_compare_ops(instr),
+            Opcode::CompareOp | Opcode::CompareOpPopJumpIfFalse
+            | Opcode::LoadFastCompareConstJump => self.exec_compare_ops(instr),
 
             Opcode::JumpForward | Opcode::JumpAbsolute
             | Opcode::PopJumpIfFalse | Opcode::PopJumpIfTrue

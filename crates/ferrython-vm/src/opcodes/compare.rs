@@ -89,6 +89,33 @@ impl VirtualMachine {
     }
 
     pub(crate) fn exec_compare_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+        if instr.op == Opcode::LoadFastCompareConstJump {
+            // Fallback path: decompose to LoadFast + LoadConst + CompareOp + PopJumpIfFalse
+            let cmp_op = instr.arg >> 28;
+            let local_idx = ((instr.arg >> 20) & 0xFF) as usize;
+            let const_idx = ((instr.arg >> 12) & 0xFF) as usize;
+            let jump_target = (instr.arg & 0xFFF) as usize;
+            let frame = self.call_stack.last_mut().unwrap();
+            let local = frame.locals[local_idx].clone().ok_or_else(|| {
+                PyException::name_error(format!(
+                    "local variable '{}' referenced before assignment",
+                    frame.code.varnames.get(local_idx).map(|s| s.as_str()).unwrap_or("?")
+                ))
+            })?;
+            let c = frame.constant_cache[const_idx].clone();
+            self.exec_compare_op(cmp_op, local, c)?;
+            let v = self.vm_pop();
+            let is_false = match &v.payload {
+                PyObjectPayload::Bool(b) => !b,
+                PyObjectPayload::None => true,
+                PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                _ => !self.vm_is_truthy(&v)?,
+            };
+            if is_false {
+                self.call_stack.last_mut().unwrap().ip = jump_target;
+            }
+            return Ok(None);
+        }
         if instr.op == Opcode::CompareOpPopJumpIfFalse {
             let cmp_op = instr.arg >> 24;
             let jump_target = (instr.arg & 0x00FF_FFFF) as usize;

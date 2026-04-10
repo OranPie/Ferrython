@@ -649,6 +649,28 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // 4-way fusion: LoadFast + LoadConst + CompareOp + PopJumpIfFalse → LoadFastCompareConstJump
+        // Zero-clone: reads local and constant by reference, compares, jumps if false.
+        // Encoding: (cmp_op << 28) | (local_idx << 20) | (const_idx << 12) | jump_target
+        if i + 3 < n && !jump_targets[i + 2] && !jump_targets[i + 3]
+            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+            && code.instructions[i + 2].op == Opcode::CompareOp
+            && code.instructions[i + 3].op == Opcode::PopJumpIfFalse
+            && a.arg < 256 && b.arg < 256
+            && code.instructions[i + 2].arg < 16
+            && code.instructions[i + 3].arg < 4096
+        {
+            let cmp_op = code.instructions[i + 2].arg;
+            let jump_target = code.instructions[i + 3].arg;
+            let packed = (cmp_op << 28) | (a.arg << 20) | (b.arg << 12) | jump_target;
+            code.instructions[i] = Instruction::new(Opcode::LoadFastCompareConstJump, packed);
+            is_nop[i + 1] = true;
+            is_nop[i + 2] = true;
+            is_nop[i + 3] = true;
+            i += 4;
+            continue;
+        }
+
         // 3-way fusion: LoadFast + LoadConst + BinarySubtract → LoadFastLoadConstBinarySub
         if i + 2 < n && !jump_targets[i + 2]
             && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
@@ -786,6 +808,16 @@ fn fuse_superinstructions(code: &mut CodeObject) {
                 final_len as u32
             };
             instr.arg = (cmp_op << 24) | new_target;
+        } else if instr.op == Opcode::LoadFastCompareConstJump {
+            // Jump target is in low 12 bits; other fields in upper bits
+            let upper = instr.arg & 0xFFFFF000;
+            let target = (instr.arg & 0xFFF) as usize;
+            let new_target = if target < old_to_new.len() {
+                old_to_new[target] as u32
+            } else {
+                final_len as u32
+            };
+            instr.arg = upper | (new_target & 0xFFF);
         } else if instr.op == Opcode::ForIterStoreFast {
             // Jump target is in high 16 bits; store_idx in low 16 bits
             let jump_target = (instr.arg >> 16) as usize;
