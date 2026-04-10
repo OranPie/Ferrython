@@ -783,6 +783,68 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
+                // Inline 'in' / 'not in' for dict, set, list, tuple, str (CompareOp arg 6/7)
+                Opcode::CompareOp if instr.arg == 6 || instr.arg == 7 => {
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let needle = &frame.stack[len - 2]; // a in b
+                        let haystack = &frame.stack[len - 1];
+                        let found = match (&haystack.payload, &needle.payload) {
+                            // dict: key in dict — direct hashmap contains
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
+                                let hk = HashableKey::Str(s.clone());
+                                Some(map.read().contains_key(&hk))
+                            }
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Int(pi @ PyInt::Small(_))) => {
+                                let hk = HashableKey::Int(pi.clone());
+                                Some(map.read().contains_key(&hk))
+                            }
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Bool(b)) => {
+                                let hk = HashableKey::Bool(*b);
+                                Some(map.read().contains_key(&hk))
+                            }
+                            // set: item in set
+                            (PyObjectPayload::Set(set), PyObjectPayload::Str(s)) => {
+                                let hk = HashableKey::Str(s.clone());
+                                Some(set.read().contains_key(&hk))
+                            }
+                            (PyObjectPayload::Set(set), PyObjectPayload::Int(pi @ PyInt::Small(_))) => {
+                                let hk = HashableKey::Int(pi.clone());
+                                Some(set.read().contains_key(&hk))
+                            }
+                            // list: item in list — linear scan for primitive types
+                            (PyObjectPayload::List(items), PyObjectPayload::Int(PyInt::Small(n))) => {
+                                let items = items.read();
+                                Some(items.iter().any(|it| matches!(&it.payload, PyObjectPayload::Int(PyInt::Small(m)) if m == n)))
+                            }
+                            (PyObjectPayload::List(items), PyObjectPayload::Str(s)) => {
+                                let items = items.read();
+                                Some(items.iter().any(|it| matches!(&it.payload, PyObjectPayload::Str(t) if t == s)))
+                            }
+                            // tuple: item in tuple for primitive types
+                            (PyObjectPayload::Tuple(items), PyObjectPayload::Int(PyInt::Small(n))) => {
+                                Some(items.iter().any(|it| matches!(&it.payload, PyObjectPayload::Int(PyInt::Small(m)) if m == n)))
+                            }
+                            (PyObjectPayload::Tuple(items), PyObjectPayload::Str(s)) => {
+                                Some(items.iter().any(|it| matches!(&it.payload, PyObjectPayload::Str(t) if t == s)))
+                            }
+                            // str: substr in str
+                            (PyObjectPayload::Str(haystack_s), PyObjectPayload::Str(needle_s)) => {
+                                Some(haystack_s.contains(needle_s.as_str()))
+                            }
+                            _ => None,
+                        };
+                        if let Some(result) = found {
+                            let val = if instr.arg == 6 { result } else { !result };
+                            unsafe { frame.binary_op_result(PyObject::bool_val(val)) };
+                            Ok(None)
+                        } else {
+                            self.execute_one(instr)
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
                 // Inline LoadGlobal: check per-frame cache, then globals, then builtins
                 Opcode::LoadGlobal => {
                     let idx = instr.arg as usize;
@@ -821,6 +883,26 @@ impl VirtualMachine {
                             if *n == 0 { frame.ip = instr.arg as usize; }
                             Ok(None)
                         }
+                        PyObjectPayload::Str(s) => {
+                            if s.is_empty() { frame.ip = instr.arg as usize; }
+                            Ok(None)
+                        }
+                        PyObjectPayload::List(items) => {
+                            if items.read().is_empty() { frame.ip = instr.arg as usize; }
+                            Ok(None)
+                        }
+                        PyObjectPayload::Tuple(items) => {
+                            if items.is_empty() { frame.ip = instr.arg as usize; }
+                            Ok(None)
+                        }
+                        PyObjectPayload::Dict(map) => {
+                            if map.read().is_empty() { frame.ip = instr.arg as usize; }
+                            Ok(None)
+                        }
+                        PyObjectPayload::Float(f) => {
+                            if *f == 0.0 { frame.ip = instr.arg as usize; }
+                            Ok(None)
+                        }
                         _ => {
                             if !self.vm_is_truthy(&v)? {
                                 let cs_len = self.call_stack.len();
@@ -841,6 +923,26 @@ impl VirtualMachine {
                         PyObjectPayload::None => Ok(None),
                         PyObjectPayload::Int(PyInt::Small(n)) => {
                             if *n != 0 { frame.ip = instr.arg as usize; }
+                            Ok(None)
+                        }
+                        PyObjectPayload::Str(s) => {
+                            if !s.is_empty() { frame.ip = instr.arg as usize; }
+                            Ok(None)
+                        }
+                        PyObjectPayload::List(items) => {
+                            if !items.read().is_empty() { frame.ip = instr.arg as usize; }
+                            Ok(None)
+                        }
+                        PyObjectPayload::Tuple(items) => {
+                            if !items.is_empty() { frame.ip = instr.arg as usize; }
+                            Ok(None)
+                        }
+                        PyObjectPayload::Dict(map) => {
+                            if !map.read().is_empty() { frame.ip = instr.arg as usize; }
+                            Ok(None)
+                        }
+                        PyObjectPayload::Float(f) => {
+                            if *f != 0.0 { frame.ip = instr.arg as usize; }
                             Ok(None)
                         }
                         _ => {
@@ -1231,6 +1333,151 @@ impl VirtualMachine {
                                         }))
                                     ));
                                     frame.stack.push(iter);
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // Inline isinstance(obj, cls) — single class check
+                            (Some("isinstance"), 2) => {
+                                let obj = &frame.stack[stack_len - 2];
+                                let cls = &frame.stack[stack_len - 1];
+                                let fast_result = match &cls.payload {
+                                    PyObjectPayload::BuiltinType(bt) => {
+                                        let bt_str = bt.as_str();
+                                        let matches = match (&obj.payload, bt_str) {
+                                            (PyObjectPayload::Int(_), "int") => true,
+                                            (PyObjectPayload::Bool(_), "int") => true, // bool is subclass of int
+                                            (PyObjectPayload::Bool(_), "bool") => true,
+                                            (PyObjectPayload::Float(_), "float") => true,
+                                            (PyObjectPayload::Str(_), "str") => true,
+                                            (PyObjectPayload::List(_), "list") => true,
+                                            (PyObjectPayload::Tuple(_), "tuple") => true,
+                                            (PyObjectPayload::Dict(_), "dict") => true,
+                                            (PyObjectPayload::Set(_), "set") => true,
+                                            (PyObjectPayload::Bytes(_), "bytes") => true,
+                                            (PyObjectPayload::ByteArray(_), "bytearray") => true,
+                                            (PyObjectPayload::None, "NoneType") => true,
+                                            _ => false,
+                                        };
+                                        Some(matches)
+                                    }
+                                    PyObjectPayload::Class(cd) => {
+                                        if let PyObjectPayload::Instance(inst) = &obj.payload {
+                                            if let PyObjectPayload::Class(obj_cd) = &inst.class.payload {
+                                                if obj_cd.name == cd.name { Some(true) }
+                                                else {
+                                                    Some(obj_cd.mro.iter().any(|b| {
+                                                        matches!(&b.payload, PyObjectPayload::Class(bc) if bc.name == cd.name)
+                                                    }))
+                                                }
+                                            } else { None }
+                                        } else { None }
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(result) = fast_result {
+                                    unsafe { frame.stack.set_len(func_idx); }
+                                    frame.stack.push(PyObject::bool_val(result));
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // Inline type(obj) for builtin types
+                            (Some("type"), 1) => {
+                                let arg = &frame.stack[stack_len - 1];
+                                let type_name = match &arg.payload {
+                                    PyObjectPayload::Int(_) => Some("int"),
+                                    PyObjectPayload::Float(_) => Some("float"),
+                                    PyObjectPayload::Str(_) => Some("str"),
+                                    PyObjectPayload::Bool(_) => Some("bool"),
+                                    PyObjectPayload::None => Some("NoneType"),
+                                    PyObjectPayload::List(_) => Some("list"),
+                                    PyObjectPayload::Tuple(_) => Some("tuple"),
+                                    PyObjectPayload::Dict(_) => Some("dict"),
+                                    PyObjectPayload::Set(_) => Some("set"),
+                                    PyObjectPayload::Bytes(_) => Some("bytes"),
+                                    PyObjectPayload::ByteArray(_) => Some("bytearray"),
+                                    _ => None,
+                                };
+                                if let Some(name) = type_name {
+                                    unsafe { frame.stack.set_len(func_idx); }
+                                    frame.stack.push(PyObject::wrap(PyObjectPayload::BuiltinType(name.into())));
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // Inline bool(x) — truthiness conversion
+                            (Some("bool"), 1) => {
+                                let arg = &frame.stack[stack_len - 1];
+                                let result = match &arg.payload {
+                                    PyObjectPayload::Bool(b) => Some(*b),
+                                    PyObjectPayload::Int(PyInt::Small(n)) => Some(*n != 0),
+                                    PyObjectPayload::Float(f) => Some(*f != 0.0),
+                                    PyObjectPayload::Str(s) => Some(!s.is_empty()),
+                                    PyObjectPayload::None => Some(false),
+                                    PyObjectPayload::List(v) => Some(!v.read().is_empty()),
+                                    PyObjectPayload::Tuple(v) => Some(!v.is_empty()),
+                                    PyObjectPayload::Dict(m) => Some(!m.read().is_empty()),
+                                    _ => None,
+                                };
+                                if let Some(b) = result {
+                                    unsafe { frame.stack.set_len(func_idx); }
+                                    frame.stack.push(PyObject::bool_val(b));
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // Inline int(x) for common conversions
+                            (Some("int"), 1) => {
+                                let arg = &frame.stack[stack_len - 1];
+                                let result = match &arg.payload {
+                                    PyObjectPayload::Int(_) => Some(arg.clone()),
+                                    PyObjectPayload::Bool(b) => Some(PyObject::int(if *b { 1 } else { 0 })),
+                                    PyObjectPayload::Float(f) => Some(PyObject::int(*f as i64)),
+                                    _ => None,
+                                };
+                                if let Some(v) = result {
+                                    unsafe { frame.stack.set_len(func_idx); }
+                                    frame.stack.push(v);
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // Inline str(x) for common types
+                            (Some("str"), 1) => {
+                                let arg = &frame.stack[stack_len - 1];
+                                let result = match &arg.payload {
+                                    PyObjectPayload::Str(_) => Some(arg.clone()),
+                                    PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::str_val(CompactString::from(format!("{}", n)))),
+                                    PyObjectPayload::Float(f) => Some(PyObject::str_val(CompactString::from(format!("{}", f)))),
+                                    PyObjectPayload::Bool(b) => Some(PyObject::str_val(CompactString::from(if *b { "True" } else { "False" }))),
+                                    PyObjectPayload::None => Some(PyObject::str_val(CompactString::from("None"))),
+                                    _ => None,
+                                };
+                                if let Some(v) = result {
+                                    unsafe { frame.stack.set_len(func_idx); }
+                                    frame.stack.push(v);
+                                    Ok(None)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // Inline abs(x) for int/float
+                            (Some("abs"), 1) => {
+                                let arg = &frame.stack[stack_len - 1];
+                                let result = match &arg.payload {
+                                    PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::int(n.abs())),
+                                    PyObjectPayload::Float(f) => Some(PyObject::wrap(PyObjectPayload::Float(f.abs()))),
+                                    _ => None,
+                                };
+                                if let Some(v) = result {
+                                    unsafe { frame.stack.set_len(func_idx); }
+                                    frame.stack.push(v);
                                     Ok(None)
                                 } else {
                                     self.execute_one(instr)
