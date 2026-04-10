@@ -1263,21 +1263,41 @@ impl VirtualMachine {
                         frame.stack.push(PyObject::str_val(CompactString::from("")));
                         Ok(None)
                     } else if count == 1 {
-                        // Single element: already a string from FormatValue
                         Ok(None)
                     } else {
                         let start = frame.stack.len() - count;
-                        // All elements should be strings from FormatValue
-                        let mut result = String::new();
+                        // Pre-compute total length to avoid reallocations
+                        let mut total_len = 0usize;
+                        let mut all_str = true;
                         for i in start..frame.stack.len() {
                             if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
-                                result.push_str(s.as_str());
+                                total_len += s.len();
                             } else {
-                                result.push_str(&frame.stack[i].py_to_string());
+                                all_str = false;
+                                break;
                             }
                         }
-                        frame.stack.truncate(start);
-                        frame.stack.push(PyObject::str_val(CompactString::from(result)));
+                        if all_str {
+                            let mut result = String::with_capacity(total_len);
+                            for i in start..frame.stack.len() {
+                                if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
+                                    result.push_str(s.as_str());
+                                }
+                            }
+                            frame.stack.truncate(start);
+                            frame.stack.push(PyObject::str_val(CompactString::from(result)));
+                        } else {
+                            let mut result = String::new();
+                            for i in start..frame.stack.len() {
+                                if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
+                                    result.push_str(s.as_str());
+                                } else {
+                                    result.push_str(&frame.stack[i].py_to_string());
+                                }
+                            }
+                            frame.stack.truncate(start);
+                            frame.stack.push(PyObject::str_val(CompactString::from(result)));
+                        }
                         Ok(None)
                     }
                 }
@@ -1559,8 +1579,14 @@ impl VirtualMachine {
                                 let arg = &frame.stack[stack_len - 1];
                                 let result = match &arg.payload {
                                     PyObjectPayload::Str(_) => Some(arg.clone()),
-                                    PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::str_val(CompactString::from(format!("{}", n)))),
-                                    PyObjectPayload::Float(f) => Some(PyObject::str_val(CompactString::from(format!("{}", f)))),
+                                    PyObjectPayload::Int(PyInt::Small(n)) => {
+                                        let mut buf = itoa::Buffer::new();
+                                        Some(PyObject::str_val(CompactString::from(buf.format(*n))))
+                                    }
+                                    PyObjectPayload::Float(f) => {
+                                        let mut buf = ryu::Buffer::new();
+                                        Some(PyObject::str_val(CompactString::from(buf.format(*f))))
+                                    }
                                     PyObjectPayload::Bool(b) => Some(PyObject::str_val(CompactString::from(if *b { "True" } else { "False" }))),
                                     PyObjectPayload::None => Some(PyObject::str_val(CompactString::from("None"))),
                                     _ => None,
@@ -1717,6 +1743,32 @@ impl VirtualMachine {
                                             }))
                                         ));
                                         frame.stack.push(iter);
+                                        Ok(None)
+                                    } else {
+                                        frame.stack.push(func_obj.clone());
+                                        let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
+                                        self.execute_one(call_instr)
+                                    }
+                                }
+                                (Some("str"), 1) => {
+                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let result = match &arg.payload {
+                                        PyObjectPayload::Str(_) => Some(arg.clone()),
+                                        PyObjectPayload::Int(PyInt::Small(n)) => {
+                                            let mut buf = itoa::Buffer::new();
+                                            Some(PyObject::str_val(CompactString::from(buf.format(*n))))
+                                        }
+                                        PyObjectPayload::Float(f) => {
+                                            let mut buf = ryu::Buffer::new();
+                                            Some(PyObject::str_val(CompactString::from(buf.format(*f))))
+                                        }
+                                        PyObjectPayload::Bool(b) => Some(PyObject::str_val(CompactString::from(if *b { "True" } else { "False" }))),
+                                        PyObjectPayload::None => Some(PyObject::str_val(CompactString::from("None"))),
+                                        _ => None,
+                                    };
+                                    if let Some(v) = result {
+                                        frame.stack.pop();
+                                        frame.stack.push(v);
                                         Ok(None)
                                     } else {
                                         frame.stack.push(func_obj.clone());
