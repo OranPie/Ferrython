@@ -55,6 +55,15 @@ macro_rules! sget {
     };
 }
 
+/// Fast path: end profiling + continue to next instruction.
+/// Eliminates Ok(None) construction + result match for hot opcodes.
+macro_rules! hot_ok {
+    ($profiling:expr, $profiler:expr, $op:expr) => {{
+        if $profiling { $profiler.end_instruction($op); }
+        continue;
+    }};
+}
+
 
 use crate::builtins;
 use crate::frame::{BlockKind, Frame, FramePool, SharedBuiltins};
@@ -356,7 +365,7 @@ impl VirtualMachine {
                     let idx = instr.arg as usize;
                     // SAFETY: compiler guarantees idx < locals.len(); stack pre-allocated
                     match slocal!(frame, idx) {
-                        Some(val) => { spush!(frame, val.clone()); Ok(None) }
+                        Some(val) => { spush!(frame, val.clone()); hot_ok!(profiling, self.profiler, instr.op) }
                         None => Self::err_unbound_local(&frame.code.varnames, idx),
                     }
                 }
@@ -364,7 +373,7 @@ impl VirtualMachine {
                     // SAFETY: stack non-empty (compiler guarantees), idx < locals.len()
                     let val = spop!(frame);
                     sset_local!(frame, instr.arg as usize, val);
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Fused StoreFast + JumpAbsolute — saves one dispatch per loop iteration
                 Opcode::StoreFastJumpAbsolute => {
@@ -373,13 +382,13 @@ impl VirtualMachine {
                     let val = spop!(frame);
                     sset_local!(frame, store_idx, val);
                     frame.ip = jump_target;
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::LoadConst => {
                     // SAFETY: compiler guarantees arg < constant_cache.len(); stack pre-allocated
                     let obj = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize).clone() };
                     spush!(frame, obj);
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // ── Superinstructions: fused opcode pairs ──
                 Opcode::LoadFastLoadFast => {
@@ -391,7 +400,7 @@ impl VirtualMachine {
                     match (a, b) {
                         (Some(a), Some(b)) => {
                             spush!(frame, a); spush!(frame, b);
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (None, _) => Self::err_unbound_local(&frame.code.varnames, idx1),
                         (_, None) => Self::err_unbound_local(&frame.code.varnames, idx2),
@@ -406,7 +415,7 @@ impl VirtualMachine {
                             spush!(frame, val.clone());
                             let c = unsafe { frame.constant_cache.get_unchecked(const_idx) }.clone();
                             spush!(frame, c);
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         None => Self::err_unbound_local(&frame.code.varnames, fast_idx),
                     }
@@ -418,7 +427,7 @@ impl VirtualMachine {
                     let val = spop!(frame);
                     sset_local!(frame, store_idx, val);
                     match slocal!(frame, load_idx) {
-                        Some(val) => { spush!(frame, val.clone()); Ok(None) }
+                        Some(val) => { spush!(frame, val.clone()); hot_ok!(profiling, self.profiler, instr.op) }
                         None => Self::err_unbound_local(&frame.code.varnames, load_idx),
                     }
                 }
@@ -440,11 +449,11 @@ impl VirtualMachine {
                                         }
                                     };
                                     spush!(frame, result);
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     spush!(frame, PyObject::float(*x - *y));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 _ => {
                                     // Fallback: push both and let execute_one handle BinarySub
@@ -475,19 +484,19 @@ impl VirtualMachine {
                                         }
                                     };
                                     spush!(frame, result);
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     spush!(frame, PyObject::float(*x + *y));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
                                     spush!(frame, PyObject::float(*x as f64 + *y));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
                                     spush!(frame, PyObject::float(*x + *y as f64));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 _ => {
                                     spush!(frame, local.clone());
@@ -519,12 +528,12 @@ impl VirtualMachine {
                                         }
                                     };
                                     spush!(frame, result);
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     let r = *x + *y;
                                     spush!(frame, PyObject::float(r));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 _ => {
                                     let (ac, bc) = (a.clone(), b.clone());
@@ -559,19 +568,19 @@ impl VirtualMachine {
                                         }
                                     };
                                     sset_local!(frame, dest, result);
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     let r = *x + *y;
                                     sset_local!(frame, dest, PyObject::float(r));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
                                     let mut s = String::with_capacity(x.len() + y.len());
                                     s.push_str(x);
                                     s.push_str(y);
                                     sset_local!(frame, dest, PyObject::str_val(CompactString::from(s)));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 _ => {
                                     let (ac, bc) = (a.clone(), b.clone());
@@ -616,19 +625,19 @@ impl VirtualMachine {
                                         }
                                     };
                                     sset_local!(frame, dest, result);
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     sset_local!(frame, dest, PyObject::float(*x + *y));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
                                     sset_local!(frame, dest, PyObject::float(*x as f64 + *y));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
                                     sset_local!(frame, dest, PyObject::float(*x + *y as f64));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
                                 _ => {
                                     let (ac, cc) = (a.clone(), c.clone());
@@ -655,32 +664,32 @@ impl VirtualMachine {
                 Opcode::PopTop => {
                     // SAFETY: stack non-empty for well-formed bytecode
                     drop(spop!(frame));
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::PopTopJumpAbsolute => {
                     drop(spop!(frame));
                     frame.ip = instr.arg as usize;
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::DupTop => {
                     // SAFETY: stack non-empty; stack pre-allocated
                     let v = unsafe { frame.peek_unchecked() }.clone();
                     spush!(frame, v);
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::RotTwo => {
                     let len = frame.stack.len();
                     unsafe { frame.stack.as_mut_ptr().add(len - 1).swap(frame.stack.as_mut_ptr().add(len - 2)) };
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // RotThree and DupTopTwo: cold, delegate to execute_one
                 Opcode::RotThree | Opcode::DupTopTwo => self.execute_one(instr),
-                Opcode::Nop => Ok(None),
+                Opcode::Nop => hot_ok!(profiling, self.profiler, instr.op),
                 // Inline GetIter for common types
                 Opcode::GetIter => {
                     let obj = speek!(frame);
                     match &obj.payload {
-                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } => Ok(None),
+                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } => hot_ok!(profiling, self.profiler, instr.op),
                         PyObjectPayload::List(items) => {
                             let items_vec = items.read().clone();
                             let iter = PyObject::wrap(PyObjectPayload::Iterator(
@@ -690,7 +699,7 @@ impl VirtualMachine {
                             ));
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Tuple(items) => {
                             let items_vec = items.clone();
@@ -701,7 +710,7 @@ impl VirtualMachine {
                             ));
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -722,7 +731,7 @@ impl VirtualMachine {
                             current.set(cur + *step);
                             spush!(frame, v);
                         }
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
                         let mut data = iter_data.lock();
                         match &mut *data {
@@ -738,7 +747,7 @@ impl VirtualMachine {
                                     drop(data);
                                     spush!(frame, v);
                                 }
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             IteratorData::List { items, index } => {
                                 if *index < items.len() {
@@ -751,7 +760,7 @@ impl VirtualMachine {
                                     drop(spop!(frame));
                                     frame.ip = instr.arg as usize;
                                 }
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             IteratorData::Tuple { items, index } => {
                                 if *index < items.len() {
@@ -764,7 +773,7 @@ impl VirtualMachine {
                                     drop(spop!(frame));
                                     frame.ip = instr.arg as usize;
                                 }
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             _ => {
                                 drop(data);
@@ -792,7 +801,7 @@ impl VirtualMachine {
                             current.set(cur + *step);
                             sset_local!(frame, store_idx, v);
                         }
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
                         let mut data = iter_data.lock();
                         match &mut *data {
@@ -809,7 +818,7 @@ impl VirtualMachine {
                                     // Store directly to local — no stack push/pop!
                                     sset_local!(frame, store_idx, v);
                                 }
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             IteratorData::List { items, index } => {
                                 if *index < items.len() {
@@ -822,7 +831,7 @@ impl VirtualMachine {
                                     drop(spop!(frame));
                                     frame.ip = jump_target;
                                 }
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             IteratorData::Tuple { items, index } => {
                                 if *index < items.len() {
@@ -835,7 +844,7 @@ impl VirtualMachine {
                                     drop(spop!(frame));
                                     frame.ip = jump_target;
                                 }
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             _ => {
                                 // Fallback: execute as ForIter, then the StoreFast
@@ -849,7 +858,7 @@ impl VirtualMachine {
                                     let v = spop!(frame);
                                     sset_local!(frame, store_idx, v);
                                 }
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                         }
                     } else {
@@ -862,7 +871,7 @@ impl VirtualMachine {
                             let v = spop!(frame);
                             sset_local!(frame, store_idx, v);
                         }
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     }
                 }
                 // Inline ReturnValue: fast path when no finally blocks are active
@@ -927,41 +936,41 @@ impl VirtualMachine {
                                 }
                             };
                             unsafe { frame.binary_op_result(result) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                             let r = *x + *y;
                             unsafe { frame.binary_op_result(PyObject::float(r)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
                             let r = *x as f64 + *y;
                             unsafe { frame.binary_op_result(PyObject::float(r)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
                             let r = *x + *y as f64;
                             unsafe { frame.binary_op_result(PyObject::float(r)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
                             let mut s = String::with_capacity(x.len() + y.len());
                             s.push_str(x);
                             s.push_str(y);
                             unsafe { frame.binary_op_result(PyObject::str_val(s.into())) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::List(x), PyObjectPayload::List(y)) => {
                             let mut items = x.read().clone();
                             items.extend(y.read().iter().cloned());
                             unsafe { frame.binary_op_result(PyObject::list(items)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Tuple(x), PyObjectPayload::Tuple(y)) => {
                             let mut items = x.to_vec();
                             items.extend(y.iter().cloned());
                             unsafe { frame.binary_op_result(PyObject::tuple(items)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -981,19 +990,19 @@ impl VirtualMachine {
                                 }
                             };
                             unsafe { frame.binary_op_result(result) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                             unsafe { frame.binary_op_result(PyObject::float(*x - *y)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
                             unsafe { frame.binary_op_result(PyObject::float(*x as f64 - *y)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
                             unsafe { frame.binary_op_result(PyObject::float(*x - *y as f64)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -1012,19 +1021,19 @@ impl VirtualMachine {
                                 }
                             };
                             unsafe { frame.binary_op_result(result) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                             unsafe { frame.binary_op_result(PyObject::float(*x * *y)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
                             unsafe { frame.binary_op_result(PyObject::float(*x as f64 * *y)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
                             unsafe { frame.binary_op_result(PyObject::float(*x * *y as f64)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -1038,12 +1047,12 @@ impl VirtualMachine {
                             // Python modulo: result has same sign as divisor
                             let r = ((*x % *y) + *y) % *y;
                             unsafe { frame.binary_op_result(PyObject::int(r)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                             let r = *x - (*x / *y).floor() * *y;
                             unsafe { frame.binary_op_result(PyObject::float(r)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -1058,11 +1067,11 @@ impl VirtualMachine {
                             let (d, m) = (x.div_euclid(*y), x.rem_euclid(*y));
                             let r = if m != 0 && (*x ^ *y) < 0 { d - 1 } else { d };
                             unsafe { frame.binary_op_result(PyObject::int(r)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                             unsafe { frame.binary_op_result(PyObject::float((*x / *y).floor())) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -1074,19 +1083,19 @@ impl VirtualMachine {
                     match (&a.payload, &b.payload) {
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                             unsafe { frame.binary_op_result(PyObject::float(*x as f64 / *y as f64)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) if *y != 0.0 => {
                             unsafe { frame.binary_op_result(PyObject::float(*x / *y)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) if *y != 0.0 => {
                             unsafe { frame.binary_op_result(PyObject::float(*x as f64 / *y)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                             unsafe { frame.binary_op_result(PyObject::float(*x / *y as f64)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -1101,7 +1110,7 @@ impl VirtualMachine {
                     if (instr.arg == 2 || instr.arg == 3) && Arc::ptr_eq(a, b) {
                         let result = instr.arg == 2; // Eq=true, Ne=false
                         unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     } else {
                     match (&a.payload, &b.payload) {
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
@@ -1114,7 +1123,7 @@ impl VirtualMachine {
                                 _ => x >= y, // Ge (5)
                             };
                             unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                             let (xv, yv) = (*x, *y);
@@ -1127,14 +1136,14 @@ impl VirtualMachine {
                                 _ => xv >= yv,
                             };
                             unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         // String equality (hot for dict lookups, isinstance checks)
                         (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) if instr.arg == 2 || instr.arg == 3 => {
                             let eq = x == y;
                             let result = if instr.arg == 2 { eq } else { !eq };
                             unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -1153,7 +1162,7 @@ impl VirtualMachine {
                             (PyObjectPayload::ExceptionType(at), PyObjectPayload::ExceptionType(bt)) if at == bt);
                     let result = if instr.arg == 8 { same } else { !same };
                     unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Inline 'in' / 'not in' for dict, set, list, tuple, str (CompareOp arg 6/7)
                 Opcode::CompareOp if instr.arg == 6 || instr.arg == 7 => {
@@ -1209,7 +1218,7 @@ impl VirtualMachine {
                         if let Some(result) = found {
                             let val = if instr.arg == 6 { result } else { !result };
                             unsafe { frame.binary_op_result(PyObject::bool_val(val)) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                             self.execute_one(instr)
                         }
@@ -1224,7 +1233,7 @@ impl VirtualMachine {
                             // SAFETY: compiler guarantees idx < code.names.len() == cache.len()
                             if let Some(ref v) = unsafe { cache.get_unchecked(idx) } {
                                 spush!(frame, v.clone());
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             } else {
                                 self.execute_one(instr) // miss — fall through to full handler
                             }
@@ -1242,42 +1251,42 @@ impl VirtualMachine {
                     match &v.payload {
                         PyObjectPayload::Bool(b) => {
                             if !b { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::None => {
                             frame.ip = instr.arg as usize;
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Int(PyInt::Small(n)) => {
                             if *n == 0 { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Str(s) => {
                             if s.is_empty() { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::List(items) => {
                             if items.read().is_empty() { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Tuple(items) => {
                             if items.is_empty() { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Dict(map) => {
                             if map.read().is_empty() { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Float(f) => {
                             if *f == 0.0 { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => {
                             if !self.vm_is_truthy(&v)? {
                                 let cs_len = self.call_stack.len();
                                 unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = instr.arg as usize;
                             }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                     }
                 }
@@ -1287,77 +1296,77 @@ impl VirtualMachine {
                     match &v.payload {
                         PyObjectPayload::Bool(b) => {
                             if *b { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        PyObjectPayload::None => Ok(None),
+                        PyObjectPayload::None => hot_ok!(profiling, self.profiler, instr.op),
                         PyObjectPayload::Int(PyInt::Small(n)) => {
                             if *n != 0 { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Str(s) => {
                             if !s.is_empty() { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::List(items) => {
                             if !items.read().is_empty() { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Tuple(items) => {
                             if !items.is_empty() { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Dict(map) => {
                             if !map.read().is_empty() { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Float(f) => {
                             if *f != 0.0 { frame.ip = instr.arg as usize; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => {
                             if self.vm_is_truthy(&v)? {
                                 let cs_len = self.call_stack.len();
                                 unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = instr.arg as usize;
                             }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                     }
                 }
                 // Inline unconditional jumps (trivial but saves dispatch)
                 Opcode::JumpForward | Opcode::JumpAbsolute => {
                     frame.ip = instr.arg as usize;
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Inline try/except block setup/teardown (very cheap, called every iteration in try loops)
                 Opcode::SetupExcept => {
                     frame.push_block(crate::frame::BlockKind::Except, instr.arg as usize);
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::SetupFinally => {
                     frame.push_block(crate::frame::BlockKind::Finally, instr.arg as usize);
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::PopBlock => {
                     frame.pop_block();
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::PopExcept => {
                     frame.pop_block();
                     self.active_exception = None;
                     ferrython_stdlib::clear_exc_info();
                     ferrython_core::error::clear_thread_exc_info();
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 Opcode::BeginFinally => {
                     spush!(frame, PyObject::none());
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // EndFinally fast path: TOS is None → no exception, no pending return
                 Opcode::EndFinally => {
                     if frame.pending_return.is_none() && !frame.stack.is_empty() {
                         if matches!(unsafe { frame.peek_unchecked() }.payload, PyObjectPayload::None) {
                             let _ = spop!(frame);
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                             self.execute_one(instr)
                         }
@@ -1373,18 +1382,18 @@ impl VirtualMachine {
                             let r = !b;
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::bool_val(r) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Int(PyInt::Small(n)) => {
                             let r = *n == 0;
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::bool_val(r) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::None => {
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::bool_val(true) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -1402,12 +1411,12 @@ impl VirtualMachine {
                             };
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = r };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Float(f) => {
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::float(-f) };
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -1449,7 +1458,7 @@ impl VirtualMachine {
                             };
                             if let Some(val) = result {
                                 unsafe { frame.binary_op_result(val) };
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             } else {
                                 self.execute_one(instr)
                             }
@@ -1470,7 +1479,7 @@ impl VirtualMachine {
                         let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
                         spush!(frame, PyObject::tuple(items));
                     }
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Inline BuildList
                 Opcode::BuildList => {
@@ -1482,7 +1491,7 @@ impl VirtualMachine {
                         let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
                         spush!(frame, PyObject::list(items));
                     }
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Inline FormatValue for primitive types (hot in f-strings)
                 Opcode::FormatValue => {
@@ -1508,7 +1517,7 @@ impl VirtualMachine {
                         if let Some(s) = fast_str {
                             { let _ = spop!(frame); }
                             spush!(frame, PyObject::str_val(s));
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                             self.execute_one(instr)
                         }
@@ -1521,9 +1530,9 @@ impl VirtualMachine {
                     let count = instr.arg as usize;
                     if count == 0 {
                         spush!(frame, PyObject::str_val(CompactString::from("")));
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     } else if count == 1 {
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     } else {
                         let start = frame.stack.len() - count;
                         let mut total_len = 0usize;
@@ -1557,7 +1566,7 @@ impl VirtualMachine {
                             frame.stack.truncate(start);
                             spush!(frame, PyObject::str_val(CompactString::from(result)));
                         }
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     }
                 }
                 // UnpackSequence/BuildMap: cold, delegate to execute_one
@@ -1599,7 +1608,7 @@ impl VirtualMachine {
                             frame.stack.set_len(func_idx);
                         }
                         spush!(frame, ret_val);
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     } else if call_kind > 0 {
                         let args_start = func_idx + 1;
                         // ── Mini-interpreter: inline base-case returns ──
@@ -1686,7 +1695,7 @@ impl VirtualMachine {
                                 frame.stack.set_len(func_idx);
                             }
                             spush!(frame, ret_val);
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                         // Normal path: create frame
                         let mut new_frame = if call_kind == 2 {
@@ -1732,7 +1741,7 @@ impl VirtualMachine {
                             if has_profile {
                                 self.fire_profile_event("call", PyObject::none());
                             }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         } // close the mini-interpreter else (normal frame creation path)
                     } else {
@@ -1755,7 +1764,7 @@ impl VirtualMachine {
                                 if let Some(n) = fast_len {
                                     unsafe { frame.stack.set_len(func_idx); }
                                     spush!(frame, PyObject::int(n));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -1769,7 +1778,7 @@ impl VirtualMachine {
                                         current: SyncI64::new(0), stop, step: 1,
                                     });
                                     spush!(frame, iter);
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -1815,7 +1824,7 @@ impl VirtualMachine {
                                 if let Some(result) = fast_result {
                                     unsafe { frame.stack.set_len(func_idx); }
                                     spush!(frame, PyObject::bool_val(result));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -1840,7 +1849,7 @@ impl VirtualMachine {
                                 if let Some(name) = type_name {
                                     unsafe { frame.stack.set_len(func_idx); }
                                     spush!(frame, PyObject::wrap(PyObjectPayload::BuiltinType(name.into())));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -1862,7 +1871,7 @@ impl VirtualMachine {
                                 if let Some(b) = result {
                                     unsafe { frame.stack.set_len(func_idx); }
                                     spush!(frame, PyObject::bool_val(b));
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -1879,7 +1888,7 @@ impl VirtualMachine {
                                 if let Some(v) = result {
                                     unsafe { frame.stack.set_len(func_idx); }
                                     spush!(frame, v);
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -1904,7 +1913,7 @@ impl VirtualMachine {
                                 if let Some(v) = result {
                                     unsafe { frame.stack.set_len(func_idx); }
                                     spush!(frame, v);
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -1920,7 +1929,7 @@ impl VirtualMachine {
                                 if let Some(v) = result {
                                     unsafe { frame.stack.set_len(func_idx); }
                                     spush!(frame, v);
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -1973,7 +1982,7 @@ impl VirtualMachine {
                                 frame.stack.set_len(stack_len - arg_count);
                             }
                             spush!(frame, ret_val);
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         } else if call_kind > 0 {
                             let stack_len = frame.stack.len();
                             let args_start = stack_len - arg_count;
@@ -2054,7 +2063,7 @@ impl VirtualMachine {
                                 // Base case resolved without frame creation
                                 frame.stack.truncate(args_start);
                                 spush!(frame, ret_val);
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             } else {
                             let mut new_frame = if call_kind == 2 {
                                 // SAFETY: parent frame outlives child in iterative dispatch
@@ -2095,7 +2104,7 @@ impl VirtualMachine {
                                 if has_profile {
                                     self.fire_profile_event("call", PyObject::none());
                                 }
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             } // close mini-interpreter else block
                         } else {
@@ -2118,7 +2127,7 @@ impl VirtualMachine {
                                     if let Some(n) = fast_len {
                                         { let _ = spop!(frame); }
                                         spush!(frame, PyObject::int(n));
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
@@ -2134,7 +2143,7 @@ impl VirtualMachine {
                                             current: SyncI64::new(0), stop, step: 1,
                                         });
                                         spush!(frame, iter);
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
@@ -2160,7 +2169,7 @@ impl VirtualMachine {
                                     if let Some(v) = result {
                                         { let _ = spop!(frame); }
                                         spush!(frame, v);
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
@@ -2191,7 +2200,7 @@ impl VirtualMachine {
                                     if let Some(matched) = result {
                                         frame.stack.truncate(slen - 2);
                                         spush!(frame, PyObject::bool_val(matched));
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 2))
@@ -2206,7 +2215,7 @@ impl VirtualMachine {
                                     if let Some(t) = type_obj {
                                         { let _ = spop!(frame); }
                                         spush!(frame, t);
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
@@ -2224,7 +2233,7 @@ impl VirtualMachine {
                                     if let Some(v) = result {
                                         { let _ = spop!(frame); }
                                         spush!(frame, v);
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 1))
@@ -2241,7 +2250,7 @@ impl VirtualMachine {
                                     if let Some(v) = result {
                                         { let _ = spop!(frame); }
                                         spush!(frame, v);
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 1))
@@ -2263,7 +2272,7 @@ impl VirtualMachine {
                                     if let Some(v) = result {
                                         { let _ = spop!(frame); }
                                         spush!(frame, v);
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 1))
@@ -2279,7 +2288,7 @@ impl VirtualMachine {
                                     if let Some(v) = result {
                                         { let _ = spop!(frame); }
                                         spush!(frame, v);
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 1))
@@ -2366,14 +2375,14 @@ impl VirtualMachine {
                             let recv = spop!(frame);
                             spush!(frame, method);
                             spush!(frame, recv);
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         2 => {
                             // Two-item protocol slow path: push None sentinel + callable
                             let val = fast_val.unwrap();
                             *frame.stack.last_mut().unwrap() = PyObject::none();
                             spush!(frame, val);
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         3 => {
                             // Builtin type method: use unbound protocol with Str tag
@@ -2385,7 +2394,7 @@ impl VirtualMachine {
                             let recv_idx = frame.stack.len() - 1;
                             spush!(frame, name_obj);
                             frame.stack.swap(recv_idx, recv_idx + 1);
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }
@@ -2445,7 +2454,7 @@ impl VirtualMachine {
                             if has_profile {
                                 self.fire_profile_event("call", PyObject::none());
                             }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                     } else {
                         // Fast path for builtin type methods (list.append, dict.get, etc.)
@@ -2474,7 +2483,7 @@ impl VirtualMachine {
                                     frame.stack.set_len(len - 3);
                                 }
                                 spush!(frame, PyObject::none());
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             } else if is_list_pop {
                                 let len = frame.stack.len();
                                 unsafe {
@@ -2486,7 +2495,7 @@ impl VirtualMachine {
                                                 let _name = std::ptr::read(frame.stack.as_ptr().add(len - 2));
                                                 frame.stack.set_len(len - 2);
                                                 spush!(frame, val);
-                                                Ok(None)
+                                                hot_ok!(profiling, self.profiler, instr.op)
                                             }
                                             None => Err(PyException::index_error("pop from empty list")),
                                         }
@@ -2514,7 +2523,7 @@ impl VirtualMachine {
                                         let val = PyObject::none();
                                         spush!(frame, val);
                                     }
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else { unreachable!() }
                             } else {
                                 // Inline fast paths for common methods — check type+name first, then pop
@@ -2549,7 +2558,7 @@ impl VirtualMachine {
                                         };
                                         spush!(frame, result);
                                     }
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else if inline_kind == 6 {
                                     // set.add(item)
                                     let item = spop!(frame);
@@ -2565,12 +2574,12 @@ impl VirtualMachine {
                                         if let Some(k) = hk {
                                             set.write().insert(k, item);
                                             spush!(frame, PyObject::none());
-                                            Ok(None)
+                                            hot_ok!(profiling, self.profiler, instr.op)
                                         } else {
                                             // Non-hashable: use general dispatch
                                             let result = crate::builtins::call_method(&receiver, "add", &[item])?;
                                             spush!(frame, result);
-                                            Ok(None)
+                                            hot_ok!(profiling, self.profiler, instr.op)
                                         }
                                     } else { unreachable!() }
                                 } else if inline_kind == 7 || inline_kind == 8 {
@@ -2581,13 +2590,13 @@ impl VirtualMachine {
                                     if let (PyObjectPayload::Str(s), PyObjectPayload::Str(prefix)) = (&receiver.payload, &arg.payload) {
                                         let result = if inline_kind == 7 { s.starts_with(prefix.as_str()) } else { s.ends_with(prefix.as_str()) };
                                         spush!(frame, PyObject::bool_val(result));
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         // Not both strings — use general dispatch
                                         let name = if inline_kind == 7 { "startswith" } else { "endswith" };
                                         let result = crate::builtins::call_method(&receiver, name, &[arg])?;
                                         spush!(frame, result);
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     }
                                 } else {
                                     // General builtin method dispatch
@@ -2601,7 +2610,7 @@ impl VirtualMachine {
                                     if let PyObjectPayload::Str(ref name) = name_obj.payload {
                                         let result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
                                         spush!(frame, result);
-                                        Ok(None)
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         unreachable!()
                                     }
@@ -2628,7 +2637,7 @@ impl VirtualMachine {
                                     let val = items[actual as usize].clone();
                                     drop(items);
                                     unsafe { frame.binary_op_result(val) };
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     drop(items);
                                     self.execute_one(instr)
@@ -2641,7 +2650,7 @@ impl VirtualMachine {
                                 if actual >= 0 && (actual as usize) < items.len() {
                                     let val = items[actual as usize].clone();
                                     unsafe { frame.binary_op_result(val) };
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -2652,7 +2661,7 @@ impl VirtualMachine {
                                 let val = map.read().get(&hk).cloned();
                                 if let Some(v) = val {
                                     unsafe { frame.binary_op_result(v) };
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -2663,7 +2672,7 @@ impl VirtualMachine {
                                 let val = map.read().get(&hk).cloned();
                                 if let Some(v) = val {
                                     unsafe { frame.binary_op_result(v) };
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -2677,7 +2686,7 @@ impl VirtualMachine {
                                     let ch = chars[actual as usize];
                                     let val = PyObject::str_val(CompactString::from(ch.to_string()));
                                     unsafe { frame.binary_op_result(val) };
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
@@ -2702,7 +2711,7 @@ impl VirtualMachine {
                                     items[actual as usize] = v;
                                     drop(items);
                                     frame.stack.truncate(len - 3);
-                                    Ok(None)
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     drop(items);
                                     self.execute_one(instr)
@@ -2714,7 +2723,7 @@ impl VirtualMachine {
                                 let v = sget!(frame, len - 3).clone();
                                 map.write().insert(hk, v);
                                 frame.stack.truncate(len - 3);
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             // dict[int] = val
                             (PyObjectPayload::Dict(map), PyObjectPayload::Int(PyInt::Small(n))) => {
@@ -2722,7 +2731,7 @@ impl VirtualMachine {
                                 let v = sget!(frame, len - 3).clone();
                                 map.write().insert(hk, v);
                                 frame.stack.truncate(len - 3);
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             // dict[bool] = val
                             (PyObjectPayload::Dict(map), PyObjectPayload::Bool(b)) => {
@@ -2730,7 +2739,7 @@ impl VirtualMachine {
                                 let v = sget!(frame, len - 3).clone();
                                 map.write().insert(hk, v);
                                 frame.stack.truncate(len - 3);
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                             _ => self.execute_one(instr),
                         }
@@ -2743,7 +2752,7 @@ impl VirtualMachine {
                     if let PyObjectPayload::List(items) = &sget!(frame, stack_pos).payload {
                         items.write().push(item);
                     }
-                    Ok(None)
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Inline LoadAttr fast path for simple instance attribute reads
                 // Fused LoadFast + LoadAttr — common in `x = obj.attr` patterns
@@ -2776,7 +2785,7 @@ impl VirtualMachine {
                     } else { None };
                     if let Some(val) = fast_val {
                         spush!(frame, val);
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     } else {
                         // Decompose: push local, then execute LoadAttr
                         spush!(frame, obj.clone());
@@ -2843,13 +2852,13 @@ impl VirtualMachine {
                             // method + receiver protocol
                             spush!(frame, fast_val.unwrap());
                             spush!(frame, obj);
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         2 => {
                             // None sentinel + callable
                             spush!(frame, PyObject::none());
                             spush!(frame, fast_val.unwrap());
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         3 => {
                             // Builtin: Str name tag + receiver
@@ -2857,7 +2866,7 @@ impl VirtualMachine {
                             let name_obj = PyObject::str_val(name);
                             spush!(frame, name_obj);
                             spush!(frame, obj);
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                         _ => {
                             // Fallback: push local to stack, execute LoadMethod
@@ -2890,7 +2899,7 @@ impl VirtualMachine {
                     if let Some(val) = fast_val {
                         let len = frame.stack.len();
                         unsafe { *frame.stack.get_unchecked_mut(len - 1) = val };
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     } else {
                         self.execute_one(instr)
                     }
@@ -2918,7 +2927,7 @@ impl VirtualMachine {
                                 value,
                             );
                         }
-                        Ok(None)
+                        hot_ok!(profiling, self.profiler, instr.op)
                     } else {
                         self.execute_one(instr)
                     }
@@ -2967,7 +2976,7 @@ impl VirtualMachine {
                                 frame.stack.set_len(len - 2);
                             }
                             if !is_true { frame.ip = jump_target; }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                             // Fallback: execute CompareOp, then check result
                             let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
@@ -2986,7 +2995,7 @@ impl VirtualMachine {
                                     unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
                                 }
                             }
-                            Ok(None)
+                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                     } else {
                         self.execute_one(instr)
@@ -3030,7 +3039,7 @@ impl VirtualMachine {
                             };
                             if let Some(is_true) = fast_result {
                                 if !is_true { frame.ip = jump_target; }
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             } else {
                                 // Fallback: push both, decompose to CompareOp + PopJumpIfFalse
                                 spush!(frame, local.clone());
@@ -3051,7 +3060,7 @@ impl VirtualMachine {
                                         unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
                                     }
                                 }
-                                Ok(None)
+                                hot_ok!(profiling, self.profiler, instr.op)
                             }
                         }
                         None => Self::err_unbound_local(&frame.code.varnames, local_idx),
