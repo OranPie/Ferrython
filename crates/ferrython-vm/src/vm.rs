@@ -287,6 +287,21 @@ impl VirtualMachine {
                     frame.stack.swap(len - 1, len - 2);
                     Ok(None)
                 }
+                Opcode::RotThree => {
+                    let len = frame.stack.len();
+                    // TOS moves to TOS2, TOS1→TOS, TOS2→TOS1
+                    frame.stack.swap(len - 1, len - 3);
+                    frame.stack.swap(len - 1, len - 2);
+                    Ok(None)
+                }
+                Opcode::DupTopTwo => {
+                    let len = frame.stack.len();
+                    let a = frame.stack[len - 2].clone();
+                    let b = frame.stack[len - 1].clone();
+                    frame.stack.push(a);
+                    frame.stack.push(b);
+                    Ok(None)
+                }
                 Opcode::Nop => Ok(None),
                 // Inline GetIter for common types
                 Opcode::GetIter => {
@@ -1076,6 +1091,19 @@ impl VirtualMachine {
                     let value = frame.stack.pop().expect("stack underflow");
                     frame.globals.write().insert(name, value);
                     crate::frame::bump_globals_version();
+                    Ok(None)
+                }
+                // Inline StoreName for module/class scope
+                Opcode::StoreName => {
+                    let name = frame.code.names[instr.arg as usize].clone();
+                    let value = frame.stack.pop().expect("stack underflow");
+                    match frame.scope_kind {
+                        crate::frame::ScopeKind::Module => {
+                            frame.globals.write().insert(name, value);
+                            crate::frame::bump_globals_version();
+                        }
+                        _ => { frame.local_names.insert(name, value); }
+                    }
                     Ok(None)
                 }
                 // Inline StoreAttr fast path for simple instance attribute writes
