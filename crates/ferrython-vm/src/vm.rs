@@ -681,6 +681,28 @@ impl VirtualMachine {
                     let obj = speek!(frame);
                     match &obj.payload {
                         PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } => Ok(None),
+                        PyObjectPayload::List(items) => {
+                            let items_vec = items.read().clone();
+                            let iter = PyObject::wrap(PyObjectPayload::Iterator(
+                                std::sync::Arc::new(parking_lot::Mutex::new(
+                                    IteratorData::List { items: items_vec, index: 0 }
+                                ))
+                            ));
+                            let len = frame.stack.len();
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
+                            Ok(None)
+                        }
+                        PyObjectPayload::Tuple(items) => {
+                            let items_vec = items.clone();
+                            let iter = PyObject::wrap(PyObjectPayload::Iterator(
+                                std::sync::Arc::new(parking_lot::Mutex::new(
+                                    IteratorData::Tuple { items: items_vec, index: 0 }
+                                ))
+                            ));
+                            let len = frame.stack.len();
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
+                            Ok(None)
+                        }
                         _ => self.execute_one(instr),
                     }
                 }
