@@ -920,6 +920,61 @@ impl VirtualMachine {
                         _ => self.execute_one(instr),
                     }
                 }
+                // Inline CallMethod super-fast path: two-item protocol + direct frame creation
+                Opcode::CallMethod => {
+                    let arg_count = instr.arg as usize;
+                    let stack_len = frame.stack.len();
+                    let base_idx = stack_len - arg_count - 2;
+                    let slot_0 = &frame.stack[base_idx];
+                    // Fast path: slot_0 is a Python function (unbound method)
+                    let fast_data = if !matches!(&slot_0.payload, PyObjectPayload::None) {
+                        if let PyObjectPayload::Function(pf) = &slot_0.payload {
+                            if pf.code.arg_count as usize == arg_count + 1
+                                && pf.code.kwonlyarg_count == 0
+                                && !pf.code.flags.contains(CodeFlags::VARARGS)
+                                && !pf.code.flags.contains(CodeFlags::VARKEYWORDS)
+                                && !pf.code.flags.contains(CodeFlags::GENERATOR)
+                                && !pf.code.flags.contains(CodeFlags::COROUTINE)
+                                && pf.closure.is_empty()
+                                && pf.code.cellvars.is_empty()
+                                && pf.code.freevars.is_empty()
+                            {
+                                Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache)))
+                            } else { None }
+                        } else { None }
+                    } else { None };
+                    if let Some((code, globals, cc)) = fast_data {
+                        let mut new_frame = Frame::new_from_pool(
+                            code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool,
+                        );
+                        // Stack: [..., method, receiver, arg0, ..., argN-1]
+                        let arg_start = frame.stack.len() - arg_count;
+                        for (i, arg) in frame.stack.drain(arg_start..).enumerate() {
+                            new_frame.locals[i + 1] = Some(arg);
+                        }
+                        new_frame.locals[0] = frame.stack.pop(); // receiver (moved)
+                        frame.stack.pop(); // drop method
+                        new_frame.scope_kind = crate::frame::ScopeKind::Function;
+                        self.call_stack.push(new_frame);
+                        if self.call_stack.len() > self.recursion_limit {
+                            if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
+                            Err(PyException::recursion_error("maximum recursion depth exceeded"))
+                        } else {
+                            let result = self.run_frame();
+                            if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
+                            match result {
+                                Ok(val) => {
+                                    let val = self.post_call_intercept(val)?;
+                                    self.call_stack.last_mut().unwrap().stack.push(val);
+                                    Ok(None)
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
                 // Inline BinarySubscr for list[int], tuple[int], dict[HashableKey]
                 Opcode::BinarySubscr => {
                     let len = frame.stack.len();
