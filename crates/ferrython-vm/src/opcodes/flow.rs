@@ -562,9 +562,52 @@ impl VirtualMachine {
                 let mut args = Vec::with_capacity(arg_count);
                 for _ in 0..arg_count { args.push(frame.pop()); }
                 args.reverse();
-                let method = frame.pop();
-                let mut result = self.call_object(method, args)?;
-                result = self.post_call_intercept(result)?;
+                let callable = frame.pop();
+                // Fast path: BoundMethod wrapping a Python function with exact arg match
+                let result = if let PyObjectPayload::BoundMethod { ref receiver, ref method } = callable.payload {
+                    if let PyObjectPayload::Function(pf) = &method.payload {
+                        if pf.code.arg_count as usize == arg_count + 1 // +1 for self
+                            && pf.code.kwonlyarg_count == 0
+                            && !pf.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARARGS)
+                            && !pf.code.flags.contains(ferrython_bytecode::code::CodeFlags::VARKEYWORDS)
+                            && !pf.code.flags.contains(ferrython_bytecode::code::CodeFlags::GENERATOR)
+                            && !pf.code.flags.contains(ferrython_bytecode::code::CodeFlags::COROUTINE)
+                            && pf.closure.is_empty()
+                            && pf.code.cellvars.is_empty()
+                            && pf.code.freevars.is_empty()
+                        {
+                            let code = Arc::clone(&pf.code);
+                            let globals = pf.globals.clone();
+                            let cc = Arc::clone(&pf.constant_cache);
+                            let recv = receiver.clone();
+                            let mut new_frame = crate::frame::Frame::new_from_pool(
+                                code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool,
+                            );
+                            new_frame.locals[0] = Some(recv);
+                            for (i, a) in args.into_iter().enumerate() {
+                                new_frame.locals[i + 1] = Some(a);
+                            }
+                            new_frame.scope_kind = crate::frame::ScopeKind::Function;
+                            self.call_stack.push(new_frame);
+                            if self.call_stack.len() > self.recursion_limit {
+                                if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
+                                return Err(PyException::recursion_error("maximum recursion depth exceeded"));
+                            }
+                            let r = self.run_frame();
+                            if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
+                            r?
+                        } else {
+                            let mut bound_args = vec![receiver.clone()];
+                            bound_args.extend(args);
+                            self.call_object(method.clone(), bound_args)?
+                        }
+                    } else {
+                        self.call_object(callable, args)?
+                    }
+                } else {
+                    self.call_object(callable, args)?
+                };
+                let result = self.post_call_intercept(result)?;
                 self.vm_push(result);
             }
             Opcode::CallFunctionEx => {
