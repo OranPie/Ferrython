@@ -1848,20 +1848,94 @@ impl VirtualMachine {
                                     Ok(None)
                                 } else { unreachable!() }
                             } else {
-                                // General builtin method dispatch
-                                let mut args = Vec::with_capacity(arg_count);
-                                for _ in 0..arg_count {
-                                    args.push(frame.stack.pop().unwrap());
-                                }
-                                args.reverse();
-                                let receiver = frame.stack.pop().unwrap();
-                                let name_obj = frame.stack.pop().unwrap();
-                                if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                    let result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
-                                    frame.stack.push(result);
+                                // Inline fast paths for common methods — check type+name first, then pop
+                                let inline_kind: u8 = {
+                                    let name_s = if let PyObjectPayload::Str(n) = &frame.stack[base_idx].payload {
+                                        n.as_str()
+                                    } else { "" };
+                                    let recv = &frame.stack[base_idx + 1].payload;
+                                    match (name_s, recv, arg_count) {
+                                        ("strip", PyObjectPayload::Str(_), 0) => 1,
+                                        ("lstrip", PyObjectPayload::Str(_), 0) => 2,
+                                        ("rstrip", PyObjectPayload::Str(_), 0) => 3,
+                                        ("lower", PyObjectPayload::Str(_), 0) => 4,
+                                        ("upper", PyObjectPayload::Str(_), 0) => 5,
+                                        ("add", PyObjectPayload::Set(_), 1) => 6,
+                                        ("startswith", PyObjectPayload::Str(_), 1) => 7,
+                                        ("endswith", PyObjectPayload::Str(_), 1) => 8,
+                                        _ => 0,
+                                    }
+                                };
+                                if inline_kind >= 1 && inline_kind <= 5 {
+                                    // 0-arg str methods
+                                    let receiver = frame.stack.pop().unwrap();
+                                    frame.stack.pop(); // name
+                                    if let PyObjectPayload::Str(s) = &receiver.payload {
+                                        let result = match inline_kind {
+                                            1 => PyObject::str_val(CompactString::from(s.trim())),
+                                            2 => PyObject::str_val(CompactString::from(s.trim_start())),
+                                            3 => PyObject::str_val(CompactString::from(s.trim_end())),
+                                            4 => PyObject::str_val(CompactString::from(s.to_lowercase())),
+                                            _ => PyObject::str_val(CompactString::from(s.to_uppercase())),
+                                        };
+                                        frame.stack.push(result);
+                                    }
                                     Ok(None)
+                                } else if inline_kind == 6 {
+                                    // set.add(item)
+                                    let item = frame.stack.pop().unwrap();
+                                    let receiver = frame.stack.pop().unwrap();
+                                    frame.stack.pop(); // name
+                                    if let PyObjectPayload::Set(set) = &receiver.payload {
+                                        let hk = match &item.payload {
+                                            PyObjectPayload::Str(s) => Some(HashableKey::Str(s.clone())),
+                                            PyObjectPayload::Int(i) => Some(HashableKey::Int(i.clone())),
+                                            PyObjectPayload::Bool(b) => Some(HashableKey::Bool(*b)),
+                                            _ => None,
+                                        };
+                                        if let Some(k) = hk {
+                                            set.write().insert(k, item);
+                                            frame.stack.push(PyObject::none());
+                                            Ok(None)
+                                        } else {
+                                            // Non-hashable: use general dispatch
+                                            let result = crate::builtins::call_method(&receiver, "add", &[item])?;
+                                            frame.stack.push(result);
+                                            Ok(None)
+                                        }
+                                    } else { unreachable!() }
+                                } else if inline_kind == 7 || inline_kind == 8 {
+                                    // str.startswith / str.endswith
+                                    let arg = frame.stack.pop().unwrap();
+                                    let receiver = frame.stack.pop().unwrap();
+                                    frame.stack.pop(); // name
+                                    if let (PyObjectPayload::Str(s), PyObjectPayload::Str(prefix)) = (&receiver.payload, &arg.payload) {
+                                        let result = if inline_kind == 7 { s.starts_with(prefix.as_str()) } else { s.ends_with(prefix.as_str()) };
+                                        frame.stack.push(PyObject::bool_val(result));
+                                        Ok(None)
+                                    } else {
+                                        // Not both strings — use general dispatch
+                                        let name = if inline_kind == 7 { "startswith" } else { "endswith" };
+                                        let result = crate::builtins::call_method(&receiver, name, &[arg])?;
+                                        frame.stack.push(result);
+                                        Ok(None)
+                                    }
                                 } else {
-                                    unreachable!()
+                                    // General builtin method dispatch
+                                    let mut args = Vec::with_capacity(arg_count);
+                                    for _ in 0..arg_count {
+                                        args.push(frame.stack.pop().unwrap());
+                                    }
+                                    args.reverse();
+                                    let receiver = frame.stack.pop().unwrap();
+                                    let name_obj = frame.stack.pop().unwrap();
+                                    if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                        let result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
+                                        frame.stack.push(result);
+                                        Ok(None)
+                                    } else {
+                                        unreachable!()
+                                    }
                                 }
                             }
                         } else {
