@@ -72,6 +72,9 @@ pub struct Frame {
     /// When set, STORE_NAME in class scope also writes to this dict so that
     /// custom dict subclasses (e.g. enum._EnumDict) see every assignment.
     pub prepare_dict: Option<PyObjectRef>,
+    /// True when code/globals/builtins/constant_cache were borrowed (not ref-counted)
+    /// from the parent frame via new_recursive(). recycle() must not drop those Arcs.
+    pub(crate) borrowed_env: bool,
 }
 
 impl Frame {
@@ -103,6 +106,7 @@ impl Frame {
             global_cache: None,
             global_cache_version: u64::MAX, // force miss on first access
             prepare_dict: None,
+            borrowed_env: false,
         }
     }
 
@@ -152,14 +156,18 @@ impl Frame {
             global_cache: None,
             global_cache_version: u64::MAX,
             prepare_dict: None,
+            borrowed_env: false,
         }
     }
 
     /// Lightweight frame construction for recursive calls to the same function.
-    /// Reuses the existing code/globals/builtins/constant_cache Arcs (just clones them),
-    /// and reuses pooled vectors. Skips cells/IndexMap allocation entirely.
+    /// SAFETY: Borrows the parent's code/globals/builtins/constant_cache without
+    /// incrementing their reference counts (saves 4 atomic operations). The
+    /// caller MUST ensure the parent outlives this frame — guaranteed by the
+    /// iterative call-stack design where child frames are always popped before
+    /// the parent. recycle_borrowed() must be used instead of recycle().
     #[inline(always)]
-    pub fn new_recursive(
+    pub unsafe fn new_recursive(
         parent: &Frame,
         pool: &mut FramePool,
     ) -> Self {
@@ -179,23 +187,25 @@ impl Frame {
 
         let block_stack = pool.take_block_stack();
 
+        // Bitwise-copy Arcs without incrementing refcount — parent keeps them alive
         Self {
-            code: Arc::clone(&parent.code),
+            code: std::ptr::read(&parent.code),
             ip: 0,
             stack,
             block_stack,
             locals,
             local_names: IndexMap::new(),
-            globals: parent.globals.clone(),
-            builtins: Arc::clone(&parent.builtins),
+            globals: std::ptr::read(&parent.globals),
+            builtins: std::ptr::read(&parent.builtins),
             cells: Vec::new(),
             scope_kind: ScopeKind::Function,
             yielded: false,
             pending_return: None,
-            constant_cache: Arc::clone(&parent.constant_cache),
-            global_cache: parent.global_cache.clone(),
+            constant_cache: std::ptr::read(&parent.constant_cache),
+            global_cache: std::ptr::read(&parent.global_cache),
             global_cache_version: parent.global_cache_version,
             prepare_dict: None,
+            borrowed_env: true,
         }
     }
     pub fn new(
@@ -209,17 +219,35 @@ impl Frame {
     }
 
     /// Return the stack and locals vectors to the pool for reuse.
+    /// If borrowed_env is set (created via new_recursive), uses ManuallyDrop
+    /// to skip decrementing the borrowed Arc refcounts.
     #[inline]
     pub fn recycle(mut self, pool: &mut FramePool) {
         self.stack.clear();
-        // Zero out locals in place (keep length) so pool can reuse without resize
         for slot in self.locals.iter_mut() {
             *slot = None;
         }
         self.block_stack.clear();
-        pool.return_stack(self.stack);
-        pool.return_locals(self.locals);
-        pool.return_block_stack(self.block_stack);
+
+        if self.borrowed_env {
+            // code/globals/builtins/constant_cache/global_cache are borrowed (no refcount).
+            // Must not let Frame::drop decrement them.
+            let md = std::mem::ManuallyDrop::new(self);
+            unsafe {
+                let stack = std::ptr::read(&md.stack);
+                let locals = std::ptr::read(&md.locals);
+                let block_stack = std::ptr::read(&md.block_stack);
+                pool.return_stack(stack);
+                pool.return_locals(locals);
+                pool.return_block_stack(block_stack);
+                // All other fields are either borrowed Arcs (must not drop) or
+                // zero-alloc empties (IndexMap::new, Vec::new, None) — safe to leak.
+            }
+        } else {
+            pool.return_stack(self.stack);
+            pool.return_locals(self.locals);
+            pool.return_block_stack(self.block_stack);
+        }
     }
 
     #[inline] pub fn push(&mut self, v: PyObjectRef) { self.stack.push(v); }

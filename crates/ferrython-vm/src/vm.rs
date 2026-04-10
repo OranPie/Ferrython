@@ -1002,7 +1002,8 @@ impl VirtualMachine {
                     if call_kind > 0 {
                         let args_start = func_idx + 1;
                         let mut new_frame = if call_kind == 2 {
-                            Frame::new_recursive(frame, &mut self.frame_pool)
+                            // SAFETY: parent frame outlives child in iterative dispatch
+                            unsafe { Frame::new_recursive(frame, &mut self.frame_pool) }
                         } else {
                             // Normal path: clone Arcs from function object
                             let (code, globals, constant_cache) = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
