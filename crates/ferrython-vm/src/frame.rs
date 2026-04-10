@@ -83,7 +83,9 @@ impl Frame {
     ) -> Self {
         let nl = code.varnames.len();
         let nc = code.cellvars.len() + code.freevars.len();
-        let cells: Vec<CellRef> = (0..nc).map(|_| Arc::new(RwLock::new(None))).collect();
+        let cells: Vec<CellRef> = if nc > 0 {
+            (0..nc).map(|_| Arc::new(RwLock::new(None))).collect()
+        } else { Vec::new() };
         Self {
             code, ip: 0,
             stack: Vec::with_capacity(32),
@@ -104,6 +106,7 @@ impl Frame {
     }
 
     /// Create a frame reusing pooled vectors to avoid heap allocation.
+    #[inline]
     pub fn new_from_pool(
         code: Arc<CodeObject>,
         globals: SharedGlobals,
@@ -117,8 +120,9 @@ impl Frame {
         // Reuse a pooled stack vector or allocate new
         let mut stack = pool.take_stack();
         stack.clear();
-        if stack.capacity() < 32 {
-            stack.reserve(32 - stack.capacity());
+        let needed = (code.max_stack_size as usize).max(8);
+        if stack.capacity() < needed {
+            stack.reserve(needed - stack.capacity());
         }
 
         // Reuse a pooled locals vector or allocate new
@@ -128,7 +132,9 @@ impl Frame {
 
         let block_stack = pool.take_block_stack();
 
-        let cells: Vec<CellRef> = (0..nc).map(|_| Arc::new(RwLock::new(None))).collect();
+        let cells: Vec<CellRef> = if nc > 0 {
+            (0..nc).map(|_| Arc::new(RwLock::new(None))).collect()
+        } else { Vec::new() };
         Self {
             code, ip: 0,
             stack,
@@ -160,6 +166,7 @@ impl Frame {
     }
 
     /// Return the stack and locals vectors to the pool for reuse.
+    #[inline]
     pub fn recycle(mut self, pool: &mut FramePool) {
         self.stack.clear();
         self.locals.clear();
