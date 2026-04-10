@@ -842,9 +842,9 @@ impl VirtualMachine {
                     let arg_count = instr.arg as usize;
                     let stack_len = frame.stack.len();
                     let func_idx = stack_len - 1 - arg_count;
-                    // Fast path: Python Function with exact positional match, no closures/cells/generators
-                    let fast_data = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
-                        if pf.code.arg_count as usize == arg_count
+                    // Check if it's a simple Python function with exact positional match
+                    let is_simple_func = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                        pf.code.arg_count as usize == arg_count
                             && pf.code.kwonlyarg_count == 0
                             && !pf.code.flags.contains(CodeFlags::VARARGS)
                             && !pf.code.flags.contains(CodeFlags::VARKEYWORDS)
@@ -853,37 +853,35 @@ impl VirtualMachine {
                             && pf.closure.is_empty()
                             && pf.code.cellvars.is_empty()
                             && pf.code.freevars.is_empty()
-                        {
-                            // Extract Arc-cloned fields directly — avoids cloning the whole func Arc
-                            Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache)))
-                        } else {
-                            None
-                        }
                     } else {
-                        None
+                        false
                     };
-                    if let Some((code, globals, constant_cache)) = fast_data {
+                    if is_simple_func {
+                        // Check if this is a recursive call (same code object)
+                        let is_recursive = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                            Arc::ptr_eq(&pf.code, &frame.code)
+                        } else { false };
+
                         let args_start = func_idx + 1;
-                        let mut new_frame = Frame::new_from_pool(
-                            code,
-                            globals,
-                            Arc::clone(&self.builtins),
-                            constant_cache,
-                            &mut self.frame_pool,
-                        );
-                        // Move args from caller stack to callee locals (avoids Arc clone per arg)
+                        let mut new_frame = if is_recursive {
+                            // Lightweight path: reuse parent's Arcs, inherit global cache
+                            Frame::new_recursive(frame, &mut self.frame_pool)
+                        } else {
+                            // Normal path: clone Arcs from function object
+                            let (code, globals, constant_cache) = if let PyObjectPayload::Function(pf) = &frame.stack[func_idx].payload {
+                                (Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache))
+                            } else { unreachable!() };
+                            let mut f = Frame::new_from_pool(
+                                code, globals, Arc::clone(&self.builtins), constant_cache,
+                                &mut self.frame_pool,
+                            );
+                            f.scope_kind = crate::frame::ScopeKind::Function;
+                            f
+                        };
                         for (i, arg) in frame.stack.drain(args_start..).enumerate() {
                             new_frame.locals[i] = Some(arg);
                         }
                         frame.stack.pop(); // drop the function object
-                        // Inherit global cache for recursive calls (same code object)
-                        if Arc::ptr_eq(&frame.code, &new_frame.code) {
-                            if let Some(ref cache) = frame.global_cache {
-                                new_frame.global_cache = Some(cache.clone());
-                                new_frame.global_cache_version = frame.global_cache_version;
-                            }
-                        }
-                        new_frame.scope_kind = crate::frame::ScopeKind::Function;
                         self.call_stack.push(new_frame);
                         if self.call_stack.len() > self.recursion_limit {
                             if let Some(frame) = self.call_stack.pop() {
@@ -891,7 +889,6 @@ impl VirtualMachine {
                             }
                             Err(PyException::recursion_error("maximum recursion depth exceeded"))
                         } else {
-                            // Iterative: continue loop with child frame (no recursive call)
                             if has_trace {
                                 let frame_obj = self.make_trace_frame();
                                 ferrython_stdlib::set_current_frame(Some(frame_obj));

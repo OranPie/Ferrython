@@ -154,7 +154,44 @@ impl Frame {
         }
     }
 
-    /// Create a frame for module-level code (builds its own constant cache).
+    /// Lightweight frame construction for recursive calls to the same function.
+    /// Reuses the existing code/globals/builtins/constant_cache Arcs (just clones them),
+    /// and reuses pooled vectors. Skips cells/IndexMap allocation entirely.
+    #[inline(always)]
+    pub fn new_recursive(
+        parent: &Frame,
+        pool: &mut FramePool,
+    ) -> Self {
+        let nl = parent.code.varnames.len();
+
+        let mut stack = pool.take_stack();
+        stack.clear();
+
+        let mut locals = pool.take_locals();
+        locals.clear();
+        locals.resize(nl, None);
+
+        let block_stack = pool.take_block_stack();
+
+        Self {
+            code: Arc::clone(&parent.code),
+            ip: 0,
+            stack,
+            block_stack,
+            locals,
+            local_names: IndexMap::new(),
+            globals: parent.globals.clone(),
+            builtins: Arc::clone(&parent.builtins),
+            cells: Vec::new(),
+            scope_kind: ScopeKind::Function,
+            yielded: false,
+            pending_return: None,
+            constant_cache: Arc::clone(&parent.constant_cache),
+            global_cache: parent.global_cache.clone(),
+            global_cache_version: parent.global_cache_version,
+            prepare_dict: None,
+        }
+    }
     pub fn new(
         code: Arc<CodeObject>,
         globals: SharedGlobals,
