@@ -1309,19 +1309,51 @@ impl VirtualMachine {
                         // LoadMethod pushes [name_as_Str, receiver] for builtin types
                         let is_builtin_str = matches!(&frame.stack[base_idx].payload, PyObjectPayload::Str(_));
                         if is_builtin_str {
-                            let mut args = Vec::with_capacity(arg_count);
-                            for _ in 0..arg_count {
-                                args.push(frame.stack.pop().unwrap());
-                            }
-                            args.reverse();
-                            let receiver = frame.stack.pop().unwrap();
-                            let name_obj = frame.stack.pop().unwrap();
-                            if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                let result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
-                                frame.stack.push(result);
+                            // Check for ultra-fast inline list.append / list.pop
+                            let is_list_append = arg_count == 1
+                                && matches!((&frame.stack[base_idx].payload, &frame.stack[base_idx + 1].payload),
+                                    (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "append");
+                            let is_list_pop = !is_list_append && arg_count == 0
+                                && matches!((&frame.stack[base_idx].payload, &frame.stack[base_idx + 1].payload),
+                                    (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "pop");
+                            if is_list_append {
+                                // Pop val, receiver, name — then push directly
+                                let val = frame.stack.pop().unwrap();
+                                let receiver = frame.stack.pop().unwrap();
+                                frame.stack.pop(); // name
+                                if let PyObjectPayload::List(items) = &receiver.payload {
+                                    items.write().push(val);
+                                }
+                                frame.stack.push(PyObject::none());
                                 Ok(None)
+                            } else if is_list_pop {
+                                let receiver = frame.stack.pop().unwrap();
+                                frame.stack.pop(); // name
+                                if let PyObjectPayload::List(items) = &receiver.payload {
+                                    match items.write().pop() {
+                                        Some(val) => {
+                                            frame.stack.push(val);
+                                            Ok(None)
+                                        }
+                                        None => Err(PyException::index_error("pop from empty list")),
+                                    }
+                                } else { unreachable!() }
                             } else {
-                                unreachable!()
+                                // General builtin method dispatch
+                                let mut args = Vec::with_capacity(arg_count);
+                                for _ in 0..arg_count {
+                                    args.push(frame.stack.pop().unwrap());
+                                }
+                                args.reverse();
+                                let receiver = frame.stack.pop().unwrap();
+                                let name_obj = frame.stack.pop().unwrap();
+                                if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                    let result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
+                                    frame.stack.push(result);
+                                    Ok(None)
+                                } else {
+                                    unreachable!()
+                                }
                             }
                         } else {
                             self.execute_one(instr)
