@@ -707,11 +707,12 @@ impl VirtualMachine {
                             constant_cache,
                             &mut self.frame_pool,
                         );
-                        for i in 0..arg_count {
-                            new_frame.locals[i] = Some(frame.stack[args_start + i].clone());
+                        // Move args from caller stack to callee locals (avoids Arc clone per arg)
+                        for (i, arg) in frame.stack.drain(args_start..).enumerate() {
+                            new_frame.locals[i] = Some(arg);
                         }
+                        frame.stack.pop(); // drop the function object
                         new_frame.scope_kind = crate::frame::ScopeKind::Function;
-                        frame.stack.truncate(func_idx);
                         self.call_stack.push(new_frame);
                         if self.call_stack.len() > self.recursion_limit {
                             if let Some(frame) = self.call_stack.pop() {
