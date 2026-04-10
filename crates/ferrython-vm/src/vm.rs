@@ -1307,7 +1307,31 @@ impl VirtualMachine {
                             Ok(None)
                         }
                     } else {
-                        self.execute_one(instr)
+                        // Fast path for BuiltinBoundMethod (list.append, dict.get, etc.)
+                        // Avoids execute_one → call_object → long dispatch chain
+                        let is_builtin_bound = {
+                            let slot_1 = &frame.stack[base_idx + 1];
+                            matches!(&slot_1.payload, PyObjectPayload::BuiltinBoundMethod { .. })
+                        };
+                        if is_builtin_bound {
+                            // Extract args, then destructure the bound method
+                            let mut args = Vec::with_capacity(arg_count);
+                            for _ in 0..arg_count {
+                                args.push(frame.stack.pop().unwrap());
+                            }
+                            args.reverse();
+                            let slot_1 = frame.stack.pop().unwrap(); // BuiltinBoundMethod
+                            frame.stack.pop(); // None sentinel
+                            if let PyObjectPayload::BuiltinBoundMethod { ref receiver, ref method_name } = slot_1.payload {
+                                let result = crate::builtins::call_method(receiver, method_name.as_str(), &args)?;
+                                frame.stack.push(result);
+                                Ok(None)
+                            } else {
+                                unreachable!()
+                            }
+                        } else {
+                            self.execute_one(instr)
+                        }
                     }
                 }
                 // Inline BinarySubscr for list[int], tuple[int], dict[HashableKey]
