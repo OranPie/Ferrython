@@ -2057,6 +2057,124 @@ impl VirtualMachine {
                                         self.execute_one(call_instr)
                                     }
                                 }
+                                (Some("isinstance"), 2) => {
+                                    let slen = frame.stack.len();
+                                    let obj = &frame.stack[slen - 2];
+                                    let cls = &frame.stack[slen - 1];
+                                    let result = if let PyObjectPayload::BuiltinType(bt) = &cls.payload {
+                                        match bt.as_str() {
+                                            "int" => Some(matches!(&obj.payload, PyObjectPayload::Int(_) | PyObjectPayload::Bool(_))),
+                                            "float" => Some(matches!(&obj.payload, PyObjectPayload::Float(_))),
+                                            "str" => Some(matches!(&obj.payload, PyObjectPayload::Str(_))),
+                                            "bool" => Some(matches!(&obj.payload, PyObjectPayload::Bool(_))),
+                                            "list" => Some(matches!(&obj.payload, PyObjectPayload::List(_))),
+                                            "dict" => Some(matches!(&obj.payload, PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_))),
+                                            "tuple" => Some(matches!(&obj.payload, PyObjectPayload::Tuple(_))),
+                                            "set" => Some(matches!(&obj.payload, PyObjectPayload::Set(_))),
+                                            "bytes" => Some(matches!(&obj.payload, PyObjectPayload::Bytes(_))),
+                                            "bytearray" => Some(matches!(&obj.payload, PyObjectPayload::ByteArray(_))),
+                                            _ => None,
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(matched) = result {
+                                        frame.stack.truncate(slen - 2);
+                                        frame.stack.push(PyObject::bool_val(matched));
+                                        Ok(None)
+                                    } else {
+                                        frame.stack.push(func_obj.clone());
+                                        self.execute_one(Instruction::new(Opcode::CallFunction, 2))
+                                    }
+                                }
+                                (Some("type"), 1) => {
+                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let type_obj = match &arg.payload {
+                                        PyObjectPayload::Instance(inst) => Some(inst.class.clone()),
+                                        _ => None,
+                                    };
+                                    if let Some(t) = type_obj {
+                                        frame.stack.pop();
+                                        frame.stack.push(t);
+                                        Ok(None)
+                                    } else {
+                                        frame.stack.push(func_obj.clone());
+                                        let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
+                                        self.execute_one(call_instr)
+                                    }
+                                }
+                                (Some("int"), 1) => {
+                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let result = match &arg.payload {
+                                        PyObjectPayload::Int(_) => Some(arg.clone()),
+                                        PyObjectPayload::Bool(b) => Some(PyObject::int(*b as i64)),
+                                        PyObjectPayload::Float(f) => Some(PyObject::int(*f as i64)),
+                                        _ => None,
+                                    };
+                                    if let Some(v) = result {
+                                        frame.stack.pop();
+                                        frame.stack.push(v);
+                                        Ok(None)
+                                    } else {
+                                        frame.stack.push(func_obj.clone());
+                                        self.execute_one(Instruction::new(Opcode::CallFunction, 1))
+                                    }
+                                }
+                                (Some("float"), 1) => {
+                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let result = match &arg.payload {
+                                        PyObjectPayload::Float(_) => Some(arg.clone()),
+                                        PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::float(*n as f64)),
+                                        PyObjectPayload::Bool(b) => Some(PyObject::float(if *b { 1.0 } else { 0.0 })),
+                                        _ => None,
+                                    };
+                                    if let Some(v) = result {
+                                        frame.stack.pop();
+                                        frame.stack.push(v);
+                                        Ok(None)
+                                    } else {
+                                        frame.stack.push(func_obj.clone());
+                                        self.execute_one(Instruction::new(Opcode::CallFunction, 1))
+                                    }
+                                }
+                                (Some("bool"), 1) => {
+                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let result = match &arg.payload {
+                                        PyObjectPayload::Bool(_) => Some(arg.clone()),
+                                        PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::bool_val(*n != 0)),
+                                        PyObjectPayload::Float(f) => Some(PyObject::bool_val(*f != 0.0)),
+                                        PyObjectPayload::None => Some(PyObject::bool_val(false)),
+                                        PyObjectPayload::Str(s) => Some(PyObject::bool_val(!s.is_empty())),
+                                        PyObjectPayload::List(v) => Some(PyObject::bool_val(!v.read().is_empty())),
+                                        PyObjectPayload::Tuple(v) => Some(PyObject::bool_val(!v.is_empty())),
+                                        PyObjectPayload::Dict(m) => Some(PyObject::bool_val(!m.read().is_empty())),
+                                        _ => None,
+                                    };
+                                    if let Some(v) = result {
+                                        frame.stack.pop();
+                                        frame.stack.push(v);
+                                        Ok(None)
+                                    } else {
+                                        frame.stack.push(func_obj.clone());
+                                        self.execute_one(Instruction::new(Opcode::CallFunction, 1))
+                                    }
+                                }
+                                (Some("abs"), 1) => {
+                                    let arg = &frame.stack[frame.stack.len() - 1];
+                                    let result = match &arg.payload {
+                                        PyObjectPayload::Int(PyInt::Small(n)) => Some(PyObject::int(n.abs())),
+                                        PyObjectPayload::Float(f) => Some(PyObject::float(f.abs())),
+                                        _ => None,
+                                    };
+                                    if let Some(v) = result {
+                                        frame.stack.pop();
+                                        frame.stack.push(v);
+                                        Ok(None)
+                                    } else {
+                                        frame.stack.push(func_obj.clone());
+                                        self.execute_one(Instruction::new(Opcode::CallFunction, 1))
+                                    }
+                                }
                                 _ => {
                                     // Not a simple function — decompose to LoadGlobal + CallFunction
                                     frame.stack.push(func_obj.clone());
