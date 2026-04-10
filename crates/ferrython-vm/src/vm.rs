@@ -1887,6 +1887,65 @@ impl VirtualMachine {
                         } else if call_kind > 0 {
                             let stack_len = frame.stack.len();
                             let args_start = stack_len - arg_count;
+                            // ── Mini-interpreter: inline base-case returns ──
+                            // For recursive calls, check if first instr is LoadFastCompareConstJump
+                            // and resolve the comparison directly against args on parent stack.
+                            let mut mini_result: Option<PyObjectRef> = None;
+                            if call_kind == 2 {
+                                let instrs = &frame.code.instructions;
+                                if instrs.len() > 2
+                                    && instrs[0].op == Opcode::LoadFastCompareConstJump
+                                {
+                                    let packed = instrs[0].arg;
+                                    let cmp_op = packed >> 28;
+                                    let local_idx = ((packed >> 20) & 0xFF) as usize;
+                                    let const_idx = ((packed >> 12) & 0xFF) as usize;
+                                    if local_idx < arg_count {
+                                        let arg_ref = &frame.stack[args_start + local_idx];
+                                        let const_ref = unsafe { frame.constant_cache.get_unchecked(const_idx) };
+                                        let cmp_result = match (&arg_ref.payload, &const_ref.payload) {
+                                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                                match cmp_op {
+                                                    0 => Some(*x < *y), 1 => Some(*x <= *y),
+                                                    2 => Some(*x == *y), 3 => Some(*x != *y),
+                                                    4 => Some(*x > *y), 5 => Some(*x >= *y),
+                                                    _ => None,
+                                                }
+                                            }
+                                            _ => None,
+                                        };
+                                        if let Some(cmp_val) = cmp_result {
+                                            if cmp_val
+                                                && instrs[1].op == Opcode::LoadFast
+                                                && instrs[2].op == Opcode::ReturnValue
+                                            {
+                                                let ret_local = instrs[1].arg as usize;
+                                                mini_result = Some(if ret_local < arg_count {
+                                                    frame.stack[args_start + ret_local].clone()
+                                                } else { PyObject::none() });
+                                            } else if !cmp_val {
+                                                let jt = (packed & 0xFFF) as usize;
+                                                if jt < instrs.len()
+                                                    && instrs[jt].op == Opcode::LoadFast
+                                                    && jt + 1 < instrs.len()
+                                                    && instrs[jt + 1].op == Opcode::ReturnValue
+                                                {
+                                                    let ret_local = instrs[jt].arg as usize;
+                                                    mini_result = Some(if ret_local < arg_count {
+                                                        frame.stack[args_start + ret_local].clone()
+                                                    } else { PyObject::none() });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(ret_val) = mini_result {
+                                // Base case resolved without frame creation
+                                frame.stack.truncate(args_start);
+                                frame.stack.push(ret_val);
+                                Ok(None)
+                            } else {
                             let mut new_frame = if call_kind == 2 {
                                 // SAFETY: parent frame outlives child in iterative dispatch
                                 unsafe { Frame::new_recursive(frame, &mut self.frame_pool) }
@@ -1928,6 +1987,7 @@ impl VirtualMachine {
                                 }
                                 Ok(None)
                             }
+                            } // close mini-interpreter else block
                         } else {
                             // Fast path for builtins (len, range) from global cache
                             let builtin_name = if let PyObjectPayload::BuiltinFunction(name) = &func_obj.payload {
@@ -2433,7 +2493,6 @@ impl VirtualMachine {
                     // SAFETY: well-formed bytecode guarantees stack depth >= 3
                     let key = unsafe { frame.stack.get_unchecked(len - 1) };
                     let obj = unsafe { frame.stack.get_unchecked(len - 2) };
-                    let val = unsafe { frame.stack.get_unchecked(len - 3) };
                         match (&obj.payload, &key.payload) {
                             // list[int] = val
                             (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
@@ -2441,7 +2500,7 @@ impl VirtualMachine {
                                 let i = *idx;
                                 let actual = if i < 0 { i + items.len() as i64 } else { i };
                                 if actual >= 0 && (actual as usize) < items.len() {
-                                    let v = val.clone();
+                                    let v = unsafe { frame.stack.get_unchecked(len - 3) }.clone();
                                     items[actual as usize] = v;
                                     drop(items);
                                     frame.stack.truncate(len - 3);
@@ -2454,15 +2513,23 @@ impl VirtualMachine {
                             // dict[str] = val
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
                                 let hk = HashableKey::Str(s.clone());
-                                let v = val.clone();
+                                let v = unsafe { frame.stack.get_unchecked(len - 3) }.clone();
                                 map.write().insert(hk, v);
                                 frame.stack.truncate(len - 3);
                                 Ok(None)
                             }
                             // dict[int] = val
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Int(pi @ PyInt::Small(_))) => {
-                                let hk = HashableKey::Int(pi.clone());
-                                let v = val.clone();
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Int(PyInt::Small(n))) => {
+                                let hk = HashableKey::Int(PyInt::Small(*n));
+                                let v = unsafe { frame.stack.get_unchecked(len - 3) }.clone();
+                                map.write().insert(hk, v);
+                                frame.stack.truncate(len - 3);
+                                Ok(None)
+                            }
+                            // dict[bool] = val
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Bool(b)) => {
+                                let hk = HashableKey::Int(PyInt::Small(*b as i64));
+                                let v = unsafe { frame.stack.get_unchecked(len - 3) }.clone();
                                 map.write().insert(hk, v);
                                 frame.stack.truncate(len - 3);
                                 Ok(None)
