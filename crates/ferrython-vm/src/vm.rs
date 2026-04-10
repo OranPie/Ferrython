@@ -788,6 +788,13 @@ impl VirtualMachine {
                             new_frame.locals[i] = Some(arg);
                         }
                         frame.stack.pop(); // drop the function object
+                        // Inherit global cache for recursive calls (same code object)
+                        if Arc::ptr_eq(&frame.code, &new_frame.code) {
+                            if let Some(ref cache) = frame.global_cache {
+                                new_frame.global_cache = Some(cache.clone());
+                                new_frame.global_cache_version = frame.global_cache_version;
+                            }
+                        }
                         new_frame.scope_kind = crate::frame::ScopeKind::Function;
                         self.call_stack.push(new_frame);
                         if self.call_stack.len() > self.recursion_limit {
@@ -996,6 +1003,13 @@ impl VirtualMachine {
                         }
                         new_frame.locals[0] = frame.stack.pop(); // receiver (moved)
                         frame.stack.pop(); // drop method
+                        // Inherit global cache for recursive calls (same code object)
+                        if Arc::ptr_eq(&frame.code, &new_frame.code) {
+                            if let Some(ref cache) = frame.global_cache {
+                                new_frame.global_cache = Some(cache.clone());
+                                new_frame.global_cache_version = frame.global_cache_version;
+                            }
+                        }
                         new_frame.scope_kind = crate::frame::ScopeKind::Function;
                         self.call_stack.push(new_frame);
                         if self.call_stack.len() > self.recursion_limit {
