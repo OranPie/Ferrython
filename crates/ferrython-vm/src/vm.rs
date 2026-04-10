@@ -384,6 +384,49 @@ impl VirtualMachine {
                         _ => self.execute_one(instr),
                     }
                 }
+                // Inline ForIter for Range/List (hot in `for i in range(n)`)
+                Opcode::ForIter => {
+                    // SAFETY: stack non-empty (iterator on TOS)
+                    let iter = unsafe { frame.peek_unchecked() };
+                    if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
+                        let mut data = iter_data.lock();
+                        match &mut *data {
+                            IteratorData::Range { current, stop, step } => {
+                                let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
+                                if done {
+                                    drop(data);
+                                    drop(unsafe { frame.pop_unchecked() });
+                                    frame.ip = instr.arg as usize;
+                                } else {
+                                    let v = PyObject::int(*current);
+                                    *current += *step;
+                                    drop(data);
+                                    frame.stack.push(v);
+                                }
+                                Ok(None)
+                            }
+                            IteratorData::List { items, index } => {
+                                if *index < items.len() {
+                                    let v = items[*index].clone();
+                                    *index += 1;
+                                    drop(data);
+                                    frame.stack.push(v);
+                                } else {
+                                    drop(data);
+                                    drop(unsafe { frame.pop_unchecked() });
+                                    frame.ip = instr.arg as usize;
+                                }
+                                Ok(None)
+                            }
+                            _ => {
+                                drop(data);
+                                self.execute_one(instr)
+                            }
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
                 // Inline ReturnValue: fast path when no finally blocks are active
                 Opcode::ReturnValue => {
                     if frame.block_stack.iter().any(|b| b.kind == BlockKind::Finally) {
@@ -526,7 +569,8 @@ impl VirtualMachine {
                 }
                 // Inline PopJumpIfFalse for primitive types (hot in conditionals/loops)
                 Opcode::PopJumpIfFalse => {
-                    let v = frame.stack.pop().expect("stack underflow");
+                    // SAFETY: stack non-empty for well-formed bytecode
+                    let v = unsafe { frame.pop_unchecked() };
                     match &v.payload {
                         PyObjectPayload::Bool(b) => {
                             if !b { frame.ip = instr.arg as usize; }
@@ -549,7 +593,8 @@ impl VirtualMachine {
                     }
                 }
                 Opcode::PopJumpIfTrue => {
-                    let v = frame.stack.pop().expect("stack underflow");
+                    // SAFETY: stack non-empty for well-formed bytecode
+                    let v = unsafe { frame.pop_unchecked() };
                     match &v.payload {
                         PyObjectPayload::Bool(b) => {
                             if *b { frame.ip = instr.arg as usize; }
@@ -704,6 +749,27 @@ impl VirtualMachine {
                                 Ok(None)
                             }
                             _ => self.execute_one(instr),
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline LoadGlobal with per-frame cache fast path
+                Opcode::LoadGlobal => {
+                    let idx = instr.arg as usize;
+                    let ver = crate::frame::globals_version();
+                    if frame.global_cache_version == ver {
+                        if let Some(ref cache) = frame.global_cache {
+                            // SAFETY: idx < names.len() == cache.len() (invariant maintained by cache init)
+                            if let Some(ref v) = unsafe { cache.get_unchecked(idx) } {
+                                frame.stack.push(v.clone());
+                                Ok(None)
+                            } else {
+                                // Cache miss on this specific name — fall through
+                                self.execute_one(instr)
+                            }
+                        } else {
+                            self.execute_one(instr)
                         }
                     } else {
                         self.execute_one(instr)
