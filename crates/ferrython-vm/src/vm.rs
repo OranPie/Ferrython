@@ -195,6 +195,31 @@ impl VirtualMachine {
         result
     }
 
+    /// Cold helper: generate NameError for unbound locals. Marked #[cold] #[inline(never)]
+    /// to keep format!() code out of the hot dispatch loop's I-cache footprint.
+    #[cold]
+    #[inline(never)]
+    fn err_unbound_local(varnames: &[compact_str::CompactString], idx: usize) -> Result<Option<PyObjectRef>, PyException> {
+        Err(PyException::name_error(format!(
+            "local variable '{}' referenced before assignment",
+            varnames.get(idx).map(|s| s.as_str()).unwrap_or("?")
+        )))
+    }
+
+    /// Cold helper: generate NameError for unresolved names.
+    #[cold]
+    #[inline(never)]
+    fn err_name_not_found(name: &str) -> Result<Option<PyObjectRef>, PyException> {
+        Err(PyException::name_error(format!("name '{}' is not defined", name)))
+    }
+
+    /// Cold helper: generate NameError with a custom message.
+    #[cold]
+    #[inline(never)]
+    fn err_name_error_msg(msg: String) -> Result<Option<PyObjectRef>, PyException> {
+        Err(PyException::name_error(msg))
+    }
+
     /// Execute a code object as a function call with arguments.
     pub(crate) fn run_frame(&mut self) -> PyResult<PyObjectRef> {
         let profiling = self.profiler.is_enabled();
@@ -276,10 +301,7 @@ impl VirtualMachine {
                     // SAFETY: compiler guarantees idx < locals.len(); stack pre-allocated
                     match unsafe { frame.get_local_unchecked(idx) } {
                         Some(val) => { unsafe { frame.push_unchecked(val.clone()) }; Ok(None) }
-                        None => Err(PyException::name_error(format!(
-                            "local variable '{}' referenced before assignment",
-                            frame.code.varnames.get(idx).map(|s| s.as_str()).unwrap_or("?")
-                        ))),
+                        None => Self::err_unbound_local(&frame.code.varnames, idx),
                     }
                 }
                 Opcode::StoreFast => {
@@ -315,14 +337,8 @@ impl VirtualMachine {
                             unsafe { frame.push_unchecked(a); frame.push_unchecked(b) };
                             Ok(None)
                         }
-                        (None, _) => Err(PyException::name_error(format!(
-                            "local variable '{}' referenced before assignment",
-                            frame.code.varnames.get(idx1).map(|s| s.as_str()).unwrap_or("?")
-                        ))),
-                        (_, None) => Err(PyException::name_error(format!(
-                            "local variable '{}' referenced before assignment",
-                            frame.code.varnames.get(idx2).map(|s| s.as_str()).unwrap_or("?")
-                        ))),
+                        (None, _) => Self::err_unbound_local(&frame.code.varnames, idx1),
+                        (_, None) => Self::err_unbound_local(&frame.code.varnames, idx2),
                     }
                 }
                 Opcode::LoadFastLoadConst => {
@@ -337,10 +353,7 @@ impl VirtualMachine {
                             }
                             Ok(None)
                         }
-                        None => Err(PyException::name_error(format!(
-                            "local variable '{}' referenced before assignment",
-                            frame.code.varnames.get(fast_idx).map(|s| s.as_str()).unwrap_or("?")
-                        ))),
+                        None => Self::err_unbound_local(&frame.code.varnames, fast_idx),
                     }
                 }
                 Opcode::StoreFastLoadFast => {
@@ -351,10 +364,7 @@ impl VirtualMachine {
                     unsafe { frame.set_local_unchecked(store_idx, val) };
                     match unsafe { frame.get_local_unchecked(load_idx) } {
                         Some(val) => { unsafe { frame.push_unchecked(val.clone()) }; Ok(None) }
-                        None => Err(PyException::name_error(format!(
-                            "local variable '{}' referenced before assignment",
-                            frame.code.varnames.get(load_idx).map(|s| s.as_str()).unwrap_or("?")
-                        ))),
+                        None => Self::err_unbound_local(&frame.code.varnames, load_idx),
                     }
                 }
                 // 3-way superinstruction: LoadFast + LoadConst + BinarySubtract
@@ -390,10 +400,7 @@ impl VirtualMachine {
                                 }
                             }
                         }
-                        None => Err(PyException::name_error(format!(
-                            "local variable '{}' referenced before assignment",
-                            frame.code.varnames.get(fast_idx).map(|s| s.as_str()).unwrap_or("?")
-                        ))),
+                        None => Self::err_unbound_local(&frame.code.varnames, fast_idx),
                     }
                 }
                 // 3-way superinstruction: LoadFast + LoadConst + BinaryAdd
@@ -435,38 +442,39 @@ impl VirtualMachine {
                                 }
                             }
                         }
-                        None => Err(PyException::name_error(format!(
-                            "local variable '{}' referenced before assignment",
-                            frame.code.varnames.get(fast_idx).map(|s| s.as_str()).unwrap_or("?")
-                        ))),
+                        None => Self::err_unbound_local(&frame.code.varnames, fast_idx),
                     }
                 }
                 Opcode::LoadFastLoadFastBinaryAdd => {
                     let idx1 = (instr.arg >> 16) as usize;
                     let idx2 = (instr.arg & 0xFFFF) as usize;
-                    let a = unsafe { frame.get_local_unchecked(idx1) }.cloned();
-                    let b = unsafe { frame.get_local_unchecked(idx2) }.cloned();
+                    // Borrow locals without cloning — only clone on fallback
+                    let a = unsafe { frame.get_local_unchecked(idx1) };
+                    let b = unsafe { frame.get_local_unchecked(idx2) };
                     match (a, b) {
                         (Some(a), Some(b)) => {
                             match (&a.payload, &b.payload) {
                                 (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
-                                    let result = match x.checked_add(*y) {
+                                    let (x, y) = (*x, *y);
+                                    let result = match x.checked_add(y) {
                                         Some(r) => PyObject::int(r),
                                         None => {
                                             use num_bigint::BigInt;
-                                            PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
+                                            PyObject::big_int(BigInt::from(x) + BigInt::from(y))
                                         }
                                     };
                                     frame.stack.push(result);
                                     Ok(None)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
-                                    frame.stack.push(PyObject::float(*x + *y));
+                                    let r = *x + *y;
+                                    frame.stack.push(PyObject::float(r));
                                     Ok(None)
                                 }
                                 _ => {
-                                    frame.stack.push(a);
-                                    frame.stack.push(b);
+                                    let (ac, bc) = (a.clone(), b.clone());
+                                    frame.stack.push(ac);
+                                    frame.stack.push(bc);
                                     self.execute_one(ferrython_bytecode::Instruction::new(
                                         Opcode::BinaryAdd, 0))
                                 }
@@ -1188,9 +1196,9 @@ impl VirtualMachine {
                             } else {
                                 frame.code.freevars[idx - n_cell].clone()
                             };
-                            Err(PyException::name_error(format!(
+                            Self::err_name_error_msg(format!(
                                 "free variable '{}' referenced before assignment in enclosing scope", name
-                            )))
+                            ))
                         }
                     }
                 }
@@ -2257,9 +2265,8 @@ impl VirtualMachine {
                     let obj = match unsafe { frame.get_local_unchecked(local_idx) } {
                         Some(val) => val,
                         None => {
-                            return Err(PyException::name_error(format!(
-                                "local variable referenced before assignment"
-                            )));
+                            return Self::err_unbound_local(&frame.code.varnames, local_idx)
+                                .map(|_| PyObject::none());
                         }
                     };
                     // Inline Instance attr fast path
@@ -2295,9 +2302,8 @@ impl VirtualMachine {
                     let obj = match unsafe { frame.get_local_unchecked(local_idx) } {
                         Some(val) => val.clone(),
                         None => {
-                            return Err(PyException::name_error(format!(
-                                "local variable referenced before assignment"
-                            )));
+                            return Self::err_unbound_local(&frame.code.varnames, local_idx)
+                                .map(|_| PyObject::none());
                         }
                     };
                     // Determine fast_kind based on object type
@@ -2626,10 +2632,7 @@ impl VirtualMachine {
                                 Ok(None)
                             }
                         }
-                        None => Err(PyException::name_error(format!(
-                            "local variable '{}' referenced before assignment",
-                            frame.code.varnames.get(local_idx).map(|s| s.as_str()).unwrap_or("?")
-                        ))),
+                        None => Self::err_unbound_local(&frame.code.varnames, local_idx),
                     }
                 }
                 _ => self.execute_one(instr),
@@ -2935,6 +2938,7 @@ impl VirtualMachine {
     }
 
     #[cold]
+    #[inline(never)]
     fn execute_one(&mut self, instr: ferrython_bytecode::Instruction) -> Result<Option<PyObjectRef>, PyException> {
         use ferrython_bytecode::opcode::Opcode;
         match instr.op {
