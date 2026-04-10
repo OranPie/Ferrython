@@ -641,7 +641,24 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         let b = code.instructions[i + 1];
 
         // Don't fuse if the second instruction is a jump target
-        if jump_targets[i + 1] || a.arg > 0xFFFF || b.arg > 0xFFFF {
+        if jump_targets[i + 1] {
+            i += 1;
+            continue;
+        }
+
+        // CompareOp + PopJumpIfFalse → CompareOpPopJumpIfFalse
+        // Special encoding: (cmp_op << 24) | jump_target
+        if a.op == Opcode::CompareOp && b.op == Opcode::PopJumpIfFalse
+            && a.arg <= 255 && b.arg <= 0x00FF_FFFF
+        {
+            let packed = (a.arg << 24) | b.arg;
+            code.instructions[i] = Instruction::new(Opcode::CompareOpPopJumpIfFalse, packed);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
+        if a.arg > 0xFFFF || b.arg > 0xFFFF {
             i += 1;
             continue;
         }
@@ -677,7 +694,17 @@ fn fuse_superinstructions(code: &mut CodeObject) {
 
     // Phase 3: Rewrite all jump targets
     for instr in &mut code.instructions {
-        if is_jump(instr.op) {
+        if instr.op == Opcode::CompareOpPopJumpIfFalse {
+            // Jump target is in low 24 bits; cmp_op in high 8 bits
+            let cmp_op = instr.arg >> 24;
+            let target = (instr.arg & 0x00FF_FFFF) as usize;
+            let new_target = if target < old_to_new.len() {
+                old_to_new[target] as u32
+            } else {
+                final_len as u32
+            };
+            instr.arg = (cmp_op << 24) | new_target;
+        } else if is_jump(instr.op) {
             let target = instr.arg as usize;
             if target < old_to_new.len() {
                 instr.arg = old_to_new[target] as u32;

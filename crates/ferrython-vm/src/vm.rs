@@ -4,7 +4,7 @@ use crate::builtins;
 use crate::frame::{BlockKind, Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeObject, CodeFlags};
-use ferrython_bytecode::opcode::Opcode;
+use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
@@ -1289,6 +1289,67 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
+                // Fused CompareOp + PopJumpIfFalse: avoids intermediate bool allocation
+                Opcode::CompareOpPopJumpIfFalse => {
+                    let cmp_op = instr.arg >> 24;
+                    let jump_target = (instr.arg & 0x00FF_FFFF) as usize;
+                    let len = frame.stack.len();
+                    if len >= 2 {
+                        let a = &frame.stack[len - 2];
+                        let b = &frame.stack[len - 1];
+                        let fast_result = match (&a.payload, &b.payload) {
+                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                match cmp_op {
+                                    0 => Some(*x < *y),
+                                    1 => Some(*x <= *y),
+                                    2 => Some(*x == *y),
+                                    3 => Some(*x != *y),
+                                    4 => Some(*x > *y),
+                                    5 => Some(*x >= *y),
+                                    _ => None,
+                                }
+                            }
+                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                match cmp_op {
+                                    0 => Some(*x < *y),
+                                    1 => Some(*x <= *y),
+                                    2 => Some(*x == *y),
+                                    3 => Some(*x != *y),
+                                    4 => Some(*x > *y),
+                                    5 => Some(*x >= *y),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some(is_true) = fast_result {
+                            frame.stack.pop();
+                            frame.stack.pop();
+                            if !is_true { frame.ip = jump_target; }
+                            Ok(None)
+                        } else {
+                            // Fallback: execute CompareOp, then check result
+                            let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
+                            let result = self.exec_compare_ops(cmp_instr)?;
+                            if result.is_none() {
+                                let frame = self.call_stack.last_mut().unwrap();
+                                let v = frame.stack.pop().expect("stack underflow");
+                                let is_false = match &v.payload {
+                                    PyObjectPayload::Bool(b) => !b,
+                                    PyObjectPayload::None => true,
+                                    PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                                    _ => !self.vm_is_truthy(&v)?,
+                                };
+                                if is_false {
+                                    self.call_stack.last_mut().unwrap().ip = jump_target;
+                                }
+                            }
+                            Ok(None)
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
                 _ => self.execute_one(instr),
             };
 
@@ -1626,7 +1687,7 @@ impl VirtualMachine {
             Opcode::BinarySubscr | Opcode::StoreSubscr | Opcode::DeleteSubscr
                 => self.exec_subscript_ops(instr),
 
-            Opcode::CompareOp => self.exec_compare_ops(instr),
+            Opcode::CompareOp | Opcode::CompareOpPopJumpIfFalse => self.exec_compare_ops(instr),
 
             Opcode::JumpForward | Opcode::JumpAbsolute
             | Opcode::PopJumpIfFalse | Opcode::PopJumpIfTrue

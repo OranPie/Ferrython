@@ -2,11 +2,12 @@
 
 use crate::vm::exception_kind_matches;
 use crate::VirtualMachine;
-use ferrython_bytecode::Instruction;
+use ferrython_bytecode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
     lookup_in_class_mro, CompareOp, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
+use ferrython_core::types::PyInt;
 
 impl VirtualMachine {
     /// Derive a missing comparison from total_ordering root method
@@ -88,6 +89,24 @@ impl VirtualMachine {
     }
 
     pub(crate) fn exec_compare_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
+        if instr.op == Opcode::CompareOpPopJumpIfFalse {
+            let cmp_op = instr.arg >> 24;
+            let jump_target = (instr.arg & 0x00FF_FFFF) as usize;
+            let (a, b) = self.vm_pop2();
+            self.exec_compare_op(cmp_op, a, b)?;
+            // Result is on stack; pop it and conditionally jump
+            let v = self.vm_pop();
+            let is_false = match &v.payload {
+                PyObjectPayload::Bool(b) => !b,
+                PyObjectPayload::None => true,
+                PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                _ => !self.vm_is_truthy(&v)?,
+            };
+            if is_false {
+                self.call_stack.last_mut().unwrap().ip = jump_target;
+            }
+            return Ok(None);
+        }
         let (a, b) = self.vm_pop2();
         self.exec_compare_op(instr.arg, a, b)
     }

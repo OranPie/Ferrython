@@ -175,6 +175,9 @@ pub enum Opcode {
     LoadFastLoadConst = 211,
     /// StoreFast then LoadFast. arg = (store_idx << 16) | load_idx.
     StoreFastLoadFast = 212,
+    /// CompareOp then PopJumpIfFalse. arg = (cmp_op << 24) | jump_target.
+    /// Fast-paths int/float comparisons without intermediate bool push/pop.
+    CompareOpPopJumpIfFalse = 213,
 }
 
 impl Opcode {
@@ -285,6 +288,7 @@ impl Opcode {
             Self::LoadFastLoadFast => 2,
             Self::LoadFastLoadConst => 2,
             Self::StoreFastLoadFast => 0, // -1 (store) + 1 (load) = 0
+            Self::CompareOpPopJumpIfFalse => -2, // pops 2 operands, pushes nothing
         }
     }
 
@@ -303,6 +307,7 @@ impl Opcode {
                 | Self::SetupWith
                 | Self::SetupExcept
                 | Self::SetupAsyncWith
+                | Self::CompareOpPopJumpIfFalse
         )
     }
 }
