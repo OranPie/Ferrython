@@ -247,7 +247,7 @@ impl VirtualMachine {
             }
         }
         // local_names (class scope, etc.)
-        for (k, v) in &frame.local_names {
+        for (k, v) in frame.local_names_iter() {
             pairs.push((PyObject::str_val(k.clone()), v.clone()));
         }
         // Cell and free variables
@@ -1288,7 +1288,7 @@ impl VirtualMachine {
                                     map.insert(HashableKey::Str(k.clone()), v.clone());
                                 }
                                 drop(g);
-                                for (k, v) in frame.local_names.iter() {
+                                for (k, v) in frame.local_names_iter() {
                                     map.insert(HashableKey::Str(k.clone()), v.clone());
                                 }
                                 return Ok(PyObject::dict(map));
@@ -1878,7 +1878,7 @@ impl VirtualMachine {
                                 map.insert(HashableKey::Str(k.clone()), v.clone());
                             }
                             drop(g);
-                            for (k, v) in frame.local_names.iter() {
+                            for (k, v) in frame.local_names_iter() {
                                 map.insert(HashableKey::Str(k.clone()), v.clone());
                             }
                             return Ok(PyObject::dict(map));

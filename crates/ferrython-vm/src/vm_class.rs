@@ -135,7 +135,7 @@ impl VirtualMachine {
                 let frame = self.call_stack.pop().unwrap();
                 let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
                 let cells = frame.cells.clone();
-                (frame.local_names, Some((cellvar_names, cells)))
+                (frame.local_names.map(|b| *b).unwrap_or_default(), Some((cellvar_names, cells)))
             }
             _ => (IndexMap::new(), None),
         };
@@ -630,7 +630,7 @@ impl VirtualMachine {
                 let mut frame = Frame::new_from_pool(code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool);
                 frame.scope_kind = ScopeKind::Class;
                 for (k, v) in &prepared_ns {
-                    frame.local_names.insert(k.clone(), v.clone());
+                    frame.local_names_insert(k.clone(), v.clone());
                 }
                 // Store the __prepare__ dict on the frame (reserved for future use)
                 frame.prepare_dict = prepare_dict_obj.clone();
@@ -646,7 +646,7 @@ impl VirtualMachine {
                 let frame = self.call_stack.pop().unwrap();
                 let cellvar_names: Vec<CompactString> = frame.code.cellvars.clone();
                 let cells = frame.cells.clone();
-                (frame.local_names, Some((cellvar_names, cells)))
+                (frame.local_names.map(|b| *b).unwrap_or_default(), Some((cellvar_names, cells)))
             }
             _ => (IndexMap::new(), None),
         };

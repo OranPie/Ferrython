@@ -36,7 +36,7 @@ impl VirtualMachine {
                     if idx < frame.locals.len() && frame.locals[idx].is_none() {
                         frame.locals[idx] = Some(PyObject::dict(IndexMap::new()));
                     }
-                } else if !frame.local_names.contains_key("__annotations__") {
+                } else if !frame.local_names_contains_key("__annotations__") {
                     frame.store_name(
                         intern_or_new("__annotations__"),
                         PyObject::dict(IndexMap::new()),

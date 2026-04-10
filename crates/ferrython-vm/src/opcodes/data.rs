@@ -89,15 +89,15 @@ impl VirtualMachine {
                         frame.globals.write().insert(name, value);
                         crate::frame::bump_globals_version();
                     }
-                    ScopeKind::Class => { frame.local_names.insert(name, value); }
-                    ScopeKind::Function => { frame.local_names.insert(name, value); }
+                    ScopeKind::Class => { frame.local_names_insert(name, value); }
+                    ScopeKind::Function => { frame.local_names_insert(name, value); }
                 }
             }
             Opcode::DeleteName => {
                 let name = frame.code.names[instr.arg as usize].clone();
-                let old = frame.local_names.get(name.as_str()).cloned()
+                let old = frame.local_names_get(name.as_str())
                     .or_else(|| frame.globals.read().get(name.as_str()).cloned());
-                frame.local_names.shift_remove(name.as_str());
+                frame.local_names_remove(name.as_str());
                 frame.globals.write().shift_remove(name.as_str());
                 crate::frame::bump_globals_version();
                 if let Some(ref obj) = old {
@@ -168,7 +168,7 @@ impl VirtualMachine {
                     frame.code.freevars[idx - n_cell].clone()
                 };
                 // Check local_names first (class namespace)
-                if let Some(v) = frame.local_names.get(name.as_str()).cloned() {
+                if let Some(v) = frame.local_names_get(name.as_str()) {
                     frame.push(v);
                 } else {
                     // Fall back to cell

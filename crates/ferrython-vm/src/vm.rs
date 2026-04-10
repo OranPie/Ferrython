@@ -2077,27 +2077,38 @@ impl VirtualMachine {
                                 && matches!((&frame.stack[base_idx].payload, &frame.stack[base_idx + 1].payload),
                                     (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "pop");
                             if is_list_append {
-                                // Pop val, receiver, name — then push directly
-                                let val = frame.stack.pop().unwrap();
-                                let receiver = frame.stack.pop().unwrap();
-                                frame.stack.pop(); // name
-                                if let PyObjectPayload::List(items) = &receiver.payload {
-                                    items.write().push(val);
+                                // Stack: [name, receiver, val] — peek receiver, pop val + truncate
+                                let len = frame.stack.len();
+                                unsafe {
+                                    let val = std::ptr::read(frame.stack.as_ptr().add(len - 1));
+                                    let receiver = &*frame.stack.as_ptr().add(len - 2);
+                                    if let PyObjectPayload::List(items) = &receiver.payload {
+                                        items.write().push(val);
+                                    }
+                                    // Drop name + receiver, replace with None
+                                    let _receiver = std::ptr::read(frame.stack.as_ptr().add(len - 2));
+                                    let _name = std::ptr::read(frame.stack.as_ptr().add(len - 3));
+                                    frame.stack.set_len(len - 3);
                                 }
                                 frame.stack.push(PyObject::none());
                                 Ok(None)
                             } else if is_list_pop {
-                                let receiver = frame.stack.pop().unwrap();
-                                frame.stack.pop(); // name
-                                if let PyObjectPayload::List(items) = &receiver.payload {
-                                    match items.write().pop() {
-                                        Some(val) => {
-                                            frame.stack.push(val);
-                                            Ok(None)
+                                let len = frame.stack.len();
+                                unsafe {
+                                    let receiver = &*frame.stack.as_ptr().add(len - 1);
+                                    if let PyObjectPayload::List(items) = &receiver.payload {
+                                        match items.write().pop() {
+                                            Some(val) => {
+                                                let _receiver = std::ptr::read(frame.stack.as_ptr().add(len - 1));
+                                                let _name = std::ptr::read(frame.stack.as_ptr().add(len - 2));
+                                                frame.stack.set_len(len - 2);
+                                                frame.stack.push(val);
+                                                Ok(None)
+                                            }
+                                            None => Err(PyException::index_error("pop from empty list")),
                                         }
-                                        None => Err(PyException::index_error("pop from empty list")),
-                                    }
-                                } else { unreachable!() }
+                                    } else { unreachable!() }
+                                }
                             } else if arg_count == 1
                                 && matches!((&frame.stack[base_idx].payload, &frame.stack[base_idx + 1].payload),
                                     (PyObjectPayload::Str(n), PyObjectPayload::Dict(_)) if n.as_str() == "get")
@@ -2511,7 +2522,7 @@ impl VirtualMachine {
                             frame.globals.write().insert(name, value);
                             crate::frame::bump_globals_version();
                         }
-                        _ => { frame.local_names.insert(name, value); }
+                        _ => { frame.local_names_insert(name, value); }
                     }
                     Ok(None)
                 }
@@ -3163,7 +3174,7 @@ impl VirtualMachine {
                 ));
             }
         }
-        for (name, val) in &frame.local_names {
+        for (name, val) in frame.local_names_iter() {
             local_pairs.push((
                 PyObject::str_val(name.clone()),
                 val.clone(),

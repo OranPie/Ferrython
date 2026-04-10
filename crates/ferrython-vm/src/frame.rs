@@ -50,7 +50,8 @@ pub struct Frame {
     pub stack: Vec<PyObjectRef>,
     pub block_stack: Vec<Block>,
     pub locals: Vec<Option<PyObjectRef>>,
-    pub local_names: IndexMap<CompactString, PyObjectRef>,
+    /// Boxed to reduce Frame size (~48→8 bytes). Only allocated for class/module scope.
+    pub local_names: Option<Box<IndexMap<CompactString, PyObjectRef>>>,
     pub globals: SharedGlobals,
     pub builtins: SharedBuiltins,
     /// Cell and free variables. Indices 0..cellvars.len() are cell vars,
@@ -95,7 +96,7 @@ impl Frame {
             stack: Vec::with_capacity(32),
             block_stack: Vec::new(),
             locals: vec![None; nl],
-            local_names: IndexMap::new(),
+            local_names: None,
             globals,
             builtins,
             cells,
@@ -145,7 +146,7 @@ impl Frame {
             stack,
             block_stack,
             locals,
-            local_names: IndexMap::new(),
+            local_names: None,
             globals,
             builtins,
             cells,
@@ -194,7 +195,7 @@ impl Frame {
             stack,
             block_stack,
             locals,
-            local_names: IndexMap::new(),
+            local_names: None,
             globals: std::ptr::read(&parent.globals),
             builtins: std::ptr::read(&parent.builtins),
             cells: Vec::new(),
@@ -310,12 +311,42 @@ impl Frame {
     }
     pub fn pop_block(&mut self) -> Option<Block> { self.block_stack.pop() }
     pub fn load_name(&self, name: &str) -> Option<PyObjectRef> {
-        self.local_names.get(name).cloned()
+        self.local_names.as_ref().and_then(|m| m.get(name).cloned())
             .or_else(|| self.globals.read().get(name).cloned())
             .or_else(|| self.builtins.get(name).cloned())
     }
     pub fn store_name(&mut self, name: CompactString, value: PyObjectRef) {
-        self.local_names.insert(name, value);
+        self.local_names.get_or_insert_with(|| Box::new(IndexMap::new())).insert(name, value);
+    }
+    /// Get a value from local_names (class/module namespace).
+    #[inline]
+    pub fn local_names_get(&self, name: &str) -> Option<PyObjectRef> {
+        self.local_names.as_ref().and_then(|m| m.get(name).cloned())
+    }
+    /// Check if local_names contains a key.
+    #[inline]
+    pub fn local_names_contains_key(&self, name: &str) -> bool {
+        self.local_names.as_ref().map_or(false, |m| m.contains_key(name))
+    }
+    /// Remove a key from local_names.
+    #[inline]
+    pub fn local_names_remove(&mut self, name: &str) -> Option<PyObjectRef> {
+        self.local_names.as_mut().and_then(|m| m.shift_remove(name))
+    }
+    /// Insert into local_names (allocates if needed).
+    #[inline]
+    pub fn local_names_insert(&mut self, name: CompactString, value: PyObjectRef) {
+        self.local_names.get_or_insert_with(|| Box::new(IndexMap::new())).insert(name, value);
+    }
+    /// Iterate over local_names. Returns empty iter if None.
+    #[inline]
+    pub fn local_names_iter(&self) -> impl Iterator<Item = (&CompactString, &PyObjectRef)> {
+        self.local_names.as_ref().into_iter().flat_map(|m| m.iter())
+    }
+    /// Take ownership of local_names (for class creation).
+    #[inline]
+    pub fn take_local_names(&mut self) -> IndexMap<CompactString, PyObjectRef> {
+        self.local_names.take().map(|b| *b).unwrap_or_default()
     }
 }
 
