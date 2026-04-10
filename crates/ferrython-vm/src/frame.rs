@@ -226,6 +226,17 @@ impl Frame {
     #[inline] pub fn pop(&mut self) -> PyObjectRef { self.stack.pop().expect("stack underflow") }
     #[inline] pub fn peek(&self) -> &PyObjectRef { self.stack.last().expect("stack underflow") }
 
+    /// Unchecked push — caller guarantees stack has capacity.
+    /// Stack capacity is pre-allocated (32) and grows automatically; for typical code
+    /// this avoids the branch in Vec::push checking capacity.
+    #[inline(always)]
+    pub unsafe fn push_unchecked(&mut self, v: PyObjectRef) {
+        let len = self.stack.len();
+        debug_assert!(len < self.stack.capacity());
+        std::ptr::write(self.stack.as_mut_ptr().add(len), v);
+        self.stack.set_len(len + 1);
+    }
+
     /// Unchecked pop — caller guarantees stack is non-empty.
     #[inline(always)]
     pub unsafe fn pop_unchecked(&mut self) -> PyObjectRef {

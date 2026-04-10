@@ -939,27 +939,6 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
-                // Inline LoadGlobal with per-frame cache fast path
-                Opcode::LoadGlobal => {
-                    let idx = instr.arg as usize;
-                    let ver = crate::frame::globals_version();
-                    if frame.global_cache_version == ver {
-                        if let Some(ref cache) = frame.global_cache {
-                            // SAFETY: idx < names.len() == cache.len() (invariant maintained by cache init)
-                            if let Some(ref v) = unsafe { cache.get_unchecked(idx) } {
-                                frame.stack.push(v.clone());
-                                Ok(None)
-                            } else {
-                                // Cache miss on this specific name — fall through
-                                self.execute_one(instr)
-                            }
-                        } else {
-                            self.execute_one(instr)
-                        }
-                    } else {
-                        self.execute_one(instr)
-                    }
-                }
                 // Inline LoadDeref (closure variable load — common in functional code)
                 Opcode::LoadDeref => {
                     let idx = instr.arg as usize;
@@ -1849,6 +1828,7 @@ impl VirtualMachine {
         None
     }
 
+    #[cold]
     fn execute_one(&mut self, instr: ferrython_bytecode::Instruction) -> Result<Option<PyObjectRef>, PyException> {
         use ferrython_bytecode::opcode::Opcode;
         match instr.op {
