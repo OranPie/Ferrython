@@ -186,6 +186,10 @@ pub enum Opcode {
     /// arg = (fast_idx << 16) | const_idx.
     /// Fast-paths int-int addition without intermediate stack pushes.
     LoadFastLoadConstBinaryAdd = 215,
+    /// ForIter + StoreFast fused.
+    /// arg encoding: (jump_target << 16) | store_idx.
+    /// Avoids intermediate stack push/pop in `for i in range(n)` loops.
+    ForIterStoreFast = 216,
 }
 
 impl Opcode {
@@ -299,6 +303,7 @@ impl Opcode {
             Self::CompareOpPopJumpIfFalse => -2, // pops 2 operands, pushes nothing
             Self::LoadFastLoadConstBinarySub => 1, // loads local + const, subtracts, pushes result
             Self::LoadFastLoadConstBinaryAdd => 1, // loads local + const, adds, pushes result
+            Self::ForIterStoreFast => 0, // either jumps (pops iter) or stores to local (net 0)
         }
     }
 
@@ -318,6 +323,7 @@ impl Opcode {
                 | Self::SetupExcept
                 | Self::SetupAsyncWith
                 | Self::CompareOpPopJumpIfFalse
+                | Self::ForIterStoreFast
         )
     }
 }

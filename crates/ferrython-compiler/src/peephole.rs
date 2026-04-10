@@ -686,6 +686,19 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // ForIter + StoreFast → ForIterStoreFast
+        // Encoding: (jump_target << 16) | store_idx
+        // jump_target must fit in 16 bits
+        if a.op == Opcode::ForIter && b.op == Opcode::StoreFast
+            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        {
+            let packed = (a.arg << 16) | b.arg;
+            code.instructions[i] = Instruction::new(Opcode::ForIterStoreFast, packed);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
         if a.arg > 0xFFFF || b.arg > 0xFFFF {
             i += 1;
             continue;
@@ -732,6 +745,16 @@ fn fuse_superinstructions(code: &mut CodeObject) {
                 final_len as u32
             };
             instr.arg = (cmp_op << 24) | new_target;
+        } else if instr.op == Opcode::ForIterStoreFast {
+            // Jump target is in high 16 bits; store_idx in low 16 bits
+            let jump_target = (instr.arg >> 16) as usize;
+            let store_idx = instr.arg & 0xFFFF;
+            let new_target = if jump_target < old_to_new.len() {
+                old_to_new[jump_target] as u32
+            } else {
+                final_len as u32
+            };
+            instr.arg = (new_target << 16) | store_idx;
         } else if is_jump(instr.op) {
             let target = instr.arg as usize;
             if target < old_to_new.len() {

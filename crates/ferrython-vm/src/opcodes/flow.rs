@@ -240,6 +240,18 @@ impl VirtualMachine {
                     }
                 }
             }
+            // ForIterStoreFast fallback: do ForIter then StoreFast
+            Opcode::ForIterStoreFast => {
+                let jump_target = (instr.arg >> 16) as u32;
+                let store_idx = (instr.arg & 0xFFFF) as usize;
+                let for_instr = Instruction::new(Opcode::ForIter, jump_target);
+                self.exec_jump_ops(for_instr)?;
+                let frame = self.vm_frame();
+                if frame.ip != jump_target as usize {
+                    let v = frame.pop();
+                    frame.set_local(store_idx, v);
+                }
+            }
             _ => unreachable!(),
         }
         Ok(None)

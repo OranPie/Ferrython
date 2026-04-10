@@ -528,6 +528,83 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
+                // ForIter + StoreFast fused: store directly to local, no stack push/pop
+                Opcode::ForIterStoreFast => {
+                    let jump_target = (instr.arg >> 16) as usize;
+                    let store_idx = (instr.arg & 0xFFFF) as usize;
+                    let iter = unsafe { frame.peek_unchecked() };
+                    if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
+                        let mut data = iter_data.lock();
+                        match &mut *data {
+                            IteratorData::Range { current, stop, step } => {
+                                let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
+                                if done {
+                                    drop(data);
+                                    drop(unsafe { frame.pop_unchecked() });
+                                    frame.ip = jump_target;
+                                } else {
+                                    let v = PyObject::int(*current);
+                                    *current += *step;
+                                    drop(data);
+                                    // Store directly to local — no stack push/pop!
+                                    unsafe { frame.set_local_unchecked(store_idx, v) };
+                                }
+                                Ok(None)
+                            }
+                            IteratorData::List { items, index } => {
+                                if *index < items.len() {
+                                    let v = items[*index].clone();
+                                    *index += 1;
+                                    drop(data);
+                                    unsafe { frame.set_local_unchecked(store_idx, v) };
+                                } else {
+                                    drop(data);
+                                    drop(unsafe { frame.pop_unchecked() });
+                                    frame.ip = jump_target;
+                                }
+                                Ok(None)
+                            }
+                            IteratorData::Tuple { items, index } => {
+                                if *index < items.len() {
+                                    let v = items[*index].clone();
+                                    *index += 1;
+                                    drop(data);
+                                    unsafe { frame.set_local_unchecked(store_idx, v) };
+                                } else {
+                                    drop(data);
+                                    drop(unsafe { frame.pop_unchecked() });
+                                    frame.ip = jump_target;
+                                }
+                                Ok(None)
+                            }
+                            _ => {
+                                // Fallback: execute as ForIter, then the StoreFast
+                                drop(data);
+                                let for_instr = ferrython_bytecode::Instruction::new(
+                                    Opcode::ForIter, jump_target as u32);
+                                self.execute_one(for_instr)?;
+                                let frame = self.call_stack.last_mut().unwrap();
+                                // If ForIter didn't jump (value was pushed), store it
+                                if frame.ip != jump_target {
+                                    let v = unsafe { frame.pop_unchecked() };
+                                    unsafe { frame.set_local_unchecked(store_idx, v) };
+                                }
+                                Ok(None)
+                            }
+                        }
+                    } else {
+                        // Fallback for non-iterator types
+                        let for_instr = ferrython_bytecode::Instruction::new(
+                            Opcode::ForIter, jump_target as u32);
+                        self.execute_one(for_instr)?;
+                        let frame = self.call_stack.last_mut().unwrap();
+                        if frame.ip != jump_target {
+                            let v = unsafe { frame.pop_unchecked() };
+                            unsafe { frame.set_local_unchecked(store_idx, v) };
+                        }
+                        Ok(None)
+                    }
+                }
                 // Inline ReturnValue: fast path when no finally blocks are active
                 Opcode::ReturnValue => {
                     if frame.block_stack.is_empty() {
@@ -1824,7 +1901,7 @@ impl VirtualMachine {
             | Opcode::PopJumpIfFalse | Opcode::PopJumpIfTrue
             | Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop
             | Opcode::GetIter | Opcode::GetYieldFromIter | Opcode::ForIter
-            | Opcode::EndForLoop
+            | Opcode::ForIterStoreFast | Opcode::EndForLoop
                 => self.exec_jump_ops(instr),
 
             Opcode::BuildTuple | Opcode::BuildList | Opcode::BuildSet
