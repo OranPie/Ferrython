@@ -920,10 +920,19 @@ impl VirtualMachine {
                             f.scope_kind = crate::frame::ScopeKind::Function;
                             f
                         };
-                        for (i, arg) in frame.stack.drain(args_start..).enumerate() {
-                            new_frame.locals[i] = Some(arg);
+                        // Move args directly from parent stack to new frame locals
+                        // SAFETY: we know stack has func + arg_count elements at the end
+                        unsafe {
+                            let base = frame.stack.as_ptr();
+                            for i in 0..arg_count {
+                                new_frame.locals[i] = Some(
+                                    std::ptr::read(base.add(args_start + i))
+                                );
+                            }
+                            // Take ownership of function object (dropped at scope end)
+                            let _func = std::ptr::read(base.add(func_idx));
+                            frame.stack.set_len(func_idx);
                         }
-                        frame.stack.pop(); // drop the function object
                         self.call_stack.push(new_frame);
                         if self.call_stack.len() > self.recursion_limit {
                             if let Some(frame) = self.call_stack.pop() {
@@ -1055,12 +1064,20 @@ impl VirtualMachine {
                             code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool,
                         );
                         // Stack: [..., method, receiver, arg0, ..., argN-1]
+                        // Move args + receiver + method off stack with direct reads
                         let arg_start = frame.stack.len() - arg_count;
-                        for (i, arg) in frame.stack.drain(arg_start..).enumerate() {
-                            new_frame.locals[i + 1] = Some(arg);
+                        unsafe {
+                            let base = frame.stack.as_ptr();
+                            for i in 0..arg_count {
+                                new_frame.locals[i + 1] = Some(
+                                    std::ptr::read(base.add(arg_start + i))
+                                );
+                            }
+                            // receiver at arg_start - 1, method at arg_start - 2
+                            new_frame.locals[0] = Some(std::ptr::read(base.add(arg_start - 1)));
+                            let _method = std::ptr::read(base.add(arg_start - 2));
+                            frame.stack.set_len(arg_start - 2);
                         }
-                        new_frame.locals[0] = frame.stack.pop(); // receiver (moved)
-                        frame.stack.pop(); // drop method
                         // Inherit global cache for recursive calls (same code object)
                         if Arc::ptr_eq(&frame.code, &new_frame.code) {
                             if let Some(ref cache) = frame.global_cache {
