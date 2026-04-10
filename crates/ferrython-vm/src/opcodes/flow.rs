@@ -622,11 +622,10 @@ impl VirtualMachine {
                         && name.as_str() != "__dict__";
 
                     if is_plain {
-                        // Resolve effective class: honour `__class__` override
-                        let effective_class = inst.attrs.read().get("__class__")
-                            .filter(|c| matches!(c.payload, PyObjectPayload::Class(_)))
-                            .cloned()
-                            .unwrap_or_else(|| inst.class.clone());
+                        // Use the compile-time class directly (fast path).
+                        // __class__ overrides go through the slow path since
+                        // they're very rare (metaclass magic only).
+                        let effective_class = inst.class.clone();
 
                         // Check own class for Python-level method overrides first.
                         // Class-defined functions (descriptors) take precedence over

@@ -23,6 +23,7 @@ pub fn optimize(code: &mut CodeObject) {
     while changed {
         changed = false;
         changed |= fold_constants(code);
+        changed |= fold_constant_tuples(code);
         changed |= eliminate_dead_stores(code);
         changed |= eliminate_dead_code(code);
         changed |= collapse_jump_chains(code);
@@ -105,6 +106,41 @@ fn fold_constants(code: &mut CodeObject) -> bool {
         i += 1;
     }
 
+    changed
+}
+
+/// Fold constant tuples: `LOAD_CONST a; LOAD_CONST b; ... BUILD_TUPLE n` → `LOAD_CONST (a,b,...)`
+/// Only folds when ALL elements are constants. Handles tuples up to 16 elements.
+fn fold_constant_tuples(code: &mut CodeObject) -> bool {
+    let mut changed = false;
+    let n = code.instructions.len();
+    let mut i = 0;
+    while i < n {
+        let instr = code.instructions[i];
+        if instr.op == Opcode::BuildTuple {
+            let count = instr.arg as usize;
+            if count > 0 && count <= 16 && i >= count {
+                // Check if all preceding `count` instructions are LOAD_CONST
+                let start = i - count;
+                let all_const = (0..count).all(|j| code.instructions[start + j].op == Opcode::LoadConst);
+                if all_const {
+                    let elements: Vec<ConstantValue> = (0..count)
+                        .map(|j| code.constants[code.instructions[start + j].arg as usize].clone())
+                        .collect();
+                    let tuple_val = ConstantValue::Tuple(elements);
+                    let idx = intern_constant(code, tuple_val);
+                    code.instructions[start] = Instruction::new(Opcode::LoadConst, idx as u32);
+                    for j in 1..=count {
+                        code.instructions[start + j] = Instruction::simple(Opcode::Nop);
+                    }
+                    changed = true;
+                    i = start + count + 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
     changed
 }
 
