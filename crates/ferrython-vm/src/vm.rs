@@ -1306,6 +1306,23 @@ impl VirtualMachine {
                     frame.ip = instr.arg as usize;
                     Ok(None)
                 }
+                // Inline try/except block setup/teardown (very cheap, called every iteration in try loops)
+                Opcode::SetupExcept => {
+                    frame.push_block(crate::frame::BlockKind::Except, instr.arg as usize);
+                    Ok(None)
+                }
+                Opcode::SetupFinally => {
+                    frame.push_block(crate::frame::BlockKind::Finally, instr.arg as usize);
+                    Ok(None)
+                }
+                Opcode::PopBlock => {
+                    frame.pop_block();
+                    Ok(None)
+                }
+                Opcode::BeginFinally => {
+                    spush!(frame, PyObject::none());
+                    Ok(None)
+                }
                 // Inline unary ops for common types
                 Opcode::UnaryNot => {
                     let v = unsafe { frame.peek_unchecked() };
