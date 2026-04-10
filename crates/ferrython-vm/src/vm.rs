@@ -386,6 +386,51 @@ impl VirtualMachine {
                         ))),
                     }
                 }
+                // 3-way superinstruction: LoadFast + LoadConst + BinaryAdd
+                Opcode::LoadFastLoadConstBinaryAdd => {
+                    let fast_idx = (instr.arg >> 16) as usize;
+                    let const_idx = (instr.arg & 0xFFFF) as usize;
+                    match unsafe { frame.get_local_unchecked(fast_idx) } {
+                        Some(local) => {
+                            let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
+                            match (&local.payload, &c.payload) {
+                                (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                    let result = match x.checked_add(*y) {
+                                        Some(r) => PyObject::int(r),
+                                        None => {
+                                            use num_bigint::BigInt;
+                                            PyObject::big_int(BigInt::from(*x) + BigInt::from(*y))
+                                        }
+                                    };
+                                    frame.stack.push(result);
+                                    Ok(None)
+                                }
+                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                    frame.stack.push(PyObject::float(*x + *y));
+                                    Ok(None)
+                                }
+                                (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
+                                    frame.stack.push(PyObject::float(*x as f64 + *y));
+                                    Ok(None)
+                                }
+                                (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                    frame.stack.push(PyObject::float(*x + *y as f64));
+                                    Ok(None)
+                                }
+                                _ => {
+                                    frame.stack.push(local.clone());
+                                    frame.stack.push(c.clone());
+                                    self.execute_one(ferrython_bytecode::Instruction::new(
+                                        Opcode::BinaryAdd, 0))
+                                }
+                            }
+                        }
+                        None => Err(PyException::name_error(format!(
+                            "local variable '{}' referenced before assignment",
+                            frame.code.varnames.get(fast_idx).map(|s| s.as_str()).unwrap_or("?")
+                        ))),
+                    }
+                }
                 Opcode::PopTop => {
                     // SAFETY: stack non-empty for well-formed bytecode
                     drop(unsafe { frame.pop_unchecked() });
@@ -1767,6 +1812,7 @@ impl VirtualMachine {
             | Opcode::BinaryXor | Opcode::InplaceXor
             | Opcode::BinaryMatrixMultiply | Opcode::InplaceMatrixMultiply
             | Opcode::LoadFastLoadConstBinarySub
+            | Opcode::LoadFastLoadConstBinaryAdd
                 => self.exec_binary_ops(instr),
 
             Opcode::BinarySubscr | Opcode::StoreSubscr | Opcode::DeleteSubscr
