@@ -214,6 +214,12 @@ impl VirtualMachine {
             self.fire_profile_event("call", PyObject::none());
         }
 
+        // Track initial call stack depth for iterative call/return.
+        // When CallFunction/CallMethod push a child frame, the loop continues
+        // executing it. When ReturnValue fires above initial_depth, we pop the
+        // child and push the result to the parent — no recursive run_frame().
+        let initial_depth = self.call_stack.len();
+
         let mut last_line: u32 = 0;
         // Re-check trace/profile periodically (every 64 opcodes) instead of
         // calling thread-local get_trace_func() on every single iteration.
@@ -790,18 +796,16 @@ impl VirtualMachine {
                             }
                             Err(PyException::recursion_error("maximum recursion depth exceeded"))
                         } else {
-                            let result = self.run_frame();
-                            if let Some(frame) = self.call_stack.pop() {
-                                frame.recycle(&mut self.frame_pool);
+                            // Iterative: continue loop with child frame (no recursive call)
+                            if has_trace {
+                                let frame_obj = self.make_trace_frame();
+                                ferrython_stdlib::set_current_frame(Some(frame_obj));
+                                self.fire_trace_event("call", PyObject::none());
                             }
-                            match result {
-                                Ok(val) => {
-                                    let val = self.post_call_intercept(val)?;
-                                    self.call_stack.last_mut().unwrap().stack.push(val);
-                                    Ok(None)
-                                }
-                                Err(e) => Err(e),
+                            if has_profile {
+                                self.fire_profile_event("call", PyObject::none());
                             }
+                            Ok(None)
                         }
                     } else {
                         self.execute_one(instr)
@@ -998,16 +1002,16 @@ impl VirtualMachine {
                             if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
                             Err(PyException::recursion_error("maximum recursion depth exceeded"))
                         } else {
-                            let result = self.run_frame();
-                            if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
-                            match result {
-                                Ok(val) => {
-                                    let val = self.post_call_intercept(val)?;
-                                    self.call_stack.last_mut().unwrap().stack.push(val);
-                                    Ok(None)
-                                }
-                                Err(e) => Err(e),
+                            // Iterative: continue loop with child frame (no recursive call)
+                            if has_trace {
+                                let frame_obj = self.make_trace_frame();
+                                ferrython_stdlib::set_current_frame(Some(frame_obj));
+                                self.fire_trace_event("call", PyObject::none());
                             }
+                            if has_profile {
+                                self.fire_profile_event("call", PyObject::none());
+                            }
+                            Ok(None)
                         }
                     } else {
                         self.execute_one(instr)
@@ -1227,7 +1231,24 @@ impl VirtualMachine {
             match result {
                 Ok(Some(ret)) => {
                     if profiling { self.profiler.end_instruction(instr.op); }
-                    // Fire "return" event
+                    // Iterative call/return: if we're deeper than initial_depth,
+                    // we're returning from a child frame pushed by inline
+                    // CallFunction/CallMethod — pop it and push result to parent.
+                    if self.call_stack.len() > initial_depth {
+                        if has_trace {
+                            self.fire_trace_event("return", ret.clone());
+                        }
+                        if has_profile {
+                            self.fire_profile_event("return", ret.clone());
+                        }
+                        if let Some(child) = self.call_stack.pop() {
+                            child.recycle(&mut self.frame_pool);
+                        }
+                        let val = self.post_call_intercept(ret)?;
+                        self.call_stack.last_mut().unwrap().stack.push(val);
+                        continue;
+                    }
+                    // Returning from the initial frame we were called to execute
                     if has_trace {
                         self.fire_trace_event("return", ret.clone());
                     }
@@ -1260,89 +1281,99 @@ impl VirtualMachine {
                             exc.context = Some(Box::new(active.clone()));
                         }
                     }
-                    if let Some(handler_ip) = self.unwind_except() {
-                        // Store active exception for bare `raise` re-raise
-                        self.active_exception = Some(exc.clone());
-                        // Also update core thread-local (used by ferrython-traceback)
-                        ferrython_core::error::set_thread_exc_info(
-                            exc.kind.clone(),
-                            exc.message.clone(),
-                            exc.traceback.clone(),
-                        );
-                        let frame = self.call_stack.last_mut().unwrap();
-                        // CPython pushes (traceback, value, type) — 3 items
-                        let (exc_value, exc_type) = if let Some(orig) = &exc.original {
-                            let cls = if let PyObjectPayload::Instance(inst) = &orig.payload {
-                                inst.class.clone()
+                    // Iterative exception unwind: try current frame, then parents
+                    loop {
+                        if let Some(handler_ip) = self.unwind_except() {
+                            // Store active exception for bare `raise` re-raise
+                            self.active_exception = Some(exc.clone());
+                            // Also update core thread-local (used by ferrython-traceback)
+                            ferrython_core::error::set_thread_exc_info(
+                                exc.kind.clone(),
+                                exc.message.clone(),
+                                exc.traceback.clone(),
+                            );
+                            let frame = self.call_stack.last_mut().unwrap();
+                            // CPython pushes (traceback, value, type) — 3 items
+                            let (exc_value, exc_type) = if let Some(orig) = &exc.original {
+                                let cls = if let PyObjectPayload::Instance(inst) = &orig.payload {
+                                    inst.class.clone()
+                                } else {
+                                    PyObject::exception_type(exc.kind.clone())
+                                };
+                                (orig.clone(), cls)
                             } else {
-                                PyObject::exception_type(exc.kind.clone())
+                                let inst = if let Some(val) = &exc.value {
+                                    PyObject::exception_instance_with_args(exc.kind.clone(), exc.message.clone(), vec![val.clone()])
+                                } else {
+                                    PyObject::exception_instance(exc.kind.clone(), exc.message.clone())
+                                };
+                                (
+                                    inst,
+                                    PyObject::exception_type(exc.kind.clone()),
+                                )
                             };
-                            (orig.clone(), cls)
-                        } else {
-                            let inst = if let Some(val) = &exc.value {
-                                PyObject::exception_instance_with_args(exc.kind.clone(), exc.message.clone(), vec![val.clone()])
-                            } else {
-                                PyObject::exception_instance(exc.kind.clone(), exc.message.clone())
-                            };
-                            (
-                                inst,
-                                PyObject::exception_type(exc.kind.clone()),
-                            )
-                        };
-                        // Store StopIteration.value if present
-                        if let Some(val) = &exc.value {
-                            Self::store_exc_attr(&exc_value, "value", val.clone());
-                        }
-                        // Store OSError attributes (.errno, .strerror, .filename) if present
-                        if let Some(info) = &exc.os_error_info {
-                            Self::store_exc_attr(&exc_value, "errno", PyObject::int(info.errno as i64));
-                            Self::store_exc_attr(&exc_value, "strerror", PyObject::str_val(CompactString::from(info.strerror.as_str())));
-                            if let Some(fname) = &info.filename {
-                                Self::store_exc_attr(&exc_value, "filename", PyObject::str_val(CompactString::from(fname.as_str())));
-                            } else {
-                                Self::store_exc_attr(&exc_value, "filename", PyObject::none());
+                            // Store StopIteration.value if present
+                            if let Some(val) = &exc.value {
+                                Self::store_exc_attr(&exc_value, "value", val.clone());
                             }
-                        }
-                        // Attach __cause__ from exception chaining (raise X from Y)
-                        if let Some(cause) = &exc.cause {
-                            let cause_obj = if let Some(corig) = &cause.original {
-                                corig.clone()
+                            // Store OSError attributes (.errno, .strerror, .filename) if present
+                            if let Some(info) = &exc.os_error_info {
+                                Self::store_exc_attr(&exc_value, "errno", PyObject::int(info.errno as i64));
+                                Self::store_exc_attr(&exc_value, "strerror", PyObject::str_val(CompactString::from(info.strerror.as_str())));
+                                if let Some(fname) = &info.filename {
+                                    Self::store_exc_attr(&exc_value, "filename", PyObject::str_val(CompactString::from(fname.as_str())));
+                                } else {
+                                    Self::store_exc_attr(&exc_value, "filename", PyObject::none());
+                                }
+                            }
+                            // Attach __cause__ from exception chaining (raise X from Y)
+                            if let Some(cause) = &exc.cause {
+                                let cause_obj = if let Some(corig) = &cause.original {
+                                    corig.clone()
+                                } else {
+                                    PyObject::exception_instance(cause.kind.clone(), cause.message.clone())
+                                };
+                                Self::store_exc_attr(&exc_value, "__cause__", cause_obj);
                             } else {
-                                PyObject::exception_instance(cause.kind.clone(), cause.message.clone())
-                            };
-                            Self::store_exc_attr(&exc_value, "__cause__", cause_obj);
-                        } else {
-                            Self::store_exc_attr(&exc_value, "__cause__", PyObject::none());
-                        }
-                        // Attach __context__ from implicit exception chaining
-                        if let Some(ctx) = &exc.context {
-                            let ctx_obj = if let Some(corig) = &ctx.original {
-                                corig.clone()
+                                Self::store_exc_attr(&exc_value, "__cause__", PyObject::none());
+                            }
+                            // Attach __context__ from implicit exception chaining
+                            if let Some(ctx) = &exc.context {
+                                let ctx_obj = if let Some(corig) = &ctx.original {
+                                    corig.clone()
+                                } else {
+                                    PyObject::exception_instance(ctx.kind.clone(), ctx.message.clone())
+                                };
+                                Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
                             } else {
-                                PyObject::exception_instance(ctx.kind.clone(), ctx.message.clone())
-                            };
-                            Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
-                        } else {
-                            Self::store_exc_attr(&exc_value, "__context__", PyObject::none());
+                                Self::store_exc_attr(&exc_value, "__context__", PyObject::none());
+                            }
+                            // Store __suppress_context__ (True when explicit cause is set)
+                            if exc.cause.is_some() {
+                                Self::store_exc_attr(&exc_value, "__suppress_context__", PyObject::bool_val(true));
+                            }
+                            // Store __traceback__ on the exception value
+                            let tb_obj = Self::build_traceback_object(&exc.traceback);
+                            Self::store_exc_attr(&exc_value, "__traceback__", tb_obj.clone());
+                            // Update thread-local for sys.exc_info() — after exc_value and __traceback__ are ready
+                            ferrython_stdlib::set_exc_info(
+                                exc.kind.clone(),
+                                exc.message.clone(),
+                                Some(exc_value.clone()),
+                            );
+                            frame.push(tb_obj);               // traceback
+                            frame.push(exc_value);            // value
+                            frame.push(exc_type);             // type
+                            frame.ip = handler_ip;
+                            break; // handler found, continue main loop
                         }
-                        // Store __suppress_context__ (True when explicit cause is set)
-                        if exc.cause.is_some() {
-                            Self::store_exc_attr(&exc_value, "__suppress_context__", PyObject::bool_val(true));
+                        // No handler in current frame — unwind iteratively
+                        if self.call_stack.len() > initial_depth {
+                            if let Some(child) = self.call_stack.pop() {
+                                child.recycle(&mut self.frame_pool);
+                            }
+                            continue; // try parent frame's block stack
                         }
-                        // Store __traceback__ on the exception value
-                        let tb_obj = Self::build_traceback_object(&exc.traceback);
-                        Self::store_exc_attr(&exc_value, "__traceback__", tb_obj.clone());
-                        // Update thread-local for sys.exc_info() — after exc_value and __traceback__ are ready
-                        ferrython_stdlib::set_exc_info(
-                            exc.kind.clone(),
-                            exc.message.clone(),
-                            Some(exc_value.clone()),
-                        );
-                        frame.push(tb_obj);               // traceback
-                        frame.push(exc_value);            // value
-                        frame.push(exc_type);             // type
-                        frame.ip = handler_ip;
-                    } else {
                         return Err(exc);
                     }
                 }
