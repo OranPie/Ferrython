@@ -2682,6 +2682,118 @@ impl VirtualMachine {
                         }
                     }
                 }
+                // Fused CallMethod + PopTop — discard return value (common for list.append, etc.)
+                Opcode::CallMethodPopTop => {
+                    let arg_count = instr.arg as usize;
+                    let stack_len = frame.stack.len();
+                    let base_idx = stack_len - arg_count - 2;
+                    let is_builtin_str = matches!(&sget!(frame, base_idx).payload, PyObjectPayload::Str(_));
+                    if is_builtin_str {
+                        // Ultra-fast inline: list.append(val) — no result pushed
+                        let is_list_append = arg_count == 1
+                            && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
+                                (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "append");
+                        let is_list_pop = !is_list_append && arg_count == 0
+                            && matches!((&sget!(frame, base_idx).payload, &sget!(frame, base_idx + 1).payload),
+                                (PyObjectPayload::Str(n), PyObjectPayload::List(_)) if n.as_str() == "pop");
+                        if is_list_append {
+                            let len = frame.stack.len();
+                            unsafe {
+                                let val = std::ptr::read(frame.stack.as_ptr().add(len - 1));
+                                let receiver = &*frame.stack.as_ptr().add(len - 2);
+                                if let PyObjectPayload::List(items) = &receiver.payload {
+                                    items.write().push(val);
+                                }
+                                let _receiver = std::ptr::read(frame.stack.as_ptr().add(len - 2));
+                                let _name = std::ptr::read(frame.stack.as_ptr().add(len - 3));
+                                frame.stack.set_len(len - 3);
+                            }
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        } else if is_list_pop {
+                            let len = frame.stack.len();
+                            unsafe {
+                                let receiver = &*frame.stack.as_ptr().add(len - 1);
+                                if let PyObjectPayload::List(items) = &receiver.payload {
+                                    match items.write().pop() {
+                                        Some(_val) => {
+                                            let _receiver = std::ptr::read(frame.stack.as_ptr().add(len - 1));
+                                            let _name = std::ptr::read(frame.stack.as_ptr().add(len - 2));
+                                            frame.stack.set_len(len - 2);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                        None => Err(PyException::index_error("pop from empty list")),
+                                    }
+                                } else { unreachable!() }
+                            }
+                        } else {
+                            // General builtin method — execute, then discard result
+                            let mut args = Vec::with_capacity(arg_count);
+                            for _ in 0..arg_count { args.push(spop!(frame)); }
+                            args.reverse();
+                            let receiver = spop!(frame);
+                            let name_obj = spop!(frame);
+                            if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                let _result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
+                            }
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                    } else {
+                        // Python function call or other: delegate to CallMethod, result handler
+                        // will detect CallMethodPopTop and discard the return value
+                        let cm_instr = ferrython_bytecode::Instruction::new(Opcode::CallMethod, instr.arg);
+                        let slot_0 = sget!(frame, base_idx);
+                        let fast_data = if !matches!(&slot_0.payload, PyObjectPayload::None) {
+                            if let PyObjectPayload::Function(pf) = &slot_0.payload {
+                                if pf.is_simple && pf.code.arg_count as usize == arg_count + 1 {
+                                    Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache)))
+                                } else { None }
+                            } else { None }
+                        } else { None };
+                        if let Some((code, globals, cc)) = fast_data {
+                            // Inline frame creation (same as CallMethod)
+                            let mut new_frame = Frame::new_from_pool(
+                                code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool,
+                            );
+                            let arg_start = frame.stack.len() - arg_count;
+                            unsafe {
+                                let base = frame.stack.as_ptr();
+                                for ii in 0..arg_count {
+                                    new_frame.locals[ii + 1] = Some(std::ptr::read(base.add(arg_start + ii)));
+                                }
+                                new_frame.locals[0] = Some(std::ptr::read(base.add(arg_start - 1)));
+                                let _method = std::ptr::read(base.add(arg_start - 2));
+                                frame.stack.set_len(arg_start - 2);
+                            }
+                            if Arc::ptr_eq(&frame.code, &new_frame.code) {
+                                if let Some(ref cache) = frame.global_cache {
+                                    new_frame.global_cache = Some(cache.clone());
+                                    new_frame.global_cache_version = frame.global_cache_version;
+                                }
+                            }
+                            new_frame.scope_kind = crate::frame::ScopeKind::Function;
+                            self.call_stack.push(new_frame);
+                            if self.call_stack.len() > self.recursion_limit {
+                                if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
+                                Err(PyException::recursion_error("maximum recursion depth exceeded"))
+                            } else {
+                                // Child frame pushed. When it returns, the Ok(Some(ret)) handler
+                                // will check that the calling instruction was CallMethodPopTop
+                                // and discard the return value instead of pushing it.
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
+                        } else {
+                            // Non-fast-path: delegate to execute_one, then pop result
+                            let res = self.execute_one(cm_instr)?;
+                            if res.is_none() {
+                                let frame2 = self.call_stack.last_mut().unwrap();
+                                if !frame2.stack.is_empty() {
+                                    drop(spop!(frame2));
+                                }
+                            }
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                    }
+                }
                 // Inline BinarySubscr for list[int], tuple[int], dict[HashableKey]
                 Opcode::BinarySubscr => {
                     let len = frame.stack.len();
@@ -3153,7 +3265,16 @@ impl VirtualMachine {
                         child.recycle(&mut self.frame_pool);
                         // SAFETY: we verified len > initial_depth >= 1 and popped one
                         let cs_len = self.call_stack.len();
-                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.stack.push(ret);
+                        let parent = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
+                        // Check if the calling instruction was CallMethodPopTop — if so,
+                        // discard the return value instead of pushing it to the stack.
+                        let caller_op = parent.code.instructions.get(parent.ip.wrapping_sub(1))
+                            .map(|i| i.op);
+                        if caller_op == Some(Opcode::CallMethodPopTop) {
+                            drop(ret);
+                        } else {
+                            parent.stack.push(ret);
+                        }
                         continue;
                     }
                     // Returning from the initial frame we were called to execute
@@ -3498,6 +3619,7 @@ impl VirtualMachine {
                 => self.exec_build_ops(instr),
 
             Opcode::CallFunction | Opcode::CallFunctionKw | Opcode::CallMethod
+            | Opcode::CallMethodPopTop
             | Opcode::CallFunctionEx | Opcode::LoadMethod | Opcode::MakeFunction
             | Opcode::LoadGlobalCallFunction | Opcode::LoadFastLoadAttr
             | Opcode::LoadFastLoadMethod

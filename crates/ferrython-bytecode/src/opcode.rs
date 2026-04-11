@@ -229,6 +229,9 @@ pub enum Opcode {
     /// Fused LoadConst + StoreFast — common variable initialization (`x = 0`, `x = None`).
     /// arg encoding: (const_idx << 16) | store_idx
     LoadConstStoreFast = 228,
+    /// Fused CallMethod + PopTop — common for methods whose return value is discarded.
+    /// arg = arg_count (same as CallMethod)
+    CallMethodPopTop = 229,
 }
 
 impl Opcode {
@@ -359,6 +362,10 @@ impl Opcode {
             Self::LoadFastReturnValue => 0, // reads local, returns it (no net stack change)
             Self::LoadConstReturnValue => 0, // reads const, returns it
             Self::LoadConstStoreFast => 0, // reads const, stores to local (net 0)
+            Self::CallMethodPopTop => {
+                // Pops: method + receiver + arg_count args. Pushes nothing (result discarded).
+                -(arg as i32) - 2
+            }
         }
     }
 

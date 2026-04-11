@@ -856,6 +856,14 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // CallMethod + PopTop → CallMethodPopTop (discard return value)
+        if a.op == Opcode::CallMethod && b.op == Opcode::PopTop {
+            code.instructions[i] = Instruction::new(Opcode::CallMethodPopTop, a.arg);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
         if a.arg > 0xFFFF || b.arg > 0xFFFF {
             i += 1;
             continue;

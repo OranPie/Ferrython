@@ -35,6 +35,11 @@ static FLOAT_ZERO: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { 
 static FLOAT_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Float(1.0) }));
 static FLOAT_NEG_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Float(-1.0) }));
 
+// ── Empty collection singletons ──
+static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Tuple(vec![]) }));
+static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Str(CompactString::const_new("")) }));
+static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Bytes(vec![]) }));
+
 // ── GC Tracking for cycle-capable objects (Instance, Dict, List) ──
 static TRACKED_OBJECTS: LazyLock<Mutex<Vec<Weak<PyObject>>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -267,15 +272,24 @@ impl PyObject {
     }
     pub fn complex(real: f64, imag: f64) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Complex { real, imag }) }
     #[inline]
-    pub fn str_val(v: CompactString) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Str(v)) }
-    pub fn bytes(v: Vec<u8>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Bytes(v)) }
+    pub fn str_val(v: CompactString) -> PyObjectRef {
+        if v.is_empty() { return EMPTY_STR.clone(); }
+        Self::wrap_leaf(PyObjectPayload::Str(v))
+    }
+    pub fn bytes(v: Vec<u8>) -> PyObjectRef {
+        if v.is_empty() { return EMPTY_BYTES.clone(); }
+        Self::wrap_leaf(PyObjectPayload::Bytes(v))
+    }
     pub fn bytearray(v: Vec<u8>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::ByteArray(v)) }
     pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef {
         let obj = Self::wrap(PyObjectPayload::List(Arc::new(RwLock::new(items))));
         track_object(&obj);
         obj
     }
-    pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::Tuple(items)) }
+    pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef {
+        if items.is_empty() { return EMPTY_TUPLE.clone(); }
+        Self::wrap_leaf(PyObjectPayload::Tuple(items))
+    }
     pub fn set(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(items)))) }
     pub fn dict(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
         let obj = Self::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(items))));

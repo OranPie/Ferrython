@@ -645,6 +645,17 @@ impl VirtualMachine {
                 let result = self.post_call_intercept(result)?;
                 self.vm_push(result);
             }
+            Opcode::CallMethodPopTop => {
+                // Same as CallMethod but discard result (fused PopTop)
+                let cm_instr = Instruction::new(Opcode::CallMethod, instr.arg);
+                // Reuse CallMethod logic via exec_call_ops recursion
+                self.exec_call_ops(cm_instr)?;
+                // Pop the result that CallMethod pushed
+                let frame = self.call_stack.last_mut().unwrap();
+                if !frame.stack.is_empty() {
+                    frame.pop();
+                }
+            }
             Opcode::CallFunctionEx => {
                 let frame = self.vm_frame();
                 let has_kwargs = (instr.arg & 1) != 0;
