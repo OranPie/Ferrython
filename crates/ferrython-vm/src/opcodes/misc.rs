@@ -9,6 +9,7 @@ use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::types::PyInt;
 use indexmap::IndexMap;
 use std::sync::Arc;
 
@@ -45,7 +46,32 @@ impl VirtualMachine {
             }
             Opcode::FormatValue => {
                 let frame = self.vm_frame();
-                let fmt_spec = if instr.arg & 0x04 != 0 {
+                let has_fmt_spec = instr.arg & 0x04 != 0;
+                let conversion = (instr.arg & 0x03) as u8;
+                // Fast path: no format spec, no/!s conversion, primitive value
+                if !has_fmt_spec && (conversion == 0 || conversion == 1) {
+                    let val = frame.peek();
+                    let fast_str = match &val.payload {
+                        PyObjectPayload::Str(s) => Some(s.clone()),
+                        PyObjectPayload::Int(PyInt::Small(n)) => {
+                            let mut buf = itoa::Buffer::new();
+                            Some(CompactString::from(buf.format(*n)))
+                        }
+                        PyObjectPayload::Float(f) => {
+                            let mut buf = ryu::Buffer::new();
+                            Some(CompactString::from(buf.format(*f)))
+                        }
+                        PyObjectPayload::Bool(b) => Some(CompactString::from(if *b { "True" } else { "False" })),
+                        PyObjectPayload::None => Some(CompactString::from("None")),
+                        _ => None,
+                    };
+                    if let Some(s) = fast_str {
+                        frame.pop();
+                        self.vm_push(PyObject::str_val(s));
+                        return Ok(None);
+                    }
+                }
+                let fmt_spec = if has_fmt_spec {
                     let spec_obj = frame.pop();
                     spec_obj.as_str().unwrap_or("").to_string()
                 } else {

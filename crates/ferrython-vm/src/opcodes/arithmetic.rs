@@ -26,7 +26,23 @@ impl VirtualMachine {
             }
             Opcode::UnaryNegative => {
                 let v = self.vm_pop();
-                if let Some(r) = self.try_call_dunder(&v, "__neg__", vec![])? {
+                // Inline fast path for int/float
+                let fast = match &v.payload {
+                    PyObjectPayload::Int(PyInt::Small(n)) => {
+                        Some(match n.checked_neg() {
+                            Some(r) => PyObject::int(r),
+                            None => {
+                                use num_bigint::BigInt;
+                                PyObject::big_int(-BigInt::from(*n))
+                            }
+                        })
+                    }
+                    PyObjectPayload::Float(f) => Some(PyObject::float(-f)),
+                    _ => None,
+                };
+                if let Some(r) = fast {
+                    self.vm_push(r);
+                } else if let Some(r) = self.try_call_dunder(&v, "__neg__", vec![])? {
                     self.vm_push(r);
                 } else {
                     self.vm_push(v.negate()?);
@@ -34,8 +50,19 @@ impl VirtualMachine {
             }
             Opcode::UnaryNot => {
                 let v = self.vm_pop();
-                let truthy = self.vm_is_truthy(&v)?;
-                self.vm_push(PyObject::bool_val(!truthy));
+                // Inline fast path for bool/int/None
+                let fast = match &v.payload {
+                    PyObjectPayload::Bool(b) => Some(!b),
+                    PyObjectPayload::Int(PyInt::Small(n)) => Some(*n == 0),
+                    PyObjectPayload::None => Some(true),
+                    _ => None,
+                };
+                if let Some(r) = fast {
+                    self.vm_push(PyObject::bool_val(r));
+                } else {
+                    let truthy = self.vm_is_truthy(&v)?;
+                    self.vm_push(PyObject::bool_val(!truthy));
+                }
             }
             Opcode::UnaryInvert => {
                 let v = self.vm_pop();
@@ -166,6 +193,61 @@ impl VirtualMachine {
             }
             Opcode::BinaryMultiply | Opcode::InplaceMultiply => {
                 fast_int_op!(a, b, checked_mul, *);
+            }
+            // Fast paths for bitwise/shift/power on small ints
+            Opcode::BinaryAnd | Opcode::InplaceAnd => {
+                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                    self.vm_push(PyObject::int(*x & *y));
+                    return Ok(None);
+                }
+            }
+            Opcode::BinaryOr | Opcode::InplaceOr => {
+                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                    self.vm_push(PyObject::int(*x | *y));
+                    return Ok(None);
+                }
+            }
+            Opcode::BinaryXor | Opcode::InplaceXor => {
+                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                    self.vm_push(PyObject::int(*x ^ *y));
+                    return Ok(None);
+                }
+            }
+            Opcode::BinaryLshift | Opcode::InplaceLshift => {
+                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                    if *y >= 0 && *y < 64 {
+                        if let Some(r) = x.checked_shl(*y as u32) {
+                            self.vm_push(PyObject::int(r));
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+            Opcode::BinaryRshift | Opcode::InplaceRshift => {
+                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                    if *y >= 0 && *y < 64 {
+                        self.vm_push(PyObject::int(*x >> *y as u32));
+                        return Ok(None);
+                    }
+                }
+            }
+            Opcode::BinaryPower | Opcode::InplacePower => {
+                if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) = (&a.payload, &b.payload) {
+                    if *y >= 0 && *y <= 63 {
+                        let mut r: i64 = 1;
+                        let mut overflow = false;
+                        for _ in 0..*y {
+                            match r.checked_mul(*x) {
+                                Some(v) => r = v,
+                                None => { overflow = true; break; }
+                            }
+                        }
+                        if !overflow {
+                            self.vm_push(PyObject::int(r));
+                            return Ok(None);
+                        }
+                    }
+                }
             }
             _ => {}
         }

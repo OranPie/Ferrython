@@ -265,17 +265,23 @@ impl VirtualMachine {
         match instr.op {
             Opcode::BuildTuple => {
                 let count = instr.arg as usize;
-                let mut items = Vec::with_capacity(count);
-                for _ in 0..count { items.push(frame.pop()); }
-                items.reverse();
-                frame.push(PyObject::tuple(items));
+                if count == 0 {
+                    frame.push(PyObject::tuple(vec![]));
+                } else {
+                    let start = frame.stack.len() - count;
+                    let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
+                    frame.push(PyObject::tuple(items));
+                }
             }
             Opcode::BuildList => {
                 let count = instr.arg as usize;
-                let mut items = Vec::with_capacity(count);
-                for _ in 0..count { items.push(frame.pop()); }
-                items.reverse();
-                frame.push(PyObject::list(items));
+                if count == 0 {
+                    frame.push(PyObject::list(vec![]));
+                } else {
+                    let start = frame.stack.len() - count;
+                    let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
+                    frame.push(PyObject::list(items));
+                }
             }
             Opcode::BuildSet => {
                 let count = instr.arg as usize;
@@ -326,11 +332,40 @@ impl VirtualMachine {
             }
             Opcode::BuildString => {
                 let count = instr.arg as usize;
-                let mut parts = Vec::new();
-                for _ in 0..count { parts.push(frame.pop()); }
-                parts.reverse();
-                let s: String = parts.iter().map(|p| p.py_to_string()).collect();
-                frame.push(PyObject::str_val(CompactString::from(s)));
+                if count == 0 {
+                    frame.push(PyObject::str_val(CompactString::from("")));
+                } else if count == 1 {
+                    // Single item — already a string from FormatValue
+                } else {
+                    let start = frame.stack.len() - count;
+                    // Fast path: all items are already Str
+                    let mut total_len = 0usize;
+                    let mut all_str = true;
+                    for i in start..frame.stack.len() {
+                        if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
+                            total_len += s.len();
+                        } else {
+                            all_str = false;
+                            break;
+                        }
+                    }
+                    if all_str {
+                        let mut result = String::with_capacity(total_len);
+                        for i in start..frame.stack.len() {
+                            if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
+                                result.push_str(s.as_str());
+                            }
+                        }
+                        frame.stack.truncate(start);
+                        frame.push(PyObject::str_val(CompactString::from(result)));
+                    } else {
+                        let mut parts = Vec::new();
+                        for _ in 0..count { parts.push(frame.pop()); }
+                        parts.reverse();
+                        let s: String = parts.iter().map(|p| p.py_to_string()).collect();
+                        frame.push(PyObject::str_val(CompactString::from(s)));
+                    }
+                }
             }
             Opcode::ListAppend => {
                 let item = frame.pop();

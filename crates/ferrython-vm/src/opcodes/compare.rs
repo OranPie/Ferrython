@@ -140,6 +140,31 @@ impl VirtualMachine {
 
     fn exec_compare_op(&mut self, op: u32, a: PyObjectRef, b: PyObjectRef) -> Result<Option<PyObjectRef>, PyException> {
         if let cmp @ 0..=5 = op {
+            // Fast path: primitive types (int, float, str, bool) — skip MRO/dunder lookup
+            match (&a.payload, &b.payload) {
+                (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                    let result = match cmp {
+                        0 => x < y, 1 => x <= y, 2 => x == y,
+                        3 => x != y, 4 => x > y, _ => x >= y,
+                    };
+                    self.vm_push(PyObject::bool_val(result));
+                    return Ok(None);
+                }
+                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                    let result = match cmp {
+                        0 => x < y, 1 => x <= y, 2 => x == y,
+                        3 => x != y, 4 => x > y, _ => x >= y,
+                    };
+                    self.vm_push(PyObject::bool_val(result));
+                    return Ok(None);
+                }
+                (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) if cmp == 2 || cmp == 3 => {
+                    let eq = x == y;
+                    self.vm_push(PyObject::bool_val(if cmp == 2 { eq } else { !eq }));
+                    return Ok(None);
+                }
+                _ => {}
+            }
             let (dunder, rdunder) = match cmp {
                 0 => ("__lt__", "__gt__"),
                 1 => ("__le__", "__ge__"),
