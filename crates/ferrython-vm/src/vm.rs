@@ -1228,8 +1228,62 @@ impl VirtualMachine {
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Inline 'in' / 'not in' for dict, set, list, tuple, str (CompareOp arg 6/7)
-                // 'in'/'not in': cold, delegate to execute_one
-                Opcode::CompareOp if instr.arg == 6 || instr.arg == 7 => self.execute_one(instr),
+                Opcode::CompareOp if instr.arg == 6 || instr.arg == 7 => {
+                    let len = frame.stack.len();
+                    let needle = sget!(frame, len - 2);
+                    let haystack = sget!(frame, len - 1);
+                    let found = match &haystack.payload {
+                        PyObjectPayload::Dict(map) => {
+                            let key: Option<HashableKey> = match &needle.payload {
+                                PyObjectPayload::Str(s) => Some(HashableKey::Str(s.clone())),
+                                PyObjectPayload::Int(n) => Some(HashableKey::Int(n.clone())),
+                                PyObjectPayload::Bool(b) => Some(HashableKey::Int(PyInt::Small(*b as i64))),
+                                _ => None,
+                            };
+                            if let Some(k) = key {
+                                let r = map.read();
+                                Some(r.contains_key(&k))
+                            } else { None }
+                        }
+                        PyObjectPayload::Set(items) => {
+                            if let Ok(hk) = HashableKey::from_object(needle) {
+                                Some(items.read().contains_key(&hk))
+                            } else { None }
+                        }
+                        PyObjectPayload::List(items) => {
+                            let items = items.read();
+                            Some(items.iter().any(|x| {
+                                match (&x.payload, &needle.payload) {
+                                    (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
+                                    (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
+                                    _ => Arc::ptr_eq(x, needle),
+                                }
+                            }))
+                        }
+                        PyObjectPayload::Tuple(items) => {
+                            Some(items.iter().any(|x| {
+                                match (&x.payload, &needle.payload) {
+                                    (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
+                                    (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
+                                    _ => Arc::ptr_eq(x, needle),
+                                }
+                            }))
+                        }
+                        PyObjectPayload::Str(haystack_s) => {
+                            if let PyObjectPayload::Str(needle_s) = &needle.payload {
+                                Some(haystack_s.contains(needle_s.as_str()))
+                            } else { None }
+                        }
+                        _ => None,
+                    };
+                    if let Some(is_in) = found {
+                        let result = if instr.arg == 6 { is_in } else { !is_in };
+                        unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
+                        hot_ok!(profiling, self.profiler, instr.op)
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
                 // Inline LoadGlobal: check per-frame cache, then globals, then builtins
                 Opcode::LoadGlobal => {
                     let idx = instr.arg as usize;
