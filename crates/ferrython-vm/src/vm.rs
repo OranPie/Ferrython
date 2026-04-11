@@ -381,33 +381,35 @@ impl VirtualMachine {
 
             // When tracing, separate borrows needed for fire_trace_event(&mut self).
             // When NOT tracing (common case), single mutable borrow is cheaper.
-            let instr = if has_trace {
+            if has_trace {
                 let frame = self.call_stack.last().unwrap();
                 let ip = frame.ip;
                 if ip >= frame.code.instructions.len() { return Ok(PyObject::none()); }
-                let instr = frame.code.instructions[ip];
                 let current_line = Self::ip_to_line(&frame.code, ip);
                 let fire_line = current_line != last_line;
                 if fire_line { last_line = current_line; }
                 self.call_stack.last_mut().unwrap().ip = ip + 1;
                 if fire_line { self.fire_trace_event("line", PyObject::none()); }
-                instr
-            } else {
-                // SAFETY: call_stack is never empty during execution
-                let cs_len = self.call_stack.len();
-                let frame = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
-                let ip = frame.ip;
+            }
+
+            // SAFETY: call_stack is never empty during execution
+            let cs_len = self.call_stack.len();
+            let frame = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
+
+            let ip = frame.ip;
+            let instr = if !has_trace {
                 let instructions = &frame.code.instructions;
                 if ip >= instructions.len() { return Ok(PyObject::none()); }
                 // SAFETY: bounds check above guarantees ip < instructions.len()
                 let instr = unsafe { *instructions.get_unchecked(ip) };
                 frame.ip = ip + 1;
                 instr
+            } else {
+                // Tracing path already advanced ip above; read the previous instruction
+                let prev_ip = ip.wrapping_sub(1);
+                if prev_ip >= frame.code.instructions.len() { return Ok(PyObject::none()); }
+                unsafe { *frame.code.instructions.get_unchecked(prev_ip) }
             };
-
-            // SAFETY: call_stack is never empty during execution
-            let cs_len = self.call_stack.len();
-            let frame = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
 
             if profiling { self.profiler.start_instruction(instr.op); }
 
