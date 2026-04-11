@@ -778,7 +778,7 @@ impl VirtualMachine {
                                     frame.push(obj);
                                     return Ok(None);
                                 }
-                                PyObjectPayload::NativeClosure { ref name, .. } if name.contains('.') => {
+                                PyObjectPayload::NativeClosure(ref nc) if nc.name.contains('.') => {
                                     frame.push(method);
                                     frame.push(obj);
                                     return Ok(None);

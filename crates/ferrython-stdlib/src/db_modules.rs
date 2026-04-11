@@ -1300,8 +1300,8 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
         if let PyObjectPayload::Instance(ref d) = cursor.payload {
             let exec_fn = d.attrs.read().get(&CompactString::from("execute")).cloned();
             if let Some(f) = exec_fn {
-                if let PyObjectPayload::NativeClosure { func, .. } = &f.payload {
-                    func(args)?;
+                if let PyObjectPayload::NativeClosure(nc) = &f.payload {
+                    (nc.func)(args)?;
                 }
             }
         }
@@ -1317,8 +1317,8 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
         if let PyObjectPayload::Instance(ref d) = cursor.payload {
             let exec_fn = d.attrs.read().get(&CompactString::from("executemany")).cloned();
             if let Some(f) = exec_fn {
-                if let PyObjectPayload::NativeClosure { func, .. } = &f.payload {
-                    func(args)?;
+                if let PyObjectPayload::NativeClosure(nc) = &f.payload {
+                    (nc.func)(args)?;
                 }
             }
         }
@@ -1334,8 +1334,8 @@ fn build_connection_object(db: Arc<Mutex<Database>>) -> PyObjectRef {
         if let PyObjectPayload::Instance(ref d) = cursor.payload {
             let exec_fn = d.attrs.read().get(&CompactString::from("executescript")).cloned();
             if let Some(f) = exec_fn {
-                if let PyObjectPayload::NativeClosure { func, .. } = &f.payload {
-                    func(args)?;
+                if let PyObjectPayload::NativeClosure(nc) = &f.payload {
+                    (nc.func)(args)?;
                 }
             }
         }

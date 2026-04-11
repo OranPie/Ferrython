@@ -16,8 +16,8 @@ fn serialize_message_part(part: &PyObjectRef) -> String {
     if let PyObjectPayload::Instance(ref inst) = part.payload {
         let attrs = inst.attrs.read();
         if let Some(ser_fn) = attrs.get("_serialize") {
-            if let PyObjectPayload::NativeClosure { func, .. } = &ser_fn.payload {
-                if let Ok(result) = func(&[]) {
+            if let PyObjectPayload::NativeClosure(nc) = &ser_fn.payload {
+                if let Ok(result) = (nc.func)(&[]) {
                     return result.py_to_string();
                 }
             }
@@ -524,8 +524,8 @@ fn mime_application_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Instance(ref inst) = msg.payload {
         let attrs = inst.attrs.read();
         if let Some(setitem) = attrs.get("__setitem__") {
-            if let PyObjectPayload::NativeClosure { func, .. } = &setitem.payload {
-                let _ = func(&[
+            if let PyObjectPayload::NativeClosure(nc) = &setitem.payload {
+                let _ = (nc.func)(&[
                     PyObject::str_val(CompactString::from("Content-Transfer-Encoding")),
                     PyObject::str_val(CompactString::from("base64")),
                 ]);
@@ -595,8 +595,8 @@ fn mime_image_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Instance(ref inst) = msg.payload {
         let attrs = inst.attrs.read();
         if let Some(setitem) = attrs.get("__setitem__") {
-            if let PyObjectPayload::NativeClosure { func, .. } = &setitem.payload {
-                let _ = func(&[
+            if let PyObjectPayload::NativeClosure(nc) = &setitem.payload {
+                let _ = (nc.func)(&[
                     PyObject::str_val(CompactString::from("Content-Transfer-Encoding")),
                     PyObject::str_val(CompactString::from("base64")),
                 ]);
@@ -1170,9 +1170,9 @@ fn email_message_from_string(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Instance(ref inst) = msg.payload {
         let attrs = inst.attrs.read();
         if let Some(setitem) = attrs.get("__setitem__") {
-            if let PyObjectPayload::NativeClosure { func, .. } = &setitem.payload {
+            if let PyObjectPayload::NativeClosure(nc) = &setitem.payload {
                 for (k, v) in &headers {
-                    let _ = func(&[
+                    let _ = (nc.func)(&[
                         PyObject::str_val(CompactString::from(k.as_str())),
                         PyObject::str_val(CompactString::from(v.as_str())),
                     ]);

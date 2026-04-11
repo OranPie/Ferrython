@@ -989,7 +989,7 @@ pub fn create_inspect_module() -> PyObjectRef {
             check_args("inspect.isroutine", args, 1)?;
             Ok(PyObject::bool_val(matches!(&args[0].payload,
                 PyObjectPayload::Function(_) | PyObjectPayload::BoundMethod { .. } |
-                PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } |
+                PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) |
                 PyObjectPayload::BuiltinBoundMethod { .. } | PyObjectPayload::BuiltinFunction(_))))
         })),
         ("isabstract", make_builtin(|args| {
@@ -1333,8 +1333,8 @@ pub fn create_dis_module() -> PyObjectRef {
                             func(&[PyObject::str_val(CompactString::from(output.as_str()))])?;
                             written = true;
                         }
-                        PyObjectPayload::NativeClosure { func, .. } => {
-                            func(&[PyObject::str_val(CompactString::from(output.as_str()))])?;
+                        PyObjectPayload::NativeClosure(nc) => {
+                            (nc.func)(&[PyObject::str_val(CompactString::from(output.as_str()))])?;
                             written = true;
                         }
                         _ => {}
@@ -3306,10 +3306,10 @@ pub fn create_tokenize_module() -> PyObjectRef {
     fn tokenize_string(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         check_args("generate_tokens", args, 1)?;
         // args[0] should be a readline callable; collect all lines first
-        let source = if let PyObjectPayload::NativeClosure { func, .. } = &args[0].payload {
+        let source = if let PyObjectPayload::NativeClosure(nc) = &args[0].payload {
             let mut lines = String::new();
             loop {
-                let line = func(&[])?;
+                let line = (nc.func)(&[])?;
                 let s = line.py_to_string();
                 if s.is_empty() { break; }
                 lines.push_str(&s);

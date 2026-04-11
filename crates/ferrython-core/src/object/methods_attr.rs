@@ -131,8 +131,8 @@ fn wrap_class_attr_for_instance(obj: &PyObjectRef, inst: &InstanceData, v: PyObj
             drop(cp_attrs);
             v
         }
-        PyObjectPayload::NativeClosure { ref name, .. } => {
-            if name.contains('.') {
+        PyObjectPayload::NativeClosure(ref nc) => {
+            if nc.name.contains('.') {
                 Arc::new(PyObject {
                     payload: PyObjectPayload::BoundMethod {
                         receiver: obj.clone(),
@@ -827,7 +827,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                     "fromhex" if n.as_str() == "bytes" || n.as_str() == "bytearray" => {
                         let is_bytearray = n.as_str() == "bytearray";
-                        Some(PyObject::wrap(PyObjectPayload::NativeClosure {
+                        Some(PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
                             name: CompactString::from("fromhex"),
                             func: Arc::new(move |args| {
                                 if args.is_empty() { return Err(PyException::type_error("fromhex() requires a string")); }
@@ -848,7 +848,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     Ok(PyObject::bytes(bytes))
                                 }
                             }),
-                        }))
+                        }))))
                     }
                     // object.__setattr__(instance, name, value) — bypass custom __setattr__
                     "__setattr__" => {
@@ -1052,13 +1052,13 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     _ => None,
                 }
             }
-            PyObjectPayload::Partial { func, args, kwargs } => {
+            PyObjectPayload::Partial(pd) => {
                 match name {
-                    "func" => Some(func.clone()),
-                    "args" => Some(PyObject::tuple(args.clone())),
+                    "func" => Some(pd.func.clone()),
+                    "args" => Some(PyObject::tuple(pd.args.clone())),
                     "keywords" => {
                         let mut map = indexmap::IndexMap::new();
-                        for (k, v) in kwargs {
+                        for (k, v) in &pd.kwargs {
                             map.insert(crate::types::HashableKey::Str(k.clone()), v.clone());
                         }
                         Some(PyObject::dict(map))
@@ -1203,8 +1203,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                         PyObject::tuple(init_args),
                                     );
                                 }
-                                PyObjectPayload::ExceptionInstance { attrs, .. } => {
-                                    attrs.write().insert(
+                                PyObjectPayload::ExceptionInstance(ei) => {
+                                    ei.attrs.write().insert(
                                         CompactString::from("args"),
                                         PyObject::tuple(init_args),
                                     );
@@ -1257,34 +1257,34 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     _ => None,
                 }
             }
-            PyObjectPayload::ExceptionInstance { kind, message, args, attrs } => {
+            PyObjectPayload::ExceptionInstance(ei) => {
                 match name {
                     "args" => {
                         // Check attrs first (may be overwritten by __init__)
-                        if let Some(v) = attrs.read().get("args").cloned() {
+                        if let Some(v) = ei.attrs.read().get("args").cloned() {
                             return Some(v);
                         }
-                        if args.is_empty() {
-                            if message.is_empty() {
+                        if ei.args.is_empty() {
+                            if ei.message.is_empty() {
                                 Some(PyObject::tuple(vec![]))
                             } else {
-                                Some(PyObject::tuple(vec![PyObject::str_val(message.clone())]))
+                                Some(PyObject::tuple(vec![PyObject::str_val(ei.message.clone())]))
                             }
                         } else {
-                            Some(PyObject::tuple(args.clone()))
+                            Some(PyObject::tuple(ei.args.clone()))
                         }
                     }
-                    "__class__" => Some(PyObject::exception_type(kind.clone())),
-                    "code" if *kind == ExceptionKind::SystemExit => {
+                    "__class__" => Some(PyObject::exception_type(ei.kind.clone())),
+                    "code" if ei.kind == ExceptionKind::SystemExit => {
                         // SystemExit.code: first arg or message
-                        if !args.is_empty() {
-                            Some(args[0].clone())
-                        } else if !message.is_empty() {
+                        if !ei.args.is_empty() {
+                            Some(ei.args[0].clone())
+                        } else if !ei.message.is_empty() {
                             // Try to parse as int, otherwise return as string
-                            if let Ok(n) = message.parse::<i64>() {
+                            if let Ok(n) = ei.message.parse::<i64>() {
                                 Some(PyObject::int(n))
                             } else {
-                                Some(PyObject::str_val(message.clone()))
+                                Some(PyObject::str_val(ei.message.clone()))
                             }
                         } else {
                             Some(PyObject::none())
@@ -1292,28 +1292,28 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                     "value" => {
                         // StopIteration.value — check attrs first, then args[0], then None
-                        if let Some(v) = attrs.read().get("value").cloned() {
+                        if let Some(v) = ei.attrs.read().get("value").cloned() {
                             Some(v)
-                        } else if !args.is_empty() {
-                            Some(args[0].clone())
+                        } else if !ei.args.is_empty() {
+                            Some(ei.args[0].clone())
                         } else {
                             Some(PyObject::none())
                         }
                     }
                     "__cause__" => {
-                        attrs.read().get("__cause__").cloned().or_else(|| Some(PyObject::none()))
+                        ei.attrs.read().get("__cause__").cloned().or_else(|| Some(PyObject::none()))
                     }
                     "__context__" => {
-                        attrs.read().get("__context__").cloned().or_else(|| Some(PyObject::none()))
+                        ei.attrs.read().get("__context__").cloned().or_else(|| Some(PyObject::none()))
                     }
                     "__suppress_context__" => {
-                        attrs.read().get("__suppress_context__").cloned().or_else(|| Some(PyObject::bool_val(false)))
+                        ei.attrs.read().get("__suppress_context__").cloned().or_else(|| Some(PyObject::bool_val(false)))
                     }
                     "__traceback__" => {
-                        attrs.read().get("__traceback__").cloned().or_else(|| Some(PyObject::none()))
+                        ei.attrs.read().get("__traceback__").cloned().or_else(|| Some(PyObject::none()))
                     }
                     "__notes__" => {
-                        attrs.read().get("__notes__").cloned()
+                        ei.attrs.read().get("__notes__").cloned()
                     }
                     "add_note" => {
                         let obj_ref = obj.clone();
@@ -1323,8 +1323,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     "add_note() missing required argument: 'note'"));
                             }
                             let note = &args[0];
-                            if let PyObjectPayload::ExceptionInstance { ref attrs, .. } = obj_ref.payload {
-                                let mut w = attrs.write();
+                            if let PyObjectPayload::ExceptionInstance(ref ei) = obj_ref.payload {
+                                let mut w = ei.attrs.write();
                                 let notes = w.entry(CompactString::from("__notes__"))
                                     .or_insert_with(|| PyObject::list(vec![]));
                                 if let PyObjectPayload::List(list) = &notes.payload {
@@ -1338,8 +1338,8 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         let obj_ref = obj.clone();
                         Some(PyObject::native_closure("with_traceback", move |args| {
                             if !args.is_empty() {
-                                if let PyObjectPayload::ExceptionInstance { ref attrs, .. } = obj_ref.payload {
-                                    attrs.write().insert(
+                                if let PyObjectPayload::ExceptionInstance(ref ei) = obj_ref.payload {
+                                    ei.attrs.write().insert(
                                         CompactString::from("__traceback__"), args[0].clone());
                                 }
                             }
@@ -1347,12 +1347,12 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }))
                     }
                     // OSError attributes: .errno, .strerror, .filename
-                    "errno" | "strerror" | "filename" if kind.is_subclass_of(&ExceptionKind::OSError) => {
-                        attrs.read().get(name).cloned().or_else(|| Some(PyObject::none()))
+                    "errno" | "strerror" | "filename" if ei.kind.is_subclass_of(&ExceptionKind::OSError) => {
+                        ei.attrs.read().get(name).cloned().or_else(|| Some(PyObject::none()))
                     }
                     _ => {
                         // Check user-set attrs (e.g., __cause__)
-                        attrs.read().get(name).cloned()
+                        ei.attrs.read().get(name).cloned()
                     }
                 }
             }
@@ -1851,7 +1851,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     let super_obj = obj.clone();
                     let inst_ref = instance.clone();
                     return Some(Arc::new(PyObject {
-                        payload: PyObjectPayload::NativeClosure {
+                        payload: PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
                             name: CompactString::from("super.__getattribute__"),
                             func: Arc::new(move |args: &[PyObjectRef]| {
                                 if args.is_empty() {
@@ -1874,7 +1874,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     "'super' object has no attribute '{}'", attr_name
                                 )))
                             }),
-                        }
+                        }))
                     }));
                 }
                 // super() proxy: look up in the RUNTIME class MRO, skipping up to and including cls
@@ -1907,7 +1907,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             // Look in this base's namespace directly
                             if let PyObjectPayload::Class(bcd) = &base.payload {
                                 if let Some(v) = bcd.namespace.read().get(name) {
-                                    if matches!(&v.payload, PyObjectPayload::Function(_) | PyObjectPayload::NativeClosure { .. } | PyObjectPayload::NativeFunction { .. }) {
+                                    if matches!(&v.payload, PyObjectPayload::Function(_) | PyObjectPayload::NativeClosure(_) | PyObjectPayload::NativeFunction { .. }) {
                                         return Some(Arc::new(PyObject {
                                             payload: PyObjectPayload::BoundMethod {
                                                 receiver: instance.clone(),
@@ -2081,7 +2081,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         if let PyObjectPayload::Instance(inst) = &instance.payload {
                             if let Some(v) = inst.attrs.read().get(name).cloned() {
                                 if matches!(&v.payload,
-                                    PyObjectPayload::NativeClosure { .. } |
+                                    PyObjectPayload::NativeClosure(_) |
                                     PyObjectPayload::NativeFunction { .. }
                                 ) {
                                     return Some(v);
@@ -2273,9 +2273,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     _ => None,
                 }
             }
-            PyObjectPayload::NativeClosure { name: nc_name, .. } => {
+            PyObjectPayload::NativeClosure(nc) => {
                 match name {
-                    "__name__" | "__qualname__" => Some(PyObject::str_val(nc_name.clone())),
+                    "__name__" | "__qualname__" => Some(PyObject::str_val(nc.name.clone())),
                     "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
                     "__doc__" => Some(PyObject::none()),
                     "__call__" => Some(obj.clone()),
@@ -2372,8 +2372,8 @@ fn resolve_exception_type_method(name: &str, _instance: &PyObjectRef) -> Option<
                     if let PyObjectPayload::List(list) = &notes.payload {
                         list.write().push(note.clone());
                     }
-                } else if let PyObjectPayload::ExceptionInstance { ref attrs, .. } = target.payload {
-                    let mut w = attrs.write();
+                } else if let PyObjectPayload::ExceptionInstance(ref ei) = target.payload {
+                    let mut w = ei.attrs.write();
                     let notes = w.entry(CompactString::from("__notes__"))
                         .or_insert_with(|| PyObject::list(vec![]));
                     if let PyObjectPayload::List(list) = &notes.payload {
@@ -2390,8 +2390,8 @@ fn resolve_exception_type_method(name: &str, _instance: &PyObjectRef) -> Option<
                     if let PyObjectPayload::Instance(idata) = &inst.payload {
                         idata.attrs.write().insert(
                             CompactString::from("__traceback__"), args[0].clone());
-                    } else if let PyObjectPayload::ExceptionInstance { ref attrs, .. } = inst.payload {
-                        attrs.write().insert(
+                    } else if let PyObjectPayload::ExceptionInstance(ref ei) = inst.payload {
+                        ei.attrs.write().insert(
                             CompactString::from("__traceback__"), args[0].clone());
                     }
                 }

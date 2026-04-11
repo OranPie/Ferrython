@@ -146,7 +146,7 @@ impl VirtualMachine {
                             _ => ExceptionKind::RuntimeError,
                         };
                         let exc_msg = match &exc_val.payload {
-                            PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
+                            PyObjectPayload::ExceptionInstance(ei) => ei.message.to_string(),
                             _ => exc_val.py_to_string(),
                         };
                         let gen_arc_clone = gen_arc.clone();
@@ -266,12 +266,12 @@ impl VirtualMachine {
                         let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
                         if !frame.stack.is_empty() { frame.pop(); }
                         let msg = match &value.payload {
-                            PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
+                            PyObjectPayload::ExceptionInstance(ei) => ei.message.to_string(),
                             _ => value.py_to_string(),
                         };
                         // Preserve original value for identity-based checks
                         // (e.g. contextlib's `exc is not value`)
-                        if matches!(value.payload, PyObjectPayload::ExceptionInstance { .. }
+                        if matches!(value.payload, PyObjectPayload::ExceptionInstance(_)
                             | PyObjectPayload::Instance(_)) {
                             return Err(PyException::with_original(kind, msg, value));
                         }
@@ -284,7 +284,7 @@ impl VirtualMachine {
                         let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
                         if !frame.stack.is_empty() { frame.pop(); }
                         let msg = match &value.payload {
-                            PyObjectPayload::ExceptionInstance { message, .. } => message.to_string(),
+                            PyObjectPayload::ExceptionInstance(ei) => ei.message.to_string(),
                             PyObjectPayload::Instance(_) => {
                                 if let Some(args) = value.get_attr("args") {
                                     args.py_to_string()
@@ -308,8 +308,8 @@ impl VirtualMachine {
         let frame = self.vm_frame();
         let raise_exc = |exc: &PyObjectRef| -> PyException {
             match &exc.payload {
-                PyObjectPayload::ExceptionInstance { kind, message, .. } => {
-                    PyException::with_original(kind.clone(), message.to_string(), exc.clone())
+                PyObjectPayload::ExceptionInstance(ei) => {
+                    PyException::with_original(ei.kind.clone(), ei.message.to_string(), exc.clone())
                 }
                 PyObjectPayload::ExceptionType(kind) => {
                     PyException::new(kind.clone(), "")
@@ -367,8 +367,8 @@ impl VirtualMachine {
                     // Ensure we have an original ExceptionInstance to store attrs on
                     py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
-                        if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
-                            let mut w = attrs.write();
+                        if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
+                            let mut w = ei.attrs.write();
                             w.insert(intern_or_new("__cause__"), PyObject::none());
                             w.insert(intern_or_new("__suppress_context__"), PyObject::bool_val(true));
                         }
@@ -377,8 +377,8 @@ impl VirtualMachine {
                     let cause_exc = raise_exc(&cause);
                     py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
-                        if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
-                            let mut w = attrs.write();
+                        if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
+                            let mut w = ei.attrs.write();
                             w.insert(intern_or_new("__cause__"), cause.clone());
                             w.insert(intern_or_new("__suppress_context__"), PyObject::bool_val(true));
                         }
@@ -389,10 +389,10 @@ impl VirtualMachine {
                 if let Some(active) = &self.active_exception {
                     py_exc.context = Some(Box::new(active.clone()));
                     if let Some(ref original) = py_exc.original {
-                        if let PyObjectPayload::ExceptionInstance { attrs, .. } = &original.payload {
+                        if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
                             // Store __context__ as the active exception's original object
                             if let Some(ref ctx_orig) = active.original {
-                                attrs.write().insert(intern_or_new("__context__"), ctx_orig.clone());
+                                ei.attrs.write().insert(intern_or_new("__context__"), ctx_orig.clone());
                             }
                         }
                     }

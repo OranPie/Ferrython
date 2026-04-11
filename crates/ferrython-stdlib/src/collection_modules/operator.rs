@@ -394,7 +394,7 @@ pub fn create_operator_module() -> PyObjectRef {
                 full_args.extend(extra_args.iter().cloned());
                 match &method.payload {
                     PyObjectPayload::NativeFunction { func, .. } => func(&full_args),
-                    PyObjectPayload::NativeClosure { func, .. } => func(&full_args),
+                    PyObjectPayload::NativeClosure(nc) => (nc.func)(&full_args),
                     PyObjectPayload::BuiltinBoundMethod { receiver, method_name, .. } => {
                         // Handle BuiltinBoundMethod with extra args by dispatching common methods
                         if !extra_args.is_empty() {
@@ -537,10 +537,10 @@ pub fn create_operator_module() -> PyObjectRef {
                                 bound_args.extend(extra_args.iter().cloned());
                                 func(&bound_args)
                             }
-                            PyObjectPayload::NativeClosure { func, .. } => {
+                            PyObjectPayload::NativeClosure(nc) => {
                                 let mut bound_args = vec![receiver.clone()];
                                 bound_args.extend(extra_args.iter().cloned());
-                                func(&bound_args)
+                                (nc.func)(&bound_args)
                             }
                             _ => {
                                 // Python function — use deferred call
@@ -570,14 +570,14 @@ pub fn create_operator_module() -> PyObjectRef {
                 match &method.payload {
                     PyObjectPayload::NativeFunction { func, .. } =>
                         func(&[]).ok().and_then(|r| r.to_int().ok()).map(Ok),
-                    PyObjectPayload::NativeClosure { func, .. } =>
-                        func(&[]).ok().and_then(|r| r.to_int().ok()).map(Ok),
+                    PyObjectPayload::NativeClosure(nc) =>
+                        (nc.func)(&[]).ok().and_then(|r| r.to_int().ok()).map(Ok),
                     PyObjectPayload::BoundMethod { receiver, method: m } => {
                         match &m.payload {
                             PyObjectPayload::NativeFunction { func, .. } =>
                                 func(&[receiver.clone()]).ok().and_then(|r| r.to_int().ok()).map(Ok),
-                            PyObjectPayload::NativeClosure { func, .. } =>
-                                func(&[receiver.clone()]).ok().and_then(|r| r.to_int().ok()).map(Ok),
+                            PyObjectPayload::NativeClosure(nc) =>
+                                (nc.func)(&[receiver.clone()]).ok().and_then(|r| r.to_int().ok()).map(Ok),
                             _ => Some(Err(())), // needs VM
                         }
                     }

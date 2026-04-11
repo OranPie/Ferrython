@@ -2,7 +2,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    InstanceData,
+    InstanceData, PartialData,
     make_module, make_builtin,
 };
 use ferrython_core::types::HashableKey;
@@ -47,7 +47,7 @@ pub fn create_functools_module() -> PyObjectRef {
             }
             match &args[0].payload {
                 PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } 
-                | PyObjectPayload::BuiltinFunction(_) | PyObjectPayload::NativeClosure { .. } => {
+                | PyObjectPayload::BuiltinFunction(_) | PyObjectPayload::NativeClosure(_) => {
                     // @lru_cache directly on function — default maxsize=128
                     Ok(create_cached_function(args[0].clone(), Some(128)))
                 }
@@ -255,11 +255,11 @@ fn functools_partial(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("partial() requires at least 1 argument")); }
     let func = args[0].clone();
     let partial_args = if args.len() > 1 { args[1..].to_vec() } else { vec![] };
-    Ok(PyObject::wrap(PyObjectPayload::Partial {
+    Ok(PyObject::wrap(PyObjectPayload::Partial(Box::new(PartialData {
         func,
         args: partial_args,
         kwargs: vec![],
-    }))
+    }))))
 }
 
 fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -278,11 +278,11 @@ fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // Call func(acc, item) — dispatch to native or closure
         acc = match &func.payload {
             PyObjectPayload::NativeFunction { func: f, .. } => f(&[acc, item.clone()])?,
-            PyObjectPayload::NativeClosure { func: f, .. } => f(&[acc, item.clone()])?,
+            PyObjectPayload::NativeClosure(nc) => (nc.func)(&[acc, item.clone()])?,
             PyObjectPayload::BoundMethod { method, .. } => {
                 match &method.payload {
                     PyObjectPayload::NativeFunction { func: f, .. } => f(&[acc, item.clone()])?,
-                    PyObjectPayload::NativeClosure { func: f, .. } => f(&[acc, item.clone()])?,
+                    PyObjectPayload::NativeClosure(nc) => (nc.func)(&[acc, item.clone()])?,
                     _ => return Err(PyException::type_error(
                         "reduce(): Python-defined functions require VM dispatch — use operator module functions instead")),
                 }

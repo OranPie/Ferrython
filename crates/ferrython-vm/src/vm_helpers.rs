@@ -171,7 +171,7 @@ impl VirtualMachine {
                 if let Some(str_method) = Self::resolve_instance_dunder(obj, "__str__") {
                     let method = self.resolve_descriptor(&str_method, obj)?;
                     let args = match &method.payload {
-                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
+                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
@@ -182,7 +182,7 @@ impl VirtualMachine {
                 if let Some(repr_method) = Self::resolve_instance_dunder(obj, "__repr__") {
                     let method = self.resolve_descriptor(&repr_method, obj)?;
                     let args = match &method.payload {
-                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
+                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
@@ -498,7 +498,7 @@ impl VirtualMachine {
                     // If it's a descriptor (Instance with __get__), invoke __get__
                     let method = self.resolve_descriptor(&repr_method, obj)?;
                     let args = match &method.payload {
-                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => vec![obj.clone()],
+                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
@@ -1165,7 +1165,7 @@ impl VirtualMachine {
                 PyObjectPayload::BuiltinType(name) => {
                     ExceptionKind::from_name(name).unwrap_or(ExceptionKind::RuntimeError)
                 }
-                PyObjectPayload::ExceptionInstance { kind, .. } => kind.clone(),
+                PyObjectPayload::ExceptionInstance(ei) => ei.kind.clone(),
                 _ => ExceptionKind::RuntimeError,
             }
         } else {
@@ -1678,7 +1678,7 @@ impl VirtualMachine {
         if let PyObjectPayload::Instance(_inst) = &a.payload {
             if let Some(method) = a.get_attr("__lt__") {
                 // If method is from class namespace (not bound), pass self explicitly
-                let result = if matches!(&method.payload, PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } | PyObjectPayload::Function(_)) {
+                let result = if matches!(&method.payload, PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) | PyObjectPayload::Function(_)) {
                     self.call_object(method, vec![a.clone(), b.clone()])?
                 } else {
                     self.call_object(method, vec![b.clone()])?

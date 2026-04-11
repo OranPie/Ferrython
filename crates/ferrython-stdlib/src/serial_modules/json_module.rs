@@ -149,7 +149,7 @@ pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     if let Some(default_method) = cls.get_attr("default") {
                         match &default_method.payload {
                             // Native default method — can call directly
-                            PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => {
+                            PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) => {
                                 default_fn = Some(PyObject::wrap(PyObjectPayload::BoundMethod {
                                     receiver: encoder_inst,
                                     method: default_method,
@@ -477,12 +477,12 @@ fn instance_to_dict(obj: &PyObjectRef) -> Option<PyObjectRef> {
 fn try_call_default(default: &PyObjectRef, obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> {
     match &default.payload {
         PyObjectPayload::NativeFunction { func, .. } => Ok(Some(func(&[obj.clone()])?)),
-        PyObjectPayload::NativeClosure { func, .. } => Ok(Some(func(&[obj.clone()])?)),
+        PyObjectPayload::NativeClosure(nc) => Ok(Some((nc.func)(&[obj.clone()])?)),
         PyObjectPayload::BoundMethod { receiver, method } => {
             // Call method(self, obj) — dispatch based on method type
             match &method.payload {
                 PyObjectPayload::NativeFunction { func, .. } => Ok(Some(func(&[receiver.clone(), obj.clone()])?)),
-                PyObjectPayload::NativeClosure { func, .. } => Ok(Some(func(&[receiver.clone(), obj.clone()])?)),
+                PyObjectPayload::NativeClosure(nc) => Ok(Some((nc.func)(&[receiver.clone(), obj.clone()])?)),
                 PyObjectPayload::Function(_) => {
                     // Python function — we need the VM. Use request_vm_call.
                     ferrython_core::error::request_vm_call(method.clone(), vec![receiver.clone(), obj.clone()]);
@@ -602,7 +602,7 @@ fn json_dump(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let Some(write_fn) = fp.get_attr("write") {
         match &write_fn.payload {
             PyObjectPayload::NativeFunction { func, .. } => { func(&[fp.clone(), json_str])?; }
-            PyObjectPayload::NativeClosure { func, .. } => { func(&[json_str])?; }
+            PyObjectPayload::NativeClosure(nc) => { (nc.func)(&[json_str])?; }
             _ => {} // user-defined write — best-effort
         }
     }
@@ -620,7 +620,7 @@ fn json_load(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let Some(read_fn) = fp.get_attr("read") {
         let data = match &read_fn.payload {
             PyObjectPayload::NativeFunction { func, .. } => func(&[fp.clone()])?,
-            PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+            PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
             _ => return Err(PyException::type_error("fp.read() is not callable")),
         };
         let s = match &data.payload {

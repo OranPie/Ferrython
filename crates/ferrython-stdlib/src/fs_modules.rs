@@ -4,6 +4,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    ExceptionInstanceData,
     make_module, make_builtin, check_args,
 };
 use ferrython_core::types::HashableKey;
@@ -2726,11 +2727,11 @@ fn subprocess_check_call(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             (CompactString::from("output"), PyObject::none()),
             (CompactString::from("stderr"), PyObject::none()),
         ]);
-        ex.original = Some(PyObject::wrap(PyObjectPayload::ExceptionInstance {
+        ex.original = Some(PyObject::wrap(PyObjectPayload::ExceptionInstance(Box::new(ExceptionInstanceData {
             kind: ExceptionKind::CalledProcessError,
             message: msg.into(),            args: vec![PyObject::int(rc)],
             attrs: std::sync::Arc::new(parking_lot::RwLock::new(exc_attrs)),
-        }));
+        }))));
         return Err(ex);
     }
     Ok(PyObject::int(rc))

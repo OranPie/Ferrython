@@ -12,6 +12,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
+// Compile-time size check: ensure enum stays compact after boxing
+const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <= 40);
+
 /// A reference-counted handle to a Python object.
 pub type PyObjectRef = Arc<PyObject>;
 
@@ -45,6 +48,30 @@ pub struct PyObject {
     pub payload: PyObjectPayload,
 }
 
+/// Boxed exception instance data (moved out of enum to reduce PyObjectPayload size)
+#[derive(Clone, Debug)]
+pub struct ExceptionInstanceData {
+    pub kind: ExceptionKind,
+    pub message: CompactString,
+    pub args: Vec<PyObjectRef>,
+    pub attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
+}
+
+/// Boxed partial application data
+#[derive(Clone, Debug)]
+pub struct PartialData {
+    pub func: PyObjectRef,
+    pub args: Vec<PyObjectRef>,
+    pub kwargs: Vec<(CompactString, PyObjectRef)>,
+}
+
+/// Boxed native closure data
+#[derive(Clone)]
+pub struct NativeClosureData {
+    pub name: CompactString,
+    pub func: Arc<dyn Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + Send + Sync>,
+}
+
 /// The actual data of a Python value.
 #[derive(Clone)]
 pub enum PyObjectPayload {
@@ -61,7 +88,7 @@ pub enum PyObjectPayload {
     List(Arc<RwLock<Vec<PyObjectRef>>>),
     Tuple(Vec<PyObjectRef>),
     Set(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
-    FrozenSet(IndexMap<HashableKey, PyObjectRef>),
+    FrozenSet(Box<IndexMap<HashableKey, PyObjectRef>>),
     Dict(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     /// A dict that is a live view of an instance's __dict__ (shares backing store)
     InstanceDict(Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>),
@@ -86,7 +113,7 @@ pub enum PyObjectPayload {
     /// Exception type object (e.g. ValueError, TypeError)
     ExceptionType(ExceptionKind),
     /// Exception instance (raised exception with kind, message, and optional args)
-    ExceptionInstance { kind: ExceptionKind, message: CompactString, args: Vec<PyObjectRef>, attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>> },
+    ExceptionInstance(Box<ExceptionInstanceData>),
     /// Generator object (suspended coroutine with opaque frame storage)
     Generator(Arc<RwLock<GeneratorState>>),
     /// Coroutine object (from async def — uses same frame machinery as Generator)
@@ -105,16 +132,9 @@ pub enum PyObjectPayload {
         func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>,
     },
     /// Native closure — a Rust function that captures state (for itemgetter, partial, etc.)
-    NativeClosure {
-        name: CompactString,
-        func: Arc<dyn Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + Send + Sync>,
-    },
+    NativeClosure(Box<NativeClosureData>),
     /// Partial application (functools.partial)
-    Partial {
-        func: PyObjectRef,
-        args: Vec<PyObjectRef>,
-        kwargs: Vec<(CompactString, PyObjectRef)>,
-    },
+    Partial(Box<PartialData>),
     /// Property descriptor
     Property { fget: Option<PyObjectRef>, fset: Option<PyObjectRef>, fdel: Option<PyObjectRef> },
     /// Static method wrapper
@@ -171,16 +191,16 @@ impl fmt::Debug for PyObjectPayload {
             Self::Slice { .. } => write!(f, "Slice(...)"),
             Self::Cell(_) => write!(f, "Cell(...)"),
             Self::ExceptionType(k) => write!(f, "ExceptionType({k:?})"),
-            Self::ExceptionInstance { kind, message, .. } => write!(f, "ExceptionInstance({kind:?}, {message:?})"),
+            Self::ExceptionInstance(ei) => write!(f, "ExceptionInstance({:?}, {:?})", ei.kind, ei.message),
             Self::Generator(_) => write!(f, "Generator(...)"),
             Self::Coroutine(_) => write!(f, "Coroutine(...)"),
             Self::AsyncGenerator(_) => write!(f, "AsyncGenerator(...)"),
             Self::AsyncGenAwaitable { action, .. } => write!(f, "AsyncGenAwaitable({action:?})"),
             Self::NativeFunction { name, .. } => write!(f, "NativeFunction({name})"),
-            Self::NativeClosure { name, .. } => write!(f, "NativeClosure({name})"),
+            Self::NativeClosure(nc) => write!(f, "NativeClosure({})", nc.name),
             Self::InstanceDict(_) => write!(f, "InstanceDict(...)"),
             Self::MappingProxy(_) => write!(f, "MappingProxy(...)"),
-            Self::Partial { .. } => write!(f, "Partial(...)"),
+            Self::Partial(_) => write!(f, "Partial(...)"),
             Self::Property { .. } => write!(f, "Property(...)"),
             Self::StaticMethod(_) => write!(f, "StaticMethod(...)"),
             Self::ClassMethod(_) => write!(f, "ClassMethod(...)"),

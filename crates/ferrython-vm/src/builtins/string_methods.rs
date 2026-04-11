@@ -895,7 +895,7 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                                     drop(guard);
                                     let val = match &factory.payload {
                                         PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
-                                        PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+                                        PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
                                         _ => return Err(PyException::key_error(field)),
                                     };
                                     m.write().insert(key, val.clone());
@@ -912,8 +912,8 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                                     PyObjectPayload::NativeFunction { func, .. } => {
                                         Some(func(&[key_obj])?)
                                     }
-                                    PyObjectPayload::NativeClosure { func, .. } => {
-                                        Some(func(&[key_obj])?)
+                                    PyObjectPayload::NativeClosure(nc) => {
+                                        Some((nc.func)(&[key_obj])?)
                                     }
                                     _ => None,
                                 }

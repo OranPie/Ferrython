@@ -1239,7 +1239,7 @@ fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64,
                         if let Some(utcoff_fn) = tz.get_attr("utcoffset") {
                             match &utcoff_fn.payload {
                                 PyObjectPayload::NativeFunction { func, .. } => return func(&[inst_for_utcoff.clone()]),
-                                PyObjectPayload::NativeClosure { func, .. } => return func(&[inst_for_utcoff.clone()]),
+                                PyObjectPayload::NativeClosure(nc) => return (nc.func)(&[inst_for_utcoff.clone()]),
                                 _ => {}
                             }
                         }
@@ -1321,7 +1321,7 @@ fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64,
                         if let Some(dst_fn) = tz.get_attr("dst") {
                             match &dst_fn.payload {
                                 PyObjectPayload::NativeFunction { func, .. } => return func(&[inst_for_dst.clone()]),
-                                PyObjectPayload::NativeClosure { func, .. } => return func(&[inst_for_dst.clone()]),
+                                PyObjectPayload::NativeClosure(nc) => return (nc.func)(&[inst_for_dst.clone()]),
                                 _ => {}
                             }
                         }
@@ -1340,7 +1340,7 @@ fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64,
                         if let Some(tzn_fn) = tz.get_attr("tzname") {
                             match &tzn_fn.payload {
                                 PyObjectPayload::NativeFunction { func, .. } => return func(&[inst_for_tzname.clone()]),
-                                PyObjectPayload::NativeClosure { func, .. } => return func(&[inst_for_tzname.clone()]),
+                                PyObjectPayload::NativeClosure(nc) => return (nc.func)(&[inst_for_tzname.clone()]),
                                 _ => {}
                             }
                         }

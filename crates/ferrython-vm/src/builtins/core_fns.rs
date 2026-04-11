@@ -148,8 +148,8 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Instance(inst) => {
             Ok(inst.class.clone())
         }
-        PyObjectPayload::ExceptionInstance { kind, .. } => {
-            Ok(PyObject::exception_type(kind.clone()))
+        PyObjectPayload::ExceptionInstance(ei) => {
+            Ok(PyObject::exception_type(ei.kind.clone()))
         }
         // For classes with a custom metaclass, return the metaclass
         PyObjectPayload::Class(cd) => {
@@ -304,10 +304,10 @@ pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         if args.len() >= 2 { call_args.push(args[1].clone()); }
                         return func(&call_args);
                     }
-                    PyObjectPayload::NativeClosure { func, .. } => {
+                    PyObjectPayload::NativeClosure(nc) => {
                         let mut call_args = vec![args[0].clone()];
                         if args.len() >= 2 { call_args.push(args[1].clone()); }
-                        return func(&call_args);
+                        return (nc.func)(&call_args);
                     }
                     _ => {}
                 }
@@ -628,12 +628,12 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
         }
         PyObjectPayload::ExceptionType(kind) => {
             // Check if obj is an exception instance of this type
-            if let PyObjectPayload::ExceptionInstance { kind: obj_kind, .. } = &obj.payload {
-                if obj_kind == kind {
+            if let PyObjectPayload::ExceptionInstance(ei) = &obj.payload {
+                if &ei.kind == kind {
                     return true;
                 }
                 // Check exception hierarchy
-                return exception_is_subclass_of(obj_kind.clone(), &format!("{:?}", kind));
+                return exception_is_subclass_of(ei.kind.clone(), &format!("{:?}", kind));
             }
             // Check if obj is a user-defined class instance that inherits from this exception
             if let PyObjectPayload::Instance(inst) = &obj.payload {
@@ -644,8 +644,7 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
         }
         // NativeFunction/NativeClosure used as constructor (e.g., ChainMap, OrderedDict):
         // Check if the instance's class name matches
-        PyObjectPayload::NativeFunction { name: func_name, .. } |
-        PyObjectPayload::NativeClosure { name: func_name, .. } => {
+        PyObjectPayload::NativeFunction { name: func_name, .. } => {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     let cls_name = cd.name.as_str();
@@ -653,6 +652,18 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
                         return true;
                     }
                     return class_is_subclass_of(&inst.class, func_name.as_str());
+                }
+            }
+            false
+        }
+        PyObjectPayload::NativeClosure(nc) => {
+            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                    let cls_name = cd.name.as_str();
+                    if !nc.name.is_empty() && cls_name == nc.name.as_str() {
+                        return true;
+                    }
+                    return class_is_subclass_of(&inst.class, nc.name.as_str());
                 }
             }
             false
@@ -836,13 +847,13 @@ fn resolve_index(obj: &PyObjectRef, func_name: &str) -> PyResult<i64> {
         }.or_else(|| obj.get_attr("__index__"));
         if let Some(func) = index_fn {
             let result = match &func.payload {
-                PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+                PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
                 PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
                 PyObjectPayload::BoundMethod { receiver: _, method } => {
                     // Call the bound method — for simple __index__ methods that
                     // just return an int, we can try NativeFunction/NativeClosure
                     match &method.payload {
-                        PyObjectPayload::NativeClosure { func, .. } => func(&[obj.clone()])?,
+                        PyObjectPayload::NativeClosure(nc) => (nc.func)(&[obj.clone()])?,
                         PyObjectPayload::NativeFunction { func, .. } => func(&[obj.clone()])?,
                         // Python-defined __index__ needs VM; we can't call it here.
                         // Fall through to error.
@@ -1016,8 +1027,8 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                     }
                     // __iter__ is a bound method — call it
                     PyObjectPayload::BoundMethod { receiver, method } => {
-                        if let PyObjectPayload::NativeClosure { func, .. } = &method.payload {
-                            let result = func(&[receiver.clone()])?;
+                        if let PyObjectPayload::NativeClosure(nc) = &method.payload {
+                            let result = (nc.func)(&[receiver.clone()])?;
                             return get_iter_from_obj(&result);
                         }
                         if let PyObjectPayload::NativeFunction { func, .. } = &method.payload {
@@ -1026,8 +1037,8 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                         }
                     }
                     // __iter__ is a native closure/function to call with self
-                    PyObjectPayload::NativeClosure { func, .. } => {
-                        let result = func(&[obj.clone()])?;
+                    PyObjectPayload::NativeClosure(nc) => {
+                        let result = (nc.func)(&[obj.clone()])?;
                         return get_iter_from_obj(&result);
                     }
                     PyObjectPayload::NativeFunction { func, .. } => {
@@ -1368,13 +1379,13 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Module(m) => {
             m.attrs.write().insert(CompactString::from(name), args[2].clone());
         }
-        PyObjectPayload::ExceptionInstance { attrs, .. } => {
-            attrs.write().insert(CompactString::from(name), args[2].clone());
+        PyObjectPayload::ExceptionInstance(ei) => {
+            ei.attrs.write().insert(CompactString::from(name), args[2].clone());
         }
         PyObjectPayload::Function(f) => {
             f.attrs.write().insert(CompactString::from(name), args[2].clone());
         }
-        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } |
+        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) |
         PyObjectPayload::BuiltinFunction(_) => {
             // Silently accept — native functions don't have persistent attrs
         }
@@ -1487,7 +1498,7 @@ pub(super) fn builtin_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if let Some(bytes_method) = args[0].get_attr("__bytes__") {
                 match &bytes_method.payload {
                     PyObjectPayload::NativeFunction { func, .. } => return func(&[args[0].clone()]),
-                    PyObjectPayload::NativeClosure { func, .. } => return func(&[args[0].clone()]),
+                    PyObjectPayload::NativeClosure(nc) => return (nc.func)(&[args[0].clone()]),
                     _ => {}
                 }
             }

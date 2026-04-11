@@ -317,8 +317,8 @@ impl VirtualMachine {
         // Transparent weakref.proxy delegation: upgrade and substitute referent
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             if let Some(target_fn) = inst.attrs.read().get("__weakref_target__").cloned() {
-                if let PyObjectPayload::NativeClosure { ref func, .. } = target_fn.payload {
-                    let referent = func(&[])?;
+                if let PyObjectPayload::NativeClosure(ref nc) = target_fn.payload {
+                    let referent = (nc.func)(&[])?;
                     return self.exec_load_attr(name, referent);
                 }
             }
@@ -585,7 +585,7 @@ impl VirtualMachine {
                         self.call_object(method, vec![name_arg, value])?;
                         return Ok(None);
                     }
-                    PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } => {
+                    PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) => {
                         let name_arg = PyObject::str_val(name.clone());
                         self.call_object(sa, vec![obj, name_arg, value])?;
                         return Ok(None);
@@ -648,12 +648,12 @@ impl VirtualMachine {
                 f.attrs.write().insert(name.clone(), value);
             }
             // Native functions: silently accept attribute assignment (common in decorators)
-            PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } |
+            PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) |
             PyObjectPayload::BuiltinFunction(_) => {
                 // No persistent storage, but don't error — many decorators set __wrapped__ etc.
             }
-            PyObjectPayload::ExceptionInstance { attrs, .. } => {
-                attrs.write().insert(name.clone(), value);
+            PyObjectPayload::ExceptionInstance(ei) => {
+                ei.attrs.write().insert(name.clone(), value);
             }
             _ => {
                 return Err(PyException::attribute_error(format!(

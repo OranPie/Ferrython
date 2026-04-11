@@ -8,7 +8,7 @@ use ferrython_bytecode::code::{CodeFlags, CodeObject};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
-    AsyncGenAction, CompareOp, IteratorData, PyObject, PyObjectMethods,
+    AsyncGenAction, CompareOp, IteratorData, PartialData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, is_data_descriptor, has_descriptor_get, lookup_in_class_mro,
     get_builtin_base_type_name,
 };
@@ -20,9 +20,9 @@ use std::sync::Arc;
 /// Attach `split` and `subgroup` methods to an ExceptionGroup instance.
 /// Reads `message` and `exceptions` from the instance attrs.
 fn attach_eg_methods(eg: &PyObjectRef) {
-    if let PyObjectPayload::ExceptionInstance { attrs, .. } = &eg.payload {
+    if let PyObjectPayload::ExceptionInstance(ei) = &eg.payload {
         let (msg, exc_list) = {
-            let a = attrs.read();
+            let a = ei.attrs.read();
             let msg = a.get(&CompactString::from("message"))
                 .cloned()
                 .unwrap_or_else(|| PyObject::str_val(CompactString::from("")));
@@ -35,7 +35,7 @@ fn attach_eg_methods(eg: &PyObjectRef) {
         let exc_sg = exc_list.clone();
         let msg_sp = msg;
         let exc_sp = exc_list;
-        let mut a = attrs.write();
+        let mut a = ei.attrs.write();
         a.insert(CompactString::from("subgroup"), PyObject::native_closure(
             "ExceptionGroup.subgroup",
             move |sg_args| {
@@ -49,16 +49,16 @@ fn attach_eg_methods(eg: &PyObjectRef) {
                 let items = exc_sg.to_list().unwrap_or_default();
                 let matched: Vec<PyObjectRef> = items.into_iter().filter(|exc| {
                     if let Some(ref fk) = filter_kind {
-                        if let PyObjectPayload::ExceptionInstance { kind: ek, .. } = &exc.payload {
-                            return ek.is_subclass_of(fk);
+                        if let PyObjectPayload::ExceptionInstance(ei) = &exc.payload {
+                            return ei.kind.is_subclass_of(fk);
                         }
                     }
                     false
                 }).collect();
                 if matched.is_empty() { return Ok(PyObject::none()); }
                 let new_eg = PyObject::exception_instance(ExceptionKind::ExceptionGroup, msg_sg.py_to_string());
-                if let PyObjectPayload::ExceptionInstance { attrs: ea, .. } = &new_eg.payload {
-                    let mut ew = ea.write();
+                if let PyObjectPayload::ExceptionInstance(ei) = &new_eg.payload {
+                    let mut ew = ei.attrs.write();
                     ew.insert(CompactString::from("message"), msg_sg.clone());
                     ew.insert(CompactString::from("exceptions"), PyObject::list(matched));
                 }
@@ -81,8 +81,8 @@ fn attach_eg_methods(eg: &PyObjectRef) {
                 let mut rest = Vec::new();
                 for exc in items {
                     let matches = if let Some(ref fk) = filter_kind {
-                        if let PyObjectPayload::ExceptionInstance { kind: ek, .. } = &exc.payload {
-                            ek.is_subclass_of(fk)
+                        if let PyObjectPayload::ExceptionInstance(ei) = &exc.payload {
+                            ei.kind.is_subclass_of(fk)
                         } else { false }
                     } else { false };
                     if matches { matched.push(exc); } else { rest.push(exc); }
@@ -90,8 +90,8 @@ fn attach_eg_methods(eg: &PyObjectRef) {
                 let make_eg = |msg: &PyObjectRef, items: Vec<PyObjectRef>| -> PyObjectRef {
                     if items.is_empty() { return PyObject::none(); }
                     let eg = PyObject::exception_instance(ExceptionKind::ExceptionGroup, msg.py_to_string());
-                    if let PyObjectPayload::ExceptionInstance { attrs: ea, .. } = &eg.payload {
-                        let mut ew = ea.write();
+                    if let PyObjectPayload::ExceptionInstance(ei) = &eg.payload {
+                        let mut ew = ei.attrs.write();
                         ew.insert(CompactString::from("message"), msg.clone());
                         ew.insert(CompactString::from("exceptions"), PyObject::list(items));
                     }
@@ -117,7 +117,7 @@ impl VirtualMachine {
                     self.call_object(write_fn, vec![text_obj])?;
                 }
                 // NativeClosure (e.g. StringIO.write): instance method stored on instance dict
-                PyObjectPayload::NativeClosure { .. } => {
+                PyObjectPayload::NativeClosure(_) => {
                     self.call_object(write_fn, vec![text_obj])?;
                 }
                 // Raw NativeFunction (e.g. default stdio): prepend self
@@ -1543,17 +1543,17 @@ impl VirtualMachine {
                             }
                             let pf = pos_args[0].clone();
                             let pa = if pos_args.len() > 1 { pos_args[1..].to_vec() } else { vec![] };
-                            return Ok(PyObject::wrap(PyObjectPayload::Partial {
+                            return Ok(PyObject::wrap(PyObjectPayload::Partial(Box::new(PartialData {
                                 func: pf, args: pa, kwargs,
-                            }));
+                            }))));
                         }
                         // re.sub / re.subn with callable replacement
                         if (name.as_str() == "re.sub" || name.as_str() == "re.subn") && pos_args.len() >= 3 {
                             let repl = &pos_args[1];
                             let is_callable = matches!(&repl.payload,
                                 PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
-                                | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. }
-                                | PyObjectPayload::Partial { .. });
+                                | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_)
+                                | PyObjectPayload::Partial(_));
                             if is_callable {
                                 // Merge kwargs into args as a trailing dict
                                 let mut merged = pos_args.clone();
@@ -1686,7 +1686,7 @@ impl VirtualMachine {
                                         matches!(&method.payload, PyObjectPayload::Function(_))
                                     }
                                     PyObjectPayload::NativeFunction { .. }
-                                    | PyObjectPayload::NativeClosure { .. }
+                                    | PyObjectPayload::NativeClosure(_)
                                     | PyObjectPayload::Class(_)
                                     | PyObjectPayload::BuiltinFunction(_)
                                     | PyObjectPayload::BuiltinType(_) => true,
@@ -1737,7 +1737,7 @@ impl VirtualMachine {
                         }
                         return nf(&pos_args);
                     }
-                    PyObjectPayload::NativeClosure { func, .. } => {
+                    PyObjectPayload::NativeClosure(nc) => {
                         let result = if !kwargs.is_empty() {
                             let mut all_args = pos_args;
                             let mut kw_map = IndexMap::new();
@@ -1745,9 +1745,9 @@ impl VirtualMachine {
                                 kw_map.insert(HashableKey::Str(k), v);
                             }
                             all_args.push(PyObject::dict(kw_map));
-                            func(&all_args)?
+                            (nc.func)(&all_args)?
                         } else {
-                            func(&pos_args)?
+                            (nc.func)(&pos_args)?
                         };
                         // Check if asyncio.run() was invoked
                         if let Some(coro) = ferrython_stdlib::take_asyncio_run_coro() {
@@ -1755,11 +1755,11 @@ impl VirtualMachine {
                         }
                         return Ok(result);
                     }
-                    PyObjectPayload::Partial { func: partial_func, args: partial_args, kwargs: partial_kwargs } => {
-                        let partial_func = partial_func.clone();
-                        let mut combined_args = partial_args.clone();
+                    PyObjectPayload::Partial(pd) => {
+                        let partial_func = pd.func.clone();
+                        let mut combined_args = pd.args.clone();
                         combined_args.extend(pos_args);
-                        let mut combined_kw = partial_kwargs.clone();
+                        let mut combined_kw = pd.kwargs.clone();
                         combined_kw.extend(kwargs);
                         if combined_kw.is_empty() {
                             return self.call_object(partial_func, combined_args);
@@ -1772,9 +1772,9 @@ impl VirtualMachine {
                         let inst = PyObject::exception_instance_with_args(kind.clone(), msg, pos_args.clone());
                         // ExceptionGroup/BaseExceptionGroup: store .message and .exceptions attrs
                         if matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup) {
-                            if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
+                            if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
                                 {
-                                    let mut a = attrs.write();
+                                    let mut a = ei.attrs.write();
                                     if !pos_args.is_empty() {
                                         a.insert(CompactString::from("message"), pos_args[0].clone());
                                     }
@@ -1794,9 +1794,8 @@ impl VirtualMachine {
                         }
                         // OSError and subclasses: OSError(errno, strerror[, filename])
                         if kind.is_subclass_of(&ExceptionKind::OSError) && pos_args.len() >= 2 {
-                            if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
-                                let mut a = attrs.write();
-                                // First arg is errno (int), second is strerror (str)
+                            if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                                let mut a = ei.attrs.write();
                                 a.insert(CompactString::from("errno"), pos_args[0].clone());
                                 a.insert(CompactString::from("strerror"), pos_args[1].clone());
                                 if pos_args.len() >= 3 {
@@ -1808,8 +1807,8 @@ impl VirtualMachine {
                         }
                         // SystemExit: store .code attribute
                         if *kind == ExceptionKind::SystemExit && !pos_args.is_empty() {
-                            if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
-                                attrs.write().insert(CompactString::from("code"), pos_args[0].clone());
+                            if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                                ei.attrs.write().insert(CompactString::from("code"), pos_args[0].clone());
                             }
                         }
                         return Ok(inst);
@@ -2700,7 +2699,7 @@ impl VirtualMachine {
                             // Preserve original exception value for identity
                             let original_value = if args.len() >= 2 {
                                 let v = &args[1];
-                                if matches!(v.payload, PyObjectPayload::ExceptionInstance { .. }
+                                if matches!(v.payload, PyObjectPayload::ExceptionInstance(_)
                                     | PyObjectPayload::Instance(_)) {
                                     Some(v.clone())
                                 } else {
@@ -2857,7 +2856,7 @@ impl VirtualMachine {
                             let (exc_kind, msg) = Self::parse_throw_args(&args);
                             let original_value = if args.len() >= 2 {
                                 let v = &args[1];
-                                if matches!(v.payload, PyObjectPayload::ExceptionInstance { .. }
+                                if matches!(v.payload, PyObjectPayload::ExceptionInstance(_)
                                     | PyObjectPayload::Instance(_)) {
                                     Some(v.clone())
                                 } else {
@@ -3142,8 +3141,8 @@ impl VirtualMachine {
                 let inst = PyObject::exception_instance_with_args(kind.clone(), msg, args.clone());
                 // ExceptionGroup/BaseExceptionGroup: store .message and .exceptions attrs
                 if matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup) {
-                    if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
-                        let mut a = attrs.write();
+                    if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                        let mut a = ei.attrs.write();
                         if !args.is_empty() {
                             a.insert(CompactString::from("message"), args[0].clone());
                         }
@@ -3161,8 +3160,8 @@ impl VirtualMachine {
                 }
                 // OSError and subclasses: OSError(errno, strerror[, filename])
                 if kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2 {
-                    if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
-                        let mut a = attrs.write();
+                    if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                        let mut a = ei.attrs.write();
                         a.insert(CompactString::from("errno"), args[0].clone());
                         a.insert(CompactString::from("strerror"), args[1].clone());
                         if args.len() >= 3 {
@@ -3174,8 +3173,8 @@ impl VirtualMachine {
                 }
                 // SystemExit: store .code attribute
                 if *kind == ExceptionKind::SystemExit && !args.is_empty() {
-                    if let PyObjectPayload::ExceptionInstance { attrs, .. } = &inst.payload {
-                        attrs.write().insert(CompactString::from("code"), args[0].clone());
+                    if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                        ei.attrs.write().insert(CompactString::from("code"), args[0].clone());
                     }
                 }
                 Ok(inst)
@@ -3239,8 +3238,8 @@ impl VirtualMachine {
                     let repl = &args[1];
                     let is_callable = matches!(&repl.payload,
                         PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
-                        | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. }
-                        | PyObjectPayload::Partial { .. });
+                        | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_)
+                        | PyObjectPayload::Partial(_));
                     if is_callable {
                         return self.re_sub_with_callable(&args, name.as_str() == "re.subn");
                     }
@@ -3336,7 +3335,7 @@ impl VirtualMachine {
                 }
                 Ok(result)
             }
-            PyObjectPayload::NativeClosure { func, .. } => {
+            PyObjectPayload::NativeClosure(nc) => {
                 // Resolve generators to lists for NativeClosure functions
                 let args = if !args.is_empty() && matches!(&args[0].payload, PyObjectPayload::Generator(_)) {
                     let mut resolved = Vec::with_capacity(args.len());
@@ -3346,7 +3345,7 @@ impl VirtualMachine {
                 } else {
                     args
                 };
-                let result = func(&args)?;
+                let result = (nc.func)(&args)?;
                 // Check if stdlib requested VM method calls (loop for multiple)
                 let collect_mode = ferrython_core::error::take_collect_vm_call_results();
                 if collect_mode {
@@ -3376,12 +3375,12 @@ impl VirtualMachine {
                 }
                 Ok(result)
             }
-            PyObjectPayload::Partial { func: partial_func, args: partial_args, kwargs: partial_kwargs } => {
-                let partial_func = partial_func.clone();
-                let mut combined_args = partial_args.clone();
+            PyObjectPayload::Partial(pd) => {
+                let partial_func = pd.func.clone();
+                let mut combined_args = pd.args.clone();
                 combined_args.extend(args);
-                if !partial_kwargs.is_empty() {
-                    let kw: Vec<(CompactString, PyObjectRef)> = partial_kwargs.iter()
+                if !pd.kwargs.is_empty() {
+                    let kw: Vec<(CompactString, PyObjectRef)> = pd.kwargs.iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
                     self.call_object_kw(partial_func, combined_args, kw)

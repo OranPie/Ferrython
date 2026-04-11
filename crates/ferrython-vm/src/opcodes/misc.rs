@@ -403,10 +403,10 @@ impl VirtualMachine {
                 // Check type first, then value for StopAsyncIteration
                 let is_stop_async = match &exc_type.payload {
                     PyObjectPayload::ExceptionType(k) => *k == ExceptionKind::StopAsyncIteration,
-                    PyObjectPayload::ExceptionInstance { kind, .. } => *kind == ExceptionKind::StopAsyncIteration,
+                    PyObjectPayload::ExceptionInstance(ei) => ei.kind == ExceptionKind::StopAsyncIteration,
                     _ => match &exc_value.payload {
                         PyObjectPayload::ExceptionType(k) => *k == ExceptionKind::StopAsyncIteration,
-                        PyObjectPayload::ExceptionInstance { kind, .. } => *kind == ExceptionKind::StopAsyncIteration,
+                        PyObjectPayload::ExceptionInstance(ei) => ei.kind == ExceptionKind::StopAsyncIteration,
                         _ => false,
                     },
                 };

@@ -57,7 +57,7 @@ pub fn call_callable(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObj
     // Fast path: native functions don't need VM
     match &func.payload {
         PyObjectPayload::NativeFunction { func: f, .. } => return f(args),
-        PyObjectPayload::NativeClosure { func: f, .. } => return f(args),
+        PyObjectPayload::NativeClosure(nc) => return (nc.func)(args),
         PyObjectPayload::BoundMethod { receiver, method } => {
             // If the underlying method is native, call directly
             match &method.payload {
@@ -66,10 +66,10 @@ pub fn call_callable(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObj
                     full_args.extend_from_slice(args);
                     return f(&full_args);
                 }
-                PyObjectPayload::NativeClosure { func: f, .. } => {
+                PyObjectPayload::NativeClosure(nc) => {
                     let mut full_args = vec![receiver.clone()];
                     full_args.extend_from_slice(args);
-                    return f(&full_args);
+                    return (nc.func)(&full_args);
                 }
                 _ => {} // Fall through to VM dispatch
             }
@@ -380,8 +380,8 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
                             return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
                         }
                     }
-                    PyObjectPayload::NativeClosure { func, .. } => {
-                        if let Ok(result) = func(&[a.clone(), b.clone()]) {
+                    PyObjectPayload::NativeClosure(nc) => {
+                        if let Ok(result) = (nc.func)(&[a.clone(), b.clone()]) {
                             return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
                         }
                     }
@@ -400,11 +400,11 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
                         }
                         return Some(std::cmp::Ordering::Equal);
                     }
-                    PyObjectPayload::NativeClosure { func, .. } => {
-                        if let Ok(result) = func(&[a.clone(), b.clone()]) {
+                    PyObjectPayload::NativeClosure(nc) => {
+                        if let Ok(result) = (nc.func)(&[a.clone(), b.clone()]) {
                             if result.is_truthy() { return Some(std::cmp::Ordering::Less); }
                         }
-                        if let Ok(result) = func(&[b.clone(), a.clone()]) {
+                        if let Ok(result) = (nc.func)(&[b.clone(), a.clone()]) {
                             if result.is_truthy() { return Some(std::cmp::Ordering::Greater); }
                         }
                         return Some(std::cmp::Ordering::Equal);

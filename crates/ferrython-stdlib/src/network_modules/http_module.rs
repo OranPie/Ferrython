@@ -3,7 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, NativeClosureData,
     make_module, make_builtin,
 };
 use ferrython_core::types::HashableKey;
@@ -1651,7 +1651,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
     // __eq__: compare by value (code)
     let eq_code = code;
     attrs.insert(CompactString::from("__eq__"), PyObject::wrap(
-        PyObjectPayload::NativeClosure {
+        PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__eq__"),
             func: Arc::new(move |args: &[PyObjectRef]| {
                 let other = if args.len() > 1 { &args[1] } else { &args[0] };
@@ -1661,46 +1661,46 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
                     Ok(PyObject::bool_val(false))
                 }
             }),
-        },
+        })),
     ));
     // __int__: return numeric code
     let int_code = code;
     attrs.insert(CompactString::from("__int__"), PyObject::wrap(
-        PyObjectPayload::NativeClosure {
+        PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__int__"),
             func: Arc::new(move |_args: &[PyObjectRef]| {
                 Ok(PyObject::int(int_code))
             }),
-        },
+        })),
     ));
     // __hash__
     let hash_code = code;
     attrs.insert(CompactString::from("__hash__"), PyObject::wrap(
-        PyObjectPayload::NativeClosure {
+        PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__hash__"),
             func: Arc::new(move |_args: &[PyObjectRef]| {
                 Ok(PyObject::int(hash_code))
             }),
-        },
+        })),
     ));
     // __repr__ / __str__
     let repr_s = CompactString::from(format!("<HTTPStatus.{}: {}>", name, code));
     let str_s = CompactString::from(format!("HTTPStatus.{}", name));
     attrs.insert(CompactString::from("__repr__"), PyObject::wrap(
-        PyObjectPayload::NativeClosure {
+        PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__repr__"),
             func: Arc::new(move |_args: &[PyObjectRef]| {
                 Ok(PyObject::str_val(repr_s.clone()))
             }),
-        },
+        })),
     ));
     attrs.insert(CompactString::from("__str__"), PyObject::wrap(
-        PyObjectPayload::NativeClosure {
+        PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__str__"),
             func: Arc::new(move |_args: &[PyObjectRef]| {
                 Ok(PyObject::str_val(str_s.clone()))
             }),
-        },
+        })),
     ));
 
     PyObject::instance_with_attrs(status_cls, attrs)
@@ -2735,7 +2735,7 @@ fn handle_one_connection(stream: &mut TcpStream, handler_cls: &PyObjectRef) {
         Some(func) => {
             // Call the handler method, passing the handler instance as self
             let result = match &func.payload {
-                PyObjectPayload::NativeClosure { func: f, .. } => f(&[handler_inst.clone()]),
+                PyObjectPayload::NativeClosure(nc) => (nc.func)(&[handler_inst.clone()]),
                 PyObjectPayload::NativeFunction { func: f, .. } => f(&[handler_inst.clone()]),
                 _ => Ok(PyObject::none()),
             };
@@ -3450,13 +3450,13 @@ pub fn create_http_cookies_module() -> PyObjectRef {
 fn ssl_call_fn(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match &func.payload {
         PyObjectPayload::NativeFunction { func: f, .. } => f(args),
-        PyObjectPayload::NativeClosure { func: f, .. } => f(args),
+        PyObjectPayload::NativeClosure(nc) => (nc.func)(args),
         PyObjectPayload::BoundMethod { receiver, method } => {
             let mut full_args = vec![receiver.clone()];
             full_args.extend_from_slice(args);
             match &method.payload {
                 PyObjectPayload::NativeFunction { func: f, .. } => f(&full_args),
-                PyObjectPayload::NativeClosure { func: f, .. } => f(&full_args),
+                PyObjectPayload::NativeClosure(nc) => (nc.func)(&full_args),
                 _ => Ok(PyObject::none()),
             }
         }
@@ -3995,19 +3995,19 @@ fn smtp_connect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.is_empty() { return Err(PyException::type_error("send_message requires a Message")); }
         let msg_obj = &args[0];
         let from_addr = msg_obj.get_attr("__getitem__").and_then(|gi| {
-            if let PyObjectPayload::NativeClosure { func, .. } = &gi.payload {
-                func(&[PyObject::str_val(CompactString::from("From"))]).ok()
+            if let PyObjectPayload::NativeClosure(nc) = &gi.payload {
+                (nc.func)(&[PyObject::str_val(CompactString::from("From"))]).ok()
             } else { None }
         }).map(|v| v.py_to_string()).unwrap_or_default();
         let to_addr = msg_obj.get_attr("__getitem__").and_then(|gi| {
-            if let PyObjectPayload::NativeClosure { func, .. } = &gi.payload {
-                func(&[PyObject::str_val(CompactString::from("To"))]).ok()
+            if let PyObjectPayload::NativeClosure(nc) = &gi.payload {
+                (nc.func)(&[PyObject::str_val(CompactString::from("To"))]).ok()
             } else { None }
         }).map(|v| v.py_to_string()).unwrap_or_default();
         let body = if let Some(as_string) = msg_obj.get_attr("as_string") {
             match &as_string.payload {
                 PyObjectPayload::NativeFunction { func, .. } => func(&[]).map(|v| v.py_to_string()).unwrap_or_default(),
-                PyObjectPayload::NativeClosure { func, .. } => func(&[]).map(|v| v.py_to_string()).unwrap_or_default(),
+                PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]).map(|v| v.py_to_string()).unwrap_or_default(),
                 _ => msg_obj.py_to_string(),
             }
         } else {

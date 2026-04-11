@@ -1742,8 +1742,8 @@ fn write_tar_to_disk(inner: &TarInner) -> PyResult<()> {
                 PyObjectPayload::NativeFunction { func, .. } => {
                     func(&[PyObject::bytes(data)])?;
                 }
-                PyObjectPayload::NativeClosure { func, .. } => {
-                    func(&[PyObject::bytes(data)])?;
+                PyObjectPayload::NativeClosure(nc) => {
+                    (nc.func)(&[PyObject::bytes(data)])?;
                 }
                 _ => {}
             }
@@ -1752,7 +1752,7 @@ fn write_tar_to_disk(inner: &TarInner) -> PyResult<()> {
         if let Some(seek_fn) = fobj.get_attr("seek") {
             match &seek_fn.payload {
                 PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&[PyObject::int(0)]); }
-                PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[PyObject::int(0)]); }
+                PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&[PyObject::int(0)]); }
                 _ => {}
             }
         }
@@ -1857,8 +1857,8 @@ fn extract_bytes_from_fileobj(fobj: &PyObjectRef) -> PyResult<Vec<u8>> {
                 return Ok(b.clone());
             }
         }
-        if let PyObjectPayload::NativeClosure { func, .. } = &getvalue.payload {
-            let result = func(&[])?;
+        if let PyObjectPayload::NativeClosure(nc) = &getvalue.payload {
+            let result = (nc.func)(&[])?;
             if let PyObjectPayload::Bytes(b) = &result.payload {
                 return Ok(b.clone());
             }

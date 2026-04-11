@@ -66,18 +66,18 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
             PyObjectPayload::Slice { .. } => "slice",
             PyObjectPayload::Cell(_) => "cell",
             PyObjectPayload::ExceptionType(_) => "type",
-            PyObjectPayload::ExceptionInstance { .. } => "exception",
+            PyObjectPayload::ExceptionInstance(_) => "exception",
             PyObjectPayload::Generator(_) => "generator",
             PyObjectPayload::Coroutine(_) => "coroutine",
             PyObjectPayload::AsyncGenerator(_) => "async_generator",
             PyObjectPayload::AsyncGenAwaitable { .. } => "async_generator_asend",
             PyObjectPayload::NativeFunction { .. } => "builtin_function_or_method",
-            PyObjectPayload::NativeClosure { .. } => "builtin_function_or_method",
+            PyObjectPayload::NativeClosure(_) => "builtin_function_or_method",
             PyObjectPayload::Property { .. } => "property",
             PyObjectPayload::StaticMethod(_) => "staticmethod",
             PyObjectPayload::ClassMethod(_) => "classmethod",
             PyObjectPayload::Super { .. } => "super",
-            PyObjectPayload::Partial { .. } => "functools.partial",
+            PyObjectPayload::Partial(_) => "functools.partial",
             PyObjectPayload::InstanceDict(_) => "dict",
             PyObjectPayload::BuiltinAwaitable(_) => "coroutine",
             PyObjectPayload::DeferredSleep { .. } => "coroutine",
@@ -122,7 +122,7 @@ pub(super) fn py_is_callable(obj: &PyObjectRef) -> bool {
             | PyObjectPayload::BuiltinType(_) | PyObjectPayload::BoundMethod { .. }
             | PyObjectPayload::BuiltinBoundMethod { .. }
             | PyObjectPayload::Class(_) | PyObjectPayload::ExceptionType(_)
-            | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure { .. } | PyObjectPayload::Partial { .. })
+            | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) | PyObjectPayload::Partial(_))
             || (matches!(&obj.payload, PyObjectPayload::Instance(_)) && obj.get_attr("__call__").is_some())
 }
 
@@ -368,8 +368,8 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 // Check for custom __repr__ NativeClosure (e.g. socket objects)
                 let attrs = m.attrs.read();
                 if let Some(repr_fn) = attrs.get("__repr__") {
-                    if let PyObjectPayload::NativeClosure { func, .. } = &repr_fn.payload {
-                        if let Ok(result) = func(&[]) {
+                    if let PyObjectPayload::NativeClosure(nc) = &repr_fn.payload {
+                        if let Ok(result) = (nc.func)(&[]) {
                             return result.py_to_string();
                         }
                     }
@@ -382,20 +382,20 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 else { format!("range({}, {}, {})", start, stop, step) }
             }
             PyObjectPayload::ExceptionType(kind) => format!("<class '{}'>", kind),
-            PyObjectPayload::ExceptionInstance { kind, message, args, .. } => {
+            PyObjectPayload::ExceptionInstance(ei) => {
                 // KeyError wraps its argument in repr() for str()
-                if *kind == crate::error::ExceptionKind::KeyError && args.len() == 1 {
-                    return args[0].repr();
+                if ei.kind == crate::error::ExceptionKind::KeyError && ei.args.len() == 1 {
+                    return ei.args[0].repr();
                 }
                 // CPython: str(e) with multiple args returns repr of the args tuple
-                if args.len() > 1 {
-                    let items: Vec<String> = args.iter().map(|a| a.repr()).collect();
+                if ei.args.len() > 1 {
+                    let items: Vec<String> = ei.args.iter().map(|a| a.repr()).collect();
                     return format!("({})", items.join(", "));
                 }
-                if message.is_empty() {
+                if ei.message.is_empty() {
                     String::new()
                 } else {
-                    message.to_string()
+                    ei.message.to_string()
                 }
             }
             PyObjectPayload::DictKeys(map) => {
@@ -450,11 +450,11 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                     format!("'{}'", escaped)
                 }
             }
-            PyObjectPayload::ExceptionInstance { kind, message, .. } => {
-                if message.is_empty() {
-                    format!("{}()", kind)
+            PyObjectPayload::ExceptionInstance(ei) => {
+                if ei.message.is_empty() {
+                    format!("{}()", ei.kind)
                 } else {
-                    format!("{}('{}')", kind, message)
+                    format!("{}('{}')", ei.kind, ei.message)
                 }
             }
             PyObjectPayload::Instance(inst) => {
@@ -491,14 +491,14 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                 // Check for __repr__: if it's a native closure, call it directly
                 if let Some(repr_fn) = obj.get_attr("__repr__") {
                     match &repr_fn.payload {
-                        PyObjectPayload::NativeClosure { func, .. } => {
-                            if let Ok(result) = func(&[obj.clone()]) {
+                        PyObjectPayload::NativeClosure(nc) => {
+                            if let Ok(result) = (nc.func)(&[obj.clone()]) {
                                 return result.py_to_string();
                             }
                         }
                         PyObjectPayload::BoundMethod { method, receiver } => {
-                            if let PyObjectPayload::NativeClosure { func, .. } = &method.payload {
-                                if let Ok(result) = func(&[receiver.clone()]) {
+                            if let PyObjectPayload::NativeClosure(nc) = &method.payload {
+                                if let Ok(result) = (nc.func)(&[receiver.clone()]) {
                                     return result.py_to_string();
                                 }
                             }

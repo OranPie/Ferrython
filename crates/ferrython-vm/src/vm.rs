@@ -3296,8 +3296,8 @@ impl VirtualMachine {
             PyObjectPayload::Instance(inst) => {
                 inst.attrs.write().insert(CompactString::from(name), value);
             }
-            PyObjectPayload::ExceptionInstance { attrs, .. } => {
-                attrs.write().insert(CompactString::from(name), value);
+            PyObjectPayload::ExceptionInstance(ei) => {
+                ei.attrs.write().insert(CompactString::from(name), value);
             }
             _ => {}
         }

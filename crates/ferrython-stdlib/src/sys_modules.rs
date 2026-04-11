@@ -1682,7 +1682,7 @@ fn os_fspath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             if let Some(method) = args[0].get_attr("__fspath__") {
                 match &method.payload {
                     PyObjectPayload::NativeFunction { func, .. } => func(&[args[0].clone()]),
-                    PyObjectPayload::NativeClosure { func, .. } => func(&[args[0].clone()]),
+                    PyObjectPayload::NativeClosure(nc) => (nc.func)(&[args[0].clone()]),
                     PyObjectPayload::Function(_) => {
                         Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
                     }
@@ -2987,7 +2987,7 @@ pub fn create_sched_module() -> PyObjectRef {
                         };
                         match &action.payload {
                             PyObjectPayload::NativeFunction { func, .. } => { func(&call_args)?; }
-                            PyObjectPayload::NativeClosure { func, .. } => { func(&call_args)?; }
+                            PyObjectPayload::NativeClosure(nc) => { (nc.func)(&call_args)?; }
                             _ => {
                                 // Python function — defer via request_vm_call
                                 ferrython_core::error::request_vm_call(action.clone(), call_args);

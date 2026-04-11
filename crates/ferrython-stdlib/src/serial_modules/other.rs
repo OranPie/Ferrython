@@ -932,18 +932,18 @@ fn pickle_serialize_p0(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
             }
             buf.extend_from_slice(b"tR");
         }
-        PyObjectPayload::ExceptionInstance { kind, message, args: exc_args, .. } => {
+        PyObjectPayload::ExceptionInstance(ei) => {
             // Serialize exceptions as: cbuiltins\nExceptionType\n(args)tR
-            let type_name = format!("{}", kind);
+            let type_name = format!("{}", ei.kind);
             buf.extend_from_slice(b"cbuiltins\n");
             buf.extend_from_slice(type_name.as_bytes());
             buf.push(b'\n');
             buf.push(b'(');
-            if exc_args.is_empty() {
+            if ei.args.is_empty() {
                 // Use the message as the sole arg
-                pickle_serialize_p0(&PyObject::str_val(CompactString::from(message.as_str())), buf, memo)?;
+                pickle_serialize_p0(&PyObject::str_val(CompactString::from(ei.message.as_str())), buf, memo)?;
             } else {
-                for arg in exc_args {
+                for arg in &ei.args {
                     pickle_serialize_p0(arg, buf, memo)?;
                 }
             }
@@ -970,7 +970,7 @@ fn pickle_extract_instance(
     let state_dict = if let Some(getstate) = obj.get_attr("__getstate__") {
         match &getstate.payload {
             PyObjectPayload::NativeFunction { func, .. } => func(&[obj.clone()]).ok(),
-            PyObjectPayload::NativeClosure { func, .. } => func(&[obj.clone()]).ok(),
+            PyObjectPayload::NativeClosure(nc) => (nc.func)(&[obj.clone()]).ok(),
             _ => None,
         }
     } else {
@@ -990,7 +990,7 @@ fn pickle_extract_instance(
         for (k, v) in attrs_r.iter() {
             match &v.payload {
                 PyObjectPayload::NativeFunction { .. }
-                | PyObjectPayload::NativeClosure { .. }
+                | PyObjectPayload::NativeClosure(_)
                 | PyObjectPayload::Function(_)
                 | PyObjectPayload::Class(_) => continue,
                 _ => data_pairs.push((k.clone(), v.clone())),
@@ -1132,16 +1132,16 @@ fn pickle_serialize_p2(obj: &PyObjectRef, buf: &mut Vec<u8>, memo: &mut u32) -> 
             }
             buf.extend_from_slice(b"tR");
         }
-        PyObjectPayload::ExceptionInstance { kind, message, args: exc_args, .. } => {
-            let type_name = format!("{}", kind);
+        PyObjectPayload::ExceptionInstance(ei) => {
+            let type_name = format!("{}", ei.kind);
             buf.extend_from_slice(b"cbuiltins\n");
             buf.extend_from_slice(type_name.as_bytes());
             buf.push(b'\n');
             buf.push(b'(');
-            if exc_args.is_empty() {
-                pickle_serialize_p2(&PyObject::str_val(CompactString::from(message.as_str())), buf, memo)?;
+            if ei.args.is_empty() {
+                pickle_serialize_p2(&PyObject::str_val(CompactString::from(ei.message.as_str())), buf, memo)?;
             } else {
-                for arg in exc_args {
+                for arg in &ei.args {
                     pickle_serialize_p2(arg, buf, memo)?;
                 }
             }
@@ -2092,8 +2092,8 @@ fn pickle_dump(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 let _ = func(&[PyObject::bytes(data_bytes.clone())]);
                 return Ok(PyObject::none());
             }
-            PyObjectPayload::NativeClosure { func, .. } => {
-                let _ = func(&[PyObject::bytes(data_bytes.clone())]);
+            PyObjectPayload::NativeClosure(nc) => {
+                let _ = (nc.func)(&[PyObject::bytes(data_bytes.clone())]);
                 return Ok(PyObject::none());
             }
             _ => {}
@@ -2125,7 +2125,7 @@ fn pickle_load(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let Some(read_method) = args[0].get_attr("read") {
         let read_result = match &read_method.payload {
             PyObjectPayload::NativeFunction { func, .. } => func(&[]).ok(),
-            PyObjectPayload::NativeClosure { func, .. } => func(&[]).ok(),
+            PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]).ok(),
             _ => None,
         };
         if let Some(data_obj) = read_result {

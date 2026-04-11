@@ -28,7 +28,7 @@ fn extract_view_keys(obj: &PyObjectRef) -> Option<IndexMap<HashableKey, PyObject
             }).collect())
         }
         PyObjectPayload::Set(s) => Some(s.read().clone()),
-        PyObjectPayload::FrozenSet(s) => Some(s.clone()),
+        PyObjectPayload::FrozenSet(s) => Some(s.as_ref().clone()),
         _ => None,
     }
 }
@@ -169,13 +169,13 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
                 let mut result = IndexMap::new();
                 for (k, v) in a.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
             }
             (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
                 let rb = b.read();
                 let mut result = IndexMap::new();
                 for (k, v) in a.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
             }
             (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
                 let ra = a.read();
@@ -641,13 +641,13 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
                 let mut result = IndexMap::new();
                 for (k, v) in a.iter() { if b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
             }
             (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
                 let rb = b.read();
                 let mut result = IndexMap::new();
                 for (k, v) in a.iter() { if rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
             }
             (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
                 let ra = a.read();
@@ -792,14 +792,14 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                 let mut result = IndexMap::new();
                 for (k, v) in a.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 for (k, v) in b.iter() { if !a.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
             }
             (PyObjectPayload::FrozenSet(a), PyObjectPayload::Set(b)) => {
                 let rb = b.read();
                 let mut result = IndexMap::new();
                 for (k, v) in a.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 for (k, v) in rb.iter() { if !a.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(result)))
+                Ok(PyObject::wrap(PyObjectPayload::FrozenSet(Box::new(result))))
             }
             (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
                 let ra = a.read();

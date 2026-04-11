@@ -370,7 +370,7 @@ impl HashableKey {
             }
             PyObjectPayload::FrozenSet(m) => {
                 let mut keys: Vec<HashableKey> = Vec::with_capacity(m.len());
-                for (k, _) in m { keys.push(k.clone()); }
+                for (k, _) in m.iter() { keys.push(k.clone()); }
                 keys.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
                 Ok(HashableKey::FrozenSet(keys))
             }
@@ -389,7 +389,7 @@ impl HashableKey {
             }
             // Functions/methods are hashable by identity in CPython
             PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } |
-            PyObjectPayload::NativeClosure { .. } | PyObjectPayload::BuiltinFunction(_) |
+            PyObjectPayload::NativeClosure(_) | PyObjectPayload::BuiltinFunction(_) |
             PyObjectPayload::BoundMethod { .. } | PyObjectPayload::BuiltinBoundMethod { .. } => {
                 let ptr = std::sync::Arc::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr, obj.clone()))

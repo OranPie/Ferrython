@@ -513,8 +513,8 @@ fn extract_exc_type_msg(args: &[PyObjectRef]) -> (String, String) {
             (format!("{}", kind), msg)
         }
         // Exception instance
-        PyObjectPayload::ExceptionInstance { kind, message, .. } => {
-            (format!("{}", kind), message.to_string())
+        PyObjectPayload::ExceptionInstance(ei) => {
+            (format!("{}", ei.kind), ei.message.to_string())
         }
         // Instance (user-defined exception)
         PyObjectPayload::Instance(inst) => {
@@ -575,8 +575,8 @@ fn write_to_file_or_stderr(file_obj: &Option<PyObjectRef>, text: &str) {
         if let Some(write_fn) = fobj.get_attr("write") {
             let text_obj = PyObject::str_val(CompactString::from(text));
             match &write_fn.payload {
-                PyObjectPayload::NativeClosure { func, .. } => {
-                    let _ = func(&[text_obj]);
+                PyObjectPayload::NativeClosure(nc) => {
+                    let _ = (nc.func)(&[text_obj]);
                     return;
                 }
                 PyObjectPayload::NativeFunction { func, .. } => {
@@ -585,8 +585,8 @@ fn write_to_file_or_stderr(file_obj: &Option<PyObjectRef>, text: &str) {
                 }
                 PyObjectPayload::BoundMethod { receiver, method } => {
                     match &method.payload {
-                        PyObjectPayload::NativeClosure { func, .. } => {
-                            let _ = func(&[text_obj]);
+                        PyObjectPayload::NativeClosure(nc) => {
+                            let _ = (nc.func)(&[text_obj]);
                             return;
                         }
                         PyObjectPayload::NativeFunction { func, .. } => {

@@ -291,7 +291,7 @@ impl VirtualMachine {
                         PyObjectPayload::NativeFunction { .. } |
                         PyObjectPayload::BuiltinFunction(_) |
                         PyObjectPayload::Property { .. } |
-                        PyObjectPayload::NativeClosure { .. } |
+                        PyObjectPayload::NativeClosure(_) |
                         PyObjectPayload::StaticMethod(_) |
                         PyObjectPayload::ClassMethod(_))
                 })

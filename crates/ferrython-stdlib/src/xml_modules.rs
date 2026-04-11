@@ -386,8 +386,8 @@ fn build_element_object(
                     if matched { return Some(c.clone()); }
                     if let PyObjectPayload::Instance(ref d) = c.payload {
                         if let Some(fa_fn) = d.attrs.read().get(&CompactString::from("findall")).cloned() {
-                            if let PyObjectPayload::NativeClosure { func, .. } = &fa_fn.payload {
-                                if let Ok(list_obj) = func(&[PyObject::str_val(CompactString::from("*"))]) {
+                            if let PyObjectPayload::NativeClosure(nc) = &fa_fn.payload {
+                                if let Ok(list_obj) = (nc.func)(&[PyObject::str_val(CompactString::from("*"))]) {
                                     if let PyObjectPayload::List(items) = &list_obj.payload {
                                         if let Some(found) = find_desc(&items.read(), tag) {
                                             return Some(found);
@@ -414,8 +414,8 @@ fn build_element_object(
                 if let Some(t) = child.get_attr("tag") {
                     if t.py_to_string() == first {
                         if let Some(find_fn) = child.get_attr("find") {
-                            if let PyObjectPayload::NativeClosure { func, .. } = &find_fn.payload {
-                                if let Ok(result) = func(&[PyObject::str_val(CompactString::from(rest))]) {
+                            if let PyObjectPayload::NativeClosure(nc) = &find_fn.payload {
+                                if let Ok(result) = (nc.func)(&[PyObject::str_val(CompactString::from(rest))]) {
                                     if !matches!(result.payload, PyObjectPayload::None) {
                                         return Ok(result);
                                     }
@@ -448,8 +448,8 @@ fn build_element_object(
                     if matched { results.push(c.clone()); }
                     if let PyObjectPayload::Instance(ref d) = c.payload {
                         if let Some(fa_fn) = d.attrs.read().get(&CompactString::from("findall")).cloned() {
-                            if let PyObjectPayload::NativeClosure { func, .. } = &fa_fn.payload {
-                                if let Ok(list_obj) = func(&[PyObject::str_val(CompactString::from("*"))]) {
+                            if let PyObjectPayload::NativeClosure(nc) = &fa_fn.payload {
+                                if let Ok(list_obj) = (nc.func)(&[PyObject::str_val(CompactString::from("*"))]) {
                                     if let PyObjectPayload::List(items) = &list_obj.payload {
                                         findall_desc(&items.read(), tag, results);
                                     }
@@ -591,8 +591,8 @@ fn collect_pyobject_elements(children: &[PyObjectRef], tag_filter: &Option<Strin
         if let PyObjectPayload::Instance(ref d) = child.payload {
             let r = d.attrs.read();
             if let Some(iter_fn) = r.get(&CompactString::from("__iter__")) {
-                if let PyObjectPayload::NativeClosure { func, .. } = &iter_fn.payload {
-                    if let Ok(list_obj) = func(&[]) {
+                if let PyObjectPayload::NativeClosure(nc) = &iter_fn.payload {
+                    if let Ok(list_obj) = (nc.func)(&[]) {
                         if let PyObjectPayload::List(items) = &list_obj.payload {
                             let items = items.read();
                             collect_pyobject_elements(&items, tag_filter, results);
@@ -641,8 +641,8 @@ fn pyobject_to_xml_element(obj: &PyObjectRef) -> PyResult<XmlElement> {
         // Get children via __iter__ (returns the shared children list)
         let mut children = Vec::new();
         if let Some(iter_fn) = r.get(&CompactString::from("__iter__")) {
-            if let PyObjectPayload::NativeClosure { func, .. } = &iter_fn.payload {
-                if let Ok(list_obj) = func(&[]) {
+            if let PyObjectPayload::NativeClosure(nc) = &iter_fn.payload {
+                if let Ok(list_obj) = (nc.func)(&[]) {
                     if let PyObjectPayload::List(items) = &list_obj.payload {
                         for child_obj in items.read().iter() {
                             if let Ok(child_elem) = pyobject_to_xml_element(child_obj) {
@@ -794,8 +794,8 @@ fn etree_subelement(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Instance(ref d) = args[0].payload {
         let r = d.attrs.read();
         if let Some(append_fn) = r.get(&CompactString::from("append")) {
-            if let PyObjectPayload::NativeClosure { func, .. } = &append_fn.payload {
-                let _ = func(&[child_obj.clone()]);
+            if let PyObjectPayload::NativeClosure(nc) = &append_fn.payload {
+                let _ = (nc.func)(&[child_obj.clone()]);
             }
         }
     }
@@ -879,8 +879,8 @@ fn build_element_tree(root: XmlElement) -> PyObjectRef {
         if let PyObjectPayload::Instance(ref d) = ro.payload {
             let r = d.attrs.read();
             if let Some(find_fn) = r.get(&CompactString::from("find")) {
-                if let PyObjectPayload::NativeClosure { func, .. } = &find_fn.payload {
-                    return func(args);
+                if let PyObjectPayload::NativeClosure(nc) = &find_fn.payload {
+                    return (nc.func)(args);
                 }
             }
         }
@@ -894,8 +894,8 @@ fn build_element_tree(root: XmlElement) -> PyObjectRef {
         if let PyObjectPayload::Instance(ref d) = ro.payload {
             let r = d.attrs.read();
             if let Some(fa_fn) = r.get(&CompactString::from("findall")) {
-                if let PyObjectPayload::NativeClosure { func, .. } = &fa_fn.payload {
-                    return func(args);
+                if let PyObjectPayload::NativeClosure(nc) = &fa_fn.payload {
+                    return (nc.func)(args);
                 }
             }
         }

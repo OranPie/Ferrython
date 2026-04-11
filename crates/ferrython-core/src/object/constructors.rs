@@ -383,7 +383,7 @@ impl PyObject {
         Self::wrap(PyObjectPayload::NativeFunction { name: CompactString::from(name), func })
     }
     pub fn native_closure(name: &str, func: impl Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + Send + Sync + 'static) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::NativeClosure { name: CompactString::from(name), func: Arc::new(func) })
+        Self::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData { name: CompactString::from(name), func: Arc::new(func) })))
     }
     pub fn dict_from_pairs(pairs: Vec<(PyObjectRef, PyObjectRef)>) -> PyObjectRef {
         let mut map = IndexMap::new();
@@ -400,7 +400,7 @@ impl PyObject {
         Self::wrap(PyObjectPayload::Slice { start, stop, step })
     }
     pub fn frozenset(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::FrozenSet(items))
+        Self::wrap(PyObjectPayload::FrozenSet(Box::new(items)))
     }
     pub fn range(start: i64, stop: i64, step: i64) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Range { start, stop, step })
@@ -414,20 +414,20 @@ impl PyObject {
     pub fn exception_instance(kind: ExceptionKind, message: impl Into<String>) -> PyObjectRef {
         let msg: String = message.into();
         let args = if msg.is_empty() { vec![] } else { vec![PyObject::str_val(CompactString::from(msg.as_str()))] };
-        Self::wrap(PyObjectPayload::ExceptionInstance {
+        Self::wrap(PyObjectPayload::ExceptionInstance(Box::new(ExceptionInstanceData {
             kind,
             message: CompactString::from(msg),
             args,
             attrs: Arc::new(RwLock::new(IndexMap::new())),
-        })
+        })))
     }
     pub fn exception_instance_with_args(kind: ExceptionKind, message: impl Into<String>, args: Vec<PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::ExceptionInstance {
+        Self::wrap(PyObjectPayload::ExceptionInstance(Box::new(ExceptionInstanceData {
             kind,
             message: CompactString::from(message.into()),
             args,
             attrs: Arc::new(RwLock::new(IndexMap::new())),
-        })
+        })))
     }
     pub fn generator(name: CompactString, frame: Box<dyn Any + Send + Sync>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Generator(Arc::new(RwLock::new(GeneratorState {

@@ -269,8 +269,8 @@ pub fn create_logging_module() -> PyObjectRef {
                         if let Some(fmt_fn) = fmt.get_attr("format") {
                             // Use Formatter.format(record) for full field resolution
                             match &fmt_fn.payload {
-                                PyObjectPayload::NativeClosure { func, .. } => {
-                                    func(&[record.clone()])
+                                PyObjectPayload::NativeClosure(nc) => {
+                                    (nc.func)(&[record.clone()])
                                         .map(|r| r.py_to_string())
                                         .unwrap_or_else(|_| msg.clone())
                                 }
@@ -303,8 +303,8 @@ pub fn create_logging_module() -> PyObjectRef {
                     if let Some(write_fn) = stream2.get_attr("write") {
                         let line_obj = PyObject::str_val(CompactString::from(&line));
                         match &write_fn.payload {
-                            PyObjectPayload::NativeClosure { func, .. } => {
-                                let _ = func(&[line_obj]);
+                            PyObjectPayload::NativeClosure(nc) => {
+                                let _ = (nc.func)(&[line_obj]);
                             }
                             PyObjectPayload::NativeFunction { func, .. } => {
                                 let _ = func(&[line_obj]);
@@ -382,8 +382,8 @@ pub fn create_logging_module() -> PyObjectRef {
                     let formatted = if !matches!(&fmt.payload, PyObjectPayload::None) {
                         if let Some(fmt_fn) = fmt.get_attr("format") {
                             match &fmt_fn.payload {
-                                PyObjectPayload::NativeClosure { func, .. } => {
-                                    func(&[record.clone()])
+                                PyObjectPayload::NativeClosure(nc) => {
+                                    (nc.func)(&[record.clone()])
                                         .map(|r| r.py_to_string())
                                         .unwrap_or_else(|_| msg.clone())
                                 }
@@ -470,8 +470,8 @@ pub fn create_logging_module() -> PyObjectRef {
                     let formatted = if !matches!(&fmt.payload, PyObjectPayload::None) {
                         if let Some(fmt_fn) = fmt.get_attr("format") {
                             match &fmt_fn.payload {
-                                PyObjectPayload::NativeClosure { func, .. } => {
-                                    func(&[record.clone()])
+                                PyObjectPayload::NativeClosure(nc) => {
+                                    (nc.func)(&[record.clone()])
                                         .map(|r| r.py_to_string())
                                         .unwrap_or_else(|_| msg.clone())
                                 }
@@ -650,8 +650,8 @@ pub fn create_logging_module() -> PyObjectRef {
                 if let Some(formatter) = self_obj.get_attr("formatter") {
                     if !matches!(formatter.payload, PyObjectPayload::None) {
                         if let Some(fmt_fn) = formatter.get_attr("format") {
-                            if let PyObjectPayload::NativeClosure { func, .. } = &fmt_fn.payload {
-                                return func(&[record.clone()]);
+                            if let PyObjectPayload::NativeClosure(nc) = &fmt_fn.payload {
+                                return (nc.func)(&[record.clone()]);
                             }
                         }
                     }
@@ -1020,7 +1020,7 @@ fn logging_log(level: i64, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                             if let Some(emit_fn) = handler.get_attr("emit") {
                                 match &emit_fn.payload {
                                     PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&[record.clone()]); }
-                                    PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[record.clone()]); }
+                                    PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&[record.clone()]); }
                                     _ => {}
                                 }
                             }
@@ -1156,8 +1156,8 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                                 PyObjectPayload::NativeFunction { func, .. } => {
                                     let _ = func(&[handler.clone(), record.clone()]);
                                 }
-                                PyObjectPayload::NativeClosure { func, .. } => {
-                                    let _ = func(&[handler.clone(), record.clone()]);
+                                PyObjectPayload::NativeClosure(nc) => {
+                                    let _ = (nc.func)(&[handler.clone(), record.clone()]);
                                 }
                                 _ => {
                                     ferrython_core::error::request_vm_call(
@@ -1282,8 +1282,8 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     } else {
                         for handler in r.iter() {
                             if let Some(emit) = handler.get_attr("emit") {
-                                if let PyObjectPayload::NativeClosure { func, .. } = &emit.payload {
-                                    let _ = func(&[record.clone()]);
+                                if let PyObjectPayload::NativeClosure(nc) = &emit.payload {
+                                    let _ = (nc.func)(&[record.clone()]);
                                 }
                             }
                         }
@@ -2215,14 +2215,14 @@ pub fn create_unittest_module() -> PyObjectRef {
                         let logger = logging_get_logger(&[PyObject::str_val(CompactString::from(ln_enter.as_str()))])?;
                         if let Some(add_handler) = logger.get_attr("addHandler") {
                             match &add_handler.payload {
-                                PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[handler_for_enter.clone()]); }
+                                PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&[handler_for_enter.clone()]); }
                                 _ => {}
                             }
                         }
                         // Lower logger level
                         if let Some(set_level) = logger.get_attr("setLevel") {
                             match &set_level.payload {
-                                PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[PyObject::int(lnum)]); }
+                                PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&[PyObject::int(lnum)]); }
                                 _ => {}
                             }
                         }
@@ -2240,7 +2240,7 @@ pub fn create_unittest_module() -> PyObjectRef {
                         let logger = logging_get_logger(&[PyObject::str_val(CompactString::from(ln_exit.as_str()))])?;
                         if let Some(rm_handler) = logger.get_attr("removeHandler") {
                             match &rm_handler.payload {
-                                PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[handler_for_exit.clone()]); }
+                                PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&[handler_for_exit.clone()]); }
                                 _ => {}
                             }
                         }
@@ -2915,7 +2915,7 @@ pub fn create_pdb_module() -> PyObjectRef {
         let call_args = if args.len() > 1 { &args[1..] } else { &[] };
         match &func.payload {
             PyObjectPayload::NativeFunction { func: f, .. } => f(call_args),
-            PyObjectPayload::NativeClosure { func: f, .. } => f(call_args),
+            PyObjectPayload::NativeClosure(nc) => (nc.func)(call_args),
             _ => Ok(PyObject::none()),
         }
     });
@@ -3056,7 +3056,7 @@ pub fn create_profile_module() -> PyObjectRef {
                     let start = std::time::Instant::now();
                     let result = match &func.payload {
                         PyObjectPayload::NativeFunction { func: f, .. } => f(func_args)?,
-                        PyObjectPayload::NativeClosure { func: f, .. } => f(func_args)?,
+                        PyObjectPayload::NativeClosure(nc) => (nc.func)(func_args)?,
                         _ => PyObject::none(),
                     };
                     stats3.write().push(("runcall".to_string(), start.elapsed().as_secs_f64()));
@@ -3146,7 +3146,7 @@ pub fn create_cprofile_module() -> PyObjectRef {
                     let start = std::time::Instant::now();
                     let result = match &func.payload {
                         PyObjectPayload::NativeFunction { func: f, .. } => f(func_args)?,
-                        PyObjectPayload::NativeClosure { func: f, .. } => f(func_args)?,
+                        PyObjectPayload::NativeClosure(nc) => (nc.func)(func_args)?,
                         _ => PyObject::none(),
                     };
                     stats3.write().push(("runcall".to_string(), 1, start.elapsed().as_secs_f64()));
@@ -3197,8 +3197,8 @@ pub fn create_cprofile_module() -> PyObjectRef {
                                     wrote_to_stream = true;
                                     break;
                                 }
-                                PyObjectPayload::NativeClosure { func, .. } => {
-                                    let _ = func(&[PyObject::str_val(CompactString::from(output.as_str()))]);
+                                PyObjectPayload::NativeClosure(nc) => {
+                                    let _ = (nc.func)(&[PyObject::str_val(CompactString::from(output.as_str()))]);
                                     wrote_to_stream = true;
                                     break;
                                 }
@@ -3246,7 +3246,7 @@ pub fn create_cprofile_module() -> PyObjectRef {
 fn call_callable(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     match &obj.payload {
         PyObjectPayload::NativeFunction { func, .. } => func(&[]),
-        PyObjectPayload::NativeClosure { func, .. } => func(&[]),
+        PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]),
         _ => Ok(PyObject::none()),
     }
 }
@@ -3255,7 +3255,7 @@ fn call_callable(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
 fn is_callable(obj: &PyObjectRef) -> bool {
     matches!(&obj.payload,
         PyObjectPayload::NativeFunction { .. } |
-        PyObjectPayload::NativeClosure { .. } |
+        PyObjectPayload::NativeClosure(_) |
         PyObjectPayload::Function(_) |
         PyObjectPayload::BoundMethod { .. }
     )
@@ -3685,7 +3685,7 @@ pub fn create_pydoc_module() -> PyObjectRef {
                 PyObjectPayload::Module(_) => format!("module {}", name),
                 PyObjectPayload::Class(_) => format!("class {}", name),
                 PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }
-                | PyObjectPayload::NativeClosure { .. } => format!("function {}", name),
+                | PyObjectPayload::NativeClosure(_) => format!("function {}", name),
                 PyObjectPayload::BoundMethod { .. } => format!("method {}", name),
                 _ => obj.type_name().to_string(),
             };

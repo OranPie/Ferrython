@@ -102,8 +102,8 @@ pub fn create_threading_module() -> PyObjectRef {
                         );
                         return Ok(PyObject::none());
                     }
-                    PyObjectPayload::NativeClosure { func, .. } => {
-                        let f = func.clone();
+                    PyObjectPayload::NativeClosure(nc) => {
+                        let f = nc.func.clone();
                         let alive_attrs = inst.attrs.clone();
                         let join_handle = std::sync::Arc::new(std::sync::Mutex::new(None::<std::thread::JoinHandle<()>>));
                         let jh = join_handle.clone();
@@ -200,7 +200,7 @@ pub fn create_threading_module() -> PyObjectRef {
                 } else {
                     // Blocking join
                     match &jh.payload {
-                        PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&[]); }
+                        PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&[]); }
                         _ => {}
                     }
                 }
@@ -733,7 +733,7 @@ pub fn create_threading_module() -> PyObjectRef {
                         };
                         match &tgt.payload {
                             PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&call_args); }
-                            PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&call_args); }
+                            PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&call_args); }
                             _ => { push_deferred_call(tgt.clone(), call_args); }
                         }
                     }
@@ -1385,7 +1385,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                         // Invoke callback with stored args (best-effort for native closures)
                         match &f_call.payload {
                             PyObjectPayload::NativeFunction { func: f, .. } => f(&e_call),
-                            PyObjectPayload::NativeClosure { func: f, .. } => f(&e_call),
+                            PyObjectPayload::NativeClosure(nc) => (nc.func)(&e_call),
                             _ => {
                                 // For Python-defined functions, we'd need VM access.
                                 // Use deferred call mechanism.
@@ -1600,7 +1600,7 @@ pub fn create_thread_module() -> PyObjectRef {
             // Spawn a real OS thread for native closures/functions
             let handle = std::thread::spawn(move || {
                 match &func.payload {
-                    PyObjectPayload::NativeClosure { func: f, .. } => { let _ = f(&call_args); }
+                    PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&call_args); }
                     PyObjectPayload::NativeFunction { func: f, .. } => { let _ = f(&call_args); }
                     _ => {} // Python-defined functions need VM — can't call from here
                 }
@@ -1663,7 +1663,7 @@ pub fn create_signal_module() -> PyObjectRef {
                 handler.payload,
                 PyObjectPayload::Function(_)
                 | PyObjectPayload::NativeFunction { .. }
-                | PyObjectPayload::NativeClosure { .. }
+                | PyObjectPayload::NativeClosure(_)
                 | PyObjectPayload::BoundMethod { .. }
             );
             // Return previous handler, store new one
@@ -1730,8 +1730,8 @@ pub fn create_signal_module() -> PyObjectRef {
                         PyObjectPayload::NativeFunction { func, .. } => {
                             return func(&call_args);
                         }
-                        PyObjectPayload::NativeClosure { func, .. } => {
-                            return func(&call_args);
+                        PyObjectPayload::NativeClosure(nc) => {
+                            return (nc.func)(&call_args);
                         }
                         _ => {
                             // Python function — use deferred call mechanism
@@ -1853,7 +1853,7 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                         };
                         match &tgt.payload {
                             PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&call_args); }
-                            PyObjectPayload::NativeClosure { func, .. } => { let _ = func(&call_args); }
+                            PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&call_args); }
                             _ => { push_deferred_call(tgt.clone(), call_args); }
                         }
                     }
@@ -1926,8 +1926,8 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                         PyObjectPayload::NativeFunction { func: f, .. } => {
                             results.push(f(&[item.clone()])?);
                         }
-                        PyObjectPayload::NativeClosure { func: f, .. } => {
-                            results.push(f(&[item.clone()])?);
+                        PyObjectPayload::NativeClosure(nc) => {
+                            results.push((nc.func)(&[item.clone()])?);
                         }
                         _ => {
                             ferrython_core::error::request_vm_call(func.clone(), vec![item.clone()]);
@@ -1955,7 +1955,7 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                 } else { vec![] };
                 match &func.payload {
                     PyObjectPayload::NativeFunction { func: f, .. } => f(&call_args),
-                    PyObjectPayload::NativeClosure { func: f, .. } => f(&call_args),
+                    PyObjectPayload::NativeClosure(nc) => (nc.func)(&call_args),
                     _ => {
                         push_deferred_call(func.clone(), call_args);
                         Ok(PyObject::none())
@@ -1976,7 +1976,7 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                 } else { vec![] };
                 let result = match &func.payload {
                     PyObjectPayload::NativeFunction { func: f, .. } => f(&call_args)?,
-                    PyObjectPayload::NativeClosure { func: f, .. } => f(&call_args)?,
+                    PyObjectPayload::NativeClosure(nc) => (nc.func)(&call_args)?,
                     _ => { push_deferred_call(func.clone(), call_args); PyObject::none() }
                 };
                 // Return an AsyncResult-like object with get() method
@@ -2529,8 +2529,8 @@ pub fn create_select_module() -> PyObjectRef {
                                 PyObjectPayload::NativeFunction { func, .. } => {
                                     func(&[item.clone()]).ok().and_then(|v| v.as_int()).unwrap_or(-1) as i32
                                 }
-                                PyObjectPayload::NativeClosure { func, .. } => {
-                                    func(&[item.clone()]).ok().and_then(|v| v.as_int()).unwrap_or(-1) as i32
+                                PyObjectPayload::NativeClosure(nc) => {
+                                    (nc.func)(&[item.clone()]).ok().and_then(|v| v.as_int()).unwrap_or(-1) as i32
                                 }
                                 _ => item.as_int().unwrap_or(-1) as i32,
                             }

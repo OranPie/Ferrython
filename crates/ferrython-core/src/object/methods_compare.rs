@@ -79,8 +79,8 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             if let PyObjectPayload::Instance(inst) = &a.payload {
                 if let Some(method) = inst.attrs.read().get(dunder).cloned() {
                     match &method.payload {
-                        PyObjectPayload::NativeClosure { func, .. } => {
-                            return func(&[a.clone(), b.clone()]);
+                        PyObjectPayload::NativeClosure(nc) => {
+                            return (nc.func)(&[a.clone(), b.clone()]);
                         }
                         PyObjectPayload::NativeFunction { func, .. } => {
                             return func(&[a.clone(), b.clone()]);

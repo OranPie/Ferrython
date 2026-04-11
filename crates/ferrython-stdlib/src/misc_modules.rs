@@ -107,8 +107,8 @@ pub fn create_contextlib_module() -> PyObjectRef {
                                         PyObjectPayload::NativeFunction { func, .. } => {
                                             let _ = func(&[]);
                                         }
-                                        PyObjectPayload::NativeClosure { func, .. } => {
-                                            let _ = func(&[]);
+                                        PyObjectPayload::NativeClosure(nc) => {
+                                            let _ = (nc.func)(&[]);
                                         }
                                         PyObjectPayload::Function(_) => {
                                             // Python function callback — use request_vm_call
@@ -151,13 +151,13 @@ pub fn create_contextlib_module() -> PyObjectRef {
                         let wrapper = PyObject::native_closure("_callback_wrapper", move |_: &[PyObjectRef]| {
                             match &func.payload {
                                 PyObjectPayload::NativeFunction { func: f, .. } => f(&extra_args),
-                                PyObjectPayload::NativeClosure { func: f, .. } => f(&extra_args),
+                                PyObjectPayload::NativeClosure(nc) => (nc.func)(&extra_args),
                                 PyObjectPayload::BoundMethod { method, receiver, .. } => {
                                     let mut call_args = vec![(*receiver).clone()];
                                     call_args.extend(extra_args.iter().cloned());
                                     match &method.payload {
                                         PyObjectPayload::NativeFunction { func: ff, .. } => ff(&call_args),
-                                        PyObjectPayload::NativeClosure { func: ff, .. } => ff(&call_args),
+                                        PyObjectPayload::NativeClosure(nc) => (nc.func)(&call_args),
                                         _ => {
                                             ferrython_core::error::request_vm_call((*method).clone(), call_args);
                                             Ok(PyObject::none())
@@ -191,7 +191,7 @@ pub fn create_contextlib_module() -> PyObjectRef {
                         let result = if let Some(enter) = cm.get_attr("__enter__") {
                             match &enter.payload {
                                 PyObjectPayload::NativeFunction { func, .. } => func(&[cm.clone()])?,
-                                PyObjectPayload::NativeClosure { func, .. } => func(&[cm.clone()])?,
+                                PyObjectPayload::NativeClosure(nc) => (nc.func)(&[cm.clone()])?,
                                 PyObjectPayload::BuiltinBoundMethod { .. } => {
                                     // Generator __enter__/__exit__ — needs VM dispatch
                                     ferrython_core::error::request_vm_call(enter, vec![cm.clone()]);
@@ -223,9 +223,9 @@ pub fn create_contextlib_module() -> PyObjectRef {
                         // Invoke __exit__ with (None, None, None)
                         if let Some(exit_fn) = self_ref.get_attr("__exit__") {
                             match &exit_fn.payload {
-                                PyObjectPayload::NativeClosure { func, .. } => {
+                                PyObjectPayload::NativeClosure(nc) => {
                                     let none = PyObject::none();
-                                    func(&[none.clone(), none.clone(), none])?;
+                                    (nc.func)(&[none.clone(), none.clone(), none])?;
                                 }
                                 _ => {}
                             }
@@ -749,7 +749,7 @@ fn dataclass_decorator(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn call_factory_or_clone(default: &PyObjectRef) -> PyResult<PyObjectRef> {
     match &default.payload {
         PyObjectPayload::NativeFunction { func, .. } => func(&[]),
-        PyObjectPayload::NativeClosure { func, .. } => func(&[]),
+        PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]),
         PyObjectPayload::BuiltinType(name) => {
             // Common builtin types: dict() → {}, list() → [], set() → set(), etc.
             match name.as_str() {
@@ -1445,8 +1445,8 @@ pub fn create_contextvars_module() -> PyObjectRef {
                 if a.is_empty() { return Err(PyException::type_error("reset() requires a token")); }
                 let token = &a[0];
                 if let Some(restore_fn) = token.get_attr("_restore") {
-                    if let PyObjectPayload::NativeClosure { func, .. } = &restore_fn.payload {
-                        return func(&[]);
+                    if let PyObjectPayload::NativeClosure(nc) = &restore_fn.payload {
+                        return (nc.func)(&[]);
                     }
                 }
                 if let Some(old) = token.get_attr("old_value") {
@@ -1479,7 +1479,7 @@ pub fn create_contextvars_module() -> PyObjectRef {
                     let call_args: Vec<PyObjectRef> = args[1..].to_vec();
                     match &callable.payload {
                         PyObjectPayload::NativeFunction { func, .. } => func(&call_args),
-                        PyObjectPayload::NativeClosure { func, .. } => func(&call_args),
+                        PyObjectPayload::NativeClosure(nc) => (nc.func)(&call_args),
                         _ => {
                             ferrython_core::error::request_vm_call(callable.clone(), call_args);
                             Ok(PyObject::none())
@@ -1509,7 +1509,7 @@ pub fn create_contextvars_module() -> PyObjectRef {
                     let call_args: Vec<PyObjectRef> = args[1..].to_vec();
                     match &callable.payload {
                         PyObjectPayload::NativeFunction { func, .. } => func(&call_args),
-                        PyObjectPayload::NativeClosure { func, .. } => func(&call_args),
+                        PyObjectPayload::NativeClosure(nc) => (nc.func)(&call_args),
                         _ => {
                             ferrython_core::error::request_vm_call(callable.clone(), call_args);
                             Ok(PyObject::none())
@@ -2086,8 +2086,8 @@ pub fn create_cmd_module() -> PyObjectRef {
                                 Err(e) => { eprintln!("{}", e.message); }
                             }
                         }
-                        PyObjectPayload::NativeClosure { func, .. } => {
-                            match func(&[PyObject::str_val(CompactString::from(line))]) {
+                        PyObjectPayload::NativeClosure(nc) => {
+                            match (nc.func)(&[PyObject::str_val(CompactString::from(line))]) {
                                 Ok(result) => {
                                     if result.is_truthy() { break; }
                                 }
@@ -2145,8 +2145,8 @@ pub fn create_cmd_module() -> PyObjectRef {
                     PyObjectPayload::NativeFunction { func, .. } => {
                         return func(&[PyObject::str_val(CompactString::from(rest))]);
                     }
-                    PyObjectPayload::NativeClosure { func, .. } => {
-                        return func(&[PyObject::str_val(CompactString::from(rest))]);
+                    PyObjectPayload::NativeClosure(nc) => {
+                        return (nc.func)(&[PyObject::str_val(CompactString::from(rest))]);
                     }
                     _ => {
                         ferrython_core::error::request_vm_call(method.clone(),
@@ -3359,7 +3359,7 @@ pub fn create_ctypes_module() -> PyObjectRef {
             let target_type = &args[1];
             match &target_type.payload {
                 PyObjectPayload::NativeFunction { func, .. } => func(&[source.clone()]),
-                PyObjectPayload::NativeClosure { func, .. } => func(&[source.clone()]),
+                PyObjectPayload::NativeClosure(nc) => (nc.func)(&[source.clone()]),
                 _ => Ok(source.clone()),
             }
         })),

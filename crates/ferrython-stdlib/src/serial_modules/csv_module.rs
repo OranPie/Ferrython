@@ -1,7 +1,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData, NativeClosureData,
     make_module, make_builtin, check_args_min,
 };
 use ferrython_core::types::HashableKey;
@@ -304,7 +304,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 let attrs = inst.attrs.read();
                 if let Some(getvalue) = attrs.get("getvalue") {
                     let text = match &getvalue.payload {
-                        PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+                        PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
                         PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
                         _ => return Err(PyException::type_error("csv.reader requires an iterable")),
                     };
@@ -315,7 +315,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         .collect()
                 } else if let Some(read_fn) = attrs.get("read") {
                     let text = match &read_fn.payload {
-                        PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+                        PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
                         PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
                         _ => return Err(PyException::type_error("csv.reader requires an iterable")),
                     };
@@ -354,14 +354,14 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
     // __len__ for len(reader)
     let rows_ref = shared_rows.clone();
-    attrs.insert(CompactString::from("__len__"), PyObject::wrap(PyObjectPayload::NativeClosure {
+    attrs.insert(CompactString::from("__len__"), PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
         name: CompactString::from("__len__"),
         func: Arc::new(move |_args| Ok(PyObject::int(rows_ref.len() as i64))),
-    }));
+    }))));
 
     // __getitem__ for reader[i]
     let rows_ref = shared_rows.clone();
-    attrs.insert(CompactString::from("__getitem__"), PyObject::wrap(PyObjectPayload::NativeClosure {
+    attrs.insert(CompactString::from("__getitem__"), PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
         name: CompactString::from("__getitem__"),
         func: Arc::new(move |args| {
             let idx = if args.is_empty() {
@@ -377,7 +377,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 Err(PyException::index_error("list index out of range"))
             }
         }),
-    }));
+    }))));
 
     // __iter__ returns self (the iterator facade)
     let idx_ref = iter_index.clone();
@@ -390,16 +390,16 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             IteratorData::List { items: rows_vec, index: 0 },
         ))));
         let it = iter_obj.clone();
-        PyObject::wrap(PyObjectPayload::NativeClosure {
+        PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__iter__"),
             func: Arc::new(move |_args| Ok(it.clone())),
-        })
+        })))
     });
 
     // __next__ for next(reader)
     let rows_ref = shared_rows.clone();
     let idx_ref = iter_index.clone();
-    attrs.insert(CompactString::from("__next__"), PyObject::wrap(PyObjectPayload::NativeClosure {
+    attrs.insert(CompactString::from("__next__"), PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
         name: CompactString::from("__next__"),
         func: Arc::new(move |_args| {
             let mut idx = idx_ref.lock().unwrap();
@@ -411,7 +411,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 Err(PyException::stop_iteration())
             }
         }),
-    }));
+    }))));
 
     Ok(PyObject::instance_with_attrs(
         PyObject::class(CompactString::from("csv_reader"), vec![], indexmap::IndexMap::new()),
@@ -505,7 +505,7 @@ fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 if let Some(write_fn) = fo.get_attr("write") {
                     match &write_fn.payload {
                         PyObjectPayload::NativeFunction { func, .. } => { func(&[PyObject::str_val(CompactString::from(&line))])?; }
-                        PyObjectPayload::NativeClosure { func, .. } => { func(&[PyObject::str_val(CompactString::from(&line))])?; }
+                        PyObjectPayload::NativeClosure(nc) => { (nc.func)(&[PyObject::str_val(CompactString::from(&line))])?; }
                         _ => {}
                     }
                 }
@@ -532,7 +532,7 @@ fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     if let Some(write_fn) = fo2.get_attr("write") {
                         match &write_fn.payload {
                             PyObjectPayload::NativeFunction { func, .. } => { func(&[PyObject::str_val(CompactString::from(&line))])?; }
-                            PyObjectPayload::NativeClosure { func, .. } => { func(&[PyObject::str_val(CompactString::from(&line))])?; }
+                            PyObjectPayload::NativeClosure(nc) => { (nc.func)(&[PyObject::str_val(CompactString::from(&line))])?; }
                             _ => {}
                         }
                     }
@@ -553,7 +553,7 @@ fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // Try getvalue() for StringIO, then read(), then to_list
         if let Some(getvalue) = attrs.get("getvalue") {
             let text = match &getvalue.payload {
-                PyObjectPayload::NativeClosure { func, .. } => func(&[])?,
+                PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
                 PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
                 _ => { drop(attrs); return Ok(PyObject::list(args[0].to_list().unwrap_or_default())); }
             };
@@ -757,9 +757,9 @@ fn csv_escape_field(s: &str) -> String {
 fn write_to_fileobj(writer_inst: &PyObjectRef, text: &str) -> PyResult<()> {
     if let Some(fileobj) = writer_inst.get_attr("_fileobj") {
         if let Some(write_fn) = fileobj.get_attr("write") {
-            if let PyObjectPayload::NativeClosure { func, .. } = &write_fn.payload {
+            if let PyObjectPayload::NativeClosure(nc) = &write_fn.payload {
                 let arg = PyObject::str_val(CompactString::from(text));
-                func(&[arg])?;
+                (nc.func)(&[arg])?;
                 return Ok(());
             }
             if let PyObjectPayload::NativeFunction { func, .. } = &write_fn.payload {

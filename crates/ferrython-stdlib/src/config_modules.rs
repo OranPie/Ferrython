@@ -389,8 +389,8 @@ fn argparse_parse_args(
                 PyObjectPayload::NativeFunction { func, .. } => {
                     return func(&[PyObject::str_val(CompactString::from(val_str))]);
                 }
-                PyObjectPayload::NativeClosure { func, .. } => {
-                    return func(&[PyObject::str_val(CompactString::from(val_str))]);
+                PyObjectPayload::NativeClosure(nc) => {
+                    return (nc.func)(&[PyObject::str_val(CompactString::from(val_str))]);
                 }
                 PyObjectPayload::Class(_) | PyObjectPayload::BuiltinType(_) => {
                     // Handle builtin type names
@@ -556,7 +556,7 @@ fn argparse_parse_args(
                         let sp_dest = dest_obj.py_to_string();
                         // Call the registry function to get (name, parser) tuples
                         let registry_list = match &reg_fn.payload {
-                            PyObjectPayload::NativeClosure { func, .. } => func(&[]),
+                            PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]),
                             PyObjectPayload::NativeFunction { func, .. } => func(&[]),
                             _ => Err(PyException::runtime_error("bad subparser registry")),
                         };
@@ -581,7 +581,7 @@ fn argparse_parse_args(
                                                 .collect();
                                             if let Some(parse_fn) = child_parser.get_attr("parse_args") {
                                                 let child_ns = match &parse_fn.payload {
-                                                    PyObjectPayload::NativeClosure { func, .. } => func(&[PyObject::list(child_args)])?,
+                                                    PyObjectPayload::NativeClosure(nc) => (nc.func)(&[PyObject::list(child_args)])?,
                                                     PyObjectPayload::NativeFunction { func, .. } => func(&[PyObject::list(child_args)])?,
                                                     _ => return Err(PyException::runtime_error("parse_args not callable")),
                                                 };
@@ -1343,8 +1343,8 @@ pub fn create_configparser_module() -> PyObjectRef {
         if let Some(write_fn) = file_obj.get_attr("write") {
             let text = PyObject::str_val(CompactString::from(output.as_str()));
             match &write_fn.payload {
-                PyObjectPayload::NativeClosure { func, .. } => {
-                    func(&[text])?;
+                PyObjectPayload::NativeClosure(nc) => {
+                    (nc.func)(&[text])?;
                 }
                 PyObjectPayload::NativeFunction { func, .. } => {
                     func(&[text])?;
@@ -1355,9 +1355,9 @@ pub fn create_configparser_module() -> PyObjectRef {
                     if let PyObjectPayload::Instance(inst) = &file_obj.payload {
                         if inst.attrs.read().contains_key("__stringio__") {
                             if let Some(w) = inst.attrs.read().get("write") {
-                                if let PyObjectPayload::NativeClosure { func, .. } = &w.payload {
+                                if let PyObjectPayload::NativeClosure(nc) = &w.payload {
                                     let text2 = PyObject::str_val(CompactString::from(output.as_str()));
-                                    func(&[text2])?;
+                                    (nc.func)(&[text2])?;
                                 }
                             }
                         }
