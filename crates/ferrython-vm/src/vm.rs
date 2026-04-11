@@ -84,6 +84,58 @@ use std::sync::{Arc, OnceLock};
 /// Shared builtins for spawning thread VMs without re-initializing.
 static SHARED_BUILTINS: OnceLock<SharedBuiltins> = OnceLock::new();
 
+/// Cached PyObjectRef for common method names — avoids heap allocation in LoadMethod
+/// for builtin type method calls. Each entry is allocated once (OnceLock) and
+/// subsequent uses are just Arc clones (atomic increment).
+#[inline]
+fn cached_method_name(name: &str) -> Option<PyObjectRef> {
+    macro_rules! intern {
+        ($s:literal, $id:ident) => {{
+            static $id: OnceLock<PyObjectRef> = OnceLock::new();
+            return Some($id.get_or_init(|| PyObject::str_val(CompactString::from($s))).clone());
+        }};
+    }
+    match name {
+        "append" => intern!("append", N_APPEND),
+        "pop" => intern!("pop", N_POP),
+        "get" => intern!("get", N_GET),
+        "set" => intern!("set", N_SET),
+        "add" => intern!("add", N_ADD),
+        "strip" => intern!("strip", N_STRIP),
+        "lstrip" => intern!("lstrip", N_LSTRIP),
+        "rstrip" => intern!("rstrip", N_RSTRIP),
+        "lower" => intern!("lower", N_LOWER),
+        "upper" => intern!("upper", N_UPPER),
+        "startswith" => intern!("startswith", N_STARTSWITH),
+        "endswith" => intern!("endswith", N_ENDSWITH),
+        "extend" => intern!("extend", N_EXTEND),
+        "insert" => intern!("insert", N_INSERT),
+        "remove" => intern!("remove", N_REMOVE),
+        "sort" => intern!("sort", N_SORT),
+        "reverse" => intern!("reverse", N_REVERSE),
+        "copy" => intern!("copy", N_COPY),
+        "clear" => intern!("clear", N_CLEAR),
+        "update" => intern!("update", N_UPDATE),
+        "items" => intern!("items", N_ITEMS),
+        "keys" => intern!("keys", N_KEYS),
+        "values" => intern!("values", N_VALUES),
+        "join" => intern!("join", N_JOIN),
+        "split" => intern!("split", N_SPLIT),
+        "replace" => intern!("replace", N_REPLACE),
+        "find" => intern!("find", N_FIND),
+        "rfind" => intern!("rfind", N_RFIND),
+        "index" => intern!("index", N_INDEX),
+        "count" => intern!("count", N_COUNT),
+        "format" => intern!("format", N_FORMAT),
+        "encode" => intern!("encode", N_ENCODE),
+        "decode" => intern!("decode", N_DECODE),
+        "write" => intern!("write", N_WRITE),
+        "read" => intern!("read", N_READ),
+        "close" => intern!("close", N_CLOSE),
+        _ => None,
+    }
+}
+
 /// Callback registered with ferrython-core to spawn Python functions on real OS threads.
 fn spawn_python_thread_impl(
     func: PyObjectRef,
@@ -918,6 +970,15 @@ impl VirtualMachine {
                         self.execute_one(ferrython_bytecode::Instruction::new(
                             Opcode::ReturnValue, 0))
                     }
+                }
+
+                // Fused LoadConst + StoreFast — common in initialization (`x = 0`, `s = ""`)
+                Opcode::LoadConstStoreFast => {
+                    let const_idx = (instr.arg >> 16) as usize;
+                    let store_idx = (instr.arg & 0xFFFF) as usize;
+                    let val = unsafe { frame.constant_cache.get_unchecked(const_idx) }.clone();
+                    sset_local!(frame, store_idx, val);
+                    hot_ok!(profiling, self.profiler, instr.op)
                 }
 
                 // Inline int+int for BinaryAdd (hot in arithmetic loops)
@@ -2388,8 +2449,8 @@ impl VirtualMachine {
                             // Builtin type method: use unbound protocol with Str tag
                             // Stack: [name_as_Str, receiver] — CallMethod detects Str in slot_0
                             // Avoids Arc allocation for BuiltinBoundMethod entirely
-                            let name = frame.code.names[name_idx].clone();
-                            let name_obj = PyObject::str_val(name);
+                            let name_obj = cached_method_name(frame.code.names[name_idx].as_str())
+                                .unwrap_or_else(|| PyObject::str_val(frame.code.names[name_idx].clone()));
                             // receiver is already TOS, insert name below it
                             let recv_idx = frame.stack.len() - 1;
                             spush!(frame, name_obj);
@@ -2861,9 +2922,9 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         3 => {
-                            // Builtin: Str name tag + receiver
-                            let name = frame.code.names[name_idx].clone();
-                            let name_obj = PyObject::str_val(name);
+                            // Builtin: Str name tag + receiver (cached to avoid allocation)
+                            let name_obj = cached_method_name(frame.code.names[name_idx].as_str())
+                                .unwrap_or_else(|| PyObject::str_val(frame.code.names[name_idx].clone()));
                             spush!(frame, name_obj);
                             spush!(frame, obj);
                             hot_ok!(profiling, self.profiler, instr.op)
@@ -3385,6 +3446,7 @@ impl VirtualMachine {
             | Opcode::LoadGlobal | Opcode::StoreGlobal | Opcode::DeleteGlobal
             | Opcode::LoadFastLoadFast | Opcode::LoadFastLoadConst
             | Opcode::StoreFastLoadFast | Opcode::StoreFastJumpAbsolute
+            | Opcode::LoadConstStoreFast
                 => self.exec_name_ops(instr),
 
             Opcode::LoadAttr | Opcode::StoreAttr | Opcode::DeleteAttr

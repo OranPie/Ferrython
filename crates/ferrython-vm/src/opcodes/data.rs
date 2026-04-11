@@ -271,6 +271,12 @@ impl VirtualMachine {
                 )))?;
                 frame.push(v);
             }
+            Opcode::LoadConstStoreFast => {
+                let const_idx = (instr.arg >> 16) as usize;
+                let store_idx = (instr.arg & 0xFFFF) as usize;
+                let val = frame.constant_cache[const_idx].clone();
+                frame.set_local(store_idx, val);
+            }
             _ => unreachable!(),
         }
         } // drop frame borrow

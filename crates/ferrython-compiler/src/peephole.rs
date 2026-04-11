@@ -845,6 +845,17 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // LoadConst + StoreFast → LoadConstStoreFast (variable initialization)
+        if a.op == Opcode::LoadConst && b.op == Opcode::StoreFast
+            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        {
+            let packed = (a.arg << 16) | b.arg;
+            code.instructions[i] = Instruction::new(Opcode::LoadConstStoreFast, packed);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
         if a.arg > 0xFFFF || b.arg > 0xFFFF {
             i += 1;
             continue;

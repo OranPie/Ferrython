@@ -226,6 +226,9 @@ pub enum Opcode {
     /// Fused LoadConst + ReturnValue — common literal return (`return 0`, `return None`).
     /// arg = const_idx
     LoadConstReturnValue = 227,
+    /// Fused LoadConst + StoreFast — common variable initialization (`x = 0`, `x = None`).
+    /// arg encoding: (const_idx << 16) | store_idx
+    LoadConstStoreFast = 228,
 }
 
 impl Opcode {
@@ -355,6 +358,7 @@ impl Opcode {
             Self::LoadFastLoadConstBinaryAddStoreFast => 0,
             Self::LoadFastReturnValue => 0, // reads local, returns it (no net stack change)
             Self::LoadConstReturnValue => 0, // reads const, returns it
+            Self::LoadConstStoreFast => 0, // reads const, stores to local (net 0)
         }
     }
 
