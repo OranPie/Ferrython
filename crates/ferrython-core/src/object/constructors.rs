@@ -22,7 +22,7 @@ static NOT_IMPLEMENTED_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::
 
 // ── Small-int cache (CPython caches -5..=256, we go wider for loop bounds) ──
 const SMALL_INT_MIN: i64 = -5;
-const SMALL_INT_MAX: i64 = 32768;
+const SMALL_INT_MAX: i64 = 65536;
 
 static SMALL_INT_CACHE: LazyLock<Vec<PyObjectRef>> = LazyLock::new(|| {
     (SMALL_INT_MIN..=SMALL_INT_MAX)

@@ -1226,64 +1226,8 @@ impl VirtualMachine {
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Inline 'in' / 'not in' for dict, set, list, tuple, str (CompareOp arg 6/7)
-                Opcode::CompareOp if instr.arg == 6 || instr.arg == 7 => {
-                    let len = frame.stack.len();
-                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
-                    let needle = sget!(frame, len - 2); // a in b
-                    let haystack = sget!(frame, len - 1);
-                        let found = match (&haystack.payload, &needle.payload) {
-                            // dict: key in dict — direct hashmap contains
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                let hk = HashableKey::Str(s.clone());
-                                Some(map.read().contains_key(&hk))
-                            }
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Int(pi @ PyInt::Small(_))) => {
-                                let hk = HashableKey::Int(pi.clone());
-                                Some(map.read().contains_key(&hk))
-                            }
-                            (PyObjectPayload::Dict(map), PyObjectPayload::Bool(b)) => {
-                                let hk = HashableKey::Bool(*b);
-                                Some(map.read().contains_key(&hk))
-                            }
-                            // set: item in set
-                            (PyObjectPayload::Set(set), PyObjectPayload::Str(s)) => {
-                                let hk = HashableKey::Str(s.clone());
-                                Some(set.read().contains_key(&hk))
-                            }
-                            (PyObjectPayload::Set(set), PyObjectPayload::Int(pi @ PyInt::Small(_))) => {
-                                let hk = HashableKey::Int(pi.clone());
-                                Some(set.read().contains_key(&hk))
-                            }
-                            // list: item in list — linear scan for primitive types
-                            (PyObjectPayload::List(items), PyObjectPayload::Int(PyInt::Small(n))) => {
-                                let items = items.read();
-                                Some(items.iter().any(|it| matches!(&it.payload, PyObjectPayload::Int(PyInt::Small(m)) if m == n)))
-                            }
-                            (PyObjectPayload::List(items), PyObjectPayload::Str(s)) => {
-                                let items = items.read();
-                                Some(items.iter().any(|it| matches!(&it.payload, PyObjectPayload::Str(t) if t == s)))
-                            }
-                            // tuple: item in tuple for primitive types
-                            (PyObjectPayload::Tuple(items), PyObjectPayload::Int(PyInt::Small(n))) => {
-                                Some(items.iter().any(|it| matches!(&it.payload, PyObjectPayload::Int(PyInt::Small(m)) if m == n)))
-                            }
-                            (PyObjectPayload::Tuple(items), PyObjectPayload::Str(s)) => {
-                                Some(items.iter().any(|it| matches!(&it.payload, PyObjectPayload::Str(t) if t == s)))
-                            }
-                            // str: substr in str
-                            (PyObjectPayload::Str(haystack_s), PyObjectPayload::Str(needle_s)) => {
-                                Some(haystack_s.contains(needle_s.as_str()))
-                            }
-                            _ => None,
-                        };
-                        if let Some(result) = found {
-                            let val = if instr.arg == 6 { result } else { !result };
-                            unsafe { frame.binary_op_result(PyObject::bool_val(val)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        } else {
-                            self.execute_one(instr)
-                        }
-                }
+                // 'in'/'not in': cold, delegate to execute_one
+                Opcode::CompareOp if instr.arg == 6 || instr.arg == 7 => self.execute_one(instr),
                 // Inline LoadGlobal: check per-frame cache, then globals, then builtins
                 Opcode::LoadGlobal => {
                     let idx = instr.arg as usize;
@@ -1436,200 +1380,22 @@ impl VirtualMachine {
                     }
                 }
                 // Inline unary ops for common types
-                Opcode::UnaryNot => {
-                    let v = unsafe { frame.peek_unchecked() };
-                    match &v.payload {
-                        PyObjectPayload::Bool(b) => {
-                            let r = !b;
-                            let len = frame.stack.len();
-                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::bool_val(r) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::Int(PyInt::Small(n)) => {
-                            let r = *n == 0;
-                            let len = frame.stack.len();
-                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::bool_val(r) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::None => {
-                            let len = frame.stack.len();
-                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::bool_val(true) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => self.execute_one(instr),
-                    }
-                }
-                Opcode::UnaryNegative => {
-                    let v = unsafe { frame.peek_unchecked() };
-                    match &v.payload {
-                        PyObjectPayload::Int(PyInt::Small(n)) => {
-                            let r = match n.checked_neg() {
-                                Some(r) => PyObject::int(r),
-                                None => {
-                                    use num_bigint::BigInt;
-                                    PyObject::big_int(-BigInt::from(*n))
-                                }
-                            };
-                            let len = frame.stack.len();
-                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = r };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        PyObjectPayload::Float(f) => {
-                            let len = frame.stack.len();
-                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::float(-f) };
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        }
-                        _ => self.execute_one(instr),
-                    }
-                }
-                // Inline bitwise and power ops for ints
+                // Unary ops: cold, delegate to execute_one
+                Opcode::UnaryNot | Opcode::UnaryNegative => self.execute_one(instr),
+                // Bitwise, shift, power ops — delegate to execute_one (less inner-loop hot)
                 Opcode::BinaryAnd | Opcode::InplaceAnd
                 | Opcode::BinaryOr | Opcode::InplaceOr
                 | Opcode::BinaryXor | Opcode::InplaceXor
                 | Opcode::BinaryLshift | Opcode::InplaceLshift
                 | Opcode::BinaryRshift | Opcode::InplaceRshift
-                | Opcode::BinaryPower | Opcode::InplacePower => {
-                    let len = frame.stack.len();
-                    // SAFETY: well-formed bytecode guarantees stack depth >= 2
-                    if let (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) =
-                        (unsafe { &frame.stack.get_unchecked(len - 2).payload }, unsafe { &frame.stack.get_unchecked(len - 1).payload })
-                        {
-                            let (xv, yv) = (*x, *y);
-                            let result = match instr.op {
-                                Opcode::BinaryAnd | Opcode::InplaceAnd => Some(PyObject::int(xv & yv)),
-                                Opcode::BinaryOr | Opcode::InplaceOr => Some(PyObject::int(xv | yv)),
-                                Opcode::BinaryXor | Opcode::InplaceXor => Some(PyObject::int(xv ^ yv)),
-                                Opcode::BinaryLshift | Opcode::InplaceLshift if yv >= 0 && yv < 64 =>
-                                    xv.checked_shl(yv as u32).map(PyObject::int),
-                                Opcode::BinaryRshift | Opcode::InplaceRshift if yv >= 0 && yv < 64 =>
-                                    Some(PyObject::int(xv >> yv as u32)),
-                                Opcode::BinaryPower | Opcode::InplacePower if yv >= 0 && yv <= 63 => {
-                                    // Fast small-exponent path
-                                    let mut r: i64 = 1;
-                                    let mut overflow = false;
-                                    for _ in 0..yv {
-                                        match r.checked_mul(xv) {
-                                            Some(v) => r = v,
-                                            None => { overflow = true; break; }
-                                        }
-                                    }
-                                    if overflow { None } else { Some(PyObject::int(r)) }
-                                }
-                                _ => None,
-                            };
-                            if let Some(val) = result {
-                                unsafe { frame.binary_op_result(val) };
-                                hot_ok!(profiling, self.profiler, instr.op)
-                            } else {
-                                self.execute_one(instr)
-                            }
-                        } else {
-                            self.execute_one(instr)
-                        }
-                }
+                | Opcode::BinaryPower | Opcode::InplacePower => self.execute_one(instr),
                 // Inline LoadDeref (closure variable load — common in functional code)
                 // LoadDeref/StoreDeref: closure variable access, cold path
                 Opcode::LoadDeref | Opcode::StoreDeref => self.execute_one(instr),
                 // Inline BuildTuple (very common for returns, unpacking)
-                Opcode::BuildTuple => {
-                    let count = instr.arg as usize;
-                    if count == 0 {
-                        spush!(frame, PyObject::tuple(vec![]));
-                    } else {
-                        let start = frame.stack.len() - count;
-                        let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
-                        spush!(frame, PyObject::tuple(items));
-                    }
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                // Inline BuildList
-                Opcode::BuildList => {
-                    let count = instr.arg as usize;
-                    if count == 0 {
-                        spush!(frame, PyObject::list(vec![]));
-                    } else {
-                        let start = frame.stack.len() - count;
-                        let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
-                        spush!(frame, PyObject::list(items));
-                    }
-                    hot_ok!(profiling, self.profiler, instr.op)
-                }
-                // Inline FormatValue for primitive types (hot in f-strings)
-                Opcode::FormatValue => {
-                    let has_fmt_spec = instr.arg & 0x04 != 0;
-                    let conversion = (instr.arg & 0x03) as u8;
-                    // Fast path: no format spec, no/!s conversion, primitive value
-                    if !has_fmt_spec && (conversion == 0 || conversion == 1) {
-                        let val = speek!(frame);
-                        let fast_str = match &val.payload {
-                            PyObjectPayload::Str(s) => Some(s.clone()),
-                            PyObjectPayload::Int(PyInt::Small(n)) => {
-                                let mut buf = itoa::Buffer::new();
-                                Some(CompactString::from(buf.format(*n)))
-                            }
-                            PyObjectPayload::Float(f) => {
-                                let mut buf = ryu::Buffer::new();
-                                Some(CompactString::from(buf.format(*f)))
-                            }
-                            PyObjectPayload::Bool(b) => Some(CompactString::from(if *b { "True" } else { "False" })),
-                            PyObjectPayload::None => Some(CompactString::from("None")),
-                            _ => None,
-                        };
-                        if let Some(s) = fast_str {
-                            { let _ = spop!(frame); }
-                            spush!(frame, PyObject::str_val(s));
-                            hot_ok!(profiling, self.profiler, instr.op)
-                        } else {
-                            self.execute_one(instr)
-                        }
-                    } else {
-                        self.execute_one(instr)
-                    }
-                }
-                // Inline BuildString — concatenate string fragments from stack (f-strings)
-                Opcode::BuildString => {
-                    let count = instr.arg as usize;
-                    if count == 0 {
-                        spush!(frame, PyObject::str_val(CompactString::from("")));
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    } else if count == 1 {
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    } else {
-                        let start = frame.stack.len() - count;
-                        let mut total_len = 0usize;
-                        let mut all_str = true;
-                        for i in start..frame.stack.len() {
-                            if let PyObjectPayload::Str(s) = &sget!(frame, i).payload {
-                                total_len += s.len();
-                            } else {
-                                all_str = false;
-                                break;
-                            }
-                        }
-                        if all_str {
-                            let mut result = String::with_capacity(total_len);
-                            for i in start..frame.stack.len() {
-                                if let PyObjectPayload::Str(s) = &sget!(frame, i).payload {
-                                    result.push_str(s.as_str());
-                                }
-                            }
-                            frame.stack.truncate(start);
-                            spush!(frame, PyObject::str_val(CompactString::from(result)));
-                        } else {
-                            let mut result = String::new();
-                            for i in start..frame.stack.len() {
-                                if let PyObjectPayload::Str(s) = &sget!(frame, i).payload {
-                                    result.push_str(s.as_str());
-                                } else {
-                                    result.push_str(&sget!(frame, i).py_to_string());
-                                }
-                            }
-                            frame.stack.truncate(start);
-                            spush!(frame, PyObject::str_val(CompactString::from(result)));
-                        }
-                        hot_ok!(profiling, self.profiler, instr.op)
-                    }
-                }
+                // BuildTuple, BuildList, FormatValue, BuildString: cold, delegate
+                Opcode::BuildTuple | Opcode::BuildList
+                | Opcode::FormatValue | Opcode::BuildString => self.execute_one(instr),
                 // UnpackSequence/BuildMap: cold, delegate to execute_one
                 Opcode::UnpackSequence | Opcode::BuildMap => self.execute_one(instr),
                 // Inline CallFunction fast path for simple Python function calls
