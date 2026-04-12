@@ -3176,7 +3176,7 @@ pub fn create_shelve_module() -> PyObjectRef {
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
-            let data: Rc<PyCell<FxHashKeyMap>> = Rc::new(PyCell::new(new_fx_hashkey_map()));
+            let data: Rc<PyCell<FxHashKeyMap>> = ferrython_core::object::alloc_map_inner();
             let file_path = Arc::new(filename.clone());
 
             // Load existing data from file if it exists

@@ -12,6 +12,55 @@ use std::any::Any;
 use super::payload::*;
 use super::methods::PyObjectMethods;
 
+// ── Dict/Set inner Rc freelist (like CPython's dict_freelist) ──
+// When a Dict or Set is dropped and holds the sole reference to its inner
+// Rc<PyCell<FxHashKeyMap>>, we recycle it instead of freeing. On next
+// dict/set creation, we pop from the freelist (clear + reuse), avoiding malloc.
+const MAP_FREELIST_MAX: usize = 80; // CPython uses 80 for dicts
+thread_local! {
+    static MAP_FREELIST: RefCell<Vec<Rc<PyCell<FxHashKeyMap>>>> =
+        RefCell::new(Vec::with_capacity(MAP_FREELIST_MAX));
+}
+
+/// Allocate an inner Rc<PyCell<FxHashKeyMap>>, reusing from freelist if possible.
+#[inline]
+pub fn alloc_map_inner() -> Rc<PyCell<FxHashKeyMap>> {
+    MAP_FREELIST.with(|fl| {
+        let mut list = fl.borrow_mut();
+        if let Some(rc) = list.pop() {
+            // Recycle: map was already cleared when returned to freelist
+            rc
+        } else {
+            Rc::new(PyCell::new(new_fx_hashkey_map()))
+        }
+    })
+}
+
+/// Return an inner Rc<PyCell<FxHashKeyMap>> to the freelist if it's uniquely owned.
+/// Returns true if successfully recycled (caller should NOT drop it normally).
+#[inline]
+pub(crate) fn try_recycle_map(rc: &mut Rc<PyCell<FxHashKeyMap>>) -> bool {
+    if Rc::strong_count(rc) == 1 {
+        // We're the sole owner — clear and recycle
+        unsafe { &mut *rc.data_ptr() }.clear();
+        MAP_FREELIST.with(|fl| {
+            let mut list = fl.borrow_mut();
+            if list.len() < MAP_FREELIST_MAX {
+                // SAFETY: we verified strong_count == 1, so this is uniquely owned.
+                // We clone the Rc (bumps to 2), push clone to freelist, then the
+                // original Rc in the payload will drop (decrements to 1). Net: freelist
+                // holds the sole reference.
+                list.push(rc.clone());
+                true
+            } else {
+                false
+            }
+        })
+    } else {
+        false // Other references exist (DictKeys/Values/Items), let normal drop happen
+    }
+}
+
 // ── Singletons ──
 use std::sync::LazyLock;
 static NONE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::None }));
@@ -296,12 +345,23 @@ impl PyObject {
         Self::wrap_leaf(PyObjectPayload::Tuple(items))
     }
     pub fn set<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
-        let fx: FxHashKeyMap = items.into_iter().collect();
-        Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(fx))))
+        if items.is_empty() {
+            // Reuse from freelist
+            let inner = alloc_map_inner();
+            Self::wrap(PyObjectPayload::Set(inner))
+        } else {
+            let fx: FxHashKeyMap = items.into_iter().collect();
+            Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(fx))))
+        }
     }
     pub fn dict<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
-        let fx: FxHashKeyMap = items.into_iter().collect();
-        let obj = Self::wrap(PyObjectPayload::Dict(Rc::new(PyCell::new(fx))));
+        let inner = if items.is_empty() {
+            alloc_map_inner()
+        } else {
+            let fx: FxHashKeyMap = items.into_iter().collect();
+            Rc::new(PyCell::new(fx))
+        };
+        let obj = Self::wrap(PyObjectPayload::Dict(inner));
         track_object(&obj);
         obj
     }
@@ -317,7 +377,7 @@ impl PyObject {
         // Use cached flags from ClassData to avoid hierarchy traversal
         let (dict_storage, attrs) = if let PyObjectPayload::Class(cd) = &class.payload {
             let ds = if cd.is_dict_subclass {
-                Some(Rc::new(PyCell::new(new_fx_hashkey_map())))
+                Some(alloc_map_inner())
             } else { None };
             let a: FxAttrMap = if cd.expected_attrs > 0 {
                 FxAttrMap::with_capacity_and_hasher(cd.expected_attrs, Default::default())
@@ -335,7 +395,7 @@ impl PyObject {
     pub fn instance_with_attrs(class: PyObjectRef, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
         let dict_storage = if let PyObjectPayload::Class(cd) = &class.payload {
             if cd.is_dict_subclass {
-                Some(Rc::new(PyCell::new(new_fx_hashkey_map())))
+                Some(alloc_map_inner())
             } else { None }
         } else {
             Self::detect_dict_subclass(&class)
@@ -356,12 +416,12 @@ impl PyObject {
                     _ => false,
                 };
                 if is_dict {
-                    return Some(Rc::new(PyCell::new(new_fx_hashkey_map())));
+                    return Some(alloc_map_inner());
                 }
                 // Recurse into base classes
                 if let Some(storage) = Self::detect_dict_subclass(base) {
                     drop(storage); // We create fresh storage for each instance
-                    return Some(Rc::new(PyCell::new(new_fx_hashkey_map())));
+                    return Some(alloc_map_inner());
                 }
             }
         }

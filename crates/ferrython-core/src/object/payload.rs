@@ -394,6 +394,22 @@ pub enum PyObjectPayload {
     DictItems(Rc<PyCell<FxHashKeyMap>>),
 }
 
+impl Drop for PyObjectPayload {
+    #[inline]
+    fn drop(&mut self) {
+        match self {
+            PyObjectPayload::Dict(rc) | PyObjectPayload::Set(rc) => {
+                super::constructors::try_recycle_map(rc);
+                // After try_recycle_map, the Rc is either recycled (refcount bumped to
+                // freelist) or not. Either way, normal drop of `self` will decrement the
+                // Rc — if recycled, it goes from 2→1 (freelist holds it); if not, it
+                // goes from N→N-1 (normal behavior).
+            }
+            _ => {}
+        }
+    }
+}
+
 impl fmt::Debug for PyObjectPayload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
