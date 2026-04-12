@@ -514,7 +514,7 @@ fn extract_exc_type_msg(args: &[PyObjectRef]) -> (String, String) {
         }
         // Exception instance
         PyObjectPayload::ExceptionInstance(ei) => {
-            (format!("{}", ei.kind), ei.message.to_string())
+            (format!("{}", ei.kind), ei.message.as_str().to_owned())
         }
         // Instance (user-defined exception)
         PyObjectPayload::Instance(inst) => {

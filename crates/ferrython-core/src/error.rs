@@ -1,12 +1,13 @@
 //! Error types and exception hierarchy for Ferrython.
 
 use std::fmt;
+use compact_str::CompactString;
 use thiserror::Error;
 
 use crate::object::PyObjectRef;
 
 /// The kind of exception (maps to Python's exception classes).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExceptionKind {
     BaseException,
     SystemExit,
@@ -247,7 +248,7 @@ impl ExceptionKind {
 #[error("{kind}: {message}")]
 pub struct PyException {
     pub kind: ExceptionKind,
-    pub message: String,
+    pub message: CompactString,
     /// Original Python object (Instance) if raised from a custom exception class.
     pub original: Option<PyObjectRef>,
     /// Call stack frames at point of raise: `(filename, function, lineno)`.
@@ -279,10 +280,10 @@ pub struct TracebackEntry {
 }
 
 impl PyException {
-    pub fn new(kind: ExceptionKind, message: impl Into<String>) -> Self {
+    pub fn new(kind: ExceptionKind, message: impl Into<CompactString>) -> Self {
         Self { kind, message: message.into(), original: None, traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
     }
-    pub fn with_original(kind: ExceptionKind, message: impl Into<String>, obj: PyObjectRef) -> Self {
+    pub fn with_original(kind: ExceptionKind, message: impl Into<CompactString>, obj: PyObjectRef) -> Self {
         Self { kind, message: message.into(), original: Some(obj), traceback: Vec::new(), cause: None, context: None, value: None, os_error_info: None }
     }
     /// Ensure this exception has an `original` ExceptionInstance object.
@@ -290,26 +291,26 @@ impl PyException {
     pub fn ensure_original(&mut self) {
         if self.original.is_none() {
             self.original = Some(crate::object::PyObject::exception_instance(
-                self.kind.clone(), self.message.clone(),
+                self.kind, self.message.clone(),
             ));
         }
     }
-    pub fn type_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::TypeError, msg) }
-    pub fn value_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::ValueError, msg) }
-    pub fn lookup_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::LookupError, msg) }
-    pub fn name_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::NameError, msg) }
-    pub fn attribute_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::AttributeError, msg) }
-    pub fn runtime_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::RuntimeError, msg) }
-    pub fn import_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::ImportError, msg) }
-    pub fn module_not_found_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::ModuleNotFoundError, msg) }
-    pub fn index_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::IndexError, msg) }
-    pub fn key_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::KeyError, msg) }
-    pub fn zero_division_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::ZeroDivisionError, msg) }
-    pub fn overflow_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::OverflowError, msg) }
+    pub fn type_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::TypeError, msg) }
+    pub fn value_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::ValueError, msg) }
+    pub fn lookup_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::LookupError, msg) }
+    pub fn name_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::NameError, msg) }
+    pub fn attribute_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::AttributeError, msg) }
+    pub fn runtime_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::RuntimeError, msg) }
+    pub fn import_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::ImportError, msg) }
+    pub fn module_not_found_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::ModuleNotFoundError, msg) }
+    pub fn index_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::IndexError, msg) }
+    pub fn key_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::KeyError, msg) }
+    pub fn zero_division_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::ZeroDivisionError, msg) }
+    pub fn overflow_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::OverflowError, msg) }
     pub fn stop_iteration() -> Self { Self::new(ExceptionKind::StopIteration, "") }
-    pub fn os_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::OSError, msg) }
-    pub fn file_not_found_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::FileNotFoundError, msg) }
-    pub fn permission_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::PermissionError, msg) }
+    pub fn os_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::OSError, msg) }
+    pub fn file_not_found_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::FileNotFoundError, msg) }
+    pub fn permission_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::PermissionError, msg) }
 
     /// Create an OSError (or appropriate subclass) from a `std::io::Error`, with
     /// `.errno`, `.strerror`, and `.filename` attributes like CPython.
@@ -337,12 +338,12 @@ impl PyException {
         });
         exc
     }
-    pub fn assertion_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::AssertionError, msg) }
-    pub fn not_implemented_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::NotImplementedError, msg) }
-    pub fn recursion_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::RecursionError, msg) }
-    pub fn unbound_local_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::UnboundLocalError, msg) }
-    pub fn syntax_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::SyntaxError, msg) }
-    pub fn json_decode_error(msg: impl Into<String>) -> Self { Self::new(ExceptionKind::JSONDecodeError, msg) }
+    pub fn assertion_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::AssertionError, msg) }
+    pub fn not_implemented_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::NotImplementedError, msg) }
+    pub fn recursion_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::RecursionError, msg) }
+    pub fn unbound_local_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::UnboundLocalError, msg) }
+    pub fn syntax_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::SyntaxError, msg) }
+    pub fn json_decode_error(msg: impl Into<CompactString>) -> Self { Self::new(ExceptionKind::JSONDecodeError, msg) }
     pub fn system_exit(code: PyObjectRef) -> Self {
         let mut exc = Self::new(ExceptionKind::SystemExit, "");
         exc.value = Some(code);
@@ -372,13 +373,13 @@ pub type PyResult<T> = Result<T, PyException>;
 use std::cell::{RefCell, Cell};
 
 thread_local! {
-    static THREAD_EXC_INFO: RefCell<Option<(ExceptionKind, String, Vec<TracebackEntry>)>>
+    static THREAD_EXC_INFO: RefCell<Option<(ExceptionKind, CompactString, Vec<TracebackEntry>)>>
         = RefCell::new(None);
 }
 
 /// Store the current exception info in thread-local storage.
 /// Called by the VM when entering an except block.
-pub fn set_thread_exc_info(kind: ExceptionKind, msg: String, tb: Vec<TracebackEntry>) {
+pub fn set_thread_exc_info(kind: ExceptionKind, msg: CompactString, tb: Vec<TracebackEntry>) {
     THREAD_EXC_INFO.with(|c| *c.borrow_mut() = Some((kind, msg, tb)));
 }
 
@@ -388,7 +389,7 @@ pub fn clear_thread_exc_info() {
 }
 
 /// Get the current thread-local exception info, if any.
-pub fn get_thread_exc_info() -> Option<(ExceptionKind, String, Vec<TracebackEntry>)> {
+pub fn get_thread_exc_info() -> Option<(ExceptionKind, CompactString, Vec<TracebackEntry>)> {
     THREAD_EXC_INFO.with(|c| c.borrow().clone())
 }
 

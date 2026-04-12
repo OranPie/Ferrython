@@ -394,7 +394,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 if ei.message.is_empty() {
                     String::new()
                 } else {
-                    ei.message.to_string()
+                    ei.message.as_str().to_owned()
                 }
             }
             PyObjectPayload::DictKeys(map) => {

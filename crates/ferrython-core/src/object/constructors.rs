@@ -441,20 +441,20 @@ impl PyObject {
     pub fn exception_type(kind: ExceptionKind) -> PyObjectRef {
         Self::wrap(PyObjectPayload::ExceptionType(kind))
     }
-    pub fn exception_instance(kind: ExceptionKind, message: impl Into<String>) -> PyObjectRef {
-        let msg: String = message.into();
-        let args = if msg.is_empty() { vec![] } else { vec![PyObject::str_val(CompactString::from(msg.as_str()))] };
+    pub fn exception_instance(kind: ExceptionKind, message: impl Into<CompactString>) -> PyObjectRef {
+        let msg: CompactString = message.into();
+        let args = if msg.is_empty() { vec![] } else { vec![PyObject::str_val(msg.clone())] };
         Self::wrap(PyObjectPayload::ExceptionInstance(Box::new(ExceptionInstanceData {
             kind,
-            message: CompactString::from(msg),
+            message: msg,
             args,
             attrs: Rc::new(PyCell::new(FxAttrMap::default())),
         })))
     }
-    pub fn exception_instance_with_args(kind: ExceptionKind, message: impl Into<String>, args: Vec<PyObjectRef>) -> PyObjectRef {
+    pub fn exception_instance_with_args(kind: ExceptionKind, message: impl Into<CompactString>, args: Vec<PyObjectRef>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::ExceptionInstance(Box::new(ExceptionInstanceData {
             kind,
-            message: CompactString::from(message.into()),
+            message: message.into(),
             args,
             attrs: Rc::new(PyCell::new(FxAttrMap::default())),
         })))

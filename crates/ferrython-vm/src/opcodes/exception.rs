@@ -140,16 +140,16 @@ impl VirtualMachine {
                     if let PyObjectPayload::Generator(gen_arc) | PyObjectPayload::AsyncGenerator(gen_arc) = &exit_fn.payload {
                         // Throw exception into generator so its except clauses can catch it
                         let exc_kind = match &exc_type.payload {
-                            PyObjectPayload::ExceptionType(k) => k.clone(),
+                            PyObjectPayload::ExceptionType(k) => *k,
                             PyObjectPayload::Class(_) => Self::find_exception_kind(&exc_type),
                             _ => ExceptionKind::RuntimeError,
                         };
                         let exc_msg = match &exc_val.payload {
-                            PyObjectPayload::ExceptionInstance(ei) => ei.message.to_string(),
-                            _ => exc_val.py_to_string(),
+                            PyObjectPayload::ExceptionInstance(ei) => ei.message.clone(),
+                            _ => CompactString::from(exc_val.py_to_string()),
                         };
                         let gen_arc_clone = gen_arc.clone();
-                        let throw_result = self.gen_throw(&gen_arc_clone, exc_kind.clone(), exc_msg.clone());
+                        let throw_result = self.gen_throw(&gen_arc_clone, exc_kind, exc_msg.clone());
                         match throw_result {
                             Ok(_) | Err(PyException { kind: ExceptionKind::StopIteration, .. })
                                   | Err(PyException { kind: ExceptionKind::StopAsyncIteration, .. }) => {
@@ -260,13 +260,13 @@ impl VirtualMachine {
                 let tos = frame.peek();
                 match &tos.payload {
                     PyObjectPayload::ExceptionType(kind) => {
-                        let kind = kind.clone();
+                        let kind = *kind;
                         frame.pop();
                         let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
                         if !frame.stack.is_empty() { frame.pop(); }
                         let msg = match &value.payload {
-                            PyObjectPayload::ExceptionInstance(ei) => ei.message.to_string(),
-                            _ => value.py_to_string(),
+                            PyObjectPayload::ExceptionInstance(ei) => ei.message.clone(),
+                            _ => CompactString::from(value.py_to_string()),
                         };
                         // Preserve original value for identity-based checks
                         // (e.g. contextlib's `exc is not value`)
@@ -283,15 +283,15 @@ impl VirtualMachine {
                         let value = if !frame.stack.is_empty() { frame.pop() } else { PyObject::none() };
                         if !frame.stack.is_empty() { frame.pop(); }
                         let msg = match &value.payload {
-                            PyObjectPayload::ExceptionInstance(ei) => ei.message.to_string(),
+                            PyObjectPayload::ExceptionInstance(ei) => ei.message.clone(),
                             PyObjectPayload::Instance(_) => {
                                 if let Some(args) = value.get_attr("args") {
-                                    args.py_to_string()
+                                    CompactString::from(args.py_to_string())
                                 } else {
-                                    value.py_to_string()
+                                    CompactString::from(value.py_to_string())
                                 }
                             }
-                            _ => value.py_to_string(),
+                            _ => CompactString::from(value.py_to_string()),
                         };
                         return Err(PyException::with_original(kind, msg, value));
                     }
@@ -308,10 +308,10 @@ impl VirtualMachine {
         let raise_exc = |exc: &PyObjectRef| -> PyException {
             match &exc.payload {
                 PyObjectPayload::ExceptionInstance(ei) => {
-                    PyException::with_original(ei.kind.clone(), ei.message.to_string(), exc.clone())
+                    PyException::with_original(ei.kind, ei.message.clone(), exc.clone())
                 }
                 PyObjectPayload::ExceptionType(kind) => {
-                    PyException::new(kind.clone(), "")
+                    PyException::new(*kind, "")
                 }
                 PyObjectPayload::Instance(inst) => {
                     let kind = Self::find_exception_kind(&inst.class);
@@ -350,11 +350,10 @@ impl VirtualMachine {
             }
             1 => {
                 let exc = frame.pop();
-                let mut py_exc = raise_exc(&exc);
-                // Implicit chaining: set __context__ to active exception
-                if let Some(active) = &self.active_exception {
-                    py_exc.context = Some(Box::new(active.clone()));
-                }
+                let py_exc = raise_exc(&exc);
+                // Context chaining (__context__) is deferred to the unwind
+                // path in run_vm() — avoids expensive cloning for exceptions
+                // that are immediately caught in the same frame.
                 return Err(py_exc);
             }
             2 => {

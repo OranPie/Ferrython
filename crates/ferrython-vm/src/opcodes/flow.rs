@@ -231,7 +231,7 @@ impl VirtualMachine {
                     if !gen.finished && gen.frame.is_some() {
                         drop(gen);
                         let gen_arc = gen_arc.clone();
-                        match self.gen_throw(&gen_arc, ExceptionKind::GeneratorExit, String::new()) {
+                        match self.gen_throw(&gen_arc, ExceptionKind::GeneratorExit, CompactString::new("")) {
                             Ok(_) | Err(_) => {}
                         }
                         let mut gen = gen_arc.write();

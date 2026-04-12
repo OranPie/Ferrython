@@ -155,7 +155,7 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(inst.class.clone())
         }
         PyObjectPayload::ExceptionInstance(ei) => {
-            Ok(PyObject::exception_type(ei.kind.clone()))
+            Ok(PyObject::exception_type(ei.kind))
         }
         // For classes with a custom metaclass, return the metaclass
         PyObjectPayload::Class(cd) => {
@@ -639,7 +639,7 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
                     return true;
                 }
                 // Check exception hierarchy
-                return exception_is_subclass_of(ei.kind.clone(), &format!("{:?}", kind));
+                return exception_is_subclass_of(ei.kind, &format!("{:?}", kind));
             }
             // Check if obj is a user-defined class instance that inherits from this exception
             if let PyObjectPayload::Instance(inst) = &obj.payload {
@@ -701,7 +701,7 @@ pub(crate) fn class_is_subclass_of(cls: &PyObjectRef, target_name: &str) -> bool
                 return true;
             }
             // Walk up the exception hierarchy
-            exception_is_subclass_of(kind.clone(), target_name)
+            exception_is_subclass_of(*kind, target_name)
         }
         _ => false,
     }

@@ -2720,7 +2720,7 @@ impl VirtualMachine {
                                 return Ok(PyObject::none());
                             }
                             drop(gen);
-                            match self.gen_throw(gen_arc, ExceptionKind::GeneratorExit, String::new()) {
+                            match self.gen_throw(gen_arc, ExceptionKind::GeneratorExit, CompactString::new("")) {
                                 Ok(_yielded) => {
                                     // Generator yielded during close → RuntimeError
                                     return Err(PyException::runtime_error(

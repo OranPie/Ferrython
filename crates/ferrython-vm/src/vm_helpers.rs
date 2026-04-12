@@ -1069,7 +1069,7 @@ impl VirtualMachine {
         &mut self,
         gen_arc: &Rc<PyCell<GeneratorState>>,
         kind: ExceptionKind,
-        msg: String,
+        msg: CompactString,
     ) -> PyResult<PyObjectRef> {
         self.gen_throw_with_value(gen_arc, kind, msg, None)
     }
@@ -1081,7 +1081,7 @@ impl VirtualMachine {
         &mut self,
         gen_arc: &Rc<PyCell<GeneratorState>>,
         kind: ExceptionKind,
-        msg: String,
+        msg: CompactString,
         original_value: Option<PyObjectRef>,
     ) -> PyResult<PyObjectRef> {
         let mut gen = gen_arc.write();
@@ -1096,7 +1096,7 @@ impl VirtualMachine {
         drop(gen);
 
         // Set up exception on the frame so VM will unwind to handler
-        let mut exc = PyException::new(kind.clone(), msg.clone());
+        let mut exc = PyException::new(kind, msg.clone());
         // Preserve original exception object for identity-preserving re-raise
         if let Some(ref orig) = original_value {
             exc.original = Some(orig.clone());
@@ -1105,8 +1105,8 @@ impl VirtualMachine {
         let exc_result = Err(exc);
         // Use original value if provided (for identity-preserving throws)
         let exc_obj = original_value.clone()
-            .unwrap_or_else(|| PyObject::exception_instance(kind.clone(), msg.clone()));
-        let exc_type = PyObject::exception_type(kind.clone());
+            .unwrap_or_else(|| PyObject::exception_instance(kind, msg.clone()));
+        let exc_type = PyObject::exception_type(kind);
         let tb = PyObject::none();
 
         // Try to find an exception handler in the generator's frame
@@ -1156,15 +1156,15 @@ impl VirtualMachine {
     }
 
     /// Parse the arguments to generator.throw() / coroutine.throw() into (ExceptionKind, message).
-    pub(crate) fn parse_throw_args(args: &[PyObjectRef]) -> (ExceptionKind, String) {
-        let msg = if args.len() >= 2 { args[1].py_to_string() } else { String::new() };
+    pub(crate) fn parse_throw_args(args: &[PyObjectRef]) -> (ExceptionKind, CompactString) {
+        let msg: CompactString = if args.len() >= 2 { args[1].py_to_string().into() } else { CompactString::new("") };
         let kind = if !args.is_empty() {
             match &args[0].payload {
-                PyObjectPayload::ExceptionType(k) => k.clone(),
+                PyObjectPayload::ExceptionType(k) => *k,
                 PyObjectPayload::BuiltinType(name) => {
                     ExceptionKind::from_name(name).unwrap_or(ExceptionKind::RuntimeError)
                 }
-                PyObjectPayload::ExceptionInstance(ei) => ei.kind.clone(),
+                PyObjectPayload::ExceptionInstance(ei) => ei.kind,
                 _ => ExceptionKind::RuntimeError,
             }
         } else {
@@ -1221,7 +1221,7 @@ impl VirtualMachine {
                 }
             }
             AsyncGenAction::Throw(exc_kind, msg) => {
-                self.gen_throw(gen, exc_kind.clone(), msg.to_string())
+                self.gen_throw(gen, *exc_kind, msg.clone())
             }
             AsyncGenAction::Close => {
                 // Like generator.close(): throw GeneratorExit, expect finish
@@ -1231,7 +1231,7 @@ impl VirtualMachine {
                     return Ok(PyObject::none());
                 }
                 drop(g);
-                match self.gen_throw(gen, ExceptionKind::GeneratorExit, String::new()) {
+                match self.gen_throw(gen, ExceptionKind::GeneratorExit, CompactString::new("")) {
                     Ok(_yielded) => {
                         Err(PyException::runtime_error("async generator ignored GeneratorExit"))
                     }

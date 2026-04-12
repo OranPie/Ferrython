@@ -35,7 +35,7 @@ pub fn is_profile_active() -> bool {
 // Thread-local active exception info for sys.exc_info().
 // Set by the VM when entering an except block, cleared when leaving.
 thread_local! {
-    static ACTIVE_EXC_INFO: std::cell::RefCell<Option<(ExceptionKind, String, Option<PyObjectRef>)>> =
+    static ACTIVE_EXC_INFO: std::cell::RefCell<Option<(ExceptionKind, CompactString, Option<PyObjectRef>)>> =
         const { std::cell::RefCell::new(None) };
     static TRACE_FUNC: std::cell::RefCell<Option<PyObjectRef>> =
         const { std::cell::RefCell::new(None) };
@@ -48,7 +48,7 @@ thread_local! {
 }
 
 /// Called by VM when entering an except handler.
-pub fn set_exc_info(kind: ExceptionKind, msg: String, obj: Option<PyObjectRef>) {
+pub fn set_exc_info(kind: ExceptionKind, msg: CompactString, obj: Option<PyObjectRef>) {
     ACTIVE_EXC_INFO.with(|c| *c.borrow_mut() = Some((kind, msg, obj)));
 }
 
@@ -58,9 +58,9 @@ pub fn clear_exc_info() {
 }
 
 /// Read active exception info for traceback.format_exc() etc.
-pub fn get_exc_info() -> Option<(ExceptionKind, String)> {
+pub fn get_exc_info() -> Option<(ExceptionKind, CompactString)> {
     ACTIVE_EXC_INFO.with(|c| {
-        c.borrow().as_ref().map(|(k, m, _)| (k.clone(), m.clone()))
+        c.borrow().as_ref().map(|(k, m, _)| (*k, m.clone()))
     })
 }
 

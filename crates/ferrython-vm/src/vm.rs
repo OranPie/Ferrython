@@ -4930,8 +4930,8 @@ impl VirtualMachine {
                     // Fire "exception" trace event
                     if has_trace {
                         let exc_info = PyObject::tuple(vec![
-                            PyObject::exception_type(exc.kind.clone()),
-                            PyObject::str_val(CompactString::from(exc.message.as_str())),
+                            PyObject::exception_type(exc.kind),
+                            PyObject::str_val(exc.message.clone()),
                             PyObject::none(),
                         ]);
                         self.fire_trace_event("exception", exc_info);
@@ -4945,7 +4945,7 @@ impl VirtualMachine {
                         if let Some(ref active) = self.active_exception {
                             // Shallow link — avoid deep-cloning the entire chain.
                             exc.context = Some(Box::new(PyException::new(
-                                active.kind.clone(),
+                                active.kind,
                                 active.message.clone(),
                             )));
                         }
@@ -4958,7 +4958,7 @@ impl VirtualMachine {
                             // Update core thread-local (used by ferrython-traceback).
                             // Pass empty traceback — built lazily on demand.
                             ferrython_core::error::set_thread_exc_info(
-                                exc.kind.clone(),
+                                exc.kind,
                                 exc.message.clone(),
                                 Vec::new(),
                             );
@@ -4968,18 +4968,18 @@ impl VirtualMachine {
                                 let cls = if let PyObjectPayload::Instance(inst) = &orig.payload {
                                     inst.class.clone()
                                 } else {
-                                    PyObject::exception_type(exc.kind.clone())
+                                    PyObject::exception_type(exc.kind)
                                 };
                                 (orig.clone(), cls)
                             } else {
                                 let inst = if let Some(val) = &exc.value {
-                                    PyObject::exception_instance_with_args(exc.kind.clone(), exc.message.clone(), vec![val.clone()])
+                                    PyObject::exception_instance_with_args(exc.kind, exc.message.clone(), vec![val.clone()])
                                 } else {
-                                    PyObject::exception_instance(exc.kind.clone(), exc.message.clone())
+                                    PyObject::exception_instance(exc.kind, exc.message.clone())
                                 };
                                 (
                                     inst,
-                                    PyObject::exception_type(exc.kind.clone()),
+                                    PyObject::exception_type(exc.kind),
                                 )
                             };
                             // Store StopIteration.value if present
@@ -5001,7 +5001,7 @@ impl VirtualMachine {
                                 let cause_obj = if let Some(corig) = &cause.original {
                                     corig.clone()
                                 } else {
-                                    PyObject::exception_instance(cause.kind.clone(), cause.message.clone())
+                                    PyObject::exception_instance(cause.kind, cause.message.clone())
                                 };
                                 Self::store_exc_attr(&exc_value, "__cause__", cause_obj);
                             } else {
@@ -5012,7 +5012,7 @@ impl VirtualMachine {
                                 let ctx_obj = if let Some(corig) = &ctx.original {
                                     corig.clone()
                                 } else {
-                                    PyObject::exception_instance(ctx.kind.clone(), ctx.message.clone())
+                                    PyObject::exception_instance(ctx.kind, ctx.message.clone())
                                 };
                                 Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
                             } else {
@@ -5028,7 +5028,7 @@ impl VirtualMachine {
                             Self::store_exc_attr(&exc_value, "__traceback__", PyObject::none());
                             // Update thread-local for sys.exc_info()
                             ferrython_stdlib::set_exc_info(
-                                exc.kind.clone(),
+                                exc.kind,
                                 exc.message.clone(),
                                 Some(exc_value.clone()),
                             );
@@ -5446,8 +5446,8 @@ impl VirtualMachine {
             Some(h) => h,
             None => return false,
         };
-        let exc_type = PyObject::exception_type(exc.kind.clone());
-        let exc_value = PyObject::str_val(CompactString::from(exc.message.as_str()));
+        let exc_type = PyObject::exception_type(exc.kind);
+        let exc_value = PyObject::str_val(exc.message.clone());
         let exc_tb = PyObject::none();
         self.call_object(hook, vec![exc_type, exc_value, exc_tb]).is_ok()
     }

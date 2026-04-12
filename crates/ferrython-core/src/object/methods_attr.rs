@@ -1129,9 +1129,9 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         // Build the MRO chain by walking up the hierarchy
                         use crate::error::ExceptionKind;
                         let mut mro = vec![obj.clone()];
-                        let mut current = kind.clone();
+                        let mut current = *kind;
                         loop {
-                            let parent = match &current {
+                            let parent = match current {
                                 ExceptionKind::BaseException => break,
                                 ExceptionKind::Exception | ExceptionKind::SystemExit |
                                 ExceptionKind::KeyboardInterrupt | ExceptionKind::GeneratorExit => ExceptionKind::BaseException,
@@ -1174,7 +1174,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 ExceptionKind::BaseExceptionGroup => ExceptionKind::BaseException,
                                 ExceptionKind::ExceptionGroup => ExceptionKind::BaseExceptionGroup,
                             };
-                            mro.push(PyObject::exception_type(parent.clone()));
+                            mro.push(PyObject::exception_type(parent));
                             current = parent;
                         }
                         mro.push(PyObject::builtin_type(CompactString::from("object")));
@@ -1218,7 +1218,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }))
                     }
                     "__repr__" => {
-                        let kind_clone = kind.clone();
+                        let kind_clone = *kind;
                         Some(PyObject::native_closure("__repr__", move |args| {
                             if args.is_empty() {
                                 return Ok(PyObject::str_val(CompactString::from(
@@ -1266,7 +1266,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             Some(PyObject::tuple(ei.args.clone()))
                         }
                     }
-                    "__class__" => Some(PyObject::exception_type(ei.kind.clone())),
+                    "__class__" => Some(PyObject::exception_type(ei.kind)),
                     "code" if ei.kind == ExceptionKind::SystemExit => {
                         // SystemExit.code: first arg or message
                         if !ei.args.is_empty() {
