@@ -451,6 +451,16 @@ impl VirtualMachine {
         // Re-check trace/profile periodically (every 64 opcodes) instead of
         // calling thread-local get_trace_func() on every single iteration.
         let mut trace_check_counter: u8 = 0;
+
+        // Cache frame pointer to avoid re-deriving from call_stack every iteration.
+        // Hot opcodes (LoadFast, StoreFast, etc.) `continue` without touching call_stack,
+        // so the cached pointer stays valid. Cold paths re-derive after modification.
+        // SAFETY: call_stack is non-empty (we just pushed the initial frame).
+        let mut frame_ptr: *mut crate::frame::Frame = unsafe {
+            let cs_len = self.call_stack.len();
+            self.call_stack.as_mut_ptr().add(cs_len - 1)
+        };
+
         loop {
             // Only check trace/profile state when trace might be active, to avoid
             // even the counter decrement overhead in the common non-tracing case.
@@ -475,11 +485,13 @@ impl VirtualMachine {
                 if fire_line { last_line = current_line; }
                 self.call_stack.last_mut().unwrap().ip = ip + 1;
                 if fire_line { self.fire_trace_event("line", PyObject::none()); }
+                // Re-derive frame_ptr: fire_trace_event may call Python code
+                frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
             }
 
-            // SAFETY: call_stack is never empty during execution
-            let cs_len = self.call_stack.len();
-            let frame = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
+            // SAFETY: frame_ptr is re-derived after any call_stack modification.
+            // Hot opcodes `continue` without modifying call_stack, keeping frame_ptr valid.
+            let frame = unsafe { &mut *frame_ptr };
 
             let ip = frame.ip;
             let instr = if !has_trace {
@@ -2818,6 +2830,8 @@ impl VirtualMachine {
                             }
                         }
                         self.call_stack.push(new_frame);
+                        // Re-derive frame_ptr: push may reallocate Vec
+                        frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
                         if self.call_stack.len() > self.recursion_limit {
                             if let Some(frame) = self.call_stack.pop() {
                                 frame.recycle(&mut self.frame_pool);
@@ -3338,6 +3352,8 @@ impl VirtualMachine {
                                 frame.stack.set_len(args_start);
                             }
                             self.call_stack.push(new_frame);
+                            // Re-derive frame_ptr: push may reallocate Vec
+                            frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
                             if self.call_stack.len() > self.recursion_limit {
                                 if let Some(frame) = self.call_stack.pop() {
                                     frame.recycle(&mut self.frame_pool);
@@ -3811,6 +3827,8 @@ impl VirtualMachine {
                         }
                         new_frame.scope_kind = crate::frame::ScopeKind::Function;
                         self.call_stack.push(new_frame);
+                        // Re-derive frame_ptr: push may reallocate Vec
+                        frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
                         if self.call_stack.len() > self.recursion_limit {
                             if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
                             Err(PyException::recursion_error("maximum recursion depth exceeded"))
@@ -4112,6 +4130,8 @@ impl VirtualMachine {
                             }
                             new_frame.scope_kind = crate::frame::ScopeKind::Function;
                             self.call_stack.push(new_frame);
+                            // Re-derive frame_ptr: push may reallocate Vec
+                            frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
                             if self.call_stack.len() > self.recursion_limit {
                                 if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
                                 Err(PyException::recursion_error("maximum recursion depth exceeded"))
@@ -5279,6 +5299,8 @@ impl VirtualMachine {
                         } else {
                             parent.stack.push(ret);
                         }
+                        // Re-derive frame_ptr: child frame was popped
+                        frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
                         continue;
                     }
                     // Returning from the initial frame we were called to execute
@@ -5292,6 +5314,8 @@ impl VirtualMachine {
                 }
                 Ok(None) => {
                     if profiling { self.profiler.end_instruction(instr.op); }
+                    // Re-derive frame_ptr: execute_one may have modified call_stack
+                    frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
                 }
                 Err(mut exc) => {
                     // Fire "exception" trace event (cold — only when tracing)
@@ -5372,6 +5396,8 @@ impl VirtualMachine {
                             frame.ip = handler_ip;
                             // Move exc into active_exception (avoids clone)
                             self.active_exception = Some(exc);
+                            // Re-derive frame_ptr: exception unwind may have popped frames
+                            frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
                             break; // handler found, continue main loop
                         }
                         // No handler in current frame — unwind iteratively
