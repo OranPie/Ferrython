@@ -1,0 +1,72 @@
+  ExitStack close: PASS
+  ExitStack pop_all empties: PASS
+  MappingProxy create: PASS
+  MappingProxy getitem: PASS
+  MappingProxy keys: PASS
+  MappingProxy len: PASS
+  MappingProxy readonly: PASS
+  redirect_stdout: PASS
+  nullcontext: PASS
+  abc Iterable: PASS
+  abc Mapping: PASS
+  abc Sequence: PASS
+  SimpleNamespace: PASS
+  frozen dataclass: FAIL
+  post_init: PASS
+  dc order: FAIL
+  init_subclass: PASS
+  class_getitem: PASS
+  count: PASS
+  count vals: PASS
+  repeat: PASS
+  cycle: PASS
+  comb_with_repl: PASS
+  WeakValueDict: PASS
+  wraps name: PASS
+  cached_property: FAIL
+  math.gcd: PASS
+  math.factorial: PASS
+  math.isnan: PASS
+  math.isinf: PASS
+  struct complex: PASS
+  re named group: PASS
+  re groupdict: PASS
+  json custom encoder: PASS
+  sqlite3 ctx mgr: PASS
+phase130: 3 FAILED, 32 passed
+  ExitStack close: PASS
+  ExitStack pop_all empties: PASS
+  MappingProxy create: PASS
+  MappingProxy getitem: PASS
+  MappingProxy keys: PASS
+  MappingProxy len: PASS
+  MappingProxy readonly: PASS
+  redirect_stdout: PASS
+  nullcontext: PASS
+  abc Iterable: PASS
+  abc Mapping: PASS
+  abc Sequence: PASS
+  SimpleNamespace: PASS
+  frozen dataclass: FAIL
+  post_init: PASS
+  dc order: FAIL
+  init_subclass: PASS
+  class_getitem: PASS
+  count: PASS
+  count vals: PASS
+  repeat: PASS
+  cycle: PASS
+  comb_with_repl: PASS
+  WeakValueDict: PASS
+  wraps name: PASS
+  cached_property: FAIL
+  math.gcd: PASS
+  math.factorial: PASS
+  math.isnan: PASS
+  math.isinf: PASS
+  struct complex: PASS
+  re named group: PASS
+  re groupdict: PASS
+  json custom encoder: PASS
+  sqlite3 ctx mgr: PASS
+phase130: 3 FAILED, 32 passed

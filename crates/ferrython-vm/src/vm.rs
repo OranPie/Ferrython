@@ -4020,42 +4020,64 @@ impl VirtualMachine {
                     let key = sget!(frame, len - 1);
                     let obj = sget!(frame, len - 2);
                         match (&obj.payload, &key.payload) {
-                            // list[int] = val — lock-free
+                            // list[int] = val — lock-free, zero-clone
                             (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
                                 let items = unsafe { &mut *items_arc.data_ptr() };
                                 let i = *idx;
                                 let actual = if i < 0 { i + items.len() as i64 } else { i };
                                 if actual >= 0 && (actual as usize) < items.len() {
-                                    let v = sget!(frame, len - 3).clone();
+                                    // Move value from stack via ptr::read (no Rc::clone)
+                                    let v = unsafe { std::ptr::read(frame.stack.as_ptr().add(len - 3)) };
+                                    // Old element drops via assignment
                                     items[actual as usize] = v;
-                                    frame.stack.truncate(len - 3);
+                                    // Drop key and obj, value already moved
+                                    unsafe {
+                                        std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(len - 1));
+                                        std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(len - 2));
+                                        frame.stack.set_len(len - 3);
+                                    }
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
                                 }
                             }
-                            // dict[str] = val — lock-free
+                            // dict[str] = val — lock-free, zero-clone value
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
                                 let hk = HashableKey::Str(s.clone());
-                                let v = sget!(frame, len - 3).clone();
-                                unsafe { &mut *map.data_ptr() }.insert(hk, v);
-                                frame.stack.truncate(len - 3);
+                                let map_ptr = map.data_ptr();
+                                unsafe {
+                                    let v = std::ptr::read(frame.stack.as_ptr().add(len - 3));
+                                    (&mut *map_ptr).insert(hk, v);
+                                    std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(len - 1));
+                                    std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(len - 2));
+                                    frame.stack.set_len(len - 3);
+                                }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            // dict[int] = val — lock-free
+                            // dict[int] = val — lock-free, zero-clone value
                             (PyObjectPayload::Dict(map), PyObjectPayload::Int(PyInt::Small(n))) => {
-                                let hk = HashableKey::Int(PyInt::Small(*n));
-                                let v = sget!(frame, len - 3).clone();
-                                unsafe { &mut *map.data_ptr() }.insert(hk, v);
-                                frame.stack.truncate(len - 3);
+                                let map_ptr = map.data_ptr();
+                                let int_val = *n;
+                                unsafe {
+                                    let v = std::ptr::read(frame.stack.as_ptr().add(len - 3));
+                                    (&mut *map_ptr).insert(HashableKey::Int(PyInt::Small(int_val)), v);
+                                    std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(len - 1));
+                                    std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(len - 2));
+                                    frame.stack.set_len(len - 3);
+                                }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            // dict[bool] = val — lock-free
+                            // dict[bool] = val — lock-free, zero-clone value
                             (PyObjectPayload::Dict(map), PyObjectPayload::Bool(b)) => {
-                                let hk = HashableKey::Int(PyInt::Small(*b as i64));
-                                let v = sget!(frame, len - 3).clone();
-                                unsafe { &mut *map.data_ptr() }.insert(hk, v);
-                                frame.stack.truncate(len - 3);
+                                let map_ptr = map.data_ptr();
+                                let bool_val = *b;
+                                unsafe {
+                                    let v = std::ptr::read(frame.stack.as_ptr().add(len - 3));
+                                    (&mut *map_ptr).insert(HashableKey::Int(PyInt::Small(bool_val as i64)), v);
+                                    std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(len - 1));
+                                    std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(len - 2));
+                                    frame.stack.set_len(len - 3);
+                                }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
                             _ => self.execute_one(instr),
