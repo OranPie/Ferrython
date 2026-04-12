@@ -379,7 +379,7 @@ impl VirtualMachine {
                     let (aenter_method, aenter_args) = if matches!(&aenter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
                         (aenter_raw, vec![])
                     } else {
-                        let bound = Arc::new(PyObject {
+                        let bound = PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: ctx_mgr.clone(),
                                 method: aenter_raw,

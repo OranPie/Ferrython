@@ -335,7 +335,7 @@ impl VirtualMachine {
             if has_ga {
                 if let Some(ga) = lookup_in_class_mro(&inst.class, "__getattribute__") {
                     if matches!(&ga.payload, PyObjectPayload::Function(_)) {
-                        let method = Arc::new(PyObject {
+                        let method = PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: obj.clone(),
                                 method: ga,
@@ -384,7 +384,7 @@ impl VirtualMachine {
                             }
                         } else {
                             // Wrap as BoundMethod
-                            let bound = Arc::new(PyObject {
+                            let bound = PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
                                     receiver: obj.clone(),
                                     method: class_val,
@@ -446,7 +446,7 @@ impl VirtualMachine {
                     let get_method_bound = if matches!(&get_method.payload, PyObjectPayload::BoundMethod { .. }) {
                         get_method
                     } else {
-                        Arc::new(PyObject {
+                        PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: v.clone(),
                                 method: get_method,
@@ -459,7 +459,7 @@ impl VirtualMachine {
                     && matches!(&v.payload, PyObjectPayload::NativeFunction { .. })
                     && obj.get_attr("_bind_methods").is_some()
                 {
-                    self.vm_push(Arc::new(PyObject {
+                    self.vm_push(PyObjectRef::new(PyObject {
                         payload: PyObjectPayload::BoundMethod {
                             receiver: obj,
                             method: v,
@@ -493,7 +493,7 @@ impl VirtualMachine {
                                 let get_bound = if matches!(&get_method.payload, PyObjectPayload::BoundMethod { .. }) {
                                     get_method
                                 } else {
-                                    Arc::new(PyObject {
+                                    PyObjectRef::new(PyObject {
                                         payload: PyObjectPayload::BoundMethod {
                                             receiver: ga_raw.clone(),
                                             method: get_method,
@@ -506,7 +506,7 @@ impl VirtualMachine {
                             }
                         } else if matches!(&ga_raw.payload, PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
                             // Regular function: bind as method
-                            Arc::new(PyObject {
+                            PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
                                     receiver: obj.clone(),
                                     method: ga_raw,
@@ -558,7 +558,7 @@ impl VirtualMachine {
                         let set_bound = if matches!(&set_method.payload, PyObjectPayload::BoundMethod { .. }) {
                             set_method
                         } else {
-                            Arc::new(PyObject {
+                            PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
                                     receiver: desc,
                                     method: set_method,
@@ -575,7 +575,7 @@ impl VirtualMachine {
             if let Some(sa) = lookup_in_class_mro(&inst.class, "__setattr__") {
                 match &sa.payload {
                     PyObjectPayload::Function(_) => {
-                        let method = Arc::new(PyObject {
+                        let method = PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: obj.clone(),
                                 method: sa,
@@ -671,7 +671,7 @@ impl VirtualMachine {
                 if let Some(class_attr) = lookup_in_class_mro(&inst.class, name.as_str()) {
                     if let PyObjectPayload::Property { fdel, .. } = &class_attr.payload {
                         if let Some(fdel_fn) = fdel {
-                            let bound = Arc::new(PyObject {
+                            let bound = PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
                                     receiver: obj.clone(),
                                     method: fdel_fn.clone(),
@@ -688,7 +688,7 @@ impl VirtualMachine {
                             let del_bound = if matches!(&del_method.payload, PyObjectPayload::BoundMethod { .. }) {
                                 del_method
                             } else {
-                                Arc::new(PyObject {
+                                PyObjectRef::new(PyObject {
                                     payload: PyObjectPayload::BoundMethod {
                                         receiver: class_attr.clone(),
                                         method: del_method,
@@ -704,7 +704,7 @@ impl VirtualMachine {
                         }
                     } else if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
                         if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
-                            let method = Arc::new(PyObject {
+                            let method = PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod { receiver: obj.clone(), method: delattr_method }
                             });
                             let name_arg = PyObject::str_val(name.clone());
@@ -723,7 +723,7 @@ impl VirtualMachine {
                     }
                 } else if let Some(delattr_method) = lookup_in_class_mro(&inst.class, "__delattr__") {
                     if matches!(&delattr_method.payload, PyObjectPayload::Function(_)) {
-                        let method = Arc::new(PyObject {
+                        let method = PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod { receiver: obj.clone(), method: delattr_method }
                         });
                         let name_arg = PyObject::str_val(name.clone());

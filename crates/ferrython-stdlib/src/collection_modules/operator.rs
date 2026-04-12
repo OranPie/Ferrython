@@ -278,11 +278,11 @@ pub fn create_operator_module() -> PyObjectRef {
         })),
         ("is_", make_builtin(|args| {
             check_args_min("is_", args, 2)?;
-            Ok(PyObject::bool_val(std::sync::Arc::ptr_eq(&args[0], &args[1])))
+            Ok(PyObject::bool_val(PyObjectRef::ptr_eq(&args[0], &args[1])))
         })),
         ("is_not", make_builtin(|args| {
             check_args_min("is_not", args, 2)?;
-            Ok(PyObject::bool_val(!std::sync::Arc::ptr_eq(&args[0], &args[1])))
+            Ok(PyObject::bool_val(!PyObjectRef::ptr_eq(&args[0], &args[1])))
         })),
         ("index", make_builtin(|args| {
             check_args_min("index", args, 1)?;

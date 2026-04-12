@@ -127,7 +127,7 @@ pub(super) fn py_is_callable(obj: &PyObjectRef) -> bool {
 }
 
 pub(super) fn py_is_same(a: &PyObjectRef, b: &PyObjectRef) -> bool {
-        Arc::ptr_eq(a, b)
+        PyObjectRef::ptr_eq(a, b)
         || matches!(
             (&a.payload, &b.payload),
             (PyObjectPayload::BuiltinType(a), PyObjectPayload::BuiltinType(b)) if a == b
@@ -162,7 +162,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 format!("bytearray({})", format_bytes_literal(b, "b"))
             }
             PyObjectPayload::List(items) => {
-                let ptr = Arc::as_ptr(obj) as usize;
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
                 if !repr_enter(ptr) { return "[...]".into(); }
                 let result = format_collection("[", "]", &items.read());
                 repr_leave(ptr);
@@ -176,7 +176,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 let m = m.read();
                 if m.is_empty() { "set()".into() }
                 else {
-                    let ptr = Arc::as_ptr(obj) as usize;
+                    let ptr = PyObjectRef::as_ptr(obj) as usize;
                     if !repr_enter(ptr) { return "set(...)".into(); }
                     let result = format_set("{", "}", &m);
                     repr_leave(ptr);
@@ -188,7 +188,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 else { format!("frozenset({})", format_set("{", "}", m)) }
             }
             PyObjectPayload::Dict(m) => {
-                let ptr = Arc::as_ptr(obj) as usize;
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
                 if !repr_enter(ptr) { return "{...}".into(); }
                 let result = format_dict(&m.read());
                 repr_leave(ptr);

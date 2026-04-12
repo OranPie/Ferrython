@@ -317,7 +317,7 @@ pub fn create_sys_module() -> PyObjectRef {
         ("getrefcount", make_builtin(|args| {
             check_args("sys.getrefcount", args, 1)?;
             // Return Arc strong_count + 1 (for the arg reference itself, matching CPython)
-            let count = std::sync::Arc::strong_count(&args[0]) as i64;
+            let count = PyObjectRef::strong_count(&args[0]) as i64;
             Ok(PyObject::int(count + 1))
         })),
         ("settrace", make_builtin(sys_settrace)),

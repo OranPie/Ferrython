@@ -160,7 +160,7 @@ impl VirtualMachine {
                 // Re-bind to the NEW class (cls) so `cls` is the subclass
                 let bound = if matches!(&init_sub.payload, PyObjectPayload::BoundMethod { .. }) {
                     if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
-                        Arc::new(PyObject {
+                        PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: cls.clone(),
                                 method: method.clone(),
@@ -170,7 +170,7 @@ impl VirtualMachine {
                         init_sub
                     }
                 } else {
-                    Arc::new(PyObject {
+                    PyObjectRef::new(PyObject {
                         payload: PyObjectPayload::BoundMethod {
                             receiver: cls.clone(),
                             method: init_sub,
@@ -193,7 +193,7 @@ impl VirtualMachine {
         // Register as subclass of each base (for type.__subclasses__())
         for base in &bases {
             if let PyObjectPayload::Class(bcd) = &base.payload {
-                bcd.subclasses.write().push(Arc::downgrade(&cls));
+                bcd.subclasses.write().push(PyObjectRef::downgrade(&cls));
             }
         }
 
@@ -782,14 +782,14 @@ impl VirtualMachine {
                 if let Some(base) = cd.bases.first() {
                     if let Some(init_sub) = base.get_attr("__init_subclass__") {
                         let bound = if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
-                            Arc::new(PyObject {
+                            PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
                                     receiver: cls.clone(),
                                     method: method.clone(),
                                 }
                             })
                         } else {
-                            Arc::new(PyObject {
+                            PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
                                     receiver: cls.clone(),
                                     method: init_sub,
@@ -815,7 +815,7 @@ impl VirtualMachine {
             if let PyObjectPayload::Class(cd) = &cls.payload {
                 for base in &cd.bases {
                     if let PyObjectPayload::Class(bcd) = &base.payload {
-                        bcd.subclasses.write().push(Arc::downgrade(&cls));
+                        bcd.subclasses.write().push(PyObjectRef::downgrade(&cls));
                     }
                 }
                 // If metaclass is ABCMeta, add register() method bound to this class
@@ -836,7 +836,7 @@ impl VirtualMachine {
                                             .or_insert_with(|| PyObject::dict(IndexMap::new()))
                                             .clone();
                                         if let PyObjectPayload::Dict(map) = &registry.payload {
-                                            let ptr = std::sync::Arc::as_ptr(subclass) as usize;
+                                            let ptr = PyObjectRef::as_ptr(subclass) as usize;
                                             map.write().insert(
                                                 HashableKey::Identity(ptr, subclass.clone()),
                                                 PyObject::bool_val(true),
@@ -865,14 +865,14 @@ impl VirtualMachine {
             if let Some(base) = bases.first() {
                 if let Some(init_sub) = base.get_attr("__init_subclass__") {
                     let bound = if let PyObjectPayload::BoundMethod { method, .. } = &init_sub.payload {
-                        Arc::new(PyObject {
+                        PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: cls.clone(),
                                 method: method.clone(),
                             }
                         })
                     } else {
-                        Arc::new(PyObject {
+                        PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: cls.clone(),
                                 method: init_sub,
@@ -902,7 +902,7 @@ impl VirtualMachine {
             // Register as subclass of each base
             for base in &bases {
                 if let PyObjectPayload::Class(bcd) = &base.payload {
-                    bcd.subclasses.write().push(Arc::downgrade(&cls));
+                    bcd.subclasses.write().push(PyObjectRef::downgrade(&cls));
                 }
             }
             Ok(cls)
@@ -937,7 +937,7 @@ impl VirtualMachine {
                     let bound = if matches!(&set_name_method.payload, PyObjectPayload::BoundMethod { .. }) {
                         set_name_method
                     } else {
-                        Arc::new(PyObject {
+                        PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: attr_val.clone(),
                                 method: set_name_method,
@@ -984,9 +984,9 @@ impl VirtualMachine {
             let mut found = None;
             for lin in linearizations.iter() {
                 let candidate = &lin[0];
-                let candidate_ptr = Arc::as_ptr(candidate);
+                let candidate_ptr = PyObjectRef::as_ptr(candidate);
                 let in_tail = linearizations.iter().any(|other| {
-                    other.iter().skip(1).any(|x| Arc::as_ptr(x) == candidate_ptr)
+                    other.iter().skip(1).any(|x| PyObjectRef::as_ptr(x) == candidate_ptr)
                 });
                 if !in_tail {
                     found = Some(candidate.clone());
@@ -994,10 +994,10 @@ impl VirtualMachine {
                 }
             }
             if let Some(head) = found {
-                let head_ptr = Arc::as_ptr(&head);
+                let head_ptr = PyObjectRef::as_ptr(&head);
                 result.push(head);
                 for lin in linearizations.iter_mut() {
-                    if !lin.is_empty() && Arc::as_ptr(&lin[0]) == head_ptr {
+                    if !lin.is_empty() && PyObjectRef::as_ptr(&lin[0]) == head_ptr {
                         lin.remove(0);
                     }
                 }

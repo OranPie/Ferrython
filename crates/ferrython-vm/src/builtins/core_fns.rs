@@ -193,7 +193,7 @@ fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj
         mro.push(base.clone());
         if let PyObjectPayload::Class(cd) = &base.payload {
             for m in &cd.mro {
-                if !mro.iter().any(|existing| Arc::ptr_eq(existing, m)) {
+                if !mro.iter().any(|existing| PyObjectRef::ptr_eq(existing, m)) {
                     mro.push(m.clone());
                 }
             }
@@ -210,7 +210,7 @@ fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj
 
 pub(super) fn builtin_id(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("id", args, 1)?;
-    let ptr = std::sync::Arc::as_ptr(&args[0]) as usize;
+    let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
     Ok(PyObject::int(ptr as i64))
 }
 
@@ -581,7 +581,7 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
                                     };
                                     for (k, _) in map.read().iter() {
                                         if let HashableKey::Identity(_, registered) = k {
-                                            if Arc::ptr_eq(registered, &oc) {
+                                            if PyObjectRef::ptr_eq(registered, &oc) {
                                                 return true;
                                             }
                                             if let Some(ref ocn) = obj_class_name {
@@ -1339,7 +1339,7 @@ pub(super) fn builtin_property(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // If fget is an abstract marker ("__abstract__", func), keep it as-is.
     // is_abstract_marker() detects Property.fget abstract markers.
     // unwrap_abstract_fget() unwraps the marker when actually calling the getter.
-    Ok(Arc::new(PyObject {
+    Ok(PyObjectRef::new(PyObject {
         payload: PyObjectPayload::Property { fget: fget_raw, fset, fdel },
     }))
 }
@@ -1357,14 +1357,14 @@ pub(crate) fn unwrap_abstract_fget(fget: &PyObjectRef) -> PyObjectRef {
 
 pub(super) fn builtin_staticmethod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("staticmethod", args, 1)?;
-    Ok(Arc::new(PyObject {
+    Ok(PyObjectRef::new(PyObject {
         payload: PyObjectPayload::StaticMethod(args[0].clone()),
     }))
 }
 
 pub(super) fn builtin_classmethod(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("classmethod", args, 1)?;
-    Ok(Arc::new(PyObject {
+    Ok(PyObjectRef::new(PyObject {
         payload: PyObjectPayload::ClassMethod(args[0].clone()),
     }))
 }
@@ -1648,7 +1648,7 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
                             if let PyObjectPayload::Dict(map) = &registry.payload {
                                 for (k, _) in map.read().iter() {
                                     if let HashableKey::Identity(_, registered) = k {
-                                        if Arc::ptr_eq(registered, sub) {
+                                        if PyObjectRef::ptr_eq(registered, sub) {
                                             return true;
                                         }
                                         if let PyObjectPayload::Class(rc) = &registered.payload {

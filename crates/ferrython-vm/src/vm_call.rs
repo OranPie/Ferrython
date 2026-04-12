@@ -607,7 +607,7 @@ impl VirtualMachine {
                             .map(|v| !is_abstract_marker(v))
                             .unwrap_or(false);
                         let overridden_in_mro = cd.mro.iter().any(|m| {
-                            if std::sync::Arc::ptr_eq(m, ancestor) { return false; }
+                            if PyObjectRef::ptr_eq(m, ancestor) { return false; }
                             if let PyObjectPayload::Class(mcd) = &m.payload {
                                 mcd.namespace.read().get(name.as_str())
                                     .map(|v| !is_abstract_marker(v))
@@ -1120,13 +1120,13 @@ impl VirtualMachine {
                         }
                     }
                 }
-                return Ok(Arc::new(PyObject {
+                return Ok(PyObjectRef::new(PyObject {
                     payload: PyObjectPayload::Super { cls, instance: instance_for_super }
                 }));
             }
             Err(PyException::runtime_error("super(): no current class"))
         } else if args.len() == 2 {
-            Ok(Arc::new(PyObject {
+            Ok(PyObjectRef::new(PyObject {
                 payload: PyObjectPayload::Super { cls: args[0].clone(), instance: args[1].clone() }
             }))
         } else {
@@ -2530,7 +2530,7 @@ impl VirtualMachine {
                             }
                             if let Some(sa) = lookup_in_class_mro(&inst.class, "__setattr__") {
                                 if matches!(&sa.payload, PyObjectPayload::Function(_)) {
-                                    let method = Arc::new(PyObject {
+                                    let method = PyObjectRef::new(PyObject {
                                         payload: PyObjectPayload::BoundMethod {
                                             receiver: args[0].clone(),
                                             method: sa,
@@ -2792,7 +2792,7 @@ impl VirtualMachine {
                         }
                         // These return AsyncGenAwaitable objects, not direct results.
                         "__anext__" if kind == "async_generator" => {
-                            return Ok(Arc::new(PyObject {
+                            return Ok(PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::AsyncGenAwaitable {
                                     gen: gen_arc.clone(),
                                     action: AsyncGenAction::Next,
@@ -2801,7 +2801,7 @@ impl VirtualMachine {
                         }
                         "asend" if kind == "async_generator" => {
                             let val = if args.is_empty() { PyObject::none() } else { args[0].clone() };
-                            return Ok(Arc::new(PyObject {
+                            return Ok(PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::AsyncGenAwaitable {
                                     gen: gen_arc.clone(),
                                     action: AsyncGenAction::Send(val),
@@ -2810,7 +2810,7 @@ impl VirtualMachine {
                         }
                         "athrow" if kind == "async_generator" => {
                             let (exc_kind, msg) = Self::parse_throw_args(&args);
-                            return Ok(Arc::new(PyObject {
+                            return Ok(PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::AsyncGenAwaitable {
                                     gen: gen_arc.clone(),
                                     action: AsyncGenAction::Throw(exc_kind, CompactString::from(msg)),
@@ -2818,7 +2818,7 @@ impl VirtualMachine {
                             }));
                         }
                         "aclose" if kind == "async_generator" => {
-                            return Ok(Arc::new(PyObject {
+                            return Ok(PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::AsyncGenAwaitable {
                                     gen: gen_arc.clone(),
                                     action: AsyncGenAction::Close,
@@ -2968,7 +2968,7 @@ impl VirtualMachine {
                             "deleter" => PyObjectPayload::Property { fget: fget.clone(), fset: fset.clone(), fdel: Some(func) },
                             _ => return Err(PyException::attribute_error(format!("property has no attribute '{}'", method_name))),
                         };
-                        return Ok(Arc::new(PyObject { payload: new_prop }));
+                        return Ok(PyObjectRef::new(PyObject { payload: new_prop }));
                     }
                 }
                 // namedtuple methods — delegated to builtins

@@ -7,18 +7,18 @@ use indexmap::IndexMap;
 use num_bigint::BigInt;
 use parking_lot::RwLock;
 use std::any::Any;
-use std::sync::{Arc, Weak, Mutex};
+use std::sync::{Arc, Mutex};
 
 use super::payload::*;
 use super::methods::PyObjectMethods;
 
 // ── Singletons ──
 use std::sync::LazyLock;
-static NONE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::None }));
-static TRUE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Bool(true) }));
-static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Bool(false) }));
-static ELLIPSIS_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Ellipsis }));
-static NOT_IMPLEMENTED_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::NotImplemented }));
+static NONE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::None }));
+static TRUE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Bool(true) }));
+static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Bool(false) }));
+static ELLIPSIS_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Ellipsis }));
+static NOT_IMPLEMENTED_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::NotImplemented }));
 
 // ── Small-int cache (CPython caches -5..=256, we go wider for loop bounds) ──
 const SMALL_INT_MIN: i64 = -5;
@@ -26,22 +26,22 @@ const SMALL_INT_MAX: i64 = 65536;
 
 static SMALL_INT_CACHE: LazyLock<Vec<PyObjectRef>> = LazyLock::new(|| {
     (SMALL_INT_MIN..=SMALL_INT_MAX)
-        .map(|n| Arc::new(PyObject { payload: PyObjectPayload::Int(PyInt::Small(n)) }))
+        .map(|n| PyObjectRef::new(PyObject { payload: PyObjectPayload::Int(PyInt::Small(n)) }))
         .collect()
 });
 
 // ── Float singleton cache for common values ──
-static FLOAT_ZERO: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Float(0.0) }));
-static FLOAT_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Float(1.0) }));
-static FLOAT_NEG_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Float(-1.0) }));
+static FLOAT_ZERO: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Float(0.0) }));
+static FLOAT_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Float(1.0) }));
+static FLOAT_NEG_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Float(-1.0) }));
 
 // ── Empty collection singletons ──
-static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Tuple(vec![]) }));
-static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Str(CompactString::const_new("")) }));
-static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| Arc::new(PyObject { payload: PyObjectPayload::Bytes(vec![]) }));
+static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Tuple(vec![]) }));
+static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Str(CompactString::const_new("")) }));
+static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Bytes(vec![]) }));
 
 // ── GC Tracking for cycle-capable objects (Instance, Dict, List) ──
-static TRACKED_OBJECTS: LazyLock<Mutex<Vec<Weak<PyObject>>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+static TRACKED_OBJECTS: LazyLock<Mutex<Vec<PyWeakRef>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// Register the cycle collector callback with the GC crate.
 pub fn init_gc() {
@@ -54,7 +54,7 @@ pub fn init_gc() {
 ///
 /// Algorithm (trial deletion, simplified for Arc):
 /// 1. Purge dead weak refs from TRACKED_OBJECTS
-/// 2. For each live tracked object, count Arc::strong_count()
+/// 2. For each live tracked object, count PyObjectRef::strong_count()
 /// 3. Count how many references each tracked object receives from other tracked objects
 /// 4. If strong_count == internal_refs, the object is only reachable from within cycles
 /// 5. Clear contents on unreachable objects to break cycles (dropping internal refs)
@@ -65,7 +65,7 @@ fn run_cycle_collection() -> usize {
     };
 
     // 1. Upgrade weak refs, purge dead ones
-    let alive: Vec<Arc<PyObject>> = tracked.iter()
+    let alive: Vec<PyObjectRef> = tracked.iter()
         .filter_map(|w| w.upgrade())
         .collect();
     tracked.retain(|w| w.strong_count() > 0);
@@ -77,7 +77,7 @@ fn run_cycle_collection() -> usize {
     // 2. Build pointer → index map for fast lookup
     let ptr_map: std::collections::HashMap<usize, usize> = alive.iter()
         .enumerate()
-        .map(|(i, obj)| (Arc::as_ptr(obj) as usize, i))
+        .map(|(i, obj)| (PyObjectRef::as_ptr(obj) as usize, i))
         .collect();
 
     // 3. Count internal references (refs from one tracked object to another)
@@ -90,7 +90,7 @@ fn run_cycle_collection() -> usize {
     // (+1 for our own `alive` Vec holding a ref)
     let mut garbage_indices: Vec<usize> = Vec::new();
     for (i, obj) in alive.iter().enumerate() {
-        let strong = Arc::strong_count(obj);
+        let strong = PyObjectRef::strong_count(obj);
         if strong <= internal_refs[i] + 1 {
             garbage_indices.push(i);
         }
@@ -126,12 +126,12 @@ fn count_internal_refs(
         PyObjectPayload::Instance(inst) => {
             let attrs = inst.attrs.read();
             for attr_val in attrs.values() {
-                let ptr = Arc::as_ptr(attr_val) as usize;
+                let ptr = PyObjectRef::as_ptr(attr_val) as usize;
                 if let Some(&target_idx) = ptr_map.get(&ptr) {
                     internal_refs[target_idx] += 1;
                 }
             }
-            let class_ptr = Arc::as_ptr(&inst.class) as usize;
+            let class_ptr = PyObjectRef::as_ptr(&inst.class) as usize;
             if let Some(&target_idx) = ptr_map.get(&class_ptr) {
                 internal_refs[target_idx] += 1;
             }
@@ -139,7 +139,7 @@ fn count_internal_refs(
         PyObjectPayload::List(items) => {
             let items = items.read();
             for item in items.iter() {
-                let ptr = Arc::as_ptr(item) as usize;
+                let ptr = PyObjectRef::as_ptr(item) as usize;
                 if let Some(&target_idx) = ptr_map.get(&ptr) {
                     internal_refs[target_idx] += 1;
                 }
@@ -148,7 +148,7 @@ fn count_internal_refs(
         PyObjectPayload::Dict(map) => {
             let map = map.read();
             for val in map.values() {
-                let ptr = Arc::as_ptr(val) as usize;
+                let ptr = PyObjectRef::as_ptr(val) as usize;
                 if let Some(&target_idx) = ptr_map.get(&ptr) {
                     internal_refs[target_idx] += 1;
                 }
@@ -168,7 +168,7 @@ fn verify_all_refs_in_garbage(
         PyObjectPayload::Instance(inst) => {
             let attrs = inst.attrs.read();
             for attr_val in attrs.values() {
-                let ptr = Arc::as_ptr(attr_val) as usize;
+                let ptr = PyObjectRef::as_ptr(attr_val) as usize;
                 if let Some(&target_idx) = ptr_map.get(&ptr) {
                     if !garbage_set.contains(&target_idx) {
                         return false;
@@ -179,7 +179,7 @@ fn verify_all_refs_in_garbage(
         PyObjectPayload::List(items) => {
             let items = items.read();
             for item in items.iter() {
-                let ptr = Arc::as_ptr(item) as usize;
+                let ptr = PyObjectRef::as_ptr(item) as usize;
                 if let Some(&target_idx) = ptr_map.get(&ptr) {
                     if !garbage_set.contains(&target_idx) {
                         return false;
@@ -190,7 +190,7 @@ fn verify_all_refs_in_garbage(
         PyObjectPayload::Dict(map) => {
             let map = map.read();
             for val in map.values() {
-                let ptr = Arc::as_ptr(val) as usize;
+                let ptr = PyObjectRef::as_ptr(val) as usize;
                 if let Some(&target_idx) = ptr_map.get(&ptr) {
                     if !garbage_set.contains(&target_idx) {
                         return false;
@@ -221,7 +221,7 @@ fn break_cycles(payload: &PyObjectPayload) {
 
 fn track_object(obj: &PyObjectRef) {
     if let Ok(mut tracked) = TRACKED_OBJECTS.lock() {
-        tracked.push(Arc::downgrade(obj));
+        tracked.push(PyObjectRef::downgrade(obj));
     }
 }
 
@@ -232,13 +232,13 @@ impl PyObject {
     #[inline(always)]
     pub fn wrap(payload: PyObjectPayload) -> PyObjectRef {
         ferrython_gc::notify_alloc();
-        Arc::new(PyObject { payload })
+        PyObjectRef::new(PyObject { payload })
     }
     /// Like `wrap` but skips GC allocation tracking.
     /// Use for leaf types (Int, Float, Str, etc.) that cannot form reference cycles.
     #[inline(always)]
     pub fn wrap_leaf(payload: PyObjectPayload) -> PyObjectRef {
-        Arc::new(PyObject { payload })
+        PyObjectRef::new(PyObject { payload })
     }
     #[inline(always)]
     pub fn none() -> PyObjectRef { NONE_SINGLETON.clone() }
@@ -407,8 +407,8 @@ impl PyObject {
     pub fn native_function(name: &str, func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::NativeFunction { name: CompactString::from(name), func })
     }
-    pub fn native_closure(name: &str, func: impl Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + Send + Sync + 'static) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData { name: CompactString::from(name), func: Arc::new(func) })))
+    pub fn native_closure(name: &str, func: impl Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + 'static) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData { name: CompactString::from(name), func: std::rc::Rc::new(func) })))
     }
     pub fn dict_from_pairs(pairs: Vec<(PyObjectRef, PyObjectRef)>) -> PyObjectRef {
         let mut map = IndexMap::new();
@@ -454,7 +454,7 @@ impl PyObject {
             attrs: Arc::new(RwLock::new(FxAttrMap::default())),
         })))
     }
-    pub fn generator(name: CompactString, frame: Box<dyn Any + Send + Sync>) -> PyObjectRef {
+    pub fn generator(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Generator(Arc::new(RwLock::new(GeneratorState {
             name,
             frame: Some(frame),
@@ -463,7 +463,7 @@ impl PyObject {
         }))))
     }
 
-    pub fn coroutine(name: CompactString, frame: Box<dyn Any + Send + Sync>) -> PyObjectRef {
+    pub fn coroutine(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Coroutine(Arc::new(RwLock::new(GeneratorState {
             name,
             frame: Some(frame),
@@ -472,7 +472,7 @@ impl PyObject {
         }))))
     }
 
-    pub fn async_generator(name: CompactString, frame: Box<dyn Any + Send + Sync>) -> PyObjectRef {
+    pub fn async_generator(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::AsyncGenerator(Arc::new(RwLock::new(GeneratorState {
             name,
             frame: Some(frame),

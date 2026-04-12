@@ -642,7 +642,7 @@ impl VirtualMachine {
                                         // Try in-place mutation if dest holds sole reference
                                         let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                         if let Some(ref mut arc) = dest_slot {
-                                            if let Some(obj) = Arc::get_mut(arc) {
+                                            if let Some(obj) = PyObjectRef::get_mut(arc) {
                                                 obj.payload = PyObjectPayload::Int(PyInt::Small(r));
                                                 hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                             }
@@ -660,7 +660,7 @@ impl VirtualMachine {
                                     // Try in-place mutation — huge win for float loops
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                         }
@@ -713,7 +713,7 @@ impl VirtualMachine {
                                     if let Some(r) = x.checked_add(y) {
                                         let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                         if let Some(ref mut arc) = dest_slot {
-                                            if let Some(obj) = Arc::get_mut(arc) {
+                                            if let Some(obj) = PyObjectRef::get_mut(arc) {
                                                 obj.payload = PyObjectPayload::Int(PyInt::Small(r));
                                                 hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                             }
@@ -730,7 +730,7 @@ impl VirtualMachine {
                                     let r = *x + *y;
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                         }
@@ -742,7 +742,7 @@ impl VirtualMachine {
                                     let r = *x as f64 + *y;
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                         }
@@ -754,7 +754,7 @@ impl VirtualMachine {
                                     let r = *x + *y as f64;
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                         }
@@ -770,7 +770,7 @@ impl VirtualMachine {
                                         let locals_ptr = frame.locals.as_mut_ptr();
                                         let dest_slot = unsafe { &mut *locals_ptr.add(dest) };
                                         if let Some(mut arc) = dest_slot.take() {
-                                            if let Some(obj) = Arc::get_mut(&mut arc) {
+                                            if let Some(obj) = PyObjectRef::get_mut(&mut arc) {
                                                 if let PyObjectPayload::Str(ref mut s) = obj.payload {
                                                     s.push_str(&rhs_clone);
                                                     *dest_slot = Some(arc);
@@ -848,7 +848,7 @@ impl VirtualMachine {
                                     if let Some(r) = x.checked_mul(y) {
                                         let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                         if let Some(ref mut arc) = dest_slot {
-                                            if let Some(obj) = Arc::get_mut(arc) {
+                                            if let Some(obj) = PyObjectRef::get_mut(arc) {
                                                 obj.payload = PyObjectPayload::Int(PyInt::Small(r));
                                                 hot_ok!(profiling, self.profiler, instr.op)
                                             }
@@ -865,7 +865,7 @@ impl VirtualMachine {
                                     let r = *x * *y;
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         }
@@ -877,7 +877,7 @@ impl VirtualMachine {
                                     let r = *x as f64 * *y;
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         }
@@ -889,7 +889,7 @@ impl VirtualMachine {
                                     let r = *x * *y as f64;
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         }
@@ -933,7 +933,7 @@ impl VirtualMachine {
                                     if let Some(r) = x.checked_sub(y) {
                                         let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                         if let Some(ref mut arc) = dest_slot {
-                                            if let Some(obj) = Arc::get_mut(arc) {
+                                            if let Some(obj) = PyObjectRef::get_mut(arc) {
                                                 obj.payload = PyObjectPayload::Int(PyInt::Small(r));
                                                 hot_ok!(profiling, self.profiler, instr.op)
                                             }
@@ -950,7 +950,7 @@ impl VirtualMachine {
                                     let r = *x - *y;
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         }
@@ -962,7 +962,7 @@ impl VirtualMachine {
                                     let r = *x as f64 - *y;
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         }
@@ -974,7 +974,7 @@ impl VirtualMachine {
                                     let r = *x - *y as f64;
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         }
@@ -1025,7 +1025,7 @@ impl VirtualMachine {
                                         let r = ((product % d) + d) % d;
                                         let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                         if let Some(ref mut arc) = dest_slot {
-                                            if let Some(obj) = Arc::get_mut(arc) {
+                                            if let Some(obj) = PyObjectRef::get_mut(arc) {
                                                 obj.payload = PyObjectPayload::Int(PyInt::Small(r));
                                                 hot_ok!(profiling, self.profiler, instr.op)
                                             }
@@ -1048,7 +1048,7 @@ impl VirtualMachine {
                                     let r = product - (product / *d).floor() * *d;
                                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(dest) };
                                     if let Some(ref mut arc) = dest_slot {
-                                        if let Some(obj) = Arc::get_mut(arc) {
+                                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         }
@@ -1275,7 +1275,7 @@ impl VirtualMachine {
                             // Try in-place mutation if dest holds sole reference
                             let dest_slot = unsafe { frame.locals.get_unchecked_mut(store_idx) };
                             if let Some(ref mut arc) = dest_slot {
-                                if let Some(obj) = Arc::get_mut(arc) {
+                                if let Some(obj) = PyObjectRef::get_mut(arc) {
                                     obj.payload = PyObjectPayload::Int(PyInt::Small(cur));
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 }
@@ -1409,7 +1409,7 @@ impl VirtualMachine {
                     // In-place mutation: if dest holds same type with refcount 1, overwrite payload
                     let dest_slot = unsafe { frame.locals.get_unchecked_mut(store_idx) };
                     if let Some(ref mut arc) = dest_slot {
-                        if let Some(obj) = Arc::get_mut(arc) {
+                        if let Some(obj) = PyObjectRef::get_mut(arc) {
                             match (&const_ref.payload, &mut obj.payload) {
                                 (PyObjectPayload::Int(src), PyObjectPayload::Int(dst)) => {
                                     *dst = src.clone();
@@ -1482,7 +1482,7 @@ impl VirtualMachine {
                                 frame.stack.set_len(len - 2);
                                 drop(_b_arc);
                                 // If refcount == 2, try to clear the local to get refcount 1
-                                if Arc::strong_count(&a_arc) == 2 && frame.ip < frame.code.instructions.len() {
+                                if PyObjectRef::strong_count(&a_arc) == 2 && frame.ip < frame.code.instructions.len() {
                                     let next = *frame.code.instructions.get_unchecked(frame.ip);
                                     let store_idx_opt = match next.op {
                                         Opcode::StoreFast => Some(next.arg as usize),
@@ -1494,14 +1494,14 @@ impl VirtualMachine {
                                     if let Some(store_idx) = store_idx_opt {
                                         let slot = frame.locals.get_unchecked_mut(store_idx);
                                         if let Some(ref existing) = slot {
-                                            if Arc::ptr_eq(existing, &a_arc) {
+                                            if PyObjectRef::ptr_eq(existing, &a_arc) {
                                                 *slot = None; // drop ref → refcount becomes 1
                                             }
                                         }
                                     }
                                 }
                                 // Now try in-place mutation
-                                if let Some(obj) = Arc::get_mut(&mut a_arc) {
+                                if let Some(obj) = PyObjectRef::get_mut(&mut a_arc) {
                                     if let PyObjectPayload::Str(ref mut s) = obj.payload {
                                         s.push_str(&rhs);
                                         frame.stack.push(a_arc);
@@ -1666,7 +1666,7 @@ impl VirtualMachine {
                     let a = sget!(frame, len - 2);
                     let b = sget!(frame, len - 1);
                     // Arc pointer equality fast-path: same object → equal
-                    if (instr.arg == 2 || instr.arg == 3) && Arc::ptr_eq(a, b) {
+                    if (instr.arg == 2 || instr.arg == 3) && PyObjectRef::ptr_eq(a, b) {
                         let result = instr.arg == 2; // Eq=true, Ne=false
                         unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
                         hot_ok!(profiling, self.profiler, instr.op)
@@ -1714,7 +1714,7 @@ impl VirtualMachine {
                     // SAFETY: well-formed bytecode guarantees stack depth >= 2
                     let a = sget!(frame, len - 2);
                     let b = sget!(frame, len - 1);
-                    let same = Arc::ptr_eq(a, b)
+                    let same = PyObjectRef::ptr_eq(a, b)
                         || matches!((&a.payload, &b.payload),
                             (PyObjectPayload::BuiltinType(at), PyObjectPayload::BuiltinType(bt)) if at == bt)
                         || matches!((&a.payload, &b.payload),
@@ -1758,7 +1758,7 @@ impl VirtualMachine {
                                 match (&x.payload, &needle.payload) {
                                     (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
                                     (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                    _ => Arc::ptr_eq(x, needle),
+                                    _ => PyObjectRef::ptr_eq(x, needle),
                                 }
                             }))
                         }
@@ -1767,7 +1767,7 @@ impl VirtualMachine {
                                 match (&x.payload, &needle.payload) {
                                     (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
                                     (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                    _ => Arc::ptr_eq(x, needle),
+                                    _ => PyObjectRef::ptr_eq(x, needle),
                                 }
                             }))
                         }
@@ -4455,7 +4455,7 @@ impl VirtualMachine {
                                 // Skip clone if destination already holds the same Arc
                                 let dest = unsafe { frame.locals.get_unchecked(store_idx) };
                                 if let Some(ref existing) = dest {
-                                    if Arc::ptr_eq(existing, v) {
+                                    if PyObjectRef::ptr_eq(existing, v) {
                                         hot_ok!(profiling, self.profiler, instr.op)
                                     }
                                 }
@@ -4542,7 +4542,7 @@ impl VirtualMachine {
                             // In-place mutation for bool result
                             let dest = unsafe { frame.locals.get_unchecked_mut(store_idx) };
                             if let Some(ref mut arc) = dest {
-                                if let Some(obj) = Arc::get_mut(arc) {
+                                if let Some(obj) = PyObjectRef::get_mut(arc) {
                                     obj.payload = PyObjectPayload::Bool(result);
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 }
@@ -4590,7 +4590,7 @@ impl VirtualMachine {
                                     // In-place mutation via raw pointer (bypasses borrow checker)
                                     let dest = unsafe { &mut *locals_ptr.add(store_idx) };
                                     if let Some(ref mut arc) = dest {
-                                        if let Some(dest_obj) = Arc::get_mut(arc) {
+                                        if let Some(dest_obj) = PyObjectRef::get_mut(arc) {
                                             match (&elem.payload, &mut dest_obj.payload) {
                                                 (PyObjectPayload::Int(src), PyObjectPayload::Int(dst)) => {
                                                     *dst = src.clone();
@@ -4619,7 +4619,7 @@ impl VirtualMachine {
                                     let elem = &items[actual as usize];
                                     let dest = unsafe { &mut *locals_ptr.add(store_idx) };
                                     if let Some(ref mut arc) = dest {
-                                        if let Some(dest_obj) = Arc::get_mut(arc) {
+                                        if let Some(dest_obj) = PyObjectRef::get_mut(arc) {
                                             match (&elem.payload, &mut dest_obj.payload) {
                                                 (PyObjectPayload::Int(src), PyObjectPayload::Int(dst)) => {
                                                     *dst = src.clone();
@@ -4821,7 +4821,7 @@ impl VirtualMachine {
                                     match (&x.payload, &needle.payload) {
                                         (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
                                         (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                        _ => Arc::ptr_eq(x, needle),
+                                        _ => PyObjectRef::ptr_eq(x, needle),
                                     }
                                 }))
                             }
@@ -4830,7 +4830,7 @@ impl VirtualMachine {
                                     match (&x.payload, &needle.payload) {
                                         (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
                                         (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
-                                        _ => Arc::ptr_eq(x, needle),
+                                        _ => PyObjectRef::ptr_eq(x, needle),
                                     }
                                 }))
                             }
@@ -4846,7 +4846,7 @@ impl VirtualMachine {
                             // In-place mutation: if dest already holds a bool, overwrite payload
                             let dest_slot = unsafe { &mut *frame.locals.as_mut_ptr().add(store_idx) };
                             if let Some(ref mut arc) = dest_slot {
-                                if let Some(obj) = Arc::get_mut(arc) {
+                                if let Some(obj) = PyObjectRef::get_mut(arc) {
                                     obj.payload = PyObjectPayload::Bool(result);
                                     hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                 }

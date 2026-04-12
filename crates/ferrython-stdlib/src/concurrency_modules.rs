@@ -3,7 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::PyException;
 use ferrython_core::object::{
-    PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods,
+    PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods, PyWeakRef,
     make_module, make_builtin, check_args_min,
 };
 use ferrython_core::types::HashableKey;
@@ -103,12 +103,12 @@ pub fn create_threading_module() -> PyObjectRef {
                         return Ok(PyObject::none());
                     }
                     PyObjectPayload::NativeClosure(nc) => {
-                        let f = nc.func.clone();
+                        let nc = nc.clone();
                         let alive_attrs = inst.attrs.clone();
                         let join_handle = std::sync::Arc::new(std::sync::Mutex::new(None::<std::thread::JoinHandle<()>>));
                         let jh = join_handle.clone();
                         let handle = std::thread::spawn(move || {
-                            let _ = f(&call_args);
+                            let _ = (nc.func)(&call_args);
                             alive_attrs.write().insert(CompactString::from("_alive"), PyObject::bool_val(false));
                         });
                         *jh.lock().unwrap() = Some(handle);
@@ -854,18 +854,17 @@ pub fn create_threading_module() -> PyObjectRef {
 
 
 pub fn create_weakref_module() -> PyObjectRef {
-    use std::sync::Weak;
 
-    // Helper: upgrade a Weak<PyObject> or return None
-    fn upgrade_or_none(weak: &Weak<PyObject>) -> PyObjectRef {
+    // Helper: upgrade a PyWeakRef or return None
+    fn upgrade_or_none(weak: &PyWeakRef) -> PyObjectRef {
         match weak.upgrade() {
             Some(arc) => arc,
             None => PyObject::none(),
         }
     }
 
-    // Helper: upgrade a Weak<PyObject> or raise ReferenceError
-    fn upgrade_or_err(weak: &Weak<PyObject>) -> Result<PyObjectRef, PyException> {
+    // Helper: upgrade a PyWeakRef or raise ReferenceError
+    fn upgrade_or_err(weak: &PyWeakRef) -> Result<PyObjectRef, PyException> {
         weak.upgrade().ok_or_else(|| {
             PyException::new(
                 ferrython_core::error::ExceptionKind::ReferenceError,
@@ -879,7 +878,7 @@ pub fn create_weakref_module() -> PyObjectRef {
         // Returns a callable weak reference. Calling it returns the referent or None.
         ("ref", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("ref() requires at least 1 argument")); }
-            let weak: Weak<PyObject> = Arc::downgrade(&args[0]);
+            let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
             let _callback = args.get(1).cloned(); // stored but not auto-invoked in refcount GC
 
             let cls = PyObject::class(CompactString::from("weakref"), vec![], IndexMap::new());
@@ -917,7 +916,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                     "weakref.__eq__", move |args| {
                         if let Some(other) = args.first() {
                             if let Some(strong) = w_eq.upgrade() {
-                                return Ok(PyObject::bool_val(Arc::ptr_eq(&strong, other)));
+                                return Ok(PyObject::bool_val(PyObjectRef::ptr_eq(&strong, other)));
                             }
                         }
                         Ok(PyObject::bool_val(false))
@@ -931,7 +930,7 @@ pub fn create_weakref_module() -> PyObjectRef {
         // Returns a proxy that auto-dereferences on attribute access.
         ("proxy", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("proxy() requires at least 1 argument")); }
-            let weak: Weak<PyObject> = Arc::downgrade(&args[0]);
+            let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
             let _callback = args.get(1).cloned();
 
             let cls = PyObject::class(CompactString::from("weakproxy"), vec![], IndexMap::new());
@@ -969,7 +968,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                     "weakproxy.__repr__", move |_| {
                         match w_r.upgrade() {
                             Some(obj) => Ok(PyObject::str_val(CompactString::from(
-                                format!("<weakproxy at {:p}>", Arc::as_ptr(&obj))
+                                format!("<weakproxy at {:p}>", PyObjectRef::as_ptr(&obj))
                             ))),
                             None => Err(PyException::new(
                                 ferrython_core::error::ExceptionKind::ReferenceError,
@@ -1014,7 +1013,7 @@ pub fn create_weakref_module() -> PyObjectRef {
         // ── WeakValueDictionary() ──
         // Dict where values are weak references; dead entries are auto-pruned.
         ("WeakValueDictionary", make_builtin(|_| {
-            let storage: Arc<RwLock<IndexMap<CompactString, std::sync::Weak<PyObject>>>> =
+            let storage: Arc<RwLock<IndexMap<CompactString, PyWeakRef>>> =
                 Arc::new(RwLock::new(IndexMap::new()));
 
             let cls = PyObject::class(CompactString::from("WeakValueDictionary"), vec![], IndexMap::new());
@@ -1028,7 +1027,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                     "WeakValueDictionary.__setitem__", move |args| {
                         if args.len() < 2 { return Err(PyException::type_error("__setitem__ requires key and value")); }
                         let key = CompactString::from(args[0].py_to_string());
-                        let weak = Arc::downgrade(&args[1]);
+                        let weak = PyObjectRef::downgrade(&args[1]);
                         s1.write().insert(key, weak);
                         Ok(PyObject::none())
                     },
@@ -1168,8 +1167,8 @@ pub fn create_weakref_module() -> PyObjectRef {
         // ── WeakKeyDictionary() ──
         // Dict where keys are weak references; dead entries are auto-pruned.
         ("WeakKeyDictionary", make_builtin(|_| {
-            // Store (Weak<PyObject>, value) keyed by raw pointer (usize)
-            let storage: Arc<RwLock<IndexMap<usize, (std::sync::Weak<PyObject>, PyObjectRef)>>> =
+            // Store (PyWeakRef, value) keyed by raw pointer (usize)
+            let storage: Arc<RwLock<IndexMap<usize, (PyWeakRef, PyObjectRef)>>> =
                 Arc::new(RwLock::new(IndexMap::new()));
 
             let cls = PyObject::class(CompactString::from("WeakKeyDictionary"), vec![], IndexMap::new());
@@ -1181,8 +1180,8 @@ pub fn create_weakref_module() -> PyObjectRef {
                 attrs.insert(CompactString::from("__setitem__"), PyObject::native_closure(
                     "WeakKeyDictionary.__setitem__", move |args| {
                         if args.len() < 2 { return Err(PyException::type_error("__setitem__ requires key and value")); }
-                        let ptr = Arc::as_ptr(&args[0]) as usize;
-                        let weak = Arc::downgrade(&args[0]);
+                        let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
+                        let weak = PyObjectRef::downgrade(&args[0]);
                         s1.write().insert(ptr, (weak, args[1].clone()));
                         Ok(PyObject::none())
                     },
@@ -1192,7 +1191,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                 attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure(
                     "WeakKeyDictionary.__getitem__", move |args| {
                         if args.is_empty() { return Err(PyException::type_error("__getitem__ requires a key")); }
-                        let ptr = Arc::as_ptr(&args[0]) as usize;
+                        let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
                         let mut store = s2.write();
                         match store.get(&ptr) {
                             Some((weak, val)) => {
@@ -1221,7 +1220,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                 attrs.insert(CompactString::from("__contains__"), PyObject::native_closure(
                     "WeakKeyDictionary.__contains__", move |args| {
                         if args.is_empty() { return Err(PyException::type_error("__contains__ requires a key")); }
-                        let ptr = Arc::as_ptr(&args[0]) as usize;
+                        let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
                         let mut store = s4.write();
                         match store.get(&ptr) {
                             Some((weak, _)) => {
@@ -1243,7 +1242,7 @@ pub fn create_weakref_module() -> PyObjectRef {
         // ── WeakSet() ──
         // A set of weak references. Dead entries are auto-pruned.
         ("WeakSet", make_builtin(|_| {
-            let storage: Arc<RwLock<IndexMap<usize, std::sync::Weak<PyObject>>>> =
+            let storage: Arc<RwLock<IndexMap<usize, PyWeakRef>>> =
                 Arc::new(RwLock::new(IndexMap::new()));
 
             let cls = PyObject::class(CompactString::from("WeakSet"), vec![], IndexMap::new());
@@ -1256,8 +1255,8 @@ pub fn create_weakref_module() -> PyObjectRef {
                 attrs.insert(CompactString::from("add"), PyObject::native_closure(
                     "WeakSet.add", move |args| {
                         if args.is_empty() { return Err(PyException::type_error("add() requires an argument")); }
-                        let ptr = Arc::as_ptr(&args[0]) as usize;
-                        let weak = Arc::downgrade(&args[0]);
+                        let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
+                        let weak = PyObjectRef::downgrade(&args[0]);
                         s1.write().insert(ptr, weak);
                         Ok(PyObject::none())
                     },
@@ -1268,7 +1267,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                 attrs.insert(CompactString::from("discard"), PyObject::native_closure(
                     "WeakSet.discard", move |args| {
                         if args.is_empty() { return Err(PyException::type_error("discard() requires an argument")); }
-                        let ptr = Arc::as_ptr(&args[0]) as usize;
+                        let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
                         s2.write().shift_remove(&ptr);
                         Ok(PyObject::none())
                     },
@@ -1279,7 +1278,7 @@ pub fn create_weakref_module() -> PyObjectRef {
                 attrs.insert(CompactString::from("__contains__"), PyObject::native_closure(
                     "WeakSet.__contains__", move |args| {
                         if args.is_empty() { return Err(PyException::type_error("__contains__ requires an argument")); }
-                        let ptr = Arc::as_ptr(&args[0]) as usize;
+                        let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
                         let mut store = s3.write();
                         match store.get(&ptr) {
                             Some(weak) => {
@@ -1325,7 +1324,7 @@ pub fn create_weakref_module() -> PyObjectRef {
         // Release callback. Stores a weak ref + callback; invokes when ref dies (best-effort).
         ("finalize", PyObject::native_closure("finalize", |args: &[PyObjectRef]| {
             if args.len() < 2 { return Err(PyException::type_error("finalize requires obj and func")); }
-            let weak: std::sync::Weak<PyObject> = Arc::downgrade(&args[0]);
+            let weak: PyWeakRef = PyObjectRef::downgrade(&args[0]);
             let func = args[1].clone();
             let extra = if args.len() > 2 { args[2..].to_vec() } else { vec![] };
 
@@ -1402,7 +1401,7 @@ pub fn create_weakref_module() -> PyObjectRef {
         // ── getweakrefcount(obj) ──
         ("getweakrefcount", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("getweakrefcount requires 1 argument")); }
-            Ok(PyObject::int(Arc::weak_count(&args[0]) as i64))
+            Ok(PyObject::int(PyObjectRef::weak_count(&args[0]) as i64))
         })),
 
         // ── getweakrefs(obj) ──
@@ -1424,7 +1423,7 @@ pub fn create_weakref_module() -> PyObjectRef {
         ("WeakMethod", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("WeakMethod requires at least 1 argument")); }
             let method = args[0].clone();
-            let weak: Weak<PyObject> = Arc::downgrade(&method);
+            let weak: PyWeakRef = PyObjectRef::downgrade(&method);
             let cls = PyObject::class(CompactString::from("WeakMethod"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst.payload {

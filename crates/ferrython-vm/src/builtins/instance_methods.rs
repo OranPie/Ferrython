@@ -806,7 +806,7 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
                 if let PyObjectPayload::Property { fget, .. } = &prop.payload {
                     if let Some(getter) = fget {
                         let getter = crate::builtins::core_fns::unwrap_abstract_fget(getter);
-                        return Ok(Arc::new(PyObject {
+                        return Ok(PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: obj.clone(),
                                 method: getter,
@@ -818,7 +818,7 @@ pub fn resolve_type_class_method(type_name: &str, method_name: &str) -> Option<P
                 // For InstanceProperty (subclass of property), look for fget in instance attrs
                 if let PyObjectPayload::Instance(inst) = &prop.payload {
                     if let Some(fget) = inst.attrs.read().get("fget").cloned() {
-                        return Ok(Arc::new(PyObject {
+                        return Ok(PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: obj.clone(),
                                 method: fget,

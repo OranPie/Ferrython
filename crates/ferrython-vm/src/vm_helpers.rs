@@ -109,7 +109,7 @@ impl VirtualMachine {
     fn bind_class_val_for_instance(obj: &PyObjectRef, inst: &ferrython_core::object::InstanceData, class_val: PyObjectRef) -> PyObjectRef {
         match &class_val.payload {
             PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } => {
-                Arc::new(PyObject {
+                PyObjectRef::new(PyObject {
                     payload: PyObjectPayload::BoundMethod {
                         receiver: obj.clone(),
                         method: class_val,
@@ -117,7 +117,7 @@ impl VirtualMachine {
                 })
             }
             PyObjectPayload::StaticMethod(func) => func.clone(),
-            PyObjectPayload::ClassMethod(func) => Arc::new(PyObject {
+            PyObjectPayload::ClassMethod(func) => PyObjectRef::new(PyObject {
                 payload: PyObjectPayload::BoundMethod {
                     receiver: inst.class.clone(),
                     method: func.clone(),
@@ -143,7 +143,7 @@ impl VirtualMachine {
                 let bound = if matches!(&get_method.payload, PyObjectPayload::BoundMethod { .. }) {
                     get_method
                 } else {
-                    Arc::new(PyObject {
+                    PyObjectRef::new(PyObject {
                         payload: PyObjectPayload::BoundMethod {
                             receiver: val.clone(),
                             method: get_method,
@@ -477,7 +477,7 @@ impl VirtualMachine {
             if matches!(&close_fn.payload, PyObjectPayload::BoundMethod { .. }) {
                 let _ = self.call_object(close_fn, vec![])?;
             } else {
-                let bound = Arc::new(PyObject {
+                let bound = PyObjectRef::new(PyObject {
                     payload: PyObjectPayload::BoundMethod {
                         receiver: obj.clone(),
                         method: close_fn,
@@ -552,7 +552,7 @@ impl VirtualMachine {
                 Ok(obj.repr())
             }
             PyObjectPayload::List(items) => {
-                let ptr = Arc::as_ptr(obj) as usize;
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
                 if !ferrython_core::object::repr_enter(ptr) { return Ok("[...]".to_string()); }
                 let items = items.read().clone();
                 let mut parts = Vec::new();
@@ -574,7 +574,7 @@ impl VirtualMachine {
                 }
             }
             PyObjectPayload::Dict(m) => {
-                let ptr = Arc::as_ptr(obj) as usize;
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
                 if !ferrython_core::object::repr_enter(ptr) { return Ok("{...}".to_string()); }
                 let m = m.read().clone();
                 let mut parts = Vec::new();
@@ -588,7 +588,7 @@ impl VirtualMachine {
                 Ok(format!("{{{}}}", parts.join(", ")))
             }
             PyObjectPayload::Set(m) => {
-                let ptr = Arc::as_ptr(obj) as usize;
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
                 if !ferrython_core::object::repr_enter(ptr) { return Ok("set(...)".to_string()); }
                 let m = m.read().clone();
                 if m.is_empty() { ferrython_core::object::repr_leave(ptr); return Ok("set()".to_string()); }
@@ -999,7 +999,7 @@ impl VirtualMachine {
                 }
                 if let Some(iter_fn) = obj.get_attr("__iter__") {
                     let iter_obj = self.call_object(iter_fn, vec![obj.clone()])?;
-                    if !std::sync::Arc::ptr_eq(&iter_obj, obj) {
+                    if !PyObjectRef::ptr_eq(&iter_obj, obj) {
                         return self.collect_iterable(&iter_obj);
                     }
                 }

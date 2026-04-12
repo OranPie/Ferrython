@@ -739,7 +739,7 @@ pub fn create_enum_module() -> PyObjectRef {
                 if let Some(members) = ns.get("__members__") {
                     if let PyObjectPayload::Dict(map) = &members.payload {
                         for member in map.read().values() {
-                            if Arc::ptr_eq(member, item) {
+                            if PyObjectRef::ptr_eq(member, item) {
                                 return Ok(PyObject::bool_val(true));
                             }
                             // Also check by value comparison
@@ -1443,7 +1443,7 @@ pub fn create_collections_abc_module() -> PyObjectRef {
                             .or_insert_with(|| PyObject::dict(IndexMap::new()))
                             .clone();
                         if let PyObjectPayload::Dict(ref map) = registry.payload {
-                            let ptr = std::sync::Arc::as_ptr(&subclass) as usize;
+                            let ptr = PyObjectRef::as_ptr(&subclass) as usize;
                             map.write().insert(
                                 HashableKey::Identity(ptr, subclass.clone()),
                                 PyObject::bool_val(true),
@@ -1533,7 +1533,7 @@ pub fn create_abc_module() -> PyObjectRef {
                     .or_insert_with(|| PyObject::dict(IndexMap::new()))
                     .clone();
                 if let PyObjectPayload::Dict(ref map) = registry.payload {
-                    let ptr = std::sync::Arc::as_ptr(&subclass) as usize;
+                    let ptr = PyObjectRef::as_ptr(&subclass) as usize;
                     map.write().insert(
                         HashableKey::Identity(ptr, subclass.clone()),
                         PyObject::bool_val(true),
@@ -1585,7 +1585,7 @@ pub fn create_abc_module() -> PyObjectRef {
                             PyObject::dict(IndexMap::new())
                         }).clone();
                     if let PyObjectPayload::Dict(map) = &registry.payload {
-                        let ptr = Arc::as_ptr(subclass) as usize;
+                        let ptr = PyObjectRef::as_ptr(subclass) as usize;
                         let key = HashableKey::Identity(ptr, subclass.clone());
                         map.write().insert(key, PyObject::bool_val(true));
                     }

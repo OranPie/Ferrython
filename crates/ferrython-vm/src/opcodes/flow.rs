@@ -818,7 +818,7 @@ impl VirtualMachine {
                                     let get_bound = if matches!(&get_fn.payload, PyObjectPayload::BoundMethod { .. }) {
                                         get_fn
                                     } else {
-                                        Arc::new(PyObject {
+                                        PyObjectRef::new(PyObject {
                                             payload: PyObjectPayload::BoundMethod {
                                                 receiver: method.clone(),
                                                 method: get_fn,

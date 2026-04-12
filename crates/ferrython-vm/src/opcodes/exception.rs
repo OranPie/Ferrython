@@ -55,7 +55,7 @@ impl VirtualMachine {
                     let exit_method = if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
                         exit_raw
                     } else {
-                        Arc::new(PyObject {
+                        PyObjectRef::new(PyObject {
                             payload: PyObjectPayload::BoundMethod {
                                 receiver: ctx_mgr.clone(),
                                 method: exit_raw,
@@ -422,7 +422,7 @@ impl VirtualMachine {
             let exit_method = if matches!(&exit_raw.payload, PyObjectPayload::BoundMethod { .. }) {
                 exit_raw
             } else {
-                Arc::new(PyObject {
+                PyObjectRef::new(PyObject {
                     payload: PyObjectPayload::BoundMethod {
                         receiver: ctx_mgr.clone(),
                         method: exit_raw,
@@ -435,7 +435,7 @@ impl VirtualMachine {
             let (enter_method, enter_args) = if matches!(&enter_raw.payload, PyObjectPayload::BoundMethod { .. }) {
                 (enter_raw, vec![])
             } else {
-                let bound = Arc::new(PyObject {
+                let bound = PyObjectRef::new(PyObject {
                     payload: PyObjectPayload::BoundMethod {
                         receiver: ctx_mgr.clone(),
                         method: enter_raw,

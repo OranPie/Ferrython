@@ -389,7 +389,7 @@ fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRe
     }
 
     // Build the Instance manually with the shared attrs Arc
-    Arc::new(PyObject {
+    PyObjectRef::new(PyObject {
         payload: PyObjectPayload::Instance(InstanceData {
             class: cache_class,
             attrs: attrs_arc,

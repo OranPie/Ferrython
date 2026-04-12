@@ -11,7 +11,7 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
         // Unwrap builtin subclass instances for comparison
         let ua = unwrap_builtin_subclass(a);
         let ub = unwrap_builtin_subclass(b);
-        if !Arc::ptr_eq(&ua, a) || !Arc::ptr_eq(&ub, b) {
+        if !PyObjectRef::ptr_eq(&ua, a) || !PyObjectRef::ptr_eq(&ub, b) {
             return py_compare(&ua, &ub, op);
         }
         // Set comparisons: subset/superset semantics
@@ -95,7 +95,7 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
             if let (PyObjectPayload::BoundMethod { method: m1, receiver: r1 },
                     PyObjectPayload::BoundMethod { method: m2, receiver: r2 }) = (&a.payload, &b.payload)
             {
-                let eq = Arc::ptr_eq(r1, r2) && Arc::ptr_eq(m1, m2);
+                let eq = PyObjectRef::ptr_eq(r1, r2) && PyObjectRef::ptr_eq(m1, m2);
                 let result = if matches!(op, CompareOp::Eq) { eq } else { !eq };
                 return Ok(PyObject::bool_val(result));
             }

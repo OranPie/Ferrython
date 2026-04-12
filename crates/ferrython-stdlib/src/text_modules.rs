@@ -3803,7 +3803,7 @@ fn pformat_value(obj: &PyObjectRef, indent: usize, width: usize, depth: Option<u
 /// Check if an object is "readable" by Python's eval (i.e., its repr can be round-tripped).
 /// Objects with custom classes, functions, or non-standard types are not readable.
 fn pprint_is_readable_impl(obj: &PyObjectRef, seen: &mut Vec<usize>) -> bool {
-    let id = Arc::as_ptr(obj) as usize;
+    let id = PyObjectRef::as_ptr(obj) as usize;
     if seen.contains(&id) {
         return false; // circular reference
     }
@@ -3843,7 +3843,7 @@ fn pprint_is_readable_impl(obj: &PyObjectRef, seen: &mut Vec<usize>) -> bool {
 
 /// Check if an object contains circular references.
 fn pprint_is_recursive_impl(obj: &PyObjectRef, seen: &mut Vec<usize>) -> bool {
-    let id = Arc::as_ptr(obj) as usize;
+    let id = PyObjectRef::as_ptr(obj) as usize;
     if seen.contains(&id) {
         return true; // found circular reference
     }

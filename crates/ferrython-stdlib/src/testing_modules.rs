@@ -1617,7 +1617,7 @@ pub fn create_unittest_module() -> PyObjectRef {
             if args.len() < 2 {
                 return Err(PyException::type_error("assertIs requires 2 arguments"));
             }
-            if !Arc::ptr_eq(&args[0], &args[1]) {
+            if !PyObjectRef::ptr_eq(&args[0], &args[1]) {
                 let msg = assert_msg(args, 2);
                 let msg = if msg.is_empty() {
                     format!("{} is not {}", args[0].py_to_string(), args[1].py_to_string())
@@ -1634,7 +1634,7 @@ pub fn create_unittest_module() -> PyObjectRef {
             if args.len() < 2 {
                 return Err(PyException::type_error("assertIsNot requires 2 arguments"));
             }
-            if Arc::ptr_eq(&args[0], &args[1]) {
+            if PyObjectRef::ptr_eq(&args[0], &args[1]) {
                 let msg = assert_msg(args, 2);
                 let msg = if msg.is_empty() {
                     format!("{} is {}", args[0].py_to_string(), args[1].py_to_string())

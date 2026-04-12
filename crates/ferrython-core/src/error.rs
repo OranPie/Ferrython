@@ -1,12 +1,9 @@
 //! Error types and exception hierarchy for Ferrython.
 
 use std::fmt;
-use std::sync::Arc;
 use thiserror::Error;
 
-use crate::object::PyObject;
-/// Type alias matching the one in object.rs.
-type PyObjectRef = Arc<PyObject>;
+use crate::object::{PyObject, PyObjectRef};
 
 /// The kind of exception (maps to Python's exception classes).
 #[derive(Debug, Clone, PartialEq, Eq)]

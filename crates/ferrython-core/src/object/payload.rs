@@ -10,6 +10,7 @@ use rustc_hash::{FxHashMap, FxHasher};
 use std::any::Any;
 use std::hash::BuildHasherDefault;
 use std::fmt;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
@@ -49,7 +50,88 @@ pub fn next_class_version() -> u64 {
 const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <= 40);
 
 /// A reference-counted handle to a Python object.
-pub type PyObjectRef = Arc<PyObject>;
+/// Uses non-atomic Rc for performance — Ferrython is single-threaded.
+#[repr(transparent)]
+pub struct PyObjectRef(Rc<PyObject>);
+
+// SAFETY: Ferrython is a single-threaded interpreter (GIL equivalent).
+// PyObjectRef values never cross thread boundaries during normal operation.
+// The unsafe Send+Sync impls are needed for: static singletons (LazyLock),
+// OnceLock caches, and SharedBuiltins (Arc<IndexMap<..., PyObjectRef>>).
+unsafe impl Send for PyObjectRef {}
+unsafe impl Sync for PyObjectRef {}
+
+impl PyObjectRef {
+    #[inline(always)]
+    pub fn new(obj: PyObject) -> Self { Self(Rc::new(obj)) }
+
+    #[inline(always)]
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool { Rc::ptr_eq(&a.0, &b.0) }
+
+    #[inline(always)]
+    pub fn as_ptr(this: &Self) -> *const PyObject { Rc::as_ptr(&this.0) }
+
+    #[inline(always)]
+    pub fn strong_count(this: &Self) -> usize { Rc::strong_count(&this.0) }
+
+    #[inline(always)]
+    pub fn downgrade(this: &Self) -> PyWeakRef { PyWeakRef(Rc::downgrade(&this.0)) }
+
+    #[inline(always)]
+    pub fn weak_count(this: &Self) -> usize { Rc::weak_count(&this.0) }
+
+    #[inline(always)]
+    pub fn get_mut(this: &mut Self) -> Option<&mut PyObject> { Rc::get_mut(&mut this.0) }
+}
+
+impl Clone for PyObjectRef {
+    #[inline(always)]
+    fn clone(&self) -> Self { Self(Rc::clone(&self.0)) }
+}
+
+impl std::ops::Deref for PyObjectRef {
+    type Target = PyObject;
+    #[inline(always)]
+    fn deref(&self) -> &PyObject { &self.0 }
+}
+
+impl AsRef<PyObject> for PyObjectRef {
+    #[inline(always)]
+    fn as_ref(&self) -> &PyObject { &self.0 }
+}
+
+impl fmt::Debug for PyObjectRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Weak reference to a Python object (for GC cycle detection and weakref module).
+#[repr(transparent)]
+pub struct PyWeakRef(std::rc::Weak<PyObject>);
+
+// SAFETY: Same as PyObjectRef — single-threaded interpreter.
+unsafe impl Send for PyWeakRef {}
+unsafe impl Sync for PyWeakRef {}
+
+impl PyWeakRef {
+    #[inline(always)]
+    pub fn upgrade(&self) -> Option<PyObjectRef> { self.0.upgrade().map(PyObjectRef) }
+
+    #[inline(always)]
+    pub fn strong_count(&self) -> usize { self.0.strong_count() }
+}
+
+impl Clone for PyWeakRef {
+    #[inline(always)]
+    fn clone(&self) -> Self { Self(self.0.clone()) }
+}
+
+impl fmt::Debug for PyWeakRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PyWeakRef(strong={})", self.strong_count())
+    }
+}
 
 /// Wrapper around AtomicI64 that implements Clone (loads current value).
 #[repr(transparent)]
@@ -81,6 +163,14 @@ pub struct PyObject {
     pub payload: PyObjectPayload,
 }
 
+// Safety: Ferrython uses GIL semantics (single-threaded execution).
+// PyObject/PyObjectPayload contain Rc and RefCell which are !Send+!Sync,
+// but we need Send+Sync for static singletons and thread::spawn in _thread module.
+unsafe impl Send for PyObject {}
+unsafe impl Sync for PyObject {}
+unsafe impl Send for PyObjectPayload {}
+unsafe impl Sync for PyObjectPayload {}
+
 /// Boxed exception instance data (moved out of enum to reduce PyObjectPayload size)
 #[derive(Clone, Debug)]
 pub struct ExceptionInstanceData {
@@ -102,8 +192,12 @@ pub struct PartialData {
 #[derive(Clone)]
 pub struct NativeClosureData {
     pub name: CompactString,
-    pub func: Arc<dyn Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + Send + Sync>,
+    pub func: Rc<dyn Fn(&[PyObjectRef]) -> PyResult<PyObjectRef>>,
 }
+
+// SAFETY: Single-threaded interpreter — Rc-based closures never cross threads.
+unsafe impl Send for NativeClosureData {}
+unsafe impl Sync for NativeClosureData {}
 
 /// The actual data of a Python value.
 #[derive(Clone)]
@@ -252,7 +346,7 @@ impl fmt::Debug for PyObjectPayload {
 /// downcast by the VM crate which owns the Frame type.
 pub struct GeneratorState {
     pub name: CompactString,
-    pub frame: Option<Box<dyn Any + Send + Sync>>,
+    pub frame: Option<Box<dyn Any>>,
     pub started: bool,
     pub finished: bool,
 }
@@ -303,7 +397,7 @@ pub struct ClassData {
     /// When false, instance attr lookup can skip the descriptor protocol entirely.
     pub has_descriptors: bool,
     /// Weak references to direct subclasses (for type.__subclasses__()).
-    pub subclasses: Arc<RwLock<Vec<std::sync::Weak<PyObject>>>>,
+    pub subclasses: Arc<RwLock<Vec<PyWeakRef>>>,
     /// `__slots__` declared on *this* class (None means no __slots__ declared).
     pub slots: Option<Vec<CompactString>>,
     /// Fast-path flag: true if this class (or any base) defines a custom __getattribute__.
@@ -378,12 +472,12 @@ impl ClassData {
         let mro = if mro.is_empty() && !bases.is_empty() {
             let mut result = Vec::new();
             for base in &bases {
-                if !result.iter().any(|r: &PyObjectRef| std::sync::Arc::ptr_eq(r, base)) {
+                if !result.iter().any(|r: &PyObjectRef| PyObjectRef::ptr_eq(r, base)) {
                     result.push(base.clone());
                 }
                 if let PyObjectPayload::Class(cd) = &base.payload {
                     for m in &cd.mro {
-                        if !result.iter().any(|r: &PyObjectRef| std::sync::Arc::ptr_eq(r, m)) {
+                        if !result.iter().any(|r: &PyObjectRef| PyObjectRef::ptr_eq(r, m)) {
                             result.push(m.clone());
                         }
                     }

@@ -21,7 +21,7 @@ use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Config, Editor, Helper};
 
 use compact_str::CompactString;
-use ferrython_core::object::PyObject;
+use ferrython_core::object::{PyObject, PyObjectRef};
 use ferrython_core::types::SharedGlobals;
 
 /// Python keyword and builtin lists for completion.
@@ -260,7 +260,7 @@ impl Validator for FerryHelper {
 impl Helper for FerryHelper {}
 
 /// Get directory listing of an object (simplified).
-fn get_object_dir(obj: &Arc<PyObject>) -> Option<Vec<String>> {
+fn get_object_dir(obj: &PyObjectRef) -> Option<Vec<String>> {
     use ferrython_core::object::PyObjectPayload;
     match &obj.payload {
         PyObjectPayload::Module(md) => {

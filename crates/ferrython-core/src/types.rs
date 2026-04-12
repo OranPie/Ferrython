@@ -385,7 +385,7 @@ impl HashableKey {
                         object: obj.clone(),
                     })
                 } else {
-                    let ptr = std::sync::Arc::as_ptr(obj) as usize;
+                    let ptr = PyObjectRef::as_ptr(obj) as usize;
                     Ok(HashableKey::Identity(ptr, obj.clone()))
                 }
             }
@@ -393,12 +393,12 @@ impl HashableKey {
             PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } |
             PyObjectPayload::NativeClosure(_) | PyObjectPayload::BuiltinFunction(_) |
             PyObjectPayload::BoundMethod { .. } | PyObjectPayload::BuiltinBoundMethod { .. } => {
-                let ptr = std::sync::Arc::as_ptr(obj) as usize;
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr, obj.clone()))
             }
             // Class objects: hash by identity (each class definition is unique)
             PyObjectPayload::Class(_) => {
-                let ptr = std::sync::Arc::as_ptr(obj) as usize;
+                let ptr = PyObjectRef::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr, obj.clone()))
             }
             // BuiltinType: hash by type name so type(42) matches int as dict key
@@ -414,7 +414,7 @@ impl HashableKey {
                         object: obj.clone(),
                     })
                 } else {
-                    let ptr = std::sync::Arc::as_ptr(obj) as usize;
+                    let ptr = PyObjectRef::as_ptr(obj) as usize;
                     Ok(HashableKey::Identity(ptr, obj.clone()))
                 }
             }
@@ -482,7 +482,7 @@ impl PartialEq for HashableKey {
                 if let Some(result) = call_eq_dispatch(oa, ob) {
                     return result;
                 }
-                std::sync::Arc::ptr_eq(oa, ob)
+                PyObjectRef::ptr_eq(oa, ob)
             }
             _ => false,
         }

@@ -1141,7 +1141,7 @@ fn extract_compare_tuple(obj: &PyObjectRef, fields: &[CompactString]) -> PyObjec
 fn same_class(a: &PyObjectRef, b: &PyObjectRef) -> bool {
     match (&a.payload, &b.payload) {
         (PyObjectPayload::Instance(ia), PyObjectPayload::Instance(ib)) => {
-            Arc::ptr_eq(&ia.class, &ib.class)
+            PyObjectRef::ptr_eq(&ia.class, &ib.class)
         }
         _ => false,
     }
@@ -1196,7 +1196,7 @@ fn deep_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
 
 fn deep_copy_with_memo(obj: &PyObjectRef, memo: &mut std::collections::HashMap<usize, PyObjectRef>) -> PyResult<PyObjectRef> {
     // Check memo for already-copied objects (handles circular references)
-    let ptr = Arc::as_ptr(obj) as usize;
+    let ptr = PyObjectRef::as_ptr(obj) as usize;
     if let Some(existing) = memo.get(&ptr) {
         return Ok(existing.clone());
     }
@@ -3368,7 +3368,7 @@ pub fn create_ctypes_module() -> PyObjectRef {
         ("addressof", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("addressof requires an argument")); }
             // Return a fake address based on the Arc pointer
-            let ptr = Arc::as_ptr(&args[0]) as usize;
+            let ptr = PyObjectRef::as_ptr(&args[0]) as usize;
             Ok(PyObject::int(ptr as i64))
         })),
         ("sizeof", sizeof_fn),

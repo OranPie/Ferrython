@@ -361,7 +361,7 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
         // Instance comparison: check __eq__ method on class (for dataclass, custom __eq__)
         (PyObjectPayload::Instance(inst_a), PyObjectPayload::Instance(inst_b)) => {
             // Check if they are the same object
-            if Arc::ptr_eq(a, b) { return Some(std::cmp::Ordering::Equal); }
+            if PyObjectRef::ptr_eq(a, b) { return Some(std::cmp::Ordering::Equal); }
             // Dict subclass: compare dict_storage contents
             if let (Some(ref ds_a), Some(ref ds_b)) = (&inst_a.dict_storage, &inst_b.dict_storage) {
                 let a_r = ds_a.read(); let b_r = ds_b.read();
@@ -1090,7 +1090,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                     mro.push(base.clone());
                     if let PyObjectPayload::Class(cd) = &base.payload {
                         for m in &cd.mro {
-                            if !mro.iter().any(|existing| std::sync::Arc::ptr_eq(existing, m)) {
+                            if !mro.iter().any(|existing| PyObjectRef::ptr_eq(existing, m)) {
                                 mro.push(m.clone());
                             }
                         }
@@ -1128,7 +1128,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                     mro.push(base.clone());
                     if let PyObjectPayload::Class(cd) = &base.payload {
                         for m in &cd.mro {
-                            if !mro.iter().any(|existing| std::sync::Arc::ptr_eq(existing, m)) {
+                            if !mro.iter().any(|existing| PyObjectRef::ptr_eq(existing, m)) {
                                 mro.push(m.clone());
                             }
                         }

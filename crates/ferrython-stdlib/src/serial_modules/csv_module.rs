@@ -356,14 +356,14 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let rows_ref = shared_rows.clone();
     attrs.insert(CompactString::from("__len__"), PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
         name: CompactString::from("__len__"),
-        func: Arc::new(move |_args| Ok(PyObject::int(rows_ref.len() as i64))),
+        func: std::rc::Rc::new(move |_args| Ok(PyObject::int(rows_ref.len() as i64))),
     }))));
 
     // __getitem__ for reader[i]
     let rows_ref = shared_rows.clone();
     attrs.insert(CompactString::from("__getitem__"), PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
         name: CompactString::from("__getitem__"),
-        func: Arc::new(move |args| {
+        func: std::rc::Rc::new(move |args| {
             let idx = if args.is_empty() {
                 return Err(PyException::type_error("__getitem__ requires an index"));
             } else {
@@ -392,7 +392,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let it = iter_obj.clone();
         PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__iter__"),
-            func: Arc::new(move |_args| Ok(it.clone())),
+            func: std::rc::Rc::new(move |_args| Ok(it.clone())),
         })))
     });
 
@@ -401,7 +401,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let idx_ref = iter_index.clone();
     attrs.insert(CompactString::from("__next__"), PyObject::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
         name: CompactString::from("__next__"),
-        func: Arc::new(move |_args| {
+        func: std::rc::Rc::new(move |_args| {
             let mut idx = idx_ref.lock().unwrap();
             if *idx < rows_ref.len() {
                 let val = rows_ref[*idx].clone();

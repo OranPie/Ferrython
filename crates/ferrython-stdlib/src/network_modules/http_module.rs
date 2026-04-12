@@ -1653,7 +1653,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
     attrs.insert(CompactString::from("__eq__"), PyObject::wrap(
         PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__eq__"),
-            func: Arc::new(move |args: &[PyObjectRef]| {
+            func: std::rc::Rc::new(move |args: &[PyObjectRef]| {
                 let other = if args.len() > 1 { &args[1] } else { &args[0] };
                 if let Some(v) = other.as_int() {
                     Ok(PyObject::bool_val(v == eq_code))
@@ -1668,7 +1668,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
     attrs.insert(CompactString::from("__int__"), PyObject::wrap(
         PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__int__"),
-            func: Arc::new(move |_args: &[PyObjectRef]| {
+            func: std::rc::Rc::new(move |_args: &[PyObjectRef]| {
                 Ok(PyObject::int(int_code))
             }),
         })),
@@ -1678,7 +1678,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
     attrs.insert(CompactString::from("__hash__"), PyObject::wrap(
         PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__hash__"),
-            func: Arc::new(move |_args: &[PyObjectRef]| {
+            func: std::rc::Rc::new(move |_args: &[PyObjectRef]| {
                 Ok(PyObject::int(hash_code))
             }),
         })),
@@ -1689,7 +1689,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
     attrs.insert(CompactString::from("__repr__"), PyObject::wrap(
         PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__repr__"),
-            func: Arc::new(move |_args: &[PyObjectRef]| {
+            func: std::rc::Rc::new(move |_args: &[PyObjectRef]| {
                 Ok(PyObject::str_val(repr_s.clone()))
             }),
         })),
@@ -1697,7 +1697,7 @@ fn make_http_status_member(code: i64, name: &str, phrase: &str, description: &st
     attrs.insert(CompactString::from("__str__"), PyObject::wrap(
         PyObjectPayload::NativeClosure(Box::new(NativeClosureData {
             name: CompactString::from("__str__"),
-            func: Arc::new(move |_args: &[PyObjectRef]| {
+            func: std::rc::Rc::new(move |_args: &[PyObjectRef]| {
                 Ok(PyObject::str_val(str_s.clone()))
             }),
         })),

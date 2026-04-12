@@ -139,7 +139,7 @@ impl VirtualMachine {
     pub(crate) fn bind_method(&self, receiver: &PyObjectRef, method: PyObjectRef) -> PyObjectRef {
         match &method.payload {
             PyObjectPayload::BoundMethod { .. } => method,
-            _ => Arc::new(PyObject {
+            _ => PyObjectRef::new(PyObject {
                 payload: PyObjectPayload::BoundMethod {
                     receiver: receiver.clone(),
                     method,
@@ -261,7 +261,7 @@ impl VirtualMachine {
                     Err(_) => {
                         let ua = unwrap_int_enum(&$a);
                         let ub = unwrap_int_enum(&$b);
-                        if !Arc::ptr_eq(&ua, &$a) || !Arc::ptr_eq(&ub, &$b) {
+                        if !PyObjectRef::ptr_eq(&ua, &$a) || !PyObjectRef::ptr_eq(&ub, &$b) {
                             ua.$op(&ub)?
                         } else {
                             return Err($a.$op(&$b).unwrap_err());
