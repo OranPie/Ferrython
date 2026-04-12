@@ -156,8 +156,8 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                                 "list" => PyObject::list(vec![]),
                                 "bool" => PyObject::bool_val(false),
                                 "tuple" => PyObject::tuple(vec![]),
-                                "set" => PyObject::set(IndexMap::new()),
-                                "dict" => PyObject::dict(IndexMap::new()),
+                                "set" => PyObject::set(new_fx_hashkey_map()),
+                                "dict" => PyObject::dict(new_fx_hashkey_map()),
                                 _ => return Err(PyException::key_error(key.repr())),
                             }
                         }

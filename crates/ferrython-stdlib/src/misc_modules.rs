@@ -2,7 +2,8 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyCell, 
+use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
     make_module, make_builtin, check_args, check_args_min,
     FxAttrMap,
@@ -836,7 +837,7 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
     
     // Store __dataclass_fields__ as dict mapping field name → Field-like object
     // CPython stores Field objects; we use Module objects with the same key attributes.
-    let mut fields_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+    let mut fields_dict: FxHashKeyMap = new_fx_hashkey_map();
     for name in &field_names {
         let has_default = field_defaults.contains_key(name.as_str());
         let default_val = field_defaults.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
@@ -909,7 +910,7 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                 }
                 let self_obj = &args[0];
                 // Detect trailing kwargs dict (VM packs kwargs as last arg for NativeClosure)
-                let trailing_kwargs: Option<IndexMap<HashableKey, PyObjectRef>> =
+                let trailing_kwargs: Option<FxHashKeyMap> =
                     if args.len() >= 2 {
                         if let PyObjectPayload::Dict(map) = &args[args.len() - 1].payload {
                             Some(map.read().clone())
@@ -1223,7 +1224,7 @@ fn deep_copy_with_memo(obj: &PyObjectRef, memo: &mut std::collections::HashMap<u
         PyObjectPayload::Dict(map) => {
             let result = PyObject::dict(IndexMap::new());
             memo.insert(ptr, result.clone());
-            let mut new_map = IndexMap::new();
+            let mut new_map = new_fx_hashkey_map();
             for (k, v) in map.read().iter() {
                 new_map.insert(k.clone(), deep_copy_with_memo(v, memo)?);
             }
@@ -1233,7 +1234,7 @@ fn deep_copy_with_memo(obj: &PyObjectRef, memo: &mut std::collections::HashMap<u
             Ok(result)
         }
         PyObjectPayload::Set(set) => {
-            let mut new_set = IndexMap::new();
+            let mut new_set = new_fx_hashkey_map();
             for (k, v) in set.read().iter() {
                 new_set.insert(k.clone(), deep_copy_with_memo(v, memo)?);
             }

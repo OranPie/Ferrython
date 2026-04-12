@@ -3,7 +3,8 @@
 use compact_str::CompactString;
 use std::rc::Rc;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyCell, 
+use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin,
 };

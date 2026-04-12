@@ -264,7 +264,7 @@ fn asyncio_wait(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // In single-threaded mode, everything runs to completion
     // Return (done, pending) as a tuple of sets
     let done = args[0].clone();
-    let pending = PyObject::set(IndexMap::new());
+    let pending = PyObject::set(ferrython_core::object::new_fx_hashkey_map());
     Ok(PyObject::builtin_awaitable(PyObject::tuple(vec![done, pending])))
 }
 
@@ -351,7 +351,7 @@ fn asyncio_current_task(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 /// `asyncio.all_tasks(loop=None)`
 fn asyncio_all_tasks(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    Ok(PyObject::set(IndexMap::new()))
+    Ok(PyObject::set(ferrython_core::object::new_fx_hashkey_map()))
 }
 
 // ── Event loop management ───────────────────────────────────────────────

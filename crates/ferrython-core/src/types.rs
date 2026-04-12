@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 use crate::error::{PyException, PyResult};
-use crate::object::{PyObject, PyObjectMethods, PyObjectRef, PyCell};
+use crate::object::{PyObject, PyObjectMethods, PyObjectRef, PyCell, new_fx_hashkey_map};
 use compact_str::CompactString;
 use ferrython_bytecode::CodeObject;
 use ferrython_bytecode::code::CodeFlags;
@@ -317,7 +317,7 @@ impl PyFunction {
                     PyObject::tuple(items.iter().map(|i| convert(i)).collect())
                 }
                 ConstantValue::FrozenSet(items) => {
-                    let mut set = indexmap::IndexMap::new();
+                    let mut set = new_fx_hashkey_map();
                     for item in items {
                         let obj = convert(item);
                         if let Ok(key) = obj.to_hashable_key() {
@@ -431,7 +431,7 @@ impl HashableKey {
             HashableKey::Bytes(b) => PyObject::bytes(b.clone()),
             HashableKey::Tuple(keys) => PyObject::tuple(keys.iter().map(|k| k.to_object()).collect()),
             HashableKey::FrozenSet(keys) => {
-                let mut map = indexmap::IndexMap::new();
+                let mut map = new_fx_hashkey_map();
                 for k in keys { map.insert(k.clone(), k.to_object()); }
                 PyObject::frozenset(map)
             },

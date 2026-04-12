@@ -3,6 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, NativeClosureData,
     make_module, make_builtin,
 };
@@ -1250,7 +1251,7 @@ fn urllib_parse_parse_qs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ));
     }
     let qs = args[0].py_to_string();
-    let mut result: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+    let mut result: FxHashKeyMap = new_fx_hashkey_map();
 
     if qs.is_empty() {
         return Ok(PyObject::dict(result));

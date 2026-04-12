@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
@@ -117,7 +118,7 @@ fn csv_list_dialects(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn make_dialect_obj(entry: &CsvDialectEntry) -> PyObjectRef {
-    let cls = PyObject::class(CompactString::from("Dialect"), vec![], indexmap::IndexMap::new());
+    let cls = PyObject::class(CompactString::from("Dialect"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -136,7 +137,7 @@ fn make_dialect_obj(entry: &CsvDialectEntry) -> PyObjectRef {
 
 /// csv.Sniffer() — returns a Sniffer instance with sniff() and has_header() methods
 fn csv_sniffer_ctor(_args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
-    let cls = PyObject::class(CompactString::from("Sniffer"), vec![], indexmap::IndexMap::new());
+    let cls = PyObject::class(CompactString::from("Sniffer"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -349,7 +350,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let shared_rows = Arc::new(rows);
     let iter_index = Arc::new(Mutex::new(0usize));
 
-    let mut attrs = indexmap::IndexMap::new();
+    let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("line_num"), PyObject::int(line_count));
 
     // __len__ for len(reader)
@@ -414,7 +415,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }))));
 
     Ok(PyObject::instance_with_attrs(
-        PyObject::class(CompactString::from("csv_reader"), vec![], indexmap::IndexMap::new()),
+        PyObject::class(CompactString::from("csv_reader"), vec![], IndexMap::new()),
         attrs,
     ))
 }
@@ -480,7 +481,7 @@ fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
     }
 
-    let cls = PyObject::class(CompactString::from("csv_writer"), vec![], indexmap::IndexMap::new());
+    let cls = PyObject::class(CompactString::from("csv_writer"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(inst_data) = &inst.payload {
         let mut attrs = inst_data.attrs.write();
@@ -585,7 +586,7 @@ fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let s = line.py_to_string();
         if s.trim().is_empty() { continue; }
         let values = csv_parse_line(&s, &CsvDialect::default());
-        let mut map = indexmap::IndexMap::new();
+        let mut map = IndexMap::new();
         for (i, name) in fieldnames.iter().enumerate() {
             let val = values.get(i).map(|v| v.trim().to_string()).unwrap_or_default();
             map.insert(
@@ -647,7 +648,7 @@ fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
         }
     }
-    let cls = PyObject::class(CompactString::from("csv_DictWriter"), vec![], indexmap::IndexMap::new());
+    let cls = PyObject::class(CompactString::from("csv_DictWriter"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(inst_data) = &inst.payload {
         let mut attrs = inst_data.attrs.write();

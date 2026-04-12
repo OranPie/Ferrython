@@ -3,6 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,
     PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods,
     make_module, make_builtin, check_args, check_args_min,
     InstanceData, to_shared_fx,
@@ -489,8 +490,8 @@ pub fn create_inspect_module() -> PyObjectRef {
         func: &PyObjectRef,
         param_cls: &PyObjectRef,
         empty: &PyObjectRef,
-    ) -> (IndexMap<HashableKey, PyObjectRef>, Vec<String>, PyObjectRef) {
-        let mut params_map: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+    ) -> (FxHashKeyMap, Vec<String>, PyObjectRef) {
+        let mut params_map: FxHashKeyMap = new_fx_hashkey_map();
         let mut keys = Vec::new();
         let mut ret_ann = empty.clone();
 
@@ -560,7 +561,7 @@ pub fn create_inspect_module() -> PyObjectRef {
     }
 
     // Helper: build signature string from params_map
-    fn sig_to_string(params_map: &IndexMap<HashableKey, PyObjectRef>, keys: &[String]) -> String {
+    fn sig_to_string(params_map: &FxHashKeyMap, keys: &[String]) -> String {
         let mut parts = Vec::new();
         let mut has_varargs = false;
         let mut has_kwonly = false;
@@ -679,7 +680,7 @@ pub fn create_inspect_module() -> PyObjectRef {
 
     // Shared bind logic for Signature.bind / bind_partial
     fn do_bind(
-        params_map: &IndexMap<HashableKey, PyObjectRef>,
+        params_map: &FxHashKeyMap,
         keys: &[String],
         call_args: &[PyObjectRef],
         partial: bool,
@@ -701,7 +702,7 @@ pub fn create_inspect_module() -> PyObjectRef {
             }
         }
 
-        let mut arguments: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+        let mut arguments: FxHashKeyMap = new_fx_hashkey_map();
         let mut pos_idx = 0;
 
         for key_name in keys {
@@ -722,7 +723,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                 }
                 4 => {
                     // VAR_KEYWORD: consume remaining keyword args
-                    let mut d: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+                    let mut d: FxHashKeyMap = new_fx_hashkey_map();
                     // Only include kwargs not already consumed
                     let bound_keys: std::collections::HashSet<String> = arguments.keys()
                         .filter_map(|k| if let HashableKey::Str(s) = k { Some(s.to_string()) } else { None })
@@ -770,7 +771,7 @@ pub fn create_inspect_module() -> PyObjectRef {
         ba_attrs.insert(CompactString::from("arguments"), PyObject::dict(arguments.clone()));
         let args_list: Vec<PyObjectRef> = arguments.values().cloned().collect();
         ba_attrs.insert(CompactString::from("args"), PyObject::tuple(args_list));
-        let mut kw_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+        let mut kw_dict: FxHashKeyMap = new_fx_hashkey_map();
         for (k, v) in &arguments {
             kw_dict.insert(k.clone(), v.clone());
         }
@@ -808,7 +809,7 @@ pub fn create_inspect_module() -> PyObjectRef {
             }
         }
 
-        let mut result: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+        let mut result: FxHashKeyMap = new_fx_hashkey_map();
         let mut pos_idx = 0;
 
         for key_name in &keys {
@@ -826,7 +827,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                     result.insert(HashableKey::Str(CompactString::from(key_name.as_str())), PyObject::tuple(rest));
                 }
                 4 => {
-                    let mut d: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+                    let mut d: FxHashKeyMap = new_fx_hashkey_map();
                     let bound: std::collections::HashSet<String> = result.keys()
                         .filter_map(|k| if let HashableKey::Str(s) = k { Some(s.to_string()) } else { None })
                         .collect();
@@ -923,13 +924,13 @@ pub fn create_inspect_module() -> PyObjectRef {
                 a.insert(CompactString::from("kwonlydefaults"), if pf.kw_defaults.is_empty() {
                     PyObject::none()
                 } else {
-                    let mut kw_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+                    let mut kw_dict: FxHashKeyMap = new_fx_hashkey_map();
                     for (k, v) in &pf.kw_defaults {
                         kw_dict.insert(HashableKey::Str(k.clone()), v.clone());
                     }
                     PyObject::dict(kw_dict)
                 });
-                let mut ann_map: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+                let mut ann_map: FxHashKeyMap = new_fx_hashkey_map();
                 for (k, v) in &pf.annotations {
                     ann_map.insert(HashableKey::Str(k.clone()), v.clone());
                 }

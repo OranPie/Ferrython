@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
@@ -47,7 +48,7 @@ fn json_escape_string(s: &str) -> String {
 
 pub fn create_json_module() -> PyObjectRef {
     // Build JSONEncoder as a proper class with methods in the namespace
-    let mut enc_ns = indexmap::IndexMap::new();
+    let mut enc_ns = IndexMap::new();
     enc_ns.insert(CompactString::from("encode"), PyObject::native_closure("encode", |args| {
         if args.is_empty() {
             return Err(PyException::type_error("JSONEncoder.encode() missing argument"));
@@ -64,7 +65,7 @@ pub fn create_json_module() -> PyObjectRef {
     let json_encoder_cls = PyObject::class(CompactString::from("JSONEncoder"), vec![], enc_ns);
 
     // Build JSONDecoder as a proper class with methods in the namespace
-    let mut dec_ns = indexmap::IndexMap::new();
+    let mut dec_ns = IndexMap::new();
     dec_ns.insert(CompactString::from("decode"), PyObject::native_closure("decode", |args| {
         if args.is_empty() {
             return Err(PyException::type_error("JSONDecoder.decode() missing argument"));
@@ -99,7 +100,7 @@ pub fn create_json_module() -> PyObjectRef {
         ("JSONDecodeError", PyObject::class(
             CompactString::from("JSONDecodeError"),
             vec![],
-            indexmap::IndexMap::new(),
+            IndexMap::new(),
         )),
     ])
 }
@@ -460,7 +461,7 @@ where
 fn instance_to_dict(obj: &PyObjectRef) -> Option<PyObjectRef> {
     if let PyObjectPayload::Instance(inst) = &obj.payload {
         let attrs_r = inst.attrs.read();
-        let mut map = indexmap::IndexMap::new();
+        let mut map = IndexMap::new();
         for (k, v) in attrs_r.iter() {
             // Skip dunder attrs and callables
             let ks: &str = k.as_str();
@@ -544,7 +545,7 @@ fn apply_json_hooks(
         PyObjectPayload::Dict(d) => {
             // Recursively apply hooks to values
             let rd = d.read();
-            let mut new_map = indexmap::IndexMap::new();
+            let mut new_map = IndexMap::new();
             for (k, v) in rd.iter() {
                 let new_v = apply_json_hooks(v, object_hook, parse_float, parse_int)?;
                 new_map.insert(k.clone(), new_v);
@@ -793,7 +794,7 @@ fn parse_json_object(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
 
 /// json.decoder submodule — exposes JSONDecoder and JSONDecodeError
 pub fn create_json_decoder_module() -> PyObjectRef {
-    let mut dec_ns = indexmap::IndexMap::new();
+    let mut dec_ns = IndexMap::new();
     dec_ns.insert(CompactString::from("decode"), PyObject::native_closure("decode", |args| {
         if args.is_empty() { return Err(PyException::type_error("JSONDecoder.decode() missing argument")); }
         let s = args[0].py_to_string();
@@ -807,7 +808,7 @@ pub fn create_json_decoder_module() -> PyObjectRef {
         Ok(PyObject::tuple(vec![val, PyObject::int(pos as i64)]))
     }));
     let json_decoder_cls = PyObject::class(CompactString::from("JSONDecoder"), vec![], dec_ns);
-    let json_decode_error = PyObject::class(CompactString::from("JSONDecodeError"), vec![], indexmap::IndexMap::new());
+    let json_decode_error = PyObject::class(CompactString::from("JSONDecodeError"), vec![], IndexMap::new());
 
     make_module("json.decoder", vec![
         ("JSONDecoder", json_decoder_cls),
@@ -817,7 +818,7 @@ pub fn create_json_decoder_module() -> PyObjectRef {
 
 /// json.encoder submodule — exposes JSONEncoder
 pub fn create_json_encoder_module() -> PyObjectRef {
-    let mut enc_ns = indexmap::IndexMap::new();
+    let mut enc_ns = IndexMap::new();
     enc_ns.insert(CompactString::from("encode"), PyObject::native_closure("encode", |args| {
         if args.is_empty() { return Err(PyException::type_error("JSONEncoder.encode() missing argument")); }
         let s = py_to_json(&args[0])?;
@@ -830,7 +831,7 @@ pub fn create_json_encoder_module() -> PyObjectRef {
     let json_encoder_cls = PyObject::class(CompactString::from("JSONEncoder"), vec![], enc_ns);
 
     // ESCAPE_DCT — mapping of control characters to escape sequences
-    let mut escape_dct = indexmap::IndexMap::new();
+    let mut escape_dct = IndexMap::new();
     for i in 0u8..0x20 {
         let key = HashableKey::Str(CompactString::from(String::from(i as char)));
         let val = PyObject::str_val(CompactString::from(format!("\\u{:04x}", i)));

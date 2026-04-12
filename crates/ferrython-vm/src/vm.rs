@@ -95,7 +95,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeObject, CodeFlags};
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{ PyCell, 
+use ferrython_core::object::{ new_fx_hashkey_map, PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
     lookup_in_class_mro, SyncI64, FxAttrMap,
 };
@@ -5098,8 +5098,8 @@ impl VirtualMachine {
             let code_class = PyObject::builtin_type(CompactString::from("code"));
             let code_obj = PyObject::instance_with_attrs(code_class, code_attrs);
             frame_attrs.insert(CompactString::from("f_code"), code_obj);
-            frame_attrs.insert(CompactString::from("f_locals"), PyObject::dict(IndexMap::new()));
-            frame_attrs.insert(CompactString::from("f_globals"), PyObject::dict(IndexMap::new()));
+            frame_attrs.insert(CompactString::from("f_locals"), PyObject::dict(new_fx_hashkey_map()));
+            frame_attrs.insert(CompactString::from("f_globals"), PyObject::dict(new_fx_hashkey_map()));
             let frame_obj = PyObject::instance_with_attrs(frame_class.clone(), frame_attrs);
 
             let mut attrs = IndexMap::new();

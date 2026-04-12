@@ -8,7 +8,7 @@ use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{new_fx_hashkey_map, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::PyInt;
 use indexmap::IndexMap;
 
@@ -34,12 +34,12 @@ impl VirtualMachine {
                 let varname_idx = frame.code.varnames.iter().position(|v| v == "__annotations__");
                 if let Some(idx) = varname_idx {
                     if idx < frame.locals.len() && frame.locals[idx].is_none() {
-                        frame.locals[idx] = Some(PyObject::dict(IndexMap::new()));
+                        frame.locals[idx] = Some(PyObject::dict(new_fx_hashkey_map()));
                     }
                 } else if !frame.local_names_contains_key("__annotations__") {
                     frame.store_name(
                         intern_or_new("__annotations__"),
-                        PyObject::dict(IndexMap::new()),
+                        PyObject::dict(new_fx_hashkey_map()),
                     );
                 }
             }

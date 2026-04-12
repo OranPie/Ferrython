@@ -1,6 +1,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyCell, 
+use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     InstanceData, PartialData,
     make_module, make_builtin,
@@ -324,7 +325,7 @@ fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRe
         vec![],
         IndexMap::new(),
     );
-    let cache_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+    let cache_dict: FxHashKeyMap = new_fx_hashkey_map();
     let cache_arc = Rc::new(PyCell::new(cache_dict));
     let attrs_arc = new_shared_fx();
 

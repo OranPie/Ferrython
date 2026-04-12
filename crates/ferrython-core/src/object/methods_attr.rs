@@ -439,7 +439,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 }
                 if name == "__dict__" {
                     let ns = cd.namespace.read();
-                    let mut map = IndexMap::new();
+                    let mut map = new_fx_hashkey_map();
                     for (k, v) in ns.iter() {
                         if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
                             map.insert(hk, v.clone());
@@ -634,7 +634,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if name == "__dict__" {
                     // Return module attrs as a dict
                     let attrs = m.attrs.read();
-                    let mut map = IndexMap::new();
+                    let mut map = new_fx_hashkey_map();
                     for (k, v) in attrs.iter() {
                         map.insert(HashableKey::Str(k.clone()), v.clone());
                     }
@@ -721,7 +721,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
                     "__dict__" => {
                         // Return a mappingproxy with common type descriptors
-                        let mut map = IndexMap::new();
+                        let mut map = new_fx_hashkey_map();
                         if n.as_str() == "type" || n.as_str() == "object" {
                             // type.__dict__["__dict__"] is a getset_descriptor with __get__
                             // that returns obj.__dict__ when called as descriptor.__get__(obj)
@@ -741,7 +741,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                                 return Ok(d);
                                             }
                                         }
-                                        Ok(PyObject::dict(IndexMap::new()))
+                                        Ok(PyObject::dict(new_fx_hashkey_map()))
                                     }),
                                 );
                             }
@@ -785,7 +785,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             if args.is_empty() { return Err(PyException::type_error("fromkeys() requires at least 1 argument")); }
                             let keys = args[0].to_list()?;
                             let value = if args.len() >= 2 { args[1].clone() } else { PyObject::none() };
-                            let mut map = IndexMap::new();
+                            let mut map = new_fx_hashkey_map();
                             for k in keys {
                                 let hk = k.to_hashable_key()?;
                                 map.insert(hk, value.clone());
@@ -796,7 +796,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "maketrans" if n.as_str() == "str" => {
                         Some(PyObject::native_function("str.maketrans", |args| {
                             if args.is_empty() { return Err(PyException::type_error("maketrans() requires at least 1 argument")); }
-                            let mut result_map = IndexMap::new();
+                            let mut result_map = new_fx_hashkey_map();
                             if args.len() == 1 {
                                 if let PyObjectPayload::Dict(map) = &args[0].payload {
                                     for (k, v) in map.read().iter() {
@@ -1049,7 +1049,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "func" => Some(pd.func.clone()),
                     "args" => Some(PyObject::tuple(pd.args.clone())),
                     "keywords" => {
-                        let mut map = indexmap::IndexMap::new();
+                        let mut map = new_fx_hashkey_map();
                         for (k, v) in &pd.kwargs {
                             map.insert(crate::types::HashableKey::Str(k.clone()), v.clone());
                         }
@@ -1377,7 +1377,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                     "__dict__" => Some(PyObject::wrap(PyObjectPayload::InstanceDict(f.attrs.clone()))),
                     "__annotations__" => {
-                        let mut map = IndexMap::new();
+                        let mut map = new_fx_hashkey_map();
                         for (k, v) in &f.annotations {
                             if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
                                 map.insert(hk, v.clone());
@@ -1399,7 +1399,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "__kwdefaults__" => {
                         if f.kw_defaults.is_empty() { Some(PyObject::none()) }
                         else {
-                            let mut map = IndexMap::new();
+                            let mut map = new_fx_hashkey_map();
                             for (k, v) in &f.kw_defaults {
                                 if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
                                     map.insert(hk, v.clone());
@@ -1410,7 +1410,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                     "__globals__" => {
                         let g = f.globals.read();
-                        let mut map: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+                        let mut map: FxHashKeyMap = new_fx_hashkey_map();
                         for (k, v) in g.iter() {
                             if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
                                 map.insert(hk, v.clone());

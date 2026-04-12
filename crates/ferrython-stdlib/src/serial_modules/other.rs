@@ -1,6 +1,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyCell, 
+use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min,
 };
@@ -198,7 +199,7 @@ pub fn create_struct_module() -> PyObjectRef {
         ("iter_unpack", make_builtin(struct_iter_unpack)),
         ("calcsize", make_builtin(struct_calcsize)),
         ("Struct", make_builtin(struct_struct_ctor)),
-        ("error", PyObject::class(CompactString::from("error"), vec![], indexmap::IndexMap::new())),
+        ("error", PyObject::class(CompactString::from("error"), vec![], IndexMap::new())),
     ])
 }
 
@@ -207,7 +208,7 @@ fn struct_struct_ctor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Err(PyException::type_error("Struct() requires a format string"));
     }
     let fmt_str = args[0].py_to_string();
-    let cls = PyObject::class(CompactString::from("Struct"), vec![], indexmap::IndexMap::new());
+    let cls = PyObject::class(CompactString::from("Struct"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -3175,7 +3176,7 @@ pub fn create_shelve_module() -> PyObjectRef {
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
-            let data: Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>> = Rc::new(PyCell::new(IndexMap::new()));
+            let data: Rc<PyCell<FxHashKeyMap>> = Rc::new(PyCell::new(new_fx_hashkey_map()));
             let file_path = Arc::new(filename.clone());
 
             // Load existing data from file if it exists
@@ -3328,7 +3329,7 @@ pub fn create_dbm_module() -> PyObjectRef {
         let db_path = if filename.contains('.') { filename.clone() } else { format!("{}.db", filename) };
 
         // Load existing data from disk
-        let mut initial_data = IndexMap::new();
+        let mut initial_data = new_fx_hashkey_map();
         if flag != "n" {
             if let Ok(content) = std::fs::read(&db_path) {
                 // Simple format: length-prefixed key-value pairs
@@ -3356,7 +3357,7 @@ pub fn create_dbm_module() -> PyObjectRef {
             }
         }
 
-        let data: Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>> = Rc::new(PyCell::new(initial_data));
+        let data: Rc<PyCell<FxHashKeyMap>> = Rc::new(PyCell::new(initial_data));
         let path_for_sync = Arc::new(db_path.clone());
 
         let cls = PyObject::class(CompactString::from("_Database"), vec![], IndexMap::new());
@@ -3462,7 +3463,7 @@ pub fn create_dbm_module() -> PyObjectRef {
     ])
 }
 
-fn sync_dbm_to_disk(data: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>, path: &str) {
+fn sync_dbm_to_disk(data: &Rc<PyCell<FxHashKeyMap>>, path: &str) {
     let guard = data.read();
     let mut buf = Vec::new();
     for (k, v) in guard.iter() {

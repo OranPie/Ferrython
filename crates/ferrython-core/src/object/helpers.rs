@@ -1009,12 +1009,12 @@ pub(super) fn format_collection(open: &str, close: &str, items: &[PyObjectRef]) 
     format!("{}{}{}", open, inner.join(", "), close)
 }
 
-pub(super) fn format_set(open: &str, close: &str, map: &IndexMap<HashableKey, PyObjectRef>) -> String {
+pub(super) fn format_set(open: &str, close: &str, map: &FxHashKeyMap) -> String {
     let inner: Vec<String> = map.values().map(|v| v.repr()).collect();
     format!("{}{}{}", open, inner.join(", "), close)
 }
 
-pub(super) fn format_dict(map: &IndexMap<HashableKey, PyObjectRef>) -> String {
+pub(super) fn format_dict(map: &FxHashKeyMap) -> String {
     let inner: Vec<String> = map.iter()
         .filter(|(k, _)| !is_hidden_dict_key(k))
         .map(|(k, v)| format!("{}: {}", k.to_object().repr(), v.repr())).collect();

@@ -87,6 +87,21 @@ pub type FxBuildHasher = BuildHasherDefault<FxHasher>;
 /// Used for instance attrs, class namespaces, and module attrs (hot path).
 pub type FxAttrMap = IndexMap<CompactString, PyObjectRef, FxBuildHasher>;
 
+/// Dict/Set map using FxHash for fast key lookups (HashableKey → PyObjectRef).
+pub type FxHashKeyMap = IndexMap<HashableKey, PyObjectRef, FxBuildHasher>;
+
+/// Create a new empty FxHashKeyMap (with FxHash, not SipHash).
+#[inline]
+pub fn new_fx_hashkey_map() -> FxHashKeyMap {
+    IndexMap::with_hasher(FxBuildHasher::default())
+}
+
+/// Convert a SipHash IndexMap to FxHashKeyMap.
+#[inline]
+pub fn to_fx_hashkey_map(map: IndexMap<HashableKey, PyObjectRef>) -> FxHashKeyMap {
+    map.into_iter().collect()
+}
+
 /// Shared attribute map behind Rc<PyCell> — used by InstanceData and InstanceDict.
 pub type SharedFxAttrMap = Rc<PyCell<FxAttrMap>>;
 
@@ -310,13 +325,13 @@ pub enum PyObjectPayload {
     ByteArray(Vec<u8>),
     List(Rc<PyCell<Vec<PyObjectRef>>>),
     Tuple(Vec<PyObjectRef>),
-    Set(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
-    FrozenSet(Box<IndexMap<HashableKey, PyObjectRef>>),
-    Dict(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
+    Set(Rc<PyCell<FxHashKeyMap>>),
+    FrozenSet(Box<FxHashKeyMap>),
+    Dict(Rc<PyCell<FxHashKeyMap>>),
     /// A dict that is a live view of an instance's __dict__ (shares backing store)
     InstanceDict(SharedFxAttrMap),
     /// Read-only view of a class namespace (types.MappingProxyType)
-    MappingProxy(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
+    MappingProxy(Rc<PyCell<FxHashKeyMap>>),
     Function(Box<PyFunction>),
     BuiltinFunction(CompactString),
     /// Built-in type object (int, str, float, etc.) — callable as constructor
@@ -374,9 +389,9 @@ pub enum PyObjectPayload {
     /// allowing asyncio.wait_for to enforce timeouts via a deadline.
     DeferredSleep { secs: f64, result: PyObjectRef },
     /// Dict view objects — live views backed by the underlying dict's Arc
-    DictKeys(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
-    DictValues(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
-    DictItems(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
+    DictKeys(Rc<PyCell<FxHashKeyMap>>),
+    DictValues(Rc<PyCell<FxHashKeyMap>>),
+    DictItems(Rc<PyCell<FxHashKeyMap>>),
 }
 
 impl fmt::Debug for PyObjectPayload {
@@ -776,7 +791,7 @@ pub struct InstanceData {
     pub class: PyObjectRef,
     pub attrs: SharedFxAttrMap,
     /// Internal dict storage for dict subclasses
-    pub dict_storage: Option<Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>>,
+    pub dict_storage: Option<Rc<PyCell<FxHashKeyMap>>>,
     /// Fast-path flag: true if this instance has special markers (__namedtuple__, __deque__, etc.)
     /// When true, LoadMethod uses the full get_attr path.
     pub is_special: bool,

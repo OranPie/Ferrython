@@ -293,9 +293,13 @@ impl PyObject {
         if items.is_empty() { return EMPTY_TUPLE.clone(); }
         Self::wrap_leaf(PyObjectPayload::Tuple(items))
     }
-    pub fn set(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(items)))) }
-    pub fn dict(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
-        let obj = Self::wrap(PyObjectPayload::Dict(Rc::new(PyCell::new(items))));
+    pub fn set<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
+        let fx: FxHashKeyMap = items.into_iter().collect();
+        Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(fx))))
+    }
+    pub fn dict<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
+        let fx: FxHashKeyMap = items.into_iter().collect();
+        let obj = Self::wrap(PyObjectPayload::Dict(Rc::new(PyCell::new(fx))));
         track_object(&obj);
         obj
     }
@@ -311,7 +315,7 @@ impl PyObject {
         // Use cached flags from ClassData to avoid hierarchy traversal
         let (dict_storage, attrs) = if let PyObjectPayload::Class(cd) = &class.payload {
             let ds = if cd.is_dict_subclass {
-                Some(Rc::new(PyCell::new(IndexMap::new())))
+                Some(Rc::new(PyCell::new(new_fx_hashkey_map())))
             } else { None };
             let a: FxAttrMap = if cd.expected_attrs > 0 {
                 FxAttrMap::with_capacity_and_hasher(cd.expected_attrs, Default::default())
@@ -329,7 +333,7 @@ impl PyObject {
     pub fn instance_with_attrs(class: PyObjectRef, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
         let dict_storage = if let PyObjectPayload::Class(cd) = &class.payload {
             if cd.is_dict_subclass {
-                Some(Rc::new(PyCell::new(IndexMap::new())))
+                Some(Rc::new(PyCell::new(new_fx_hashkey_map())))
             } else { None }
         } else {
             Self::detect_dict_subclass(&class)
@@ -341,7 +345,7 @@ impl PyObject {
     }
 
     /// Check if a class inherits from dict and return dict storage if so
-    fn detect_dict_subclass(class: &PyObjectRef) -> Option<Rc<PyCell<IndexMap<crate::types::HashableKey, PyObjectRef>>>> {
+    fn detect_dict_subclass(class: &PyObjectRef) -> Option<Rc<PyCell<FxHashKeyMap>>> {
         if let PyObjectPayload::Class(cd) = &class.payload {
             for base in &cd.bases {
                 let is_dict = match &base.payload {
@@ -350,12 +354,12 @@ impl PyObject {
                     _ => false,
                 };
                 if is_dict {
-                    return Some(Rc::new(PyCell::new(IndexMap::new())));
+                    return Some(Rc::new(PyCell::new(new_fx_hashkey_map())));
                 }
                 // Recurse into base classes
                 if let Some(storage) = Self::detect_dict_subclass(base) {
                     drop(storage); // We create fresh storage for each instance
-                    return Some(Rc::new(PyCell::new(IndexMap::new())));
+                    return Some(Rc::new(PyCell::new(new_fx_hashkey_map())));
                 }
             }
         }
@@ -411,7 +415,7 @@ impl PyObject {
         Self::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData { name: CompactString::from(name), func: std::rc::Rc::new(func) })))
     }
     pub fn dict_from_pairs(pairs: Vec<(PyObjectRef, PyObjectRef)>) -> PyObjectRef {
-        let mut map = IndexMap::new();
+        let mut map = new_fx_hashkey_map();
         for (k, v) in pairs {
             if let Ok(hk) = k.to_hashable_key() {
                 map.insert(hk, v);
@@ -424,8 +428,9 @@ impl PyObject {
     pub fn slice(start: Option<PyObjectRef>, stop: Option<PyObjectRef>, step: Option<PyObjectRef>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Slice(Box::new(SliceData { start, stop, step })))
     }
-    pub fn frozenset(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::FrozenSet(Box::new(items)))
+    pub fn frozenset<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
+        let fx: FxHashKeyMap = items.into_iter().collect();
+        Self::wrap(PyObjectPayload::FrozenSet(Box::new(fx)))
     }
     pub fn range(start: i64, stop: i64, step: i64) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Range { start, stop, step })

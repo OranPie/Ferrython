@@ -7,7 +7,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeFlags, CodeObject};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::{ PyCell, 
+use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell, 
     AsyncGenAction, CompareOp, IteratorData, PartialData, PropertyData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, is_data_descriptor, has_descriptor_get, lookup_in_class_mro,
     get_builtin_base_type_name,
@@ -144,7 +144,7 @@ impl VirtualMachine {
         &mut self,
         template: &str,
         mapping: &PyObjectRef,
-        dict_storage: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>,
+        dict_storage: &Rc<PyCell<FxHashKeyMap>>,
         mapping_class: &PyObjectRef,
     ) -> PyResult<PyObjectRef> {
         let mut result = String::new();
@@ -187,7 +187,7 @@ impl VirtualMachine {
         &mut self,
         template: &str,
         _mapping: &PyObjectRef,
-        dict: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>,
+        dict: &Rc<PyCell<FxHashKeyMap>>,
     ) -> PyResult<PyObjectRef> {
         let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
         let mut result = String::new();
@@ -348,7 +348,7 @@ impl VirtualMachine {
         if has_varkw {
             let kwargs_idx = kwonly_start + nkwonly;
             if frame.locals.get(kwargs_idx).map_or(true, |v| v.is_none()) {
-                frame.set_local(kwargs_idx, PyObject::dict(IndexMap::new()));
+                frame.set_local(kwargs_idx, PyObject::dict(new_fx_hashkey_map()));
             }
         }
 
@@ -388,7 +388,7 @@ impl VirtualMachine {
         // Place keyword args at their correct parameter positions
         // Build a name→index lookup for O(1) kwarg matching
         let posonlyarg_count = code.posonlyarg_count as usize;
-        let mut extra_kwargs: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+        let mut extra_kwargs: FxHashKeyMap = new_fx_hashkey_map();
         // Pre-build varname→index map for fast lookup when kwargs > 2
         let varname_map: Option<std::collections::HashMap<&str, usize>> = if kwargs.len() > 2 {
             Some(code.varnames.iter().enumerate().map(|(i, v)| (v.as_str(), i)).collect())
@@ -654,8 +654,8 @@ impl VirtualMachine {
                             // No-arg defaults for builtin type subclasses
                             match base_type.as_str() {
                                 "list" => Some(PyObject::list(vec![])),
-                                "dict" => Some(PyObject::dict(IndexMap::new())),
-                                "set" => Some(PyObject::set(IndexMap::new())),
+                                "dict" => Some(PyObject::dict(new_fx_hashkey_map())),
+                                "set" => Some(PyObject::set(new_fx_hashkey_map())),
                                 "tuple" => Some(PyObject::tuple(vec![])),
                                 "int" => Some(PyObject::int(0)),
                                 "float" => Some(PyObject::float(0.0)),
@@ -1278,7 +1278,7 @@ impl VirtualMachine {
                                 let globals_arc = frame.globals.clone();
                                 return Ok(PyObject::wrap(PyObjectPayload::InstanceDict(globals_arc)));
                             }
-                            return Ok(PyObject::dict(IndexMap::new()));
+                            return Ok(PyObject::dict(new_fx_hashkey_map()));
                         }
                         "locals" => {
                             if let Some(frame) = self.call_stack.last() {
@@ -1293,7 +1293,7 @@ impl VirtualMachine {
                                 }
                                 return Ok(PyObject::dict(map));
                             }
-                            return Ok(PyObject::dict(IndexMap::new()));
+                            return Ok(PyObject::dict(new_fx_hashkey_map()));
                         }
                         "print" => {
                             let sep = kwargs.iter().find(|(k, _)| k.as_str() == "sep")
@@ -1867,7 +1867,7 @@ impl VirtualMachine {
                             let globals_arc = frame.globals.clone();
                             return Ok(PyObject::wrap(PyObjectPayload::InstanceDict(globals_arc)));
                         }
-                        return Ok(PyObject::dict(IndexMap::new()));
+                        return Ok(PyObject::dict(new_fx_hashkey_map()));
                     }
                     "locals" => {
                         if let Some(frame) = self.call_stack.last() {
@@ -1882,7 +1882,7 @@ impl VirtualMachine {
                             }
                             return Ok(PyObject::dict(map));
                         }
-                        return Ok(PyObject::dict(IndexMap::new()));
+                        return Ok(PyObject::dict(new_fx_hashkey_map()));
                     }
                     "print" => {
                         let mut parts = Vec::new();
@@ -2051,7 +2051,7 @@ impl VirtualMachine {
                     }
                     "dict" => {
                         if args.is_empty() {
-                            return Ok(PyObject::dict(IndexMap::new()));
+                            return Ok(PyObject::dict(new_fx_hashkey_map()));
                         }
                         // dict(mapping) — handle Dict payload
                         if let PyObjectPayload::Dict(_) = &args[0].payload {
@@ -2376,7 +2376,7 @@ impl VirtualMachine {
                                 }
                                 PyObjectPayload::InstanceDict(attrs) => {
                                     let rd = attrs.read();
-                                    let mut m = IndexMap::new();
+                                    let mut m = new_fx_hashkey_map();
                                     for (k, v) in rd.iter() {
                                         m.insert(HashableKey::Str(k.clone()), v.clone());
                                     }
@@ -2567,7 +2567,7 @@ impl VirtualMachine {
                             let mut field_names: Vec<CompactString> = Vec::new();
 
                             // Check for kwargs dict as last arg
-                            let kwargs_dict: Option<IndexMap<HashableKey, PyObjectRef>> = if args.len() >= 2 {
+                            let kwargs_dict: Option<FxHashKeyMap> = if args.len() >= 2 {
                                 if let PyObjectPayload::Dict(d) = &args[args.len() - 1].payload {
                                     Some(d.read().clone())
                                 } else { None }
@@ -2620,7 +2620,7 @@ impl VirtualMachine {
                             let mut ns = IndexMap::new();
                             ns.insert(CompactString::from("__namedtuple__"), PyObject::bool_val(true));
                             ns.insert(CompactString::from("_fields"), fields_tuple);
-                            ns.insert(CompactString::from("_field_defaults"), PyObject::dict(IndexMap::new()));
+                            ns.insert(CompactString::from("_field_defaults"), PyObject::dict(new_fx_hashkey_map()));
                             return Ok(PyObject::class(CompactString::from(typename), vec![], ns));
                         }
                     }

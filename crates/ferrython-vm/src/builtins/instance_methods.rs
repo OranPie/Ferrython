@@ -6,7 +6,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::{ PyCell, 
+use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
     NativeFunctionData, CompareOp, check_args_min, SharedFxAttrMap,
 };
@@ -33,7 +33,7 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
                     return Ok(PyObject::dict(map));
                 }
             }
-            Ok(PyObject::dict(IndexMap::new()))
+            Ok(PyObject::dict(new_fx_hashkey_map()))
         }
         "_replace" => {
             // _replace(**kwargs) — create a new instance with some fields replaced
@@ -495,7 +495,7 @@ pub(super) fn call_instance_dict_method(
         }
         "copy" => {
             let guard = attrs.read();
-            let copy: IndexMap<HashableKey, PyObjectRef> = guard.iter()
+            let copy: FxHashKeyMap = guard.iter()
                 .map(|(k, v)| (HashableKey::Str(k.clone()), v.clone()))
                 .collect();
             Ok(PyObject::dict(copy))

@@ -2,7 +2,8 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyCell, 
+use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, CompareOp,
 };
@@ -2452,7 +2453,7 @@ pub fn create_unittest_module() -> PyObjectRef {
 /// `mock.return_value = X` (a normal STORE_ATTR) updates it in-place.
 /// The __call__ closure reads from the instance's attrs dict at call time
 /// via a shared Rc<PyCell<IndexMap>> reference to the instance data.
-fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
+fn build_mock_instance(name: &str, kwargs: &FxHashKeyMap) -> PyObjectRef {
     let cls = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
     if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -2561,7 +2562,7 @@ fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) 
                     return Ok(child.clone());
                 }
                 // Create new child mock
-                let child = build_mock_instance("MagicMock", &IndexMap::new());
+                let child = build_mock_instance("MagicMock", &new_fx_hashkey_map());
                 cache.insert(attr_name, child.clone());
                 Ok(child)
             }
@@ -2658,13 +2659,13 @@ fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) 
 }
 
 /// Extract kwargs dict from trailing argument (VM passes kwargs as last Dict arg)
-fn extract_mock_kwargs(args: &[PyObjectRef]) -> IndexMap<HashableKey, PyObjectRef> {
+fn extract_mock_kwargs(args: &[PyObjectRef]) -> FxHashKeyMap {
     if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(kw_map) = &last.payload {
             return kw_map.read().clone();
         }
     }
-    IndexMap::new()
+    new_fx_hashkey_map()
 }
 
 pub fn create_unittest_mock_module() -> PyObjectRef {

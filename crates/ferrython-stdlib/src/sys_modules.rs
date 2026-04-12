@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::rc::Rc;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{PyCell, 
+use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min,
 };
@@ -497,7 +498,7 @@ pub fn create_sys_module() -> PyObjectRef {
                 return Ok(current);
             }
             // Fallback: return a minimal frame
-            let mut attrs = indexmap::IndexMap::new();
+            let mut attrs = IndexMap::new();
             attrs.insert(CompactString::from("f_locals"), PyObject::dict_from_pairs(vec![]));
             attrs.insert(CompactString::from("f_globals"), PyObject::dict_from_pairs(vec![]));
             attrs.insert(CompactString::from("f_lineno"), PyObject::int(0));
@@ -1750,7 +1751,7 @@ fn walk_dir_recursive(dir: &str, topdown: bool, results: &mut Vec<PyObjectRef>) 
 }
 
 fn build_stat_result_from_meta(meta: &std::fs::Metadata) -> PyResult<PyObjectRef> {
-    let mut attrs = indexmap::IndexMap::new();
+    let mut attrs = IndexMap::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

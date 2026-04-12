@@ -5,7 +5,7 @@ use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::{ PyCell, 
+use ferrython_core::object::{ new_fx_hashkey_map, PyCell, 
     ClassData, FxAttrMap, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
@@ -833,7 +833,7 @@ impl VirtualMachine {
                                     if let PyObjectPayload::Class(cd) = &cls_ref.payload {
                                         let mut ns = cd.namespace.write();
                                         let registry = ns.entry(CompactString::from("_abc_registry"))
-                                            .or_insert_with(|| PyObject::dict(IndexMap::new()))
+                                            .or_insert_with(|| PyObject::dict(new_fx_hashkey_map()))
                                             .clone();
                                         if let PyObjectPayload::Dict(map) = &registry.payload {
                                             let ptr = PyObjectRef::as_ptr(subclass) as usize;

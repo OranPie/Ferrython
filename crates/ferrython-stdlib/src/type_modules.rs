@@ -2,7 +2,8 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyCell, 
+use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min, CompareOp,
 };
@@ -30,7 +31,7 @@ pub fn create_typing_module() -> PyObjectRef {
             let last_is_kwargs = real_args.len() >= 2
                 && matches!(&real_args[real_args.len() - 1].payload, PyObjectPayload::Dict(_));
 
-            let kwargs_dict: Option<IndexMap<HashableKey, PyObjectRef>> = if last_is_kwargs {
+            let kwargs_dict: Option<FxHashKeyMap> = if last_is_kwargs {
                 if let PyObjectPayload::Dict(d) = &real_args[real_args.len() - 1].payload {
                     Some(d.read().clone())
                 } else { None }
@@ -650,7 +651,7 @@ pub fn create_enum_module() -> PyObjectRef {
                     _ => vec![names_arg.py_to_string()],
                 };
                 // Create a new class with members
-                let mut members_map: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+                let mut members_map: FxHashKeyMap = new_fx_hashkey_map();
                 let new_cls = PyObject::class(CompactString::from(class_name.as_str()), vec![cls.clone()], IndexMap::new());
                 if let PyObjectPayload::Class(ref cd) = new_cls.payload {
                     let mut ns = cd.namespace.write();
@@ -1510,7 +1511,7 @@ pub fn create_abc_module() -> PyObjectRef {
         let mut ns = cd.namespace.write();
         ns.insert(
             CompactString::from("__abstractmethods__"),
-            PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(IndexMap::new())))),
+            PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(new_fx_hashkey_map())))),
         );
         // ABC.register(subclass) — registers subclass as a virtual subclass
         let abc_ref = abc_class.clone();

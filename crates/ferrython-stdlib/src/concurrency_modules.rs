@@ -2,7 +2,8 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::PyException;
-use ferrython_core::object::{PyCell,
+use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,PyCell,
     PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods, PyWeakRef,
     make_module, make_builtin, check_args_min,
 };

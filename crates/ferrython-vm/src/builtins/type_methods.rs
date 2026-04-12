@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{ PyCell, 
+use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell, 
     check_args_min,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -386,7 +386,7 @@ pub(super) fn call_list_method(items: Rc<PyCell<Vec<PyObjectRef>>>, method: &str
     }
 }
 
-pub(super) fn call_dict_method(map: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "keys" => {
             Ok(PyObject::wrap(PyObjectPayload::DictKeys(map.clone())))
@@ -601,7 +601,7 @@ pub(super) fn call_dict_method(map: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef
                 if last {
                     w.insert(key, val);
                 } else {
-                    let mut new_map = IndexMap::new();
+                    let mut new_map = new_fx_hashkey_map();
                     new_map.insert(key, val);
                     for (k, v) in w.drain(..) {
                         new_map.insert(k, v);
@@ -676,7 +676,7 @@ pub(super) fn call_dict_method(map: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef
             }
         }
         "__hash__" => Err(PyException::type_error("unhashable type: 'dict'")),
-        "__sizeof__" => Ok(PyObject::int((std::mem::size_of::<IndexMap<HashableKey, PyObjectRef>>() + map.read().len() * 64) as i64)),
+        "__sizeof__" => Ok(PyObject::int((std::mem::size_of::<FxHashKeyMap>() + map.read().len() * 64) as i64)),
         _ => Err(PyException::attribute_error(format!(
             "'dict' object has no attribute '{}'", method
         ))),
@@ -792,7 +792,7 @@ pub(super) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyO
     }
 }
 
-pub(super) fn call_set_method(m: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::set(m.read().clone())),
         "union" | "__or__" => {
@@ -811,7 +811,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>
             let other_keys: std::collections::HashSet<String> = other_items.iter()
                 .map(|x| x.py_to_string()).collect();
             let guard = m.read();
-            let result: IndexMap<HashableKey, PyObjectRef> = guard.iter()
+            let result: FxHashKeyMap = guard.iter()
                 .filter(|(_, v)| other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
@@ -823,7 +823,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>
             let other_keys: std::collections::HashSet<String> = other_items.iter()
                 .map(|x| x.py_to_string()).collect();
             let guard = m.read();
-            let result: IndexMap<HashableKey, PyObjectRef> = guard.iter()
+            let result: FxHashKeyMap = guard.iter()
                 .filter(|(_, v)| !other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
@@ -991,7 +991,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>
     }
 }
 
-pub(super) fn call_frozenset_method(m: &IndexMap<HashableKey, PyObjectRef>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_frozenset_method(m: &FxHashKeyMap, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::frozenset(m.clone())),
         "union" | "__or__" => {
@@ -1009,7 +1009,7 @@ pub(super) fn call_frozenset_method(m: &IndexMap<HashableKey, PyObjectRef>, meth
             let other_items = args[0].to_list()?;
             let other_keys: std::collections::HashSet<String> = other_items.iter()
                 .map(|x| x.py_to_string()).collect();
-            let result: IndexMap<HashableKey, PyObjectRef> = m.iter()
+            let result: FxHashKeyMap = m.iter()
                 .filter(|(_, v)| other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
@@ -1020,7 +1020,7 @@ pub(super) fn call_frozenset_method(m: &IndexMap<HashableKey, PyObjectRef>, meth
             let other_items = args[0].to_list()?;
             let other_keys: std::collections::HashSet<String> = other_items.iter()
                 .map(|x| x.py_to_string()).collect();
-            let result: IndexMap<HashableKey, PyObjectRef> = m.iter()
+            let result: FxHashKeyMap = m.iter()
                 .filter(|(_, v)| !other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();

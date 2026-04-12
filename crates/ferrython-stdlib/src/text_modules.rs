@@ -3,6 +3,7 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     IteratorData,
     make_module, make_builtin, check_args_min,
@@ -74,7 +75,7 @@ fn formatter_format(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn format_string_impl(
     fmt: &str,
     pos_args: &[PyObjectRef],
-    kwargs: &Option<IndexMap<HashableKey, PyObjectRef>>,
+    kwargs: &Option<FxHashKeyMap>,
 ) -> PyResult<String> {
     let mut result = String::new();
     let mut auto_idx = 0usize;
@@ -138,7 +139,7 @@ fn format_string_impl(
     Ok(result)
 }
 
-fn template_substitute(template: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>, safe: bool) -> PyResult<String> {
+fn template_substitute(template: &str, kwargs: &FxHashKeyMap, safe: bool) -> PyResult<String> {
     let mut result = String::new();
     let chars: Vec<char> = template.chars().collect();
     let len = chars.len();
@@ -197,13 +198,13 @@ fn template_substitute(template: &str, kwargs: &IndexMap<HashableKey, PyObjectRe
     Ok(result)
 }
 
-fn extract_kwargs_dict(args: &[PyObjectRef]) -> IndexMap<HashableKey, PyObjectRef> {
+fn extract_kwargs_dict(args: &[PyObjectRef]) -> FxHashKeyMap {
     for arg in args.iter().rev() {
         if let PyObjectPayload::Dict(d) = &arg.payload {
             return d.read().clone();
         }
     }
-    IndexMap::new()
+    new_fx_hashkey_map()
 }
 
 fn template_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -573,8 +574,8 @@ fn fancy_captures(re: &fancy_regex::Regex, text: &str) -> Vec<Vec<Option<String>
 }
 
 /// Extract named capture group index from a fancy_regex::Regex
-fn extract_fancy_group_names(re: &fancy_regex::Regex) -> IndexMap<HashableKey, PyObjectRef> {
-    let mut map = IndexMap::new();
+fn extract_fancy_group_names(re: &fancy_regex::Regex) -> FxHashKeyMap {
+    let mut map = new_fx_hashkey_map();
     // fancy_regex exposes capture_names()
     for (idx, name_opt) in re.capture_names().enumerate() {
         if let Some(name) = name_opt {
@@ -587,7 +588,7 @@ fn extract_fancy_group_names(re: &fancy_regex::Regex) -> IndexMap<HashableKey, P
     map
 }
 
-fn make_fancy_match_object(text: &str, start: usize, end: usize, full: &str, groups: Vec<Option<String>>, group_names: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
+fn make_fancy_match_object(text: &str, start: usize, end: usize, full: &str, groups: Vec<Option<String>>, group_names: FxHashKeyMap) -> PyObjectRef {
     let mut attrs = IndexMap::new();
     attrs.insert(CompactString::from("_match"), PyObject::str_val(CompactString::from(full)));
     attrs.insert(CompactString::from("_start"), PyObject::int(start as i64));
@@ -3981,7 +3982,7 @@ pub fn create_pprint_module() -> PyObjectRef {
                     }
                 }
             }
-            let cls = PyObject::class(CompactString::from("PrettyPrinter"), vec![], indexmap::IndexMap::new());
+            let cls = PyObject::class(CompactString::from("PrettyPrinter"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst.payload {
                 let mut attrs = d.attrs.write();

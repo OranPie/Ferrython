@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{ PyCell, 
+use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell, 
     check_args, check_args_min,
     IteratorData, PropertyData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     FxAttrMap,
@@ -1138,7 +1138,7 @@ pub(super) fn builtin_tuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Ok(PyObject::dict(IndexMap::new()));
+        return Ok(PyObject::dict(new_fx_hashkey_map()));
     }
     match &args[0].payload {
         PyObjectPayload::Dict(m) => {
@@ -1185,7 +1185,7 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
             // Fall back to iterating as pairs
             let pairs = args[0].to_list()?;
-            let mut map: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+            let mut map: FxHashKeyMap = new_fx_hashkey_map();
             for pair in &pairs {
                 let kv = pair.to_list()?;
                 if kv.len() != 2 {
@@ -1202,7 +1202,7 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_set(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Ok(PyObject::set(IndexMap::new()));
+        return Ok(PyObject::set(new_fx_hashkey_map()));
     }
     let items = args[0].to_list()?;
     let mut set = IndexMap::new();
@@ -1216,7 +1216,7 @@ pub(super) fn builtin_set(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_frozenset(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
-        return Ok(PyObject::frozenset(IndexMap::new()));
+        return Ok(PyObject::frozenset(new_fx_hashkey_map()));
     }
     let items = args[0].to_list()?;
     let mut set = IndexMap::new();

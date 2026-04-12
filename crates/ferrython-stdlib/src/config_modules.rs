@@ -2,7 +2,8 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyCell, 
+use ferrython_core::object::{
+    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args_min,
 };
@@ -776,7 +777,7 @@ pub fn create_configparser_module() -> PyObjectRef {
 
     let configparser_class = PyObject::class(CompactString::from("ConfigParser"), vec![], ns);
 
-    fn get_sections(obj: &PyObjectRef) -> Option<Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>> {
+    fn get_sections(obj: &PyObjectRef) -> Option<Rc<PyCell<FxHashKeyMap>>> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             if let Some(sec) = inst.attrs.read().get("_sections") {
                 if let PyObjectPayload::Dict(d) = &sec.payload {
@@ -787,10 +788,10 @@ pub fn create_configparser_module() -> PyObjectRef {
         None
     }
 
-    fn parse_ini(content: &str) -> IndexMap<HashableKey, PyObjectRef> {
-        let mut sections: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+    fn parse_ini(content: &str) -> FxHashKeyMap {
+        let mut sections: FxHashKeyMap = new_fx_hashkey_map();
         let mut current_section = CompactString::from("DEFAULT");
-        let mut current_items: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
+        let mut current_items: FxHashKeyMap = new_fx_hashkey_map();
         let mut last_key: Option<CompactString> = None;
 
         for line in content.lines() {
@@ -839,8 +840,8 @@ pub fn create_configparser_module() -> PyObjectRef {
     /// Perform %(name)s interpolation on a value, resolving from section then defaults.
     fn interpolate_value(
         raw: &str,
-        section_items: Option<&IndexMap<HashableKey, PyObjectRef>>,
-        defaults: Option<&IndexMap<HashableKey, PyObjectRef>>,
+        section_items: Option<&FxHashKeyMap>,
+        defaults: Option<&FxHashKeyMap>,
         depth: usize,
     ) -> String {
         if depth > 10 { return raw.to_string(); } // guard against infinite recursion
@@ -877,7 +878,7 @@ pub fn create_configparser_module() -> PyObjectRef {
         result
     }
 
-    fn apply_parsed(obj: &PyObjectRef, parsed: IndexMap<HashableKey, PyObjectRef>) {
+    fn apply_parsed(obj: &PyObjectRef, parsed: FxHashKeyMap) {
         if let Some(secs) = get_sections(obj) {
             let mut w = secs.write();
             for (k, v) in &parsed {
@@ -958,8 +959,8 @@ pub fn create_configparser_module() -> PyObjectRef {
         } else { false };
 
         // Collect section items and defaults for interpolation
-        let mut section_items_snap: Option<IndexMap<HashableKey, PyObjectRef>> = None;
-        let mut defaults_snap: Option<IndexMap<HashableKey, PyObjectRef>> = None;
+        let mut section_items_snap: Option<FxHashKeyMap> = None;
+        let mut defaults_snap: Option<FxHashKeyMap> = None;
         let mut raw_val: Option<PyObjectRef> = None;
 
         // Check section first
@@ -1145,7 +1146,7 @@ pub fn create_configparser_module() -> PyObjectRef {
         let section = args[1].py_to_string();
 
         // Collect defaults snapshot for interpolation
-        let defaults_snap: Option<IndexMap<HashableKey, PyObjectRef>> =
+        let defaults_snap: Option<FxHashKeyMap> =
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
                 inst.attrs.read().get("_defaults")
                     .and_then(|d| if let PyObjectPayload::Dict(dd) = &d.payload {
