@@ -252,6 +252,18 @@ pub enum Opcode {
     ///   arg = (local_idx << 24) | (const1_idx << 16) | (const2_idx << 8) | dest
     /// Limits: all indices < 256
     LoadFastMulModStoreFast = 234,
+    /// Fused 4-way: LoadFast + LoadFast + CompareOp + PopJumpIfFalse
+    /// Zero-clone: reads both locals by reference, no stack ops.
+    /// arg encoding: (cmp_op << 28) | (idx1 << 20) | (idx2 << 12) | jump_target
+    LoadFastLoadFastCompareJump = 235,
+    /// Fused 2-way: LoadGlobal + StoreFast
+    /// Stores global cache value directly to local, no stack push/pop.
+    /// arg encoding: (name_idx << 16) | store_idx
+    LoadGlobalStoreFast = 236,
+    /// Fused 2-way: PopBlock + JumpForward/JumpAbsolute
+    /// Hot in try/except — pops exception block and jumps in one dispatch.
+    /// arg encoding: jump_target
+    PopBlockJump = 237,
 }
 
 impl Opcode {
@@ -391,6 +403,9 @@ impl Opcode {
             Self::LoadFastLoadConstBinaryMulStoreFast => 0, // stores to local
             Self::LoadFastLoadConstBinarySubStoreFast => 0, // stores to local
             Self::LoadFastMulModStoreFast => 0, // x = (x * c1) % c2
+            Self::LoadFastLoadFastCompareJump => 0, // reads two locals by ref, compares, no stack change
+            Self::LoadGlobalStoreFast => 0, // stores global directly to local (net 0)
+            Self::PopBlockJump => 0, // pops block, jumps (no stack change)
         }
     }
 
@@ -414,6 +429,8 @@ impl Opcode {
                 | Self::LoadFastCompareConstJump
                 | Self::StoreFastJumpAbsolute
                 | Self::PopTopJumpAbsolute
+                | Self::LoadFastLoadFastCompareJump
+                | Self::PopBlockJump
         )
     }
 }

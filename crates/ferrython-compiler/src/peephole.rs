@@ -839,6 +839,45 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // 4-way fusion: LoadFast + LoadFast + CompareOp + PopJumpIfFalse → LoadFastLoadFastCompareJump
+        // Zero-clone: reads both locals by reference, no stack ops.
+        // Encoding: (cmp_op << 28) | (idx1 << 20) | (idx2 << 12) | jump_target
+        if i + 3 < n && !jump_targets[i + 2] && !jump_targets[i + 3]
+            && !is_nop[i + 2] && !is_nop[i + 3]
+            && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
+            && code.instructions[i + 2].op == Opcode::CompareOp
+            && code.instructions[i + 3].op == Opcode::PopJumpIfFalse
+            && a.arg < 256 && b.arg < 256
+            && code.instructions[i + 2].arg < 16
+            && code.instructions[i + 3].arg < 4096
+        {
+            let cmp_op = code.instructions[i + 2].arg;
+            let jump_target = code.instructions[i + 3].arg;
+            let packed = (cmp_op << 28) | (a.arg << 20) | (b.arg << 12) | jump_target;
+            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadFastCompareJump, packed);
+            is_nop[i + 1] = true;
+            is_nop[i + 2] = true;
+            is_nop[i + 3] = true;
+            i += 4;
+            continue;
+        }
+
+        // PopBlock + JumpForward → PopBlockJump
+        if a.op == Opcode::PopBlock && b.op == Opcode::JumpForward {
+            code.instructions[i] = Instruction::new(Opcode::PopBlockJump, b.arg);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
+        // PopBlock + JumpAbsolute → PopBlockJump
+        if a.op == Opcode::PopBlock && b.op == Opcode::JumpAbsolute {
+            code.instructions[i] = Instruction::new(Opcode::PopBlockJump, b.arg);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
         // ForIter + StoreFast → ForIterStoreFast
         // Encoding: (jump_target << 16) | store_idx
         // jump_target must fit in 16 bits
@@ -859,6 +898,19 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         {
             let packed = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::LoadGlobalCallFunction, packed);
+            is_nop[i + 1] = true;
+            i += 2;
+            continue;
+        }
+
+        // LoadGlobal + StoreFast → LoadGlobalStoreFast
+        // Stores global directly to local, skipping stack.
+        // Encoding: (name_idx << 16) | store_idx
+        if a.op == Opcode::LoadGlobal && b.op == Opcode::StoreFast
+            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        {
+            let packed = (a.arg << 16) | b.arg;
+            code.instructions[i] = Instruction::new(Opcode::LoadGlobalStoreFast, packed);
             is_nop[i + 1] = true;
             i += 2;
             continue;
@@ -1030,6 +1082,16 @@ fn fuse_superinstructions(code: &mut CodeObject) {
                 final_len as u32
             };
             instr.arg = (store_idx << 16) | new_target;
+        } else if instr.op == Opcode::LoadFastLoadFastCompareJump {
+            // Jump target is in low 12 bits (same layout as LoadFastCompareConstJump)
+            let upper = instr.arg & 0xFFFFF000;
+            let target = (instr.arg & 0xFFF) as usize;
+            let new_target = if target < old_to_new.len() {
+                old_to_new[target] as u32
+            } else {
+                final_len as u32
+            };
+            instr.arg = upper | (new_target & 0xFFF);
         } else if is_jump(instr.op) {
             let target = instr.arg as usize;
             if target < old_to_new.len() {

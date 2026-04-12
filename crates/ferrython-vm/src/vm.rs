@@ -4163,6 +4163,114 @@ impl VirtualMachine {
                         None => Self::err_unbound_local(&frame.code.varnames, local_idx),
                     }
                 }
+                // 4-way superinstruction: LoadFast + LoadFast + CompareOp + PopJumpIfFalse
+                // Zero-clone — reads both locals by reference, no stack ops at all
+                Opcode::LoadFastLoadFastCompareJump => {
+                    let cmp_op = instr.arg >> 28;
+                    let idx1 = ((instr.arg >> 20) & 0xFF) as usize;
+                    let idx2 = ((instr.arg >> 12) & 0xFF) as usize;
+                    let jump_target = (instr.arg & 0xFFF) as usize;
+                    match (slocal!(frame, idx1), slocal!(frame, idx2)) {
+                        (Some(a), Some(b)) => {
+                            let fast_result = match (&a.payload, &b.payload) {
+                                (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                    match cmp_op {
+                                        0 => Some(*x < *y),
+                                        1 => Some(*x <= *y),
+                                        2 => Some(*x == *y),
+                                        3 => Some(*x != *y),
+                                        4 => Some(*x > *y),
+                                        5 => Some(*x >= *y),
+                                        _ => None,
+                                    }
+                                }
+                                (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
+                                    match cmp_op {
+                                        0 => Some(*x < *y),
+                                        1 => Some(*x <= *y),
+                                        2 => Some(*x == *y),
+                                        3 => Some(*x != *y),
+                                        4 => Some(*x > *y),
+                                        5 => Some(*x >= *y),
+                                        _ => None,
+                                    }
+                                }
+                                (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
+                                    match cmp_op {
+                                        0 => Some(x < y),
+                                        1 => Some(x <= y),
+                                        2 => Some(x == y),
+                                        3 => Some(x != y),
+                                        4 => Some(x > y),
+                                        5 => Some(x >= y),
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            };
+                            if let Some(is_true) = fast_result {
+                                if !is_true { frame.ip = jump_target; }
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            } else {
+                                // Fallback: push both, decompose to CompareOp + PopJumpIfFalse
+                                spush!(frame, a.clone());
+                                spush!(frame, b.clone());
+                                let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_op);
+                                let result = self.exec_compare_ops(cmp_instr)?;
+                                if result.is_none() {
+                                    let frame = self.call_stack.last_mut().unwrap();
+                                    let v = spop!(frame);
+                                    let is_false = match &v.payload {
+                                        PyObjectPayload::Bool(b) => !b,
+                                        PyObjectPayload::None => true,
+                                        PyObjectPayload::Int(PyInt::Small(n)) => *n == 0,
+                                        _ => !self.vm_is_truthy(&v)?,
+                                    };
+                                    if is_false {
+                                        let cs_len = self.call_stack.len();
+                                        unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) }.ip = jump_target;
+                                    }
+                                }
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
+                        }
+                        _ => {
+                            // One of the locals is unbound
+                            if slocal!(frame, idx1).is_none() {
+                                Self::err_unbound_local(&frame.code.varnames, idx1)
+                            } else {
+                                Self::err_unbound_local(&frame.code.varnames, idx2)
+                            }
+                        }
+                    }
+                }
+                // Fused LoadGlobal + StoreFast: stores global directly to local
+                Opcode::LoadGlobalStoreFast => {
+                    let name_idx = (instr.arg >> 16) as usize;
+                    let store_idx = (instr.arg & 0xFFFF) as usize;
+                    let ver = crate::frame::globals_version();
+                    if frame.global_cache_version == ver {
+                        if let Some(ref cache) = frame.global_cache {
+                            if let Some(ref v) = unsafe { cache.get_unchecked(name_idx) } {
+                                sset_local!(frame, store_idx, v.clone());
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
+                        }
+                    }
+                    // Cache miss: fallback to LoadGlobal + StoreFast
+                    let load_instr = Instruction::new(Opcode::LoadGlobal, name_idx as u32);
+                    self.execute_one(load_instr)?;
+                    let frame = self.call_stack.last_mut().unwrap();
+                    let v = spop!(frame);
+                    sset_local!(frame, store_idx, v);
+                    hot_ok!(profiling, self.profiler, instr.op)
+                }
+                // Fused PopBlock + Jump: pops exception block and jumps in one dispatch
+                Opcode::PopBlockJump => {
+                    frame.pop_block();
+                    frame.ip = instr.arg as usize;
+                    hot_ok!(profiling, self.profiler, instr.op)
+                }
                 _ => self.execute_one(instr),
             };
 
@@ -4491,7 +4599,7 @@ impl VirtualMachine {
             | Opcode::LoadGlobal | Opcode::StoreGlobal | Opcode::DeleteGlobal
             | Opcode::LoadFastLoadFast | Opcode::LoadFastLoadConst
             | Opcode::StoreFastLoadFast | Opcode::StoreFastJumpAbsolute
-            | Opcode::LoadConstStoreFast
+            | Opcode::LoadConstStoreFast | Opcode::LoadGlobalStoreFast
                 => self.exec_name_ops(instr),
 
             Opcode::LoadAttr | Opcode::StoreAttr | Opcode::DeleteAttr
@@ -4525,13 +4633,15 @@ impl VirtualMachine {
                 => self.exec_subscript_ops(instr),
 
             Opcode::CompareOp | Opcode::CompareOpPopJumpIfFalse
-            | Opcode::LoadFastCompareConstJump => self.exec_compare_ops(instr),
+            | Opcode::LoadFastCompareConstJump
+            | Opcode::LoadFastLoadFastCompareJump => self.exec_compare_ops(instr),
 
             Opcode::JumpForward | Opcode::JumpAbsolute
             | Opcode::PopJumpIfFalse | Opcode::PopJumpIfTrue
             | Opcode::JumpIfTrueOrPop | Opcode::JumpIfFalseOrPop
             | Opcode::GetIter | Opcode::GetYieldFromIter | Opcode::ForIter
             | Opcode::ForIterStoreFast | Opcode::EndForLoop
+            | Opcode::PopBlockJump
                 => self.exec_jump_ops(instr),
 
             Opcode::BuildTuple | Opcode::BuildList | Opcode::BuildSet
