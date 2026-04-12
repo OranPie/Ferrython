@@ -147,12 +147,17 @@ const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <
 #[repr(C)]
 struct PyObjectBlock {
     /// Strong reference count (u32 is sufficient for single-threaded interpreter).
+    /// Special value IMMORTAL_REFCOUNT means the object is never freed.
     strong: Cell<u32>,
     /// Weak reference count (tracked for PyWeakRef support).
     weak: Cell<u32>,
     /// The Python object data (may be uninitialized after strong reaches 0 but weak > 0).
     obj: MaybeUninit<PyObject>,
 }
+
+/// Sentinel refcount for immortal objects (True, False, None, small ints).
+/// Clone and Drop are no-ops when strong == IMMORTAL_REFCOUNT.
+const IMMORTAL_REFCOUNT: u32 = u32::MAX;
 
 const MAX_OBJECT_POOL: usize = 512;
 
@@ -211,6 +216,22 @@ impl PyObjectRef {
     #[inline(always)]
     pub fn new(obj: PyObject) -> Self { Self(pool_alloc(obj)) }
 
+    /// Create an immortal object that is never freed.
+    /// Used for singletons (True, False, None) and small int cache.
+    #[inline(always)]
+    pub fn new_immortal(obj: PyObject) -> Self {
+        let layout = std::alloc::Layout::new::<PyObjectBlock>();
+        let ptr = unsafe { std::alloc::alloc(layout) as *mut PyObjectBlock };
+        let block = NonNull::new(ptr).expect("allocation failed");
+        unsafe {
+            let p = block.as_ptr();
+            (*p).strong = Cell::new(IMMORTAL_REFCOUNT);
+            (*p).weak = Cell::new(0);
+            (*p).obj.as_mut_ptr().write(obj);
+        }
+        Self(block)
+    }
+
     #[inline(always)]
     pub fn ptr_eq(a: &Self, b: &Self) -> bool { a.0 == b.0 }
 
@@ -222,6 +243,12 @@ impl PyObjectRef {
     #[inline(always)]
     pub fn strong_count(this: &Self) -> usize {
         unsafe { (*this.0.as_ptr()).strong.get() as usize }
+    }
+
+    /// Returns true if this object is immortal (refcount never changes).
+    #[inline(always)]
+    pub fn is_immortal(this: &Self) -> bool {
+        unsafe { (*this.0.as_ptr()).strong.get() == IMMORTAL_REFCOUNT }
     }
 
     #[inline(always)]
@@ -256,7 +283,11 @@ impl Clone for PyObjectRef {
     fn clone(&self) -> Self {
         unsafe {
             let c = &(*self.0.as_ptr()).strong;
-            c.set(c.get() + 1);
+            let val = c.get();
+            // Immortal objects skip refcount increment entirely
+            if val != IMMORTAL_REFCOUNT {
+                c.set(val + 1);
+            }
         }
         Self(self.0)
     }
@@ -267,7 +298,10 @@ impl Drop for PyObjectRef {
     fn drop(&mut self) {
         unsafe {
             let p = self.0.as_ptr();
-            let new_strong = (*p).strong.get() - 1;
+            let strong = (*p).strong.get();
+            // Immortal objects are never freed
+            if strong == IMMORTAL_REFCOUNT { return; }
+            let new_strong = strong - 1;
             (*p).strong.set(new_strong);
             if new_strong == 0 {
                 // Drop the PyObject value

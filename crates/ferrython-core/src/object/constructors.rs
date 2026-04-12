@@ -63,11 +63,11 @@ pub(crate) fn try_recycle_map(rc: &mut Rc<PyCell<FxHashKeyMap>>) -> bool {
 
 // ── Singletons ──
 use std::sync::LazyLock;
-static NONE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::None }));
-static TRUE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Bool(true) }));
-static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Bool(false) }));
-static ELLIPSIS_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Ellipsis }));
-static NOT_IMPLEMENTED_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::NotImplemented }));
+static NONE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::None }));
+static TRUE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bool(true) }));
+static FALSE_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bool(false) }));
+static ELLIPSIS_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Ellipsis }));
+static NOT_IMPLEMENTED_SINGLETON: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::NotImplemented }));
 
 // ── Small-int cache (CPython caches -5..=256, we go wider for loop bounds) ──
 const SMALL_INT_MIN: i64 = -5;
@@ -75,19 +75,19 @@ const SMALL_INT_MAX: i64 = 65536;
 
 static SMALL_INT_CACHE: LazyLock<Vec<PyObjectRef>> = LazyLock::new(|| {
     (SMALL_INT_MIN..=SMALL_INT_MAX)
-        .map(|n| PyObjectRef::new(PyObject { payload: PyObjectPayload::Int(PyInt::Small(n)) }))
+        .map(|n| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Int(PyInt::Small(n)) }))
         .collect()
 });
 
 // ── Float singleton cache for common values ──
-static FLOAT_ZERO: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Float(0.0) }));
-static FLOAT_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Float(1.0) }));
-static FLOAT_NEG_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Float(-1.0) }));
+static FLOAT_ZERO: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Float(0.0) }));
+static FLOAT_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Float(1.0) }));
+static FLOAT_NEG_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Float(-1.0) }));
 
 // ── Empty collection singletons ──
-static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Tuple(vec![]) }));
-static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Str(CompactString::const_new("")) }));
-static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Bytes(vec![]) }));
+static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Tuple(vec![]) }));
+static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(CompactString::const_new("")) }));
+static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bytes(vec![]) }));
 
 // ── GC Tracking for cycle-capable objects (Instance, Dict, List) ──
 // Thread-local tracking: no mutex, no atomics — single-threaded GIL interpreter.

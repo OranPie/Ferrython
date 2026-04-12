@@ -117,7 +117,9 @@ fn cached_method_name(name: &str) -> Option<PyObjectRef> {
     macro_rules! intern {
         ($s:literal, $id:ident) => {{
             static $id: OnceLock<PyObjectRef> = OnceLock::new();
-            return Some($id.get_or_init(|| PyObject::str_val(CompactString::from($s))).clone());
+            return Some($id.get_or_init(|| PyObjectRef::new_immortal(PyObject {
+                payload: PyObjectPayload::Str(CompactString::from($s))
+            })).clone());
         }};
     }
     match name {
