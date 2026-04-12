@@ -92,7 +92,7 @@ macro_rules! hot_ok_chain {
 use crate::builtins;
 use crate::frame::{AttrInlineCache, BlockKind, Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
-use ferrython_bytecode::code::{CodeObject, CodeFlags};
+use ferrython_bytecode::code::{CodeObject, CodeFlags, ConstantValue};
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{ new_fx_hashkey_map, PyCell, 
@@ -2334,6 +2334,7 @@ impl VirtualMachine {
                     let conversion = (instr.arg & 0x03) as u8;
                     if !has_fmt_spec && (conversion == 0 || conversion == 1) {
                         let val = speek!(frame);
+                        // Format value to string fragment (without allocating PyObject yet)
                         let fast_str = match &val.payload {
                             PyObjectPayload::Str(s) => Some(s.clone()),
                             PyObjectPayload::Int(PyInt::Small(n)) => {
@@ -2349,6 +2350,37 @@ impl VirtualMachine {
                             _ => None,
                         };
                         if let Some(s) = fast_str {
+                            // Look-ahead: fuse with LOAD_CONST + BUILD_STRING 3
+                            // Pattern: f"prefix{val}suffix" → single String allocation
+                            let next_ip = frame.ip;
+                            if next_ip + 1 < frame.code.instructions.len() {
+                                let next = unsafe { *frame.code.instructions.get_unchecked(next_ip) };
+                                let next2 = unsafe { *frame.code.instructions.get_unchecked(next_ip + 1) };
+                                if next.op == Opcode::LoadConst && next2.op == Opcode::BuildString && next2.arg == 3 {
+                                    let stack_len = frame.stack.len();
+                                    let prefix_obj = sget!(frame, stack_len - 2);
+                                    let suffix_const = &frame.code.constants[next.arg as usize];
+                                    if let (PyObjectPayload::Str(prefix), ConstantValue::Str(suffix)) =
+                                        (&prefix_obj.payload, suffix_const)
+                                    {
+                                        let total = prefix.len() + s.len() + suffix.len();
+                                        let mut result = String::with_capacity(total);
+                                        result.push_str(prefix.as_str());
+                                        result.push_str(s.as_str());
+                                        result.push_str(suffix.as_str());
+                                        // Drop prefix and value, replace with concatenated result
+                                        unsafe {
+                                            std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(stack_len - 2));
+                                            std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(stack_len - 1));
+                                            frame.stack.set_len(stack_len - 2);
+                                        }
+                                        spush!(frame, PyObject::str_val(CompactString::from(result)));
+                                        frame.ip = next_ip + 2; // skip LOAD_CONST + BUILD_STRING
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    }
+                                }
+                            }
+                            // Normal path: replace TOS with formatted Str
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::str_val(s) };
                             hot_ok!(profiling, self.profiler, instr.op)

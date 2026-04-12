@@ -1,7 +1,7 @@
 //! Singleton values and PyObject factory/constructor methods.
 
 use std::rc::Rc;
-use std::cell::RefCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::mem::ManuallyDrop;
 use crate::error::{ExceptionKind, PyResult};
 use crate::types::{HashableKey, PyFunction, PyInt};
@@ -17,19 +17,20 @@ use super::methods::PyObjectMethods;
 // When a Dict or Set is dropped and holds the sole reference to its inner
 // Rc<PyCell<FxHashKeyMap>>, we recycle it instead of freeing. On next
 // dict/set creation, we pop from the freelist (clear + reuse), avoiding malloc.
+// SAFETY: Single-threaded interpreter (GIL) — no concurrent access to TLS.
 const MAP_FREELIST_MAX: usize = 80; // CPython uses 80 for dicts
 thread_local! {
-    static MAP_FREELIST: RefCell<Vec<Rc<PyCell<FxHashKeyMap>>>> =
-        RefCell::new(Vec::with_capacity(MAP_FREELIST_MAX));
+    static MAP_FREELIST: UnsafeCell<Vec<Rc<PyCell<FxHashKeyMap>>>> =
+        UnsafeCell::new(Vec::with_capacity(MAP_FREELIST_MAX));
 }
 
 // ── Exception instance freelist ──
 // Recycle Box<ExceptionInstanceData> to avoid malloc/free per raise/catch cycle.
-// CPython has a per-type freelist for exception objects.
+// SAFETY: Single-threaded interpreter (GIL) — no concurrent access to TLS.
 const EXCEPTION_FREELIST_MAX: usize = 16;
 thread_local! {
-    static EXCEPTION_FREELIST: RefCell<Vec<Box<ExceptionInstanceData>>> =
-        RefCell::new(Vec::with_capacity(EXCEPTION_FREELIST_MAX));
+    static EXCEPTION_FREELIST: UnsafeCell<Vec<Box<ExceptionInstanceData>>> =
+        UnsafeCell::new(Vec::with_capacity(EXCEPTION_FREELIST_MAX));
 }
 
 /// Allocate an ExceptionInstanceData box, reusing from freelist if possible.
@@ -40,7 +41,8 @@ pub fn alloc_exception_box(
     args: Vec<PyObjectRef>,
 ) -> Box<ExceptionInstanceData> {
     EXCEPTION_FREELIST.with(|fl| {
-        let mut list = fl.borrow_mut();
+        // SAFETY: single-threaded (GIL), no reentrant access during pop
+        let list = unsafe { &mut *fl.get() };
         if let Some(mut data) = list.pop() {
             data.kind = kind;
             data.message = message;
@@ -62,19 +64,17 @@ pub fn alloc_exception_box(
 /// Clears inner references to avoid holding PyObjectRef alive.
 #[inline]
 pub(crate) fn recycle_exception_box(mut data: Box<ExceptionInstanceData>) {
-    // CRITICAL: Clear inner references BEFORE borrowing the freelist.
-    // Dropping PyObjectRefs can cascade into more exception drops,
-    // which would re-enter this function. We must not hold the borrow.
+    // Clear inner references BEFORE accessing the freelist.
+    // Dropping PyObjectRefs can cascade into more exception drops.
     data.args.clear();
     data.attrs = None;
     data.message = CompactString::default();
-    // Now safe to borrow — no nested drops can occur from an empty struct
     EXCEPTION_FREELIST.with(|fl| {
-        let mut list = fl.borrow_mut();
+        // SAFETY: single-threaded (GIL), inner refs already cleared (no reentrant drops)
+        let list = unsafe { &mut *fl.get() };
         if list.len() < EXCEPTION_FREELIST_MAX {
             list.push(data);
         }
-        // else: data drops here (harmless — already cleared)
     })
 }
 
@@ -82,9 +82,9 @@ pub(crate) fn recycle_exception_box(mut data: Box<ExceptionInstanceData>) {
 #[inline]
 pub fn alloc_map_inner() -> Rc<PyCell<FxHashKeyMap>> {
     MAP_FREELIST.with(|fl| {
-        let mut list = fl.borrow_mut();
+        // SAFETY: single-threaded (GIL), no reentrant access during pop
+        let list = unsafe { &mut *fl.get() };
         if let Some(rc) = list.pop() {
-            // Recycle: map was already cleared when returned to freelist
             rc
         } else {
             Rc::new(PyCell::new(new_fx_hashkey_map()))
@@ -97,15 +97,11 @@ pub fn alloc_map_inner() -> Rc<PyCell<FxHashKeyMap>> {
 #[inline]
 pub(crate) fn try_recycle_map(rc: &mut Rc<PyCell<FxHashKeyMap>>) -> bool {
     if Rc::strong_count(rc) == 1 {
-        // We're the sole owner — clear and recycle
         unsafe { &mut *rc.data_ptr() }.clear();
         MAP_FREELIST.with(|fl| {
-            let mut list = fl.borrow_mut();
+            // SAFETY: single-threaded (GIL), map already cleared (no reentrant drops)
+            let list = unsafe { &mut *fl.get() };
             if list.len() < MAP_FREELIST_MAX {
-                // SAFETY: we verified strong_count == 1, so this is uniquely owned.
-                // We clone the Rc (bumps to 2), push clone to freelist, then the
-                // original Rc in the payload will drop (decrements to 1). Net: freelist
-                // holds the sole reference.
                 list.push(rc.clone());
                 true
             } else {
@@ -113,7 +109,7 @@ pub(crate) fn try_recycle_map(rc: &mut Rc<PyCell<FxHashKeyMap>>) -> bool {
             }
         })
     } else {
-        false // Other references exist (DictKeys/Values/Items), let normal drop happen
+        false
     }
 }
 

@@ -32,11 +32,8 @@ pub fn is_profile_active() -> bool {
     PROFILE_ACTIVE.load(Ordering::Relaxed)
 }
 
-// Thread-local active exception info for sys.exc_info().
-// Set by the VM when entering an except block, cleared when leaving.
+// Thread-local trace/profile hooks and current frame.
 thread_local! {
-    static ACTIVE_EXC_INFO: std::cell::UnsafeCell<Option<(ExceptionKind, CompactString, Option<PyObjectRef>)>> =
-        const { std::cell::UnsafeCell::new(None) };
     static TRACE_FUNC: std::cell::RefCell<Option<PyObjectRef>> =
         const { std::cell::RefCell::new(None) };
     static PROFILE_FUNC: std::cell::RefCell<Option<PyObjectRef>> =
@@ -47,18 +44,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Called by VM when entering an except handler.
-pub fn set_exc_info(kind: ExceptionKind, msg: CompactString, obj: Option<PyObjectRef>) {
-    ACTIVE_EXC_INFO.with(|c| unsafe { *c.get() = Some((kind, msg, obj)) });
-}
-
-/// Called by VM when leaving an except handler.
-pub fn clear_exc_info() {
-    ACTIVE_EXC_INFO.with(|c| unsafe { *c.get() = None });
-}
-
 /// Read active exception info for traceback.format_exc() etc.
-/// Now reads lazily through the VM's active_exception pointer.
+/// Reads lazily through the VM's active_exception pointer.
 pub fn get_exc_info() -> Option<(ExceptionKind, CompactString)> {
     ferrython_core::error::get_active_exc_info()
 }
