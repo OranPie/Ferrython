@@ -37,18 +37,101 @@ pub enum BlockKind { Loop, Except, Finally, With, ExceptHandler }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeKind { Module, Function, Class }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Block {
     pub kind: BlockKind,
     pub handler: usize,
     pub stack_level: usize,
 }
 
+/// Fixed-capacity inline block stack (avoids Vec heap allocation).
+/// Python rarely nests more than 8 blocks; overflow spills to a Vec.
+const BLOCK_STACK_INLINE: usize = 8;
+
+#[derive(Debug, Clone)]
+pub struct BlockStack {
+    inline: [std::mem::MaybeUninit<Block>; BLOCK_STACK_INLINE],
+    len: u8,
+    overflow: Option<Vec<Block>>,
+}
+
+impl BlockStack {
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self {
+            inline: [std::mem::MaybeUninit::uninit(); BLOCK_STACK_INLINE],
+            len: 0,
+            overflow: None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0 && self.overflow.as_ref().map_or(true, |v| v.is_empty())
+    }
+
+    #[inline(always)]
+    pub fn push(&mut self, block: Block) {
+        if (self.len as usize) < BLOCK_STACK_INLINE {
+            unsafe { self.inline[self.len as usize].write(block); }
+            self.len += 1;
+        } else {
+            self.overflow.get_or_insert_with(|| Vec::with_capacity(4)).push(block);
+        }
+    }
+
+    #[inline(always)]
+    pub fn pop(&mut self) -> Option<Block> {
+        if let Some(ref mut ov) = self.overflow {
+            if let Some(b) = ov.pop() {
+                return Some(b);
+            }
+        }
+        if self.len > 0 {
+            self.len -= 1;
+            Some(unsafe { self.inline[self.len as usize].assume_init() })
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub fn last(&self) -> Option<&Block> {
+        if let Some(ref ov) = self.overflow {
+            if let Some(b) = ov.last() {
+                return Some(b);
+            }
+        }
+        if self.len > 0 {
+            Some(unsafe { self.inline[(self.len - 1) as usize].assume_init_ref() })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &Block> {
+        let inline_slice = unsafe {
+            std::slice::from_raw_parts(self.inline.as_ptr() as *const Block, self.len as usize)
+        };
+        let overflow_slice = self.overflow.as_deref().unwrap_or(&[]);
+        inline_slice.iter().chain(overflow_slice.iter())
+    }
+
+    #[inline(always)]
+    pub fn clear(&mut self) {
+        self.len = 0;
+        if let Some(ref mut ov) = self.overflow {
+            ov.clear();
+        }
+    }
+}
+
 pub struct Frame {
     pub code: Arc<CodeObject>,
     pub ip: usize,
     pub stack: Vec<PyObjectRef>,
-    pub block_stack: Vec<Block>,
+    pub block_stack: BlockStack,
     pub locals: Vec<Option<PyObjectRef>>,
     /// Boxed to reduce Frame size (~48→8 bytes). Only allocated for class/module scope.
     pub local_names: Option<Box<FxAttrMap>>,
@@ -86,7 +169,7 @@ pub struct Frame {
 /// Fixed-size direct-mapped inline cache for class attribute lookups.
 /// Stores (instruction_pointer, class_version, value) tuples.
 /// Slot = ip % ATTR_IC_SLOTS. Collisions evict the old entry.
-pub const ATTR_IC_SLOTS: usize = 16;
+pub const ATTR_IC_SLOTS: usize = 32;
 
 #[derive(Clone)]
 pub struct AttrInlineCache {
@@ -105,8 +188,14 @@ impl AttrInlineCache {
     }
 
     #[inline(always)]
+    fn slot(ip: u32) -> usize {
+        // Multiplicative hash for better distribution across 32 slots
+        (ip.wrapping_mul(2654435761) >> 27) as usize
+    }
+
+    #[inline(always)]
     pub fn lookup(&self, ip: u32, class_version: u64) -> Option<&PyObjectRef> {
-        let slot = (ip as usize) & (ATTR_IC_SLOTS - 1);
+        let slot = Self::slot(ip);
         unsafe {
             if *self.ips.get_unchecked(slot) == ip
                 && *self.versions.get_unchecked(slot) == class_version
@@ -120,7 +209,7 @@ impl AttrInlineCache {
 
     #[inline(always)]
     pub fn insert(&mut self, ip: u32, class_version: u64, value: PyObjectRef) {
-        let slot = (ip as usize) & (ATTR_IC_SLOTS - 1);
+        let slot = Self::slot(ip);
         unsafe {
             *self.ips.get_unchecked_mut(slot) = ip;
             *self.versions.get_unchecked_mut(slot) = class_version;
@@ -152,7 +241,7 @@ impl Frame {
         Self {
             code, ip: 0,
             stack: Vec::with_capacity(32),
-            block_stack: Vec::new(),
+            block_stack: BlockStack::new(),
             locals: vec![None; nl],
             local_names: None,
             globals,
@@ -195,21 +284,81 @@ impl Frame {
         locals.clear();
         locals.resize(nl, None);
 
-        let block_stack = pool.take_block_stack();
-
         let cells: Vec<CellRef> = if nc > 0 {
             (0..nc).map(|_| Arc::new(RwLock::new(None))).collect()
         } else { Vec::new() };
         Self {
             code, ip: 0,
             stack,
-            block_stack,
+            block_stack: BlockStack::new(),
             locals,
             local_names: None,
             globals,
             builtins,
             cells,
             scope_kind: ScopeKind::Module,
+            yielded: false,
+            pending_return: None,
+            constant_cache,
+            global_cache: None,
+            global_cache_version: u64::MAX,
+            prepare_dict: None,
+            borrowed_env: false,
+            attr_ic: None,
+        }
+    }
+
+    /// Create a frame for closure functions, reusing pooled vectors.
+    /// Takes closure cells directly to avoid allocating and then replacing freevars.
+    #[inline]
+    pub fn new_closure_from_pool(
+        code: Arc<CodeObject>,
+        globals: SharedGlobals,
+        builtins: SharedBuiltins,
+        constant_cache: SharedConstantCache,
+        closure: &[CellRef],
+        pool: &mut FramePool,
+    ) -> Self {
+        let nl = code.varnames.len();
+        let n_cellvars = code.cellvars.len();
+        let n_freevars = code.freevars.len();
+
+        let mut stack = pool.take_stack();
+        stack.clear();
+        let needed = (code.max_stack_size as usize).max(8);
+        if stack.capacity() < needed {
+            stack.reserve(needed - stack.capacity());
+        }
+
+        let mut locals = pool.take_locals();
+        locals.clear();
+        locals.resize(nl, None);
+
+        // Build cells: allocate only for cellvars, clone from closure for freevars
+        let nc = n_cellvars + n_freevars;
+        let cells: Vec<CellRef> = if nc > 0 {
+            let mut cells = Vec::with_capacity(nc);
+            for _ in 0..n_cellvars {
+                cells.push(Arc::new(RwLock::new(None)));
+            }
+            for (i, cell) in closure.iter().enumerate() {
+                if i < n_freevars {
+                    cells.push(cell.clone());
+                }
+            }
+            cells
+        } else { Vec::new() };
+
+        Self {
+            code, ip: 0,
+            stack,
+            block_stack: BlockStack::new(),
+            locals,
+            local_names: None,
+            globals,
+            builtins,
+            cells,
+            scope_kind: ScopeKind::Function,
             yielded: false,
             pending_return: None,
             constant_cache,
@@ -246,14 +395,12 @@ impl Frame {
         }
         // else: locals is already len=nl with all None from recycle()
 
-        let block_stack = pool.take_block_stack();
-
         // Bitwise-copy Arcs without incrementing refcount — parent keeps them alive
         Self {
             code: std::ptr::read(&parent.code),
             ip: 0,
             stack,
-            block_stack,
+            block_stack: BlockStack::new(),
             locals,
             local_names: None,
             globals: std::ptr::read(&parent.globals),
@@ -286,31 +433,23 @@ impl Frame {
     #[inline]
     pub fn recycle(mut self, pool: &mut FramePool) {
         self.stack.clear();
-        // Fast locals clear: truncate drops all elements in one pass
-        // (equivalent to setting each to None, but lets Vec handle it internally)
         self.locals.clear();
-        self.block_stack.clear();
+        // block_stack is inline — just drop it (no pooling needed)
 
         if self.borrowed_env {
-            // code/globals/builtins/constant_cache/global_cache are borrowed (no refcount).
-            // Must not let Frame::drop decrement them.
             let md = std::mem::ManuallyDrop::new(self);
             unsafe {
                 let stack = std::ptr::read(&md.stack);
                 let locals = std::ptr::read(&md.locals);
-                let block_stack = std::ptr::read(&md.block_stack);
                 // attr_ic is cloned (not borrowed) — must drop to free cached PyObjectRefs
                 let _attr_ic = std::ptr::read(&md.attr_ic);
+                // block_stack is inline, no need to extract
                 pool.return_stack(stack);
                 pool.return_locals(locals);
-                pool.return_block_stack(block_stack);
-                // All other fields are either borrowed Arcs (must not drop) or
-                // zero-alloc empties (IndexMap::new, Vec::new, None) — safe to leak.
             }
         } else {
             pool.return_stack(self.stack);
             pool.return_locals(self.locals);
-            pool.return_block_stack(self.block_stack);
         }
     }
 
@@ -419,7 +558,6 @@ const MAX_POOL_SIZE: usize = 32;
 pub struct FramePool {
     stacks: Vec<Vec<PyObjectRef>>,
     locals: Vec<Vec<Option<PyObjectRef>>>,
-    block_stacks: Vec<Vec<Block>>,
 }
 
 impl FramePool {
@@ -427,7 +565,6 @@ impl FramePool {
         Self {
             stacks: Vec::with_capacity(MAX_POOL_SIZE),
             locals: Vec::with_capacity(MAX_POOL_SIZE),
-            block_stacks: Vec::with_capacity(MAX_POOL_SIZE),
         }
     }
 
@@ -442,16 +579,6 @@ impl FramePool {
     }
 
     #[inline(always)]
-    fn take_block_stack(&mut self) -> Vec<Block> {
-        if let Some(mut bs) = self.block_stacks.pop() {
-            bs.clear();
-            bs
-        } else {
-            Vec::with_capacity(4)
-        }
-    }
-
-    #[inline(always)]
     fn return_stack(&mut self, v: Vec<PyObjectRef>) {
         if self.stacks.len() < MAX_POOL_SIZE {
             self.stacks.push(v);
@@ -462,12 +589,6 @@ impl FramePool {
     fn return_locals(&mut self, v: Vec<Option<PyObjectRef>>) {
         if self.locals.len() < MAX_POOL_SIZE {
             self.locals.push(v);
-        }
-    }
-
-    fn return_block_stack(&mut self, v: Vec<Block>) {
-        if self.block_stacks.len() < MAX_POOL_SIZE {
-            self.block_stacks.push(v);
         }
     }
 }

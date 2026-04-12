@@ -27,6 +27,29 @@ def bench_int_mul(n):
     for i in range(n):
         x = (x * 3) % 1000000
 
+def bench_int_sub(n):
+    x = n
+    for i in range(n):
+        x = x - 1
+
+def bench_float_mul(n):
+    x = 1.0
+    for i in range(n):
+        x = x * 1.000001
+
+# ── Loops ──
+
+def bench_while_loop(n):
+    i = 0
+    while i < n:
+        i = i + 1
+
+def bench_nested_loop(n):
+    s = 0
+    for i in range(100):
+        for j in range(n // 100):
+            s = s + 1
+
 # ── String operations ──
 
 def bench_str_concat(n):
@@ -49,6 +72,11 @@ def bench_list_comprehension(n):
     for i in range(min(n, 1000)):
         lst = [x * 2 for x in range(100)]
 
+def bench_list_index(n):
+    lst = list(range(100))
+    for i in range(n):
+        x = lst[i % 100]
+
 # ── Dict operations ──
 
 def bench_dict_setget(n):
@@ -57,6 +85,11 @@ def bench_dict_setget(n):
         d[i] = i
     for i in range(n):
         x = d[i]
+
+def bench_dict_in(n):
+    d = {i: i for i in range(1000)}
+    for i in range(n):
+        x = i in d
 
 # ── Function calls ──
 
@@ -73,6 +106,20 @@ def bench_method_call(n):
         lst.append(i)
         lst.pop()
 
+def add(a, b):
+    return a + b
+
+def bench_function_call_args(n):
+    for i in range(n):
+        add(i, 1)
+
+def bench_closure_call(n):
+    x = 10
+    def inner():
+        return x
+    for i in range(n):
+        inner()
+
 # ── Attribute access ──
 
 class Point:
@@ -85,6 +132,26 @@ def bench_attr_access(n):
     for i in range(n):
         x = p.x
         y = p.y
+
+def bench_attr_set(n):
+    p = Point(1, 2)
+    for i in range(n):
+        p.x = i
+
+# ── Global access ──
+
+GLOBAL_VAR = 42
+
+def bench_global_read(n):
+    for i in range(n):
+        x = GLOBAL_VAR
+
+# ── Type checks ──
+
+def bench_isinstance(n):
+    x = 42
+    for i in range(n):
+        isinstance(x, int)
 
 # ── Exception handling ──
 
@@ -126,6 +193,13 @@ print("Arithmetic:")
 bench("int_add", bench_int_add, N)
 bench("float_add", bench_float_add, N)
 bench("int_mul_mod", bench_int_mul, N)
+bench("int_sub", bench_int_sub, N)
+bench("float_mul", bench_float_mul, N)
+print()
+
+print("Loops:")
+bench("while_loop", bench_while_loop, N)
+bench("nested_loop", bench_nested_loop, N)
 print()
 
 print("Strings:")
@@ -136,16 +210,23 @@ print()
 print("Collections:")
 bench("list_append", bench_list_append, N)
 bench("list_comprehension (1K×100)", bench_list_comprehension, 1000)
+bench("list_index", bench_list_index, N)
 bench("dict_set_get", bench_dict_setget, N)
+bench("dict_in", bench_dict_in, N)
 print()
 
 print("Calls:")
 bench("function_call", bench_function_call, N)
+bench("function_call_args", bench_function_call_args, N)
 bench("method_call", bench_method_call, N)
+bench("closure_call", bench_closure_call, N)
 print()
 
 print("Objects:")
 bench("attr_access", bench_attr_access, N)
+bench("attr_set", bench_attr_set, N)
+bench("global_read", bench_global_read, N)
+bench("isinstance", bench_isinstance, N)
 print()
 
 print("Control flow:")

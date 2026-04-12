@@ -1092,7 +1092,7 @@ impl VirtualMachine {
                     match &obj.payload {
                         PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } => hot_ok!(profiling, self.profiler, instr.op),
                         PyObjectPayload::List(items) => {
-                            let items_vec = items.read().clone();
+                            let items_vec = unsafe { &*items.data_ptr() }.clone();
                             let iter = PyObject::wrap(PyObjectPayload::Iterator(
                                 std::sync::Arc::new(parking_lot::Mutex::new(
                                     IteratorData::List { items: items_vec, index: 0 }
@@ -1378,8 +1378,8 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::List(x), PyObjectPayload::List(y)) => {
-                            let mut items = x.read().clone();
-                            items.extend(y.read().iter().cloned());
+                            let mut items = unsafe { &*x.data_ptr() }.clone();
+                            items.extend(unsafe { &*y.data_ptr() }.iter().cloned());
                             unsafe { frame.binary_op_result(PyObject::list(items)) };
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
@@ -1588,18 +1588,17 @@ impl VirtualMachine {
                     let haystack = sget!(frame, len - 1);
                     let found = match &haystack.payload {
                         PyObjectPayload::Dict(map) => {
-                            let r = map.read();
+                            let r = unsafe { &*map.data_ptr() };
                             let found = match &needle.payload {
                                 PyObjectPayload::Str(s) => Some(r.contains_key(&BorrowedStrKey(s.as_str()))),
                                 PyObjectPayload::Int(PyInt::Small(n)) => Some(r.contains_key(&BorrowedIntKey(*n))),
                                 PyObjectPayload::Bool(b) => Some(r.contains_key(&BorrowedIntKey(*b as i64))),
                                 _ => None,
                             };
-                            drop(r);
                             found
                         }
                         PyObjectPayload::Set(items) => {
-                            let r = items.read();
+                            let r = unsafe { &*items.data_ptr() };
                             match &needle.payload {
                                 PyObjectPayload::Str(s) => Some(r.contains_key(&BorrowedStrKey(s.as_str()))),
                                 PyObjectPayload::Int(PyInt::Small(n)) => Some(r.contains_key(&BorrowedIntKey(*n))),
@@ -1612,7 +1611,7 @@ impl VirtualMachine {
                             }
                         }
                         PyObjectPayload::List(items) => {
-                            let items = items.read();
+                            let items = unsafe { &*items.data_ptr() };
                             Some(items.iter().any(|x| {
                                 match (&x.payload, &needle.payload) {
                                     (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
@@ -1688,7 +1687,7 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::List(items) => {
-                            if items.read().is_empty() { frame.ip = instr.arg as usize; }
+                            if unsafe { &*items.data_ptr() }.is_empty() { frame.ip = instr.arg as usize; }
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Tuple(items) => {
@@ -1696,7 +1695,7 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Dict(map) => {
-                            if map.read().is_empty() { frame.ip = instr.arg as usize; }
+                            if unsafe { &*map.data_ptr() }.is_empty() { frame.ip = instr.arg as usize; }
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Float(f) => {
@@ -1730,7 +1729,7 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::List(items) => {
-                            if !items.read().is_empty() { frame.ip = instr.arg as usize; }
+                            if !unsafe { &*items.data_ptr() }.is_empty() { frame.ip = instr.arg as usize; }
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Tuple(items) => {
@@ -1738,7 +1737,7 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Dict(map) => {
-                            if !map.read().is_empty() { frame.ip = instr.arg as usize; }
+                            if !unsafe { &*map.data_ptr() }.is_empty() { frame.ip = instr.arg as usize; }
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Float(f) => {
@@ -1805,9 +1804,9 @@ impl VirtualMachine {
                         PyObjectPayload::None => Some(true),
                         PyObjectPayload::Float(f) => Some(*f == 0.0),
                         PyObjectPayload::Str(s) => Some(s.is_empty()),
-                        PyObjectPayload::List(items) => Some(items.read().is_empty()),
+                        PyObjectPayload::List(items) => Some(unsafe { &*items.data_ptr() }.is_empty()),
                         PyObjectPayload::Tuple(items) => Some(items.is_empty()),
-                        PyObjectPayload::Dict(map) => Some(map.read().is_empty()),
+                        PyObjectPayload::Dict(map) => Some(unsafe { &*map.data_ptr() }.is_empty()),
                         _ => None,
                     };
                     if let Some(r) = fast {
@@ -1959,24 +1958,23 @@ impl VirtualMachine {
                         _ => self.execute_one(instr),
                     }
                 }
-                // Inline LoadDeref (closure variable load — common in functional code)
-                // LoadDeref/StoreDeref: closure variable access, cold path
-                // Inline LoadDeref — closure variable fast path
+                // Inline LoadDeref — lock-free closure variable fast path
+                // SAFETY: single-threaded interpreter, no concurrent cell writes
                 Opcode::LoadDeref => {
                     let idx = instr.arg as usize;
-                    let val = { frame.cells[idx].read().clone() };
+                    let val = unsafe { &*frame.cells[idx].data_ptr() };
                     if let Some(v) = val {
-                        unsafe { frame.push_unchecked(v) };
+                        unsafe { frame.push_unchecked(v.clone()) };
                         hot_ok!(profiling, self.profiler, instr.op)
                     } else {
                         self.execute_one(instr)
                     }
                 }
-                // StoreDeref: write closure var directly
+                // StoreDeref: lock-free write closure var
                 Opcode::StoreDeref => {
                     let value = spop!(frame);
                     let idx = instr.arg as usize;
-                    *frame.cells[idx].write() = Some(value);
+                    unsafe { *frame.cells[idx].data_ptr() = Some(value) };
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Inline BuildTuple for small counts (0–4)
@@ -2059,6 +2057,7 @@ impl VirtualMachine {
                     let stack_len = frame.stack.len();
                     let func_idx = stack_len - 1 - arg_count;
                     // Single payload check: determine both is_simple and is_recursive
+                    // call_kind: 0=slow, 1=simple, 2=recursive, 3=trivial, 4=closure
                     let call_kind = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
                         if pf.is_simple && pf.code.arg_count as usize == arg_count {
                             // Trivial function: body is just `LoadConst X; ReturnValue`
@@ -2071,7 +2070,14 @@ impl VirtualMachine {
                                     && pf.code.instructions[0].op == Opcode::LoadConstReturnValue)
                             { 3u8 }
                             else if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
-                        } else { 0 }
+                        } else if pf.code.arg_count as usize == arg_count
+                            && pf.code.kwonlyarg_count == 0
+                            && !pf.code.flags.contains(CodeFlags::VARARGS)
+                            && !pf.code.flags.contains(CodeFlags::VARKEYWORDS)
+                            && !pf.code.flags.contains(CodeFlags::GENERATOR)
+                            && !pf.code.flags.contains(CodeFlags::COROUTINE)
+                        { 4u8 } // closure or cell function — fast path with cell setup
+                        else { 0 }
                     } else { 0 };
                     if call_kind == 3 {
                         // Trivial function: inline the return constant
@@ -2097,7 +2103,31 @@ impl VirtualMachine {
                         // Pattern: LoadFastCompareConstJump → LoadFast → ReturnValue
                         // Skips frame creation entirely for leaf returns (e.g., fib base case)
                         let mut mini_result: Option<PyObjectRef> = None;
-                        if call_kind == 2 {
+                        // Trivial closure: body is just LOAD_DEREF X; RETURN_VALUE
+                        // Skip frame creation, directly read the cell
+                        if call_kind == 4 {
+                            if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
+                                let instrs = &pf.code.instructions;
+                                if instrs.len() == 2
+                                    && instrs[0].op == Opcode::LoadDeref
+                                    && instrs[1].op == Opcode::ReturnValue
+                                {
+                                    let cell_idx = instrs[0].arg as usize;
+                                    let n_cell = pf.code.cellvars.len();
+                                    if cell_idx >= n_cell && cell_idx - n_cell < pf.closure.len() {
+                                        let cell = &pf.closure[cell_idx - n_cell];
+                                        if let Some(val) = unsafe { &*cell.data_ptr() } {
+                                            mini_result = Some(val.clone());
+                                        }
+                                    }
+                                } else if instrs.len() == 1
+                                    && instrs[0].op == Opcode::LoadConstReturnValue
+                                {
+                                    // Closure that returns a constant
+                                    mini_result = Some(pf.constant_cache[instrs[0].arg as usize].clone());
+                                }
+                            }
+                        } else if call_kind == 2 {
                             let instrs = &frame.code.instructions;
                             if instrs.len() > 2
                                 && instrs[0].op == Opcode::LoadFastCompareConstJump
@@ -2183,6 +2213,19 @@ impl VirtualMachine {
                         let mut new_frame = if call_kind == 2 {
                             // SAFETY: parent frame outlives child in iterative dispatch
                             unsafe { Frame::new_recursive(frame, &mut self.frame_pool) }
+                        } else if call_kind == 4 {
+                            // Closure call: use optimized constructor that takes cells directly
+                            let (code, globals, constant_cache, closure_ptr, closure_len) = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
+                                (Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache),
+                                 pf.closure.as_ptr(), pf.closure.len())
+                            } else { unreachable!() };
+                            // SAFETY: closure ref valid while stack reference held
+                            let closure_ref = unsafe { std::slice::from_raw_parts(closure_ptr, closure_len) };
+                            let f = Frame::new_closure_from_pool(
+                                code, globals, Arc::clone(&self.builtins), constant_cache,
+                                closure_ref, &mut self.frame_pool,
+                            );
+                            f
                         } else {
                             // Normal path: clone Arcs from function object
                             let (code, globals, constant_cache) = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
@@ -2207,6 +2250,19 @@ impl VirtualMachine {
                             // Take ownership of function object (dropped at scope end)
                             let _func = std::ptr::read(base.add(func_idx));
                             frame.stack.set_len(func_idx);
+                        }
+                        // Link cellvars to locals by name (must happen AFTER args are moved)
+                        if call_kind == 4 && !new_frame.code.cellvars.is_empty() {
+                            for (cell_idx, cell_name) in new_frame.code.cellvars.iter().enumerate() {
+                                for (var_idx, var_name) in new_frame.code.varnames.iter().enumerate() {
+                                    if cell_name == var_name {
+                                        if let Some(val) = new_frame.locals[var_idx].take() {
+                                            unsafe { *new_frame.cells[cell_idx].data_ptr() = Some(val) };
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
                         }
                         self.call_stack.push(new_frame);
                         if self.call_stack.len() > self.recursion_limit {
@@ -2235,11 +2291,11 @@ impl VirtualMachine {
                             (Some("len"), 1) => {
                                 let arg = sget!(frame, stack_len - 1);
                                 let fast_len = match &arg.payload {
-                                    PyObjectPayload::List(v) => Some(v.read().len() as i64),
+                                    PyObjectPayload::List(v) => Some(unsafe { &*v.data_ptr() }.len() as i64),
                                     PyObjectPayload::Tuple(v) => Some(v.len() as i64),
                                     PyObjectPayload::Str(s) => Some(s.chars().count() as i64),
-                                    PyObjectPayload::Dict(m) => Some(m.read().len() as i64),
-                                    PyObjectPayload::Set(m) => Some(m.read().len() as i64),
+                                    PyObjectPayload::Dict(m) => Some(unsafe { &*m.data_ptr() }.len() as i64),
+                                    PyObjectPayload::Set(m) => Some(unsafe { &*m.data_ptr() }.len() as i64),
                                     PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Some(b.len() as i64),
                                     _ => None,
                                 };
@@ -2345,9 +2401,9 @@ impl VirtualMachine {
                                     PyObjectPayload::Float(f) => Some(*f != 0.0),
                                     PyObjectPayload::Str(s) => Some(!s.is_empty()),
                                     PyObjectPayload::None => Some(false),
-                                    PyObjectPayload::List(v) => Some(!v.read().is_empty()),
+                                    PyObjectPayload::List(v) => Some(!unsafe { &*v.data_ptr() }.is_empty()),
                                     PyObjectPayload::Tuple(v) => Some(!v.is_empty()),
-                                    PyObjectPayload::Dict(m) => Some(!m.read().is_empty()),
+                                    PyObjectPayload::Dict(m) => Some(!unsafe { &*m.data_ptr() }.is_empty()),
                                     _ => None,
                                 };
                                 if let Some(b) = result {
@@ -2650,11 +2706,11 @@ impl VirtualMachine {
                                 (Some("len"), 1) => {
                                     let arg = sget!(frame, frame.stack.len() - 1);
                                     let fast_len = match &arg.payload {
-                                        PyObjectPayload::List(v) => Some(v.read().len() as i64),
+                                        PyObjectPayload::List(v) => Some(unsafe { &*v.data_ptr() }.len() as i64),
                                         PyObjectPayload::Tuple(v) => Some(v.len() as i64),
                                         PyObjectPayload::Str(s) => Some(s.chars().count() as i64),
-                                        PyObjectPayload::Dict(m) => Some(m.read().len() as i64),
-                                        PyObjectPayload::Set(m) => Some(m.read().len() as i64),
+                                        PyObjectPayload::Dict(m) => Some(unsafe { &*m.data_ptr() }.len() as i64),
+                                        PyObjectPayload::Set(m) => Some(unsafe { &*m.data_ptr() }.len() as i64),
                                         PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Some(b.len() as i64),
                                         _ => None,
                                     };
@@ -2798,9 +2854,9 @@ impl VirtualMachine {
                                         PyObjectPayload::Float(f) => Some(PyObject::bool_val(*f != 0.0)),
                                         PyObjectPayload::None => Some(PyObject::bool_val(false)),
                                         PyObjectPayload::Str(s) => Some(PyObject::bool_val(!s.is_empty())),
-                                        PyObjectPayload::List(v) => Some(PyObject::bool_val(!v.read().is_empty())),
+                                        PyObjectPayload::List(v) => Some(PyObject::bool_val(!unsafe { &*v.data_ptr() }.is_empty())),
                                         PyObjectPayload::Tuple(v) => Some(PyObject::bool_val(!v.is_empty())),
-                                        PyObjectPayload::Dict(m) => Some(PyObject::bool_val(!m.read().is_empty())),
+                                        PyObjectPayload::Dict(m) => Some(PyObject::bool_val(!unsafe { &*m.data_ptr() }.is_empty())),
                                         _ => None,
                                     };
                                     if let Some(v) = result {
@@ -3111,14 +3167,13 @@ impl VirtualMachine {
                                 let receiver = spop!(frame);
                                 { let _ = spop!(frame); } // name
                                 if let PyObjectPayload::Dict(map) = &receiver.payload {
-                                    let r = map.read();
+                                    let r = unsafe { &*map.data_ptr() };
                                     let val = match &key_obj.payload {
                                         PyObjectPayload::Str(s) => r.get(&BorrowedStrKey(s.as_str())).cloned(),
                                         PyObjectPayload::Int(PyInt::Small(n)) => r.get(&BorrowedIntKey(*n)).cloned(),
                                         PyObjectPayload::Bool(b) => r.get(&BorrowedIntKey(*b as i64)).cloned(),
                                         _ => None,
                                     }.unwrap_or_else(PyObject::none);
-                                    drop(r);
                                     spush!(frame, val);
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 } else { unreachable!() }
@@ -3339,18 +3394,17 @@ impl VirtualMachine {
                     let obj = sget!(frame, len - 2);
                     let key = sget!(frame, len - 1);
                     match (&obj.payload, &key.payload) {
-                            // list[int] — direct index
+                            // list[int] — lock-free direct index
+                            // SAFETY: single-threaded interpreter
                             (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
-                                let items = items_arc.read();
+                                let items = unsafe { &*items_arc.data_ptr() };
                                 let i = *idx;
                                 let actual = if i < 0 { i + items.len() as i64 } else { i };
                                 if actual >= 0 && (actual as usize) < items.len() {
                                     let val = items[actual as usize].clone();
-                                    drop(items);
                                     unsafe { frame.binary_op_result(val) };
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
-                                    drop(items);
                                     self.execute_one(instr)
                                 }
                             }
@@ -3368,7 +3422,7 @@ impl VirtualMachine {
                             }
                             // dict[str] — zero-clone hash lookup
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                let val = map.read().get(&BorrowedStrKey(s.as_str())).cloned();
+                                let val = unsafe { &*map.data_ptr() }.get(&BorrowedStrKey(s.as_str())).cloned();
                                 if let Some(v) = val {
                                     unsafe { frame.binary_op_result(v) };
                                     hot_ok!(profiling, self.profiler, instr.op)
@@ -3376,9 +3430,9 @@ impl VirtualMachine {
                                     self.execute_one(instr)
                                 }
                             }
-                            // dict[int] — zero-clone hash lookup
+                            // dict[int] — lock-free hash lookup
                             (PyObjectPayload::Dict(map), PyObjectPayload::Int(PyInt::Small(n))) => {
-                                let val = map.read().get(&BorrowedIntKey(*n)).cloned();
+                                let val = unsafe { &*map.data_ptr() }.get(&BorrowedIntKey(*n)).cloned();
                                 if let Some(v) = val {
                                     unsafe { frame.binary_op_result(v) };
                                     hot_ok!(profiling, self.profiler, instr.op)
@@ -3410,43 +3464,41 @@ impl VirtualMachine {
                     let key = sget!(frame, len - 1);
                     let obj = sget!(frame, len - 2);
                         match (&obj.payload, &key.payload) {
-                            // list[int] = val
+                            // list[int] = val — lock-free
                             (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
-                                let mut items = items_arc.write();
+                                let items = unsafe { &mut *items_arc.data_ptr() };
                                 let i = *idx;
                                 let actual = if i < 0 { i + items.len() as i64 } else { i };
                                 if actual >= 0 && (actual as usize) < items.len() {
                                     let v = sget!(frame, len - 3).clone();
                                     items[actual as usize] = v;
-                                    drop(items);
                                     frame.stack.truncate(len - 3);
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
-                                    drop(items);
                                     self.execute_one(instr)
                                 }
                             }
-                            // dict[str] = val
+                            // dict[str] = val — lock-free
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
                                 let hk = HashableKey::Str(s.clone());
                                 let v = sget!(frame, len - 3).clone();
-                                map.write().insert(hk, v);
+                                unsafe { &mut *map.data_ptr() }.insert(hk, v);
                                 frame.stack.truncate(len - 3);
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            // dict[int] = val
+                            // dict[int] = val — lock-free
                             (PyObjectPayload::Dict(map), PyObjectPayload::Int(PyInt::Small(n))) => {
                                 let hk = HashableKey::Int(PyInt::Small(*n));
                                 let v = sget!(frame, len - 3).clone();
-                                map.write().insert(hk, v);
+                                unsafe { &mut *map.data_ptr() }.insert(hk, v);
                                 frame.stack.truncate(len - 3);
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            // dict[bool] = val
+                            // dict[bool] = val — lock-free
                             (PyObjectPayload::Dict(map), PyObjectPayload::Bool(b)) => {
                                 let hk = HashableKey::Int(PyInt::Small(*b as i64));
                                 let v = sget!(frame, len - 3).clone();
-                                map.write().insert(hk, v);
+                                unsafe { &mut *map.data_ptr() }.insert(hk, v);
                                 frame.stack.truncate(len - 3);
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
