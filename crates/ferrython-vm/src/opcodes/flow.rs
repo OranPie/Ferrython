@@ -946,7 +946,7 @@ impl VirtualMachine {
                 };
                 let qualname_str = qualname.as_str().map(CompactString::from)
                     .unwrap_or_else(|| code.name.clone());
-                let constant_cache = Rc::new(PyFunction::build_constant_cache(&code));
+                let constant_cache = PyFunction::get_or_build_constant_cache(&code);
                 let is_simple = PyFunction::compute_is_simple_static(&code, &closure_cells);
                 let func = PyFunction {
                     name: code.name.clone(),

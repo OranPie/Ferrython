@@ -11,6 +11,7 @@ use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 use std::hash::{Hash, Hasher};
 use std::cell::RefCell;
+use rustc_hash::FxHashMap;
 
 /// Thread-local dispatch for calling Python __eq__ from PartialEq on HashableKey.
 /// The VM sets this before any dict/set operation that may compare Custom keys.
@@ -20,6 +21,11 @@ type HashDispatchFn = Box<dyn FnMut(&PyObjectRef) -> Option<i64>>;
 thread_local! {
     static EQ_DISPATCH: RefCell<Option<EqDispatchFn>> = RefCell::new(None);
     static HASH_DISPATCH: RefCell<Option<HashDispatchFn>> = RefCell::new(None);
+    /// Cache of constant caches keyed by CodeObject pointer.
+    /// Code objects live for the program's lifetime (they're compiled once),
+    /// so their constant caches are safe to cache permanently.
+    static CODE_CONSTANT_CACHE: RefCell<FxHashMap<usize, SharedConstantCache>> =
+        RefCell::new(FxHashMap::default());
 }
 
 /// Install an __eq__ dispatch callback (called by VM before dict/set ops).
@@ -271,7 +277,7 @@ impl PyFunction {
 
     pub fn new(name: CompactString, code: CodeObject) -> Self {
         let code = Rc::new(code);
-        let constant_cache = Rc::new(Self::build_constant_cache(&code));
+        let constant_cache = Self::get_or_build_constant_cache(&code);
         let is_simple = Self::compute_is_simple(&code, &[]);
         Self {
             qualname: name.clone(), name, code, constant_cache,
@@ -285,7 +291,7 @@ impl PyFunction {
 
     /// Build from a pre-existing Rc<CodeObject> (avoids double-wrapping).
     pub fn with_arc_code(name: CompactString, code: Rc<CodeObject>) -> Self {
-        let constant_cache = Rc::new(Self::build_constant_cache(&code));
+        let constant_cache = Self::get_or_build_constant_cache(&code);
         let is_simple = Self::compute_is_simple(&code, &[]);
         Self {
             qualname: name.clone(), name, code, constant_cache,
@@ -295,6 +301,25 @@ impl PyFunction {
             attrs: Rc::new(PyCell::new(FxAttrMap::default())),
             is_simple,
         }
+    }
+
+    /// Get a cached constant cache for this code object, or build one.
+    /// Code objects are identified by Rc pointer identity — the same code
+    /// object (e.g., list comprehension body) reuses its constant cache
+    /// across all function instances, eliminating repeated Vec allocation
+    /// and constant conversion.
+    #[inline]
+    pub fn get_or_build_constant_cache(code: &Rc<CodeObject>) -> SharedConstantCache {
+        let key = Rc::as_ptr(code) as usize;
+        CODE_CONSTANT_CACHE.with(|cache| {
+            let mut map = cache.borrow_mut();
+            if let Some(existing) = map.get(&key) {
+                return Rc::clone(existing);
+            }
+            let new_cache = Rc::new(Self::build_constant_cache(code));
+            map.insert(key, Rc::clone(&new_cache));
+            new_cache
+        })
     }
 
     /// Pre-convert all constants to PyObjectRef once.

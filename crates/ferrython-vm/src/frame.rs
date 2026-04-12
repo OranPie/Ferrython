@@ -498,7 +498,7 @@ impl Frame {
         builtins: SharedBuiltins,
     ) -> Self {
         use ferrython_core::types::PyFunction;
-        let constant_cache = Rc::new(PyFunction::build_constant_cache(&code));
+        let constant_cache = PyFunction::get_or_build_constant_cache(&code);
         Self::new_with_cache(code, globals, builtins, constant_cache)
     }
 
