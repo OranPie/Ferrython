@@ -162,38 +162,31 @@ impl BlockStack {
     }
 }
 
+/// Frame layout optimized for cache locality: hot fields (accessed every dispatch
+/// iteration) are grouped first so they share cache lines 0-1.
+#[repr(C)]
 pub struct Frame {
-    pub code: Rc<CodeObject>,
+    // ── Hot: accessed every dispatch iteration (cache lines 0-1) ──
     pub ip: usize,
+    pub code: Rc<CodeObject>,
     pub stack: Vec<PyObjectRef>,
-    pub block_stack: BlockStack,
+    pub constant_cache: SharedConstantCache,
     pub locals: Vec<Option<PyObjectRef>>,
-    /// Boxed to reduce Frame size (~48→8 bytes). Only allocated for class/module scope.
-    pub local_names: Option<Box<FxAttrMap>>,
+    // ── Warm: accessed on specific opcodes ──
+    pub global_cache_version: u64,
+    pub global_cache: Option<Rc<Vec<Option<PyObjectRef>>>>,
+    pub block_stack: BlockStack,
     pub globals: SharedGlobals,
     pub builtins: SharedBuiltins,
-    /// Cell and free variables. Indices 0..cellvars.len() are cell vars,
-    /// cellvars.len()..cellvars.len()+freevars.len() are free vars.
+    // ── Cold: rarely accessed in inner loops ──
     pub cells: Vec<CellRef>,
-    pub scope_kind: ScopeKind,
-    /// Set to true when a YieldValue instruction is executed.
-    pub yielded: bool,
-    /// Pending return value when unwinding through finally blocks.
     pub pending_return: Option<PyObjectRef>,
-    /// Pre-boxed constants — shared from PyFunction or built for module-level code.
-    pub constant_cache: SharedConstantCache,
-    /// Per-frame inline cache for LoadGlobal: lazily allocated on first miss.
-    /// Arc-wrapped so recursive frames can share the cache cheaply.
-    pub global_cache: Option<Rc<Vec<Option<PyObjectRef>>>>,
-    /// The globals_version at which global_cache was populated.
-    pub global_cache_version: u64,
+    /// Boxed to reduce Frame size (~48→8 bytes). Only allocated for class/module scope.
+    pub local_names: Option<Box<FxAttrMap>>,
     /// The dict returned by metaclass.__prepare__() (PEP 3115).
     /// When set, STORE_NAME in class scope also writes to this dict so that
     /// custom dict subclasses (e.g. enum._EnumDict) see every assignment.
     pub prepare_dict: Option<PyObjectRef>,
-    /// True when code/globals/builtins/constant_cache were borrowed (not ref-counted)
-    /// from the parent frame or held function. recycle() must not drop those Arcs.
-    pub(crate) borrowed_env: bool,
     /// Keeps the function object alive when borrowed_env is set for non-recursive calls.
     /// The function's Arc fields (code, globals, constant_cache) are borrowed without
     /// cloning — this field ensures they remain valid until the frame is recycled.
@@ -203,6 +196,12 @@ pub struct Frame {
     /// Each entry: (ip, class_version, cached_value). On hit, skip vtable/MRO lookup.
     /// Lazily allocated on first IC miss to avoid overhead for functions without attr lookups.
     pub(crate) attr_ic: Option<Box<AttrInlineCache>>,
+    pub scope_kind: ScopeKind,
+    /// Set to true when a YieldValue instruction is executed.
+    pub yielded: bool,
+    /// True when code/globals/builtins/constant_cache were borrowed (not ref-counted)
+    /// from the parent frame or held function. recycle() must not drop those Arcs.
+    pub(crate) borrowed_env: bool,
 }
 
 /// Fixed-size direct-mapped inline cache for class attribute lookups.

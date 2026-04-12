@@ -67,10 +67,10 @@ macro_rules! hot_ok {
 /// Instruction chaining: if the next instruction is JumpAbsolute, consume it inline.
 /// Saves one dispatch cycle per for-loop iteration.
 macro_rules! chain_jump {
-    ($frame:expr) => {
+    ($frame:expr, $instr_base:expr, $instr_count:expr) => {
         let next_ip = $frame.ip;
-        if next_ip < $frame.code.instructions.len() {
-            let next = unsafe { *$frame.code.instructions.get_unchecked(next_ip) };
+        if next_ip < $instr_count {
+            let next = unsafe { *$instr_base.add(next_ip) };
             if next.op == Opcode::JumpAbsolute {
                 $frame.ip = next.arg as usize;
             }
@@ -81,11 +81,24 @@ macro_rules! chain_jump {
 /// Fast path with instruction chaining: chain JumpAbsolute, end profiling, continue.
 /// Use in superinstructions that commonly appear before JumpAbsolute in for-loops.
 macro_rules! hot_ok_chain {
-    ($profiling:expr, $profiler:expr, $op:expr, $frame:expr) => {{
-        chain_jump!($frame);
+    ($profiling:expr, $profiler:expr, $op:expr, $frame:expr, $instr_base:expr, $instr_count:expr) => {{
+        chain_jump!($frame, $instr_base, $instr_count);
         if $profiling { $profiler.end_instruction($op); }
         continue;
     }};
+}
+
+/// Re-derive frame_ptr, instr_base, instr_count after call_stack modification.
+/// SAFETY: call_stack must be non-empty.
+macro_rules! rederive_frame {
+    ($self_:expr, $frame_ptr:expr, $instr_base:expr, $instr_count:expr) => {
+        unsafe {
+            $frame_ptr = $self_.call_stack.as_mut_ptr().add($self_.call_stack.len() - 1);
+            let f = &*$frame_ptr;
+            $instr_base = f.code.instructions.as_ptr();
+            $instr_count = f.code.instructions.len();
+        }
+    };
 }
 
 
@@ -453,13 +466,22 @@ impl VirtualMachine {
         let mut trace_check_counter: u8 = 0;
 
         // Cache frame pointer to avoid re-deriving from call_stack every iteration.
-        // Hot opcodes (LoadFast, StoreFast, etc.) `continue` without touching call_stack,
-        // so the cached pointer stays valid. Cold paths re-derive after modification.
+        // Also cache instruction base pointer and count to eliminate Rc + Vec deref
+        // on every dispatch (frame → Rc<CodeObject> → Vec<Instruction> = 2 pointer chases).
+        // Hot opcodes `continue` without touching call_stack, so cached pointers stay valid.
+        // Cold paths re-derive via rederive_frame!() after any call_stack modification.
         // SAFETY: call_stack is non-empty (we just pushed the initial frame).
         let mut frame_ptr: *mut crate::frame::Frame = unsafe {
             let cs_len = self.call_stack.len();
             self.call_stack.as_mut_ptr().add(cs_len - 1)
         };
+        let mut instr_base: *const Instruction;
+        let mut instr_count: usize;
+        unsafe {
+            let f = &*frame_ptr;
+            instr_base = f.code.instructions.as_ptr();
+            instr_count = f.code.instructions.len();
+        }
 
         loop {
             // Only check trace/profile state when trace might be active, to avoid
@@ -485,8 +507,8 @@ impl VirtualMachine {
                 if fire_line { last_line = current_line; }
                 self.call_stack.last_mut().unwrap().ip = ip + 1;
                 if fire_line { self.fire_trace_event("line", PyObject::none()); }
-                // Re-derive frame_ptr: fire_trace_event may call Python code
-                frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
+                // Re-derive all cached pointers: fire_trace_event may call Python code
+                rederive_frame!(self, frame_ptr, instr_base, instr_count);
             }
 
             // SAFETY: frame_ptr is re-derived after any call_stack modification.
@@ -495,17 +517,16 @@ impl VirtualMachine {
 
             let ip = frame.ip;
             let instr = if !has_trace {
-                let instructions = &frame.code.instructions;
-                if ip >= instructions.len() { return Ok(PyObject::none()); }
-                // SAFETY: bounds check above guarantees ip < instructions.len()
-                let instr = unsafe { *instructions.get_unchecked(ip) };
+                if ip >= instr_count { return Ok(PyObject::none()); }
+                // SAFETY: bounds check above guarantees ip < instr_count
+                let instr = unsafe { *instr_base.add(ip) };
                 frame.ip = ip + 1;
                 instr
             } else {
                 // Tracing path already advanced ip above; read the previous instruction
                 let prev_ip = ip.wrapping_sub(1);
-                if prev_ip >= frame.code.instructions.len() { return Ok(PyObject::none()); }
-                unsafe { *frame.code.instructions.get_unchecked(prev_ip) }
+                if prev_ip >= instr_count { return Ok(PyObject::none()); }
+                unsafe { *instr_base.add(prev_ip) }
             };
 
             if profiling { self.profiler.start_instruction(instr.op); }
@@ -717,7 +738,7 @@ impl VirtualMachine {
                                         if let Some(ref mut arc) = dest_slot {
                                             if let Some(obj) = PyObjectRef::get_mut(arc) {
                                                 obj.payload = PyObjectPayload::Int(PyInt::Small(r));
-                                                hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                                hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                             }
                                         }
                                         *dest_slot = Some(PyObject::int(r));
@@ -726,7 +747,7 @@ impl VirtualMachine {
                                         let result = PyObject::big_int(BigInt::from(x) + BigInt::from(y));
                                         sset_local!(frame, dest, result);
                                     }
-                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     let r = *x + *y;
@@ -735,11 +756,11 @@ impl VirtualMachine {
                                     if let Some(ref mut arc) = dest_slot {
                                         if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                         }
                                     }
                                     *dest_slot = Some(PyObject::float(r));
-                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                 }
                                 (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
                                     let mut s = String::with_capacity(x.len() + y.len());
@@ -788,7 +809,7 @@ impl VirtualMachine {
                                         if let Some(ref mut arc) = dest_slot {
                                             if let Some(obj) = PyObjectRef::get_mut(arc) {
                                                 obj.payload = PyObjectPayload::Int(PyInt::Small(r));
-                                                hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                                hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                             }
                                         }
                                         *dest_slot = Some(PyObject::int(r));
@@ -797,7 +818,7 @@ impl VirtualMachine {
                                         let result = PyObject::big_int(BigInt::from(x) + BigInt::from(y));
                                         sset_local!(frame, dest, result);
                                     }
-                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     let r = *x + *y;
@@ -805,11 +826,11 @@ impl VirtualMachine {
                                     if let Some(ref mut arc) = dest_slot {
                                         if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                         }
                                     }
                                     *dest_slot = Some(PyObject::float(r));
-                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                 }
                                 (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
                                     let r = *x as f64 + *y;
@@ -817,11 +838,11 @@ impl VirtualMachine {
                                     if let Some(ref mut arc) = dest_slot {
                                         if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                         }
                                     }
                                     *dest_slot = Some(PyObject::float(r));
-                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
                                     let r = *x + *y as f64;
@@ -829,11 +850,11 @@ impl VirtualMachine {
                                     if let Some(ref mut arc) = dest_slot {
                                         if let Some(obj) = PyObjectRef::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                         }
                                     }
                                     *dest_slot = Some(PyObject::float(r));
-                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                 }
                                 (PyObjectPayload::Str(_), PyObjectPayload::Str(rhs)) => {
                                     // String concat in-place: s = s + "a" (like CPython)
@@ -2831,7 +2852,7 @@ impl VirtualMachine {
                         }
                         self.call_stack.push(new_frame);
                         // Re-derive frame_ptr: push may reallocate Vec
-                        frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
+                        rederive_frame!(self, frame_ptr, instr_base, instr_count);
                         if self.call_stack.len() > self.recursion_limit {
                             if let Some(frame) = self.call_stack.pop() {
                                 frame.recycle(&mut self.frame_pool);
@@ -3353,7 +3374,7 @@ impl VirtualMachine {
                             }
                             self.call_stack.push(new_frame);
                             // Re-derive frame_ptr: push may reallocate Vec
-                            frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
+                            rederive_frame!(self, frame_ptr, instr_base, instr_count);
                             if self.call_stack.len() > self.recursion_limit {
                                 if let Some(frame) = self.call_stack.pop() {
                                     frame.recycle(&mut self.frame_pool);
@@ -3828,7 +3849,7 @@ impl VirtualMachine {
                         new_frame.scope_kind = crate::frame::ScopeKind::Function;
                         self.call_stack.push(new_frame);
                         // Re-derive frame_ptr: push may reallocate Vec
-                        frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
+                        rederive_frame!(self, frame_ptr, instr_base, instr_count);
                         if self.call_stack.len() > self.recursion_limit {
                             if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
                             Err(PyException::recursion_error("maximum recursion depth exceeded"))
@@ -4024,7 +4045,7 @@ impl VirtualMachine {
                                 let _name = std::ptr::read(frame.stack.as_ptr().add(stack_len - 3));
                                 frame.stack.set_len(stack_len - 3);
                             }
-                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                         }
                     }
                     // Ultra-fast pointer-identity check for list.pop
@@ -4036,7 +4057,7 @@ impl VirtualMachine {
                                     let _receiver = std::ptr::read(frame.stack.as_ptr().add(stack_len - 1));
                                     let _name = std::ptr::read(frame.stack.as_ptr().add(stack_len - 2));
                                     frame.stack.set_len(stack_len - 2);
-                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                 }
                                 // Empty list falls through to existing string-comparison path
                             }
@@ -4065,7 +4086,7 @@ impl VirtualMachine {
                                 let _name = std::ptr::read(frame.stack.as_ptr().add(len - 3));
                                 frame.stack.set_len(len - 3);
                             }
-                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                         } else if is_list_pop {
                             let len = frame.stack.len();
                             unsafe {
@@ -4077,7 +4098,7 @@ impl VirtualMachine {
                                             let _receiver = std::ptr::read(frame.stack.as_ptr().add(len - 1));
                                             let _name = std::ptr::read(frame.stack.as_ptr().add(len - 2));
                                             frame.stack.set_len(len - 2);
-                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                         }
                                         None => Err(PyException::index_error("pop from empty list")),
                                     }
@@ -4131,7 +4152,7 @@ impl VirtualMachine {
                             new_frame.scope_kind = crate::frame::ScopeKind::Function;
                             self.call_stack.push(new_frame);
                             // Re-derive frame_ptr: push may reallocate Vec
-                            frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
+                            rederive_frame!(self, frame_ptr, instr_base, instr_count);
                             if self.call_stack.len() > self.recursion_limit {
                                 if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
                                 Err(PyException::recursion_error("maximum recursion depth exceeded"))
@@ -5094,7 +5115,7 @@ impl VirtualMachine {
                             // In-place mutation if dest has refcount 1
                             let dest_slot = unsafe { &mut *locals_ptr.add(store_idx) };
                             *dest_slot = Some(val);
-                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                         }
                     }
                     // Fallback: decompose to individual ops
@@ -5235,11 +5256,11 @@ impl VirtualMachine {
                             if let Some(ref mut arc) = dest_slot {
                                 if let Some(obj) = PyObjectRef::get_mut(arc) {
                                     obj.payload = PyObjectPayload::Bool(result);
-                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                 }
                             }
                             *dest_slot = Some(PyObject::bool_val(result));
-                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                         }
                     }
                     // Fallback: decompose to individual ops
@@ -5300,7 +5321,7 @@ impl VirtualMachine {
                             parent.stack.push(ret);
                         }
                         // Re-derive frame_ptr: child frame was popped
-                        frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
+                        rederive_frame!(self, frame_ptr, instr_base, instr_count);
                         continue;
                     }
                     // Returning from the initial frame we were called to execute
@@ -5315,7 +5336,7 @@ impl VirtualMachine {
                 Ok(None) => {
                     if profiling { self.profiler.end_instruction(instr.op); }
                     // Re-derive frame_ptr: execute_one may have modified call_stack
-                    frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
+                    rederive_frame!(self, frame_ptr, instr_base, instr_count);
                 }
                 Err(mut exc) => {
                     // Fire "exception" trace event (cold — only when tracing)
@@ -5397,7 +5418,7 @@ impl VirtualMachine {
                             // Move exc into active_exception (avoids clone)
                             self.active_exception = Some(exc);
                             // Re-derive frame_ptr: exception unwind may have popped frames
-                            frame_ptr = unsafe { self.call_stack.as_mut_ptr().add(self.call_stack.len() - 1) };
+                            rederive_frame!(self, frame_ptr, instr_base, instr_count);
                             break; // handler found, continue main loop
                         }
                         // No handler in current frame — unwind iteratively
