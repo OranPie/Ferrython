@@ -187,11 +187,13 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
             | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
                 if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
-                let ak = extract_view_keys(a).unwrap();
-                let bk = extract_view_keys(b).unwrap();
-                let mut result = IndexMap::new();
-                for (k, v) in ak.iter() { if !bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(keys_to_set(result))
+                if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
+                    let mut result = IndexMap::new();
+                    for (k, v) in ak.iter() { if !bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                    Ok(keys_to_set(result))
+                } else {
+                    Err(PyException::type_error("dict view changed during operation"))
+                }
             }
             // Counter - Counter: subtract counts, keep positive
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
@@ -690,11 +692,13 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
             | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
                 if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
-                let ak = extract_view_keys(a).unwrap();
-                let bk = extract_view_keys(b).unwrap();
-                let mut result = IndexMap::new();
-                for (k, v) in ak.iter() { if bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(keys_to_set(result))
+                if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
+                    let mut result = IndexMap::new();
+                    for (k, v) in ak.iter() { if bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                    Ok(keys_to_set(result))
+                } else {
+                    Err(PyException::type_error("dict view changed during operation"))
+                }
             }
             _ => int_bitop(a, b, "&", |a, b| a & b),
         }
@@ -769,11 +773,13 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
             (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
             | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
                 if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
-                let ak = extract_view_keys(a).unwrap();
-                let bk = extract_view_keys(b).unwrap();
-                let mut result = ak;
-                for (k, v) in bk.iter() { result.entry(k.clone()).or_insert_with(|| v.clone()); }
-                Ok(keys_to_set(result))
+                if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
+                    let mut result = ak;
+                    for (k, v) in bk.iter() { result.entry(k.clone()).or_insert_with(|| v.clone()); }
+                    Ok(keys_to_set(result))
+                } else {
+                    Err(PyException::type_error("dict view changed during operation"))
+                }
             }
             _ => int_bitop(a, b, "|", |a, b| a | b),
         }
@@ -812,12 +818,14 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
             | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
                 if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
-                let ak = extract_view_keys(a).unwrap();
-                let bk = extract_view_keys(b).unwrap();
-                let mut result = IndexMap::new();
-                for (k, v) in ak.iter() { if !bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                for (k, v) in bk.iter() { if !ak.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(keys_to_set(result))
+                if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
+                    let mut result = IndexMap::new();
+                    for (k, v) in ak.iter() { if !bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                    for (k, v) in bk.iter() { if !ak.contains_key(k) { result.insert(k.clone(), v.clone()); } }
+                    Ok(keys_to_set(result))
+                } else {
+                    Err(PyException::type_error("dict view changed during operation"))
+                }
             }
             _ => int_bitop(a, b, "^", |a, b| a ^ b),
         }

@@ -1749,18 +1749,23 @@ pub fn create_signal_module() -> PyObjectRef {
             Ok(PyObject::none())
         })),
         ("alarm", make_builtin(|args| {
-            if args.is_empty() { return Ok(PyObject::int(0)); }
+            if args.is_empty() { return Err(PyException::type_error("alarm() requires 1 argument")); }
             let secs = args[0].to_int()? as u32;
             #[cfg(unix)]
             let remaining = unsafe { libc::alarm(secs) };
             #[cfg(not(unix))]
-            let remaining = 0u32;
+            {
+                let _ = secs;
+                return Err(PyException::os_error("alarm() is not supported on this platform"));
+            }
+            #[cfg(unix)]
             Ok(PyObject::int(remaining as i64))
         })),
         ("pause", make_builtin(|_| {
             #[cfg(unix)]
-            unsafe { libc::pause(); }
-            Ok(PyObject::none())
+            { unsafe { libc::pause(); } Ok(PyObject::none()) }
+            #[cfg(not(unix))]
+            Err(PyException::os_error("pause() is not supported on this platform"))
         })),
         ("set_wakeup_fd", make_builtin(|args| {
             if args.is_empty() { return Ok(PyObject::int(-1)); }

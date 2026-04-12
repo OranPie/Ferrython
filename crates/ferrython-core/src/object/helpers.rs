@@ -168,6 +168,21 @@ pub(super) fn int_bitop(a: &PyObjectRef, b: &PyObjectRef, op_name: &str, op: fn(
         "unsupported operand type(s) for {}: '{}' and '{}'", op_name, a.type_name(), b.type_name())))?;
     let bi = b.to_int().map_err(|_| PyException::type_error(format!(
         "unsupported operand type(s) for {}: '{}' and '{}'", op_name, a.type_name(), b.type_name())))?;
+    // Guard against shift overflow (UB when shift >= 64)
+    if op_name == "<<" || op_name == ">>" {
+        if bi < 0 {
+            return Err(PyException::value_error(format!("negative shift count")));
+        }
+        if bi >= 64 {
+            return if op_name == "<<" {
+                // Python supports arbitrary-precision left shift — for i64 range this overflows
+                Ok(PyObject::int(0)) // all bits shifted out
+            } else {
+                // Right shift by >= 64: sign-extends to 0 or -1
+                Ok(PyObject::int(if ai < 0 { -1 } else { 0 }))
+            };
+        }
+    }
     Ok(PyObject::int(op(ai, bi)))
 }
 
@@ -1282,9 +1297,10 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                             PyObjectPayload::Instance(src_inst)
                                 if src_inst.dict_storage.is_some() =>
                             {
-                                let src_ds = src_inst.dict_storage.as_ref().unwrap();
-                                for (k, v) in src_ds.read().iter() {
-                                    storage.insert(k.clone(), v.clone());
+                                if let Some(src_ds) = src_inst.dict_storage.as_ref() {
+                                    for (k, v) in src_ds.read().iter() {
+                                        storage.insert(k.clone(), v.clone());
+                                    }
                                 }
                             }
                             _ => {

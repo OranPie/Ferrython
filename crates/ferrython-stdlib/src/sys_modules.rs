@@ -1016,23 +1016,23 @@ pub fn create_os_module() -> PyObjectRef {
         // Unix ID functions
         ("getuid", make_builtin(|_| {
             #[cfg(unix)] { Ok(PyObject::int(unsafe { libc::getuid() } as i64)) }
-            #[cfg(not(unix))] { Ok(PyObject::int(0)) }
+            #[cfg(not(unix))] { Err(PyException::os_error("getuid() is not supported on this platform")) }
         })),
         ("getgid", make_builtin(|_| {
             #[cfg(unix)] { Ok(PyObject::int(unsafe { libc::getgid() } as i64)) }
-            #[cfg(not(unix))] { Ok(PyObject::int(0)) }
+            #[cfg(not(unix))] { Err(PyException::os_error("getgid() is not supported on this platform")) }
         })),
         ("geteuid", make_builtin(|_| {
             #[cfg(unix)] { Ok(PyObject::int(unsafe { libc::geteuid() } as i64)) }
-            #[cfg(not(unix))] { Ok(PyObject::int(0)) }
+            #[cfg(not(unix))] { Err(PyException::os_error("geteuid() is not supported on this platform")) }
         })),
         ("getegid", make_builtin(|_| {
             #[cfg(unix)] { Ok(PyObject::int(unsafe { libc::getegid() } as i64)) }
-            #[cfg(not(unix))] { Ok(PyObject::int(0)) }
+            #[cfg(not(unix))] { Err(PyException::os_error("getegid() is not supported on this platform")) }
         })),
         ("getppid", make_builtin(|_| {
             #[cfg(unix)] { Ok(PyObject::int(unsafe { libc::getppid() } as i64)) }
-            #[cfg(not(unix))] { Ok(PyObject::int(0)) }
+            #[cfg(not(unix))] { Err(PyException::os_error("getppid() is not supported on this platform")) }
         })),
         // Process management
         ("kill", make_builtin(|args| {
@@ -3397,7 +3397,7 @@ pub fn create_resource_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = resource;
-            Ok(PyObject::tuple(vec![PyObject::int(-1), PyObject::int(-1)]))
+            Err(PyException::os_error("getrlimit() is not supported on this platform"))
         }
     });
 
@@ -3427,6 +3427,7 @@ pub fn create_resource_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = (resource, limits);
+            return Err(PyException::os_error("setrlimit() is not supported on this platform"));
         }
         Ok(PyObject::none())
     });
@@ -3536,7 +3537,7 @@ pub fn create_fcntl_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = (fd, cmd);
-            Ok(PyObject::int(0))
+            Err(PyException::os_error("fcntl() is not supported on this platform"))
         }
     });
 
@@ -3555,6 +3556,7 @@ pub fn create_fcntl_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = (fd, operation);
+            return Err(PyException::os_error("flock() is not supported on this platform"));
         }
         Ok(PyObject::none())
     });
@@ -3580,7 +3582,7 @@ pub fn create_fcntl_module() -> PyObjectRef {
             }
         }
         #[cfg(not(unix))]
-        { let _ = (fd, cmd, len, start, whence); }
+        { let _ = (fd, cmd, len, start, whence); return Err(PyException::os_error("lockf() is not supported on this platform")); }
         Ok(PyObject::none())
     });
 
@@ -3605,7 +3607,7 @@ pub fn create_fcntl_module() -> PyObjectRef {
         #[cfg(not(unix))]
         {
             let _ = (fd, request);
-            Ok(PyObject::int(0))
+            Err(PyException::os_error("ioctl() is not supported on this platform"))
         }
     });
 

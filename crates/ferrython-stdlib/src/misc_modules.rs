@@ -3387,7 +3387,7 @@ pub fn create_ctypes_module() -> PyObjectRef {
                 Ok(PyObject::int(e as i64))
             }
             #[cfg(not(unix))]
-            Ok(PyObject::int(0))
+            Err(PyException::os_error("get_errno() is not supported on this platform"))
         })),
         ("set_errno", make_builtin(|args| {
             let new_val = args.first().and_then(|a| a.as_int()).unwrap_or(0);
@@ -3400,14 +3400,11 @@ pub fn create_ctypes_module() -> PyObjectRef {
             #[cfg(not(unix))]
             {
                 let _ = new_val;
-                Ok(PyObject::int(0))
+                Err(PyException::os_error("set_errno() is not supported on this platform"))
             }
         })),
-        ("get_last_error", make_builtin(|_| Ok(PyObject::int(0)))),
-        ("set_last_error", make_builtin(|args| {
-            let _new_val = args.first().and_then(|a| a.as_int()).unwrap_or(0);
-            Ok(PyObject::int(0)) // return old error (always 0 in stub)
-        })),
+        ("get_last_error", make_builtin(|_| Err(PyException::os_error("get_last_error() is not supported on this platform")))),
+        ("set_last_error", make_builtin(|_| Err(PyException::os_error("set_last_error() is not supported on this platform")))),
         ("util", {
             // ctypes.util.find_library
             let mut util_attrs = IndexMap::new();

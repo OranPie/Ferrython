@@ -54,13 +54,91 @@ pub fn create_time_module() -> PyObjectRef {
         ("ctime", make_builtin(time_ctime)),
         ("asctime", make_builtin(time_asctime)),
         ("struct_time", struct_time_cls),
-        ("timezone", PyObject::int(0)),
-        ("altzone", PyObject::int(0)),
-        ("daylight", PyObject::int(0)),
-        ("tzname", PyObject::tuple(vec![
-            PyObject::str_val(CompactString::from("UTC")),
-            PyObject::str_val(CompactString::from("UTC")),
-        ])),
+        ("timezone", {
+            // Compute actual timezone offset (seconds west of UTC)
+            #[cfg(unix)]
+            {
+                use std::mem::MaybeUninit;
+                let offset = unsafe {
+                    let mut t: libc::time_t = 0;
+                    libc::time(&mut t);
+                    let mut tm = MaybeUninit::<libc::tm>::zeroed();
+                    libc::localtime_r(&t, tm.as_mut_ptr());
+                    -((*tm.as_ptr()).tm_gmtoff as i64)
+                };
+                PyObject::int(offset)
+            }
+            #[cfg(not(unix))]
+            PyObject::int(0)
+        }),
+        ("altzone", {
+            #[cfg(unix)]
+            {
+                use std::mem::MaybeUninit;
+                let offset = unsafe {
+                    let mut t: libc::time_t = 0;
+                    libc::time(&mut t);
+                    let mut tm = MaybeUninit::<libc::tm>::zeroed();
+                    libc::localtime_r(&t, tm.as_mut_ptr());
+                    let base = -((*tm.as_ptr()).tm_gmtoff as i64);
+                    if (*tm.as_ptr()).tm_isdst > 0 { base } else { base - 3600 }
+                };
+                PyObject::int(offset)
+            }
+            #[cfg(not(unix))]
+            PyObject::int(0)
+        }),
+        ("daylight", {
+            #[cfg(unix)]
+            {
+                let has_dst = unsafe {
+                    use std::mem::MaybeUninit;
+                    let mut winter: libc::time_t = 0;
+                    let mut tm_w = MaybeUninit::<libc::tm>::zeroed();
+                    libc::localtime_r(&winter, tm_w.as_mut_ptr());
+                    let w_off = (*tm_w.as_ptr()).tm_gmtoff;
+                    let mut summer: libc::time_t = 15778800;
+                    let mut tm_s = MaybeUninit::<libc::tm>::zeroed();
+                    libc::localtime_r(&summer, tm_s.as_mut_ptr());
+                    let s_off = (*tm_s.as_ptr()).tm_gmtoff;
+                    w_off != s_off
+                };
+                PyObject::int(if has_dst { 1 } else { 0 })
+            }
+            #[cfg(not(unix))]
+            PyObject::int(0)
+        }),
+        ("tzname", {
+            #[cfg(unix)]
+            {
+                let (std_name, dst_name) = unsafe {
+                    use std::mem::MaybeUninit;
+                    use std::ffi::CStr;
+                    // Get standard time zone name (winter)
+                    let mut winter: libc::time_t = 0;
+                    let mut tm_w = MaybeUninit::<libc::tm>::zeroed();
+                    libc::localtime_r(&winter, tm_w.as_mut_ptr());
+                    let std_n = if (*tm_w.as_ptr()).tm_zone.is_null() { "UTC".to_string() }
+                    else { CStr::from_ptr((*tm_w.as_ptr()).tm_zone).to_str().unwrap_or("UTC").to_string() };
+                    // Get DST zone name (summer)
+                    let mut summer: libc::time_t = 15778800;
+                    let mut tm_s = MaybeUninit::<libc::tm>::zeroed();
+                    libc::localtime_r(&summer, tm_s.as_mut_ptr());
+                    let dst_n = if (*tm_s.as_ptr()).tm_zone.is_null() { "UTC".to_string() }
+                    else { CStr::from_ptr((*tm_s.as_ptr()).tm_zone).to_str().unwrap_or("UTC").to_string() };
+                    (std_n, dst_n)
+                };
+                PyObject::tuple(vec![
+                    PyObject::str_val(CompactString::from(std_name)),
+                    PyObject::str_val(CompactString::from(dst_name)),
+                ])
+            }
+            #[cfg(not(unix))]
+            PyObject::tuple(vec![
+                PyObject::str_val(CompactString::from("UTC")),
+                PyObject::str_val(CompactString::from("UTC")),
+            ])
+        }),
     ])
 }
 

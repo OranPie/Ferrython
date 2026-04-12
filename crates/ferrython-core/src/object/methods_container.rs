@@ -251,7 +251,11 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
             }
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
                 let hk = item.to_hashable_key()?;
-                Ok(inst.dict_storage.as_ref().unwrap().read().contains_key(&hk))
+                if let Some(storage) = inst.dict_storage.as_ref() {
+                    Ok(storage.read().contains_key(&hk))
+                } else {
+                    Ok(false)
+                }
             }
             PyObjectPayload::InstanceDict(attrs) => {
                 let key_str = item.py_to_string();
@@ -354,8 +358,12 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: keys, index: 0 })))))
             }
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
-                let keys: Vec<PyObjectRef> = inst.dict_storage.as_ref().unwrap().read().keys().map(|k| k.to_object()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: keys, index: 0 })))))
+                if let Some(storage) = inst.dict_storage.as_ref() {
+                    let keys: Vec<PyObjectRef> = storage.read().keys().map(|k| k.to_object()).collect();
+                    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: keys, index: 0 })))))
+                } else {
+                    Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
+                }
             }
             PyObjectPayload::Set(m) => {
                 let vals: Vec<PyObjectRef> = m.read().values().cloned().collect();

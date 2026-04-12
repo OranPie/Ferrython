@@ -59,7 +59,10 @@ pub fn init_gc() {
 /// 4. If strong_count == internal_refs, the object is only reachable from within cycles
 /// 5. Clear contents on unreachable objects to break cycles (dropping internal refs)
 fn run_cycle_collection() -> usize {
-    let mut tracked = TRACKED_OBJECTS.lock().unwrap();
+    let mut tracked = match TRACKED_OBJECTS.lock() {
+        Ok(t) => t,
+        Err(poisoned) => poisoned.into_inner(),
+    };
 
     // 1. Upgrade weak refs, purge dead ones
     let alive: Vec<Arc<PyObject>> = tracked.iter()

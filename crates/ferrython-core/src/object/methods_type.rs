@@ -479,14 +479,16 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
                     return format!("Decimal('{}')", v);
                 }
                 // Enum member repr: <ClassName.NAME: value>
-                if inst.attrs.read().contains_key("_name_") && inst.attrs.read().contains_key("_value_") {
+                {
                     let attrs = inst.attrs.read();
-                    let name = attrs.get("_name_").unwrap().py_to_string();
-                    let value = attrs.get("_value_").unwrap().repr();
-                    let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                        cd.name.to_string()
-                    } else { "Enum".to_string() };
-                    return format!("<{}.{}: {}>", class_name, name, value);
+                    if let (Some(name_val), Some(value_val)) = (attrs.get("_name_"), attrs.get("_value_")) {
+                        let name = name_val.py_to_string();
+                        let value = value_val.repr();
+                        let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                            cd.name.to_string()
+                        } else { "Enum".to_string() };
+                        return format!("<{}.{}: {}>", class_name, name, value);
+                    }
                 }
                 // Check for __repr__: if it's a native closure, call it directly
                 if let Some(repr_fn) = obj.get_attr("__repr__") {
@@ -537,7 +539,11 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 .filter(|k| !is_hidden_dict_key(k))
                 .map(|k| k.to_object()).collect()),
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
-                Ok(inst.dict_storage.as_ref().unwrap().read().keys().map(|k| k.to_object()).collect())
+                if let Some(storage) = inst.dict_storage.as_ref() {
+                    Ok(storage.read().keys().map(|k| k.to_object()).collect())
+                } else {
+                    Ok(vec![])
+                }
             }
             PyObjectPayload::InstanceDict(attrs) => Ok(attrs.read().keys().map(|k| PyObject::str_val(k.clone())).collect()),
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
