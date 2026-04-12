@@ -529,25 +529,22 @@ impl Hash for HashableKey {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         // CPython hash consistency: hash(0) == hash(0.0) == hash(False)
-        // Numeric types must produce the same hash for equal values.
+        // Numeric types (Bool, Int, Float-as-int) hash identically via a single
+        // write — no type discriminant needed since non-numeric types naturally
+        // produce different hashes from their content.
+        // None uses a unique constant to avoid colliding with Int(0).
         match self {
-            HashableKey::None => { 0u8.hash(state); 0i64.hash(state); },
-            HashableKey::Bool(b) => { 1u8.hash(state); (*b as i64).hash(state); },
-            HashableKey::Int(PyInt::Small(v)) => {
-                1u8.hash(state);
-                v.hash(state);
-            },
-            HashableKey::Int(PyInt::Big(n)) => {
-                1u8.hash(state);
-                n.to_i64().unwrap_or(0).hash(state);
-            },
+            HashableKey::None => { state.write_u64(0x517cc1b727220a95); },
+            HashableKey::Bool(b) => { (*b as i64).hash(state); },
+            HashableKey::Int(PyInt::Small(v)) => { v.hash(state); },
+            HashableKey::Int(PyInt::Big(n)) => { n.to_i64().unwrap_or(0).hash(state); },
             HashableKey::Float(f) => {
                 let fv = f.0;
                 if fv.is_finite() && fv == fv.trunc() && fv.abs() < (i64::MAX as f64) {
-                    // Exact integer float: hash like the integer
-                    1u8.hash(state);
                     (fv as i64).hash(state);
                 } else {
+                    // Non-integral floats: use bit representation with a tag
+                    // to avoid colliding with integers
                     2u8.hash(state);
                     f.hash(state);
                 }
@@ -595,7 +592,6 @@ pub struct BorrowedIntKey(pub i64);
 impl Hash for BorrowedIntKey {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        1u8.hash(state);
         self.0.hash(state);
     }
 }
