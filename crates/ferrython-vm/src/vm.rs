@@ -2127,6 +2127,105 @@ impl VirtualMachine {
                                     mini_result = Some(pf.constant_cache[instrs[0].arg as usize].clone());
                                 }
                             }
+                        } else if call_kind == 1 && arg_count > 0 {
+                            // Trivial simple-function inlining for functions with args
+                            if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
+                                let instrs = &pf.code.instructions;
+                                match instrs.len() {
+                                    1 => match instrs[0].op {
+                                        // def f(a): return a
+                                        Opcode::LoadFastReturnValue => {
+                                            let li = instrs[0].arg as usize;
+                                            if li < arg_count {
+                                                mini_result = Some(sget!(frame, args_start + li).clone());
+                                            }
+                                        }
+                                        // def f(a): return CONST
+                                        Opcode::LoadConstReturnValue => {
+                                            mini_result = Some(pf.constant_cache[instrs[0].arg as usize].clone());
+                                        }
+                                        _ => {}
+                                    }
+                                    2 => {
+                                        // def add(a, b): return a + b (fused)
+                                        if instrs[0].op == Opcode::LoadFastLoadFastBinaryAdd
+                                            && instrs[1].op == Opcode::ReturnValue
+                                        {
+                                            let ai = (instrs[0].arg >> 16) as usize;
+                                            let bi = (instrs[0].arg & 0xFFFF) as usize;
+                                            if ai < arg_count && bi < arg_count {
+                                                let a = sget!(frame, args_start + ai);
+                                                let b = sget!(frame, args_start + bi);
+                                                mini_result = match (&a.payload, &b.payload) {
+                                                    (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                                        match x.checked_add(*y) {
+                                                            Some(r) => Some(PyObject::int(r)),
+                                                            None => {
+                                                                use num_bigint::BigInt;
+                                                                Some(PyObject::big_int(BigInt::from(*x) + BigInt::from(*y)))
+                                                            }
+                                                        }
+                                                    }
+                                                    (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => Some(PyObject::float(*x + *y)),
+                                                    (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => Some(PyObject::float(*x as f64 + *y)),
+                                                    (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => Some(PyObject::float(*x + *y as f64)),
+                                                    _ => None,
+                                                };
+                                            }
+                                        }
+                                        // def f(a): return a (unfused)
+                                        else if instrs[0].op == Opcode::LoadFast && instrs[1].op == Opcode::ReturnValue {
+                                            let li = instrs[0].arg as usize;
+                                            if li < arg_count {
+                                                mini_result = Some(sget!(frame, args_start + li).clone());
+                                            }
+                                        }
+                                    }
+                                    3 => {
+                                        // def sub(a, b): return a - b
+                                        if instrs[0].op == Opcode::LoadFastLoadFast
+                                            && instrs[2].op == Opcode::ReturnValue
+                                        {
+                                            let ai = (instrs[0].arg >> 16) as usize;
+                                            let bi = (instrs[0].arg & 0xFFFF) as usize;
+                                            if ai < arg_count && bi < arg_count {
+                                                let a = sget!(frame, args_start + ai);
+                                                let b = sget!(frame, args_start + bi);
+                                                if instrs[1].op == Opcode::BinarySubtract {
+                                                    mini_result = match (&a.payload, &b.payload) {
+                                                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                                            match x.checked_sub(*y) {
+                                                                Some(r) => Some(PyObject::int(r)),
+                                                                None => {
+                                                                    use num_bigint::BigInt;
+                                                                    Some(PyObject::big_int(BigInt::from(*x) - BigInt::from(*y)))
+                                                                }
+                                                            }
+                                                        }
+                                                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => Some(PyObject::float(*x - *y)),
+                                                        _ => None,
+                                                    };
+                                                } else if instrs[1].op == Opcode::BinaryMultiply {
+                                                    mini_result = match (&a.payload, &b.payload) {
+                                                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                                            match x.checked_mul(*y) {
+                                                                Some(r) => Some(PyObject::int(r)),
+                                                                None => {
+                                                                    use num_bigint::BigInt;
+                                                                    Some(PyObject::big_int(BigInt::from(*x) * BigInt::from(*y)))
+                                                                }
+                                                            }
+                                                        }
+                                                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => Some(PyObject::float(*x * *y)),
+                                                        _ => None,
+                                                    };
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                         } else if call_kind == 2 {
                             let instrs = &frame.code.instructions;
                             if instrs.len() > 2
@@ -2646,6 +2745,101 @@ impl VirtualMachine {
                                                 }
                                             }
                                         }
+                                    }
+                                }
+                            }
+                            // call_kind==1: trivial simple function with args
+                            if call_kind == 1 && arg_count > 0 && mini_result.is_none() {
+                                if let PyObjectPayload::Function(pf) = &func_obj.payload {
+                                    let instrs = &pf.code.instructions;
+                                    match instrs.len() {
+                                        1 => match instrs[0].op {
+                                            Opcode::LoadFastReturnValue => {
+                                                let li = instrs[0].arg as usize;
+                                                if li < arg_count {
+                                                    mini_result = Some(sget!(frame, args_start + li).clone());
+                                                }
+                                            }
+                                            Opcode::LoadConstReturnValue => {
+                                                mini_result = Some(pf.constant_cache[instrs[0].arg as usize].clone());
+                                            }
+                                            _ => {}
+                                        }
+                                        2 => {
+                                            if instrs[0].op == Opcode::LoadFastLoadFastBinaryAdd
+                                                && instrs[1].op == Opcode::ReturnValue
+                                            {
+                                                let ai = (instrs[0].arg >> 16) as usize;
+                                                let bi = (instrs[0].arg & 0xFFFF) as usize;
+                                                if ai < arg_count && bi < arg_count {
+                                                    let a = sget!(frame, args_start + ai);
+                                                    let b = sget!(frame, args_start + bi);
+                                                    mini_result = match (&a.payload, &b.payload) {
+                                                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                                            match x.checked_add(*y) {
+                                                                Some(r) => Some(PyObject::int(r)),
+                                                                None => {
+                                                                    use num_bigint::BigInt;
+                                                                    Some(PyObject::big_int(BigInt::from(*x) + BigInt::from(*y)))
+                                                                }
+                                                            }
+                                                        }
+                                                        (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => Some(PyObject::float(*x + *y)),
+                                                        (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => Some(PyObject::float(*x as f64 + *y)),
+                                                        (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => Some(PyObject::float(*x + *y as f64)),
+                                                        _ => None,
+                                                    };
+                                                }
+                                            }
+                                            else if instrs[0].op == Opcode::LoadFast && instrs[1].op == Opcode::ReturnValue {
+                                                let li = instrs[0].arg as usize;
+                                                if li < arg_count {
+                                                    mini_result = Some(sget!(frame, args_start + li).clone());
+                                                }
+                                            }
+                                        }
+                                        3 => {
+                                            if instrs[0].op == Opcode::LoadFastLoadFast
+                                                && instrs[2].op == Opcode::ReturnValue
+                                            {
+                                                let ai = (instrs[0].arg >> 16) as usize;
+                                                let bi = (instrs[0].arg & 0xFFFF) as usize;
+                                                if ai < arg_count && bi < arg_count {
+                                                    let a = sget!(frame, args_start + ai);
+                                                    let b = sget!(frame, args_start + bi);
+                                                    if instrs[1].op == Opcode::BinarySubtract {
+                                                        mini_result = match (&a.payload, &b.payload) {
+                                                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                                                match x.checked_sub(*y) {
+                                                                    Some(r) => Some(PyObject::int(r)),
+                                                                    None => {
+                                                                        use num_bigint::BigInt;
+                                                                        Some(PyObject::big_int(BigInt::from(*x) - BigInt::from(*y)))
+                                                                    }
+                                                                }
+                                                            }
+                                                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => Some(PyObject::float(*x - *y)),
+                                                            _ => None,
+                                                        };
+                                                    } else if instrs[1].op == Opcode::BinaryMultiply {
+                                                        mini_result = match (&a.payload, &b.payload) {
+                                                            (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
+                                                                match x.checked_mul(*y) {
+                                                                    Some(r) => Some(PyObject::int(r)),
+                                                                    None => {
+                                                                        use num_bigint::BigInt;
+                                                                        Some(PyObject::big_int(BigInt::from(*x) * BigInt::from(*y)))
+                                                                    }
+                                                                }
+                                                            }
+                                                            (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => Some(PyObject::float(*x * *y)),
+                                                            _ => None,
+                                                        };
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
