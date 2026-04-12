@@ -328,7 +328,16 @@ impl PyFunction {
                 }
             }
         }
-        code.constants.iter().map(|c| convert(c)).collect()
+        let cache: Vec<PyObjectRef> = code.constants.iter().map(|c| convert(c)).collect();
+        // Make all constants immortal — they live as long as the code object.
+        // This eliminates refcount operations on every LoadConst, and cascades
+        // to StoreFast/PopTop/etc. when those values flow through the VM.
+        for obj in &cache {
+            if !PyObjectRef::is_immortal(obj) {
+                PyObjectRef::make_immortal(obj);
+            }
+        }
+        cache
     }
 }
 

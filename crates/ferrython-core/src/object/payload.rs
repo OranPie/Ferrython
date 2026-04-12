@@ -321,6 +321,14 @@ impl PyObjectRef {
         unsafe { (*this.0.as_ptr()).strong.get() == IMMORTAL_REFCOUNT }
     }
 
+    /// Promote an existing object to immortal status.
+    /// After this call, clone/drop become no-ops for all references.
+    /// Used for constants in code objects — they live as long as the program.
+    #[inline(always)]
+    pub fn make_immortal(this: &Self) {
+        unsafe { (*this.0.as_ptr()).strong.set(IMMORTAL_REFCOUNT); }
+    }
+
     #[inline(always)]
     pub fn downgrade(this: &Self) -> PyWeakRef {
         unsafe {
