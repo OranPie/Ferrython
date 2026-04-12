@@ -4,8 +4,9 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    ExceptionInstanceData,
+    ExceptionInstanceData, SharedFxAttrMap,
     make_module, make_builtin, check_args,
+    to_shared_fx,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -2730,7 +2731,7 @@ fn subprocess_check_call(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ex.original = Some(PyObject::wrap(PyObjectPayload::ExceptionInstance(Box::new(ExceptionInstanceData {
             kind: ExceptionKind::CalledProcessError,
             message: msg.into(),            args: vec![PyObject::int(rc)],
-            attrs: std::sync::Arc::new(parking_lot::RwLock::new(exc_attrs)),
+            attrs: to_shared_fx(exc_attrs),
         }))));
         return Err(ex);
     }
@@ -2853,7 +2854,7 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let is_text = text_mode;
 
     // Helper: update returncode on instance
-    fn set_returncode(attrs: &Arc<parking_lot::RwLock<IndexMap<CompactString, PyObjectRef>>>, code: i32) {
+    fn set_returncode(attrs: &SharedFxAttrMap, code: i32) {
         attrs.write().insert(CompactString::from("returncode"), PyObject::int(code as i64));
     }
 

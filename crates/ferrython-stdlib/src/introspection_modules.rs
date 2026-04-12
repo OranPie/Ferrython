@@ -5,7 +5,7 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods,
     make_module, make_builtin, check_args, check_args_min,
-    InstanceData,
+    InstanceData, to_shared_fx,
 };
 use ferrython_core::types::HashableKey;
 use ferrython_bytecode::CodeFlags;
@@ -3290,12 +3290,10 @@ pub fn create_token_module() -> PyObjectRef {
 
 /// Helper: create a simple namespace-like instance with the given attrs.
 fn make_ns(cls_name: &str, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
-    use std::sync::Arc;
-    use parking_lot::RwLock;
     let cls = PyObject::class(CompactString::from(cls_name), vec![], IndexMap::new());
     PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class: cls,
-        attrs: Arc::new(RwLock::new(attrs)),
+        attrs: to_shared_fx(attrs),
         is_special: true, dict_storage: None,
     }))
 }

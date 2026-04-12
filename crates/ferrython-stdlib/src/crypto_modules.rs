@@ -5,6 +5,7 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
     make_module, make_builtin, check_args,
+    to_shared_fx,
 };
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -154,7 +155,7 @@ fn make_hash_object(name: &str, data: Vec<u8>, _digest_hex: String, _digest_byte
 
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
-        attrs: Arc::new(RwLock::new(attrs)),
+        attrs: to_shared_fx(attrs),
         is_special: true, dict_storage: None,
     }));
     inst
@@ -551,7 +552,7 @@ pub fn create_hmac_module() -> PyObjectRef {
         let class = PyObject::class(CompactString::from("HMAC"), vec![], ns);
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
-            attrs: Arc::new(RwLock::new(attrs)),
+            attrs: to_shared_fx(attrs),
             is_special: true, dict_storage: None,
         }));
         Ok(inst)

@@ -28,3 +28,4 @@ Thumbs.db
 *.profdata
 coverage/
 _test_*.zip
+build_output.txt

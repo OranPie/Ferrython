@@ -762,9 +762,7 @@ pub fn create_numbers_module() -> PyObjectRef {
 
 
 pub fn create_decimal_module() -> PyObjectRef {
-    use parking_lot::RwLock;
-    use std::sync::Arc;
-    use ferrython_core::object::InstanceData;
+    use ferrython_core::object::{InstanceData, new_shared_fx, to_shared_fx};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::OnceLock;
 
@@ -1091,7 +1089,7 @@ pub fn create_decimal_module() -> PyObjectRef {
         let class = get_decimal_class();
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
-            attrs: Arc::new(RwLock::new(IndexMap::new())),
+            attrs: new_shared_fx(),
             is_special: true, dict_storage: None,
         }));
         if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -1669,7 +1667,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             let cls = PyObject::class(CompactString::from("Context"), vec![], cls_ns);
             let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: cls,
-                attrs: Arc::new(RwLock::new(ctx_ns)),
+                attrs: to_shared_fx(ctx_ns),
                 is_special: true, dict_storage: None,
             }));
             Ok(inst)
@@ -1730,7 +1728,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             let cls = PyObject::class(CompactString::from("Context"), vec![], cls_ns);
             let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: cls,
-                attrs: Arc::new(RwLock::new(ctx_ns)),
+                attrs: to_shared_fx(ctx_ns),
                 is_special: true, dict_storage: None,
             }));
             // Add __enter__ and __exit__ for context manager
@@ -1765,7 +1763,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
             PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: cls,
-                attrs: Arc::new(RwLock::new(ns)),
+                attrs: to_shared_fx(ns),
                 is_special: true, dict_storage: None,
             }))
         }),
@@ -1778,7 +1776,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
             PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: cls,
-                attrs: Arc::new(RwLock::new(ns)),
+                attrs: to_shared_fx(ns),
                 is_special: true, dict_storage: None,
             }))
         }),
@@ -1801,7 +1799,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
             Ok(PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: cls,
-                attrs: Arc::new(RwLock::new(ctx_ns)),
+                attrs: to_shared_fx(ctx_ns),
                 is_special: true, dict_storage: None,
             })))
         })),
@@ -2414,9 +2412,7 @@ fn insort_right(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 // ── fractions module ─────────────────────────────────────────────────
 pub fn create_fractions_module() -> PyObjectRef {
-    use ferrython_core::object::InstanceData;
-    use parking_lot::RwLock;
-    use std::sync::Arc;
+    use ferrython_core::object::{InstanceData, new_shared_fx};
 
     fn frac_gcd(mut a: i64, mut b: i64) -> i64 {
         a = a.abs(); b = b.abs();
@@ -2506,7 +2502,7 @@ pub fn create_fractions_module() -> PyObjectRef {
         let class = PyObject::class(CompactString::from("Fraction"), vec![], frac_ns);
         let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
             class,
-            attrs: Arc::new(RwLock::new(IndexMap::new())),
+            attrs: new_shared_fx(),
             is_special: true, dict_storage: None,
         }));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {

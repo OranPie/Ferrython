@@ -1058,7 +1058,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                 let namespace = match &args[3].payload {
                     PyObjectPayload::Dict(m) => {
                         let r = m.read();
-                        let mut ns = IndexMap::new();
+                        let mut ns = FxAttrMap::default();
                         for (k, v) in r.iter() {
                             let key_str = match k {
                                 HashableKey::Str(s) => s.clone(),
@@ -1096,7 +1096,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                 let namespace = match &args[2].payload {
                     PyObjectPayload::Dict(m) => {
                         let r = m.read();
-                        let mut ns = IndexMap::new();
+                        let mut ns = FxAttrMap::default();
                         for (k, v) in r.iter() {
                             let key_str = match k {
                                 HashableKey::Str(s) => s.clone(),

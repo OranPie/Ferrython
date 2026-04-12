@@ -5,6 +5,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     check_args, check_args_min,
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    FxAttrMap,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -132,6 +133,11 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         has_getattribute: cd.has_getattribute,
                         has_setattr: cd.has_setattr,
                         has_descriptors: cd.has_descriptors,
+                        method_vtable: cd.method_vtable.clone(),
+                        attr_shape: cd.attr_shape.clone(),
+                        class_version: cd.class_version,
+                        is_dict_subclass: cd.is_dict_subclass,
+                        expected_attrs: cd.expected_attrs,
                     }))));
                 }
             }
@@ -170,7 +176,7 @@ fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj
     let namespace = match &dict_obj.payload {
         PyObjectPayload::Dict(m) => {
             let r = m.read();
-            let mut ns = IndexMap::new();
+            let mut ns = FxAttrMap::default();
             for (k, v) in r.iter() {
                 let key_str = match k {
                     HashableKey::Str(s) => s.clone(),

@@ -67,9 +67,11 @@ fn call_hash_dispatch(obj: &PyObjectRef) -> Option<i64> {
     })
 }
 
+use crate::object::FxAttrMap;
+
 /// Shared globals dictionary — all functions defined in the same module share
 /// one instance so that `global` mutations are visible across calls.
-pub type SharedGlobals = Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>;
+pub type SharedGlobals = Arc<RwLock<FxAttrMap>>;
 
 // ── PyInt ──
 
@@ -240,7 +242,7 @@ pub struct PyFunction {
     pub closure: Vec<Arc<RwLock<Option<PyObjectRef>>>>,
     pub annotations: IndexMap<CompactString, PyObjectRef>,
     /// User-settable attributes (e.g., __name__, __doc__, __wrapped__)
-    pub attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
+    pub attrs: Arc<RwLock<FxAttrMap>>,
     /// Cached: true if function can use the fast inline CallFunction path
     /// (exact positional args, no *args/**kwargs/generators/closures/cells)
     pub is_simple: bool,
@@ -274,9 +276,9 @@ impl PyFunction {
         Self {
             qualname: name.clone(), name, code, constant_cache,
             defaults: Vec::new(), kw_defaults: IndexMap::new(),
-            globals: Arc::new(RwLock::new(IndexMap::new())),
+            globals: Arc::new(RwLock::new(FxAttrMap::default())),
             closure: Vec::new(), annotations: IndexMap::new(),
-            attrs: Arc::new(RwLock::new(IndexMap::new())),
+            attrs: Arc::new(RwLock::new(FxAttrMap::default())),
             is_simple,
         }
     }
@@ -288,9 +290,9 @@ impl PyFunction {
         Self {
             qualname: name.clone(), name, code, constant_cache,
             defaults: Vec::new(), kw_defaults: IndexMap::new(),
-            globals: Arc::new(RwLock::new(IndexMap::new())),
+            globals: Arc::new(RwLock::new(FxAttrMap::default())),
             closure: Vec::new(), annotations: IndexMap::new(),
-            attrs: Arc::new(RwLock::new(IndexMap::new())),
+            attrs: Arc::new(RwLock::new(FxAttrMap::default())),
             is_simple,
         }
     }
@@ -521,6 +523,60 @@ impl Hash for HashableKey {
         }
     }
 }
+
+// ── Zero-clone dict lookup keys ──
+// These types allow IndexMap::get without cloning the key.
+// They hash and compare identically to their HashableKey counterparts.
+
+/// Borrowed str key for zero-clone dict[str] lookups.
+pub struct BorrowedStrKey<'a>(pub &'a str);
+
+impl Hash for BorrowedStrKey<'_> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        3u8.hash(state);
+        self.0.hash(state);
+    }
+}
+
+impl indexmap::Equivalent<HashableKey> for BorrowedStrKey<'_> {
+    #[inline]
+    fn equivalent(&self, key: &HashableKey) -> bool {
+        matches!(key, HashableKey::Str(s) if s.as_str() == self.0)
+    }
+}
+
+impl PartialEq for BorrowedStrKey<'_> {
+    fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+}
+impl Eq for BorrowedStrKey<'_> {}
+
+/// Borrowed small-int key for zero-clone dict[int] lookups.
+pub struct BorrowedIntKey(pub i64);
+
+impl Hash for BorrowedIntKey {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        1u8.hash(state);
+        self.0.hash(state);
+    }
+}
+
+impl indexmap::Equivalent<HashableKey> for BorrowedIntKey {
+    #[inline]
+    fn equivalent(&self, key: &HashableKey) -> bool {
+        match key {
+            HashableKey::Int(PyInt::Small(n)) => *n == self.0,
+            HashableKey::Bool(b) => (*b as i64) == self.0,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq for BorrowedIntKey {
+    fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+}
+impl Eq for BorrowedIntKey {}
 
 // ── OrderedFloat ──
 

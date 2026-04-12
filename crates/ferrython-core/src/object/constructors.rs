@@ -301,17 +301,38 @@ impl PyObject {
     pub fn builtin_type(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinType(name)) }
     pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef { Self::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))) }
     pub fn class(name: CompactString, bases: Vec<PyObjectRef>, namespace: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Class(Box::new(ClassData::new(name, bases, namespace, Vec::new(), None))))
+        let fx_ns: FxAttrMap = namespace.into_iter().collect();
+        Self::wrap(PyObjectPayload::Class(Box::new(ClassData::new(name, bases, fx_ns, Vec::new(), None))))
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
-        let dict_storage = Self::detect_dict_subclass(&class);
-        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(IndexMap::new())), dict_storage, is_special: false }));
+        // Use cached flags from ClassData to avoid hierarchy traversal
+        let (dict_storage, attrs) = if let PyObjectPayload::Class(cd) = &class.payload {
+            let ds = if cd.is_dict_subclass {
+                Some(Arc::new(RwLock::new(IndexMap::new())))
+            } else { None };
+            let a: FxAttrMap = if cd.expected_attrs > 0 {
+                FxAttrMap::with_capacity_and_hasher(cd.expected_attrs, Default::default())
+            } else {
+                FxAttrMap::default()
+            };
+            (ds, a)
+        } else {
+            (Self::detect_dict_subclass(&class), FxAttrMap::default())
+        };
+        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(attrs)), dict_storage, is_special: false }));
         track_object(&obj);
         obj
     }
     pub fn instance_with_attrs(class: PyObjectRef, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
-        let dict_storage = Self::detect_dict_subclass(&class);
-        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(attrs)), dict_storage, is_special: false }));
+        let dict_storage = if let PyObjectPayload::Class(cd) = &class.payload {
+            if cd.is_dict_subclass {
+                Some(Arc::new(RwLock::new(IndexMap::new())))
+            } else { None }
+        } else {
+            Self::detect_dict_subclass(&class)
+        };
+        let fx_attrs: FxAttrMap = attrs.into_iter().collect();
+        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(fx_attrs)), dict_storage, is_special: false }));
         track_object(&obj);
         obj
     }
@@ -338,30 +359,31 @@ impl PyObject {
         None
     }
     pub fn module(name: CompactString) -> PyObjectRef {
-        let mut attrs = IndexMap::new();
+        let mut attrs = FxAttrMap::default();
         attrs.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
         attrs.insert(CompactString::from("__loader__"), PyObject::none());
         attrs.insert(CompactString::from("__spec__"), PyObject::none());
         attrs.insert(CompactString::from("__package__"), PyObject::none());
         Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(attrs)) }))
     }
-    pub fn module_with_attrs(name: CompactString, mut attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
-        if !attrs.contains_key("__name__") {
-            attrs.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
+    pub fn module_with_attrs(name: CompactString, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
+        let mut fx_attrs: FxAttrMap = attrs.into_iter().collect();
+        if !fx_attrs.contains_key("__name__") {
+            fx_attrs.insert(CompactString::from("__name__"), PyObject::str_val(name.clone()));
         }
-        if !attrs.contains_key("__loader__") {
-            attrs.insert(CompactString::from("__loader__"), PyObject::none());
+        if !fx_attrs.contains_key("__loader__") {
+            fx_attrs.insert(CompactString::from("__loader__"), PyObject::none());
         }
-        if !attrs.contains_key("__spec__") {
-            attrs.insert(CompactString::from("__spec__"), PyObject::none());
+        if !fx_attrs.contains_key("__spec__") {
+            fx_attrs.insert(CompactString::from("__spec__"), PyObject::none());
         }
-        if !attrs.contains_key("__package__") {
-            attrs.insert(CompactString::from("__package__"), PyObject::none());
+        if !fx_attrs.contains_key("__package__") {
+            fx_attrs.insert(CompactString::from("__package__"), PyObject::none());
         }
-        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(attrs)) }))
+        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(fx_attrs)) }))
     }
     /// Create a module that shares an existing globals Arc (for circular import support).
-    pub fn module_with_shared_globals(name: CompactString, globals: Arc<parking_lot::RwLock<IndexMap<CompactString, PyObjectRef>>>) -> PyObjectRef {
+    pub fn module_with_shared_globals(name: CompactString, globals: Arc<parking_lot::RwLock<FxAttrMap>>) -> PyObjectRef {
         {
             let mut g = globals.write();
             if !g.contains_key("__name__") {
@@ -418,7 +440,7 @@ impl PyObject {
             kind,
             message: CompactString::from(msg),
             args,
-            attrs: Arc::new(RwLock::new(IndexMap::new())),
+            attrs: Arc::new(RwLock::new(FxAttrMap::default())),
         })))
     }
     pub fn exception_instance_with_args(kind: ExceptionKind, message: impl Into<String>, args: Vec<PyObjectRef>) -> PyObjectRef {
@@ -426,7 +448,7 @@ impl PyObject {
             kind,
             message: CompactString::from(message.into()),
             args,
-            attrs: Arc::new(RwLock::new(IndexMap::new())),
+            attrs: Arc::new(RwLock::new(FxAttrMap::default())),
         })))
     }
     pub fn generator(name: CompactString, frame: Box<dyn Any + Send + Sync>) -> PyObjectRef {

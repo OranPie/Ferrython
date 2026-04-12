@@ -7,7 +7,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{
     AsyncGenAction, GeneratorState, IteratorData, PyObject, PyObjectMethods,
-    PyObjectPayload, PyObjectRef,
+    PyObjectPayload, PyObjectRef, FxAttrMap,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -1755,7 +1755,7 @@ impl VirtualMachine {
         };
         if args.len() >= 2 {
             if let PyObjectPayload::Dict(ref map) = args[1].payload {
-                let mut new_globals = IndexMap::new();
+                let mut new_globals = FxAttrMap::default();
                 let m = map.read();
                 for (k, v) in m.iter() {
                     let key_str = match k {
@@ -1839,7 +1839,7 @@ impl VirtualMachine {
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
         if args.len() >= 2 {
             if let PyObjectPayload::Dict(ref globs_map) = args[1].payload {
-                let mut new_globals = IndexMap::new();
+                let mut new_globals = FxAttrMap::default();
                 let gm = globs_map.read();
                 for (k, v) in gm.iter() {
                     let key_str = match k {

@@ -6,7 +6,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
-    ClassData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    ClassData, FxAttrMap, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -137,7 +137,7 @@ impl VirtualMachine {
                 let cells = frame.cells.clone();
                 (frame.local_names.map(|b| *b).unwrap_or_default(), Some((cellvar_names, cells)))
             }
-            _ => (IndexMap::new(), None),
+            _ => (FxAttrMap::default(), None),
         };
         let (namespace, class_cell_info) = namespace;
 
@@ -593,17 +593,17 @@ impl VirtualMachine {
             .or_else(|| Self::inherited_metaclass(&bases));
 
         // Call __prepare__ on metaclass if available (PEP 3115)
-        let (prepared_ns, prepare_dict_obj): (IndexMap<CompactString, PyObjectRef>, Option<PyObjectRef>) =
+        let (prepared_ns, prepare_dict_obj): (FxAttrMap, Option<PyObjectRef>) =
             if let Some(ref meta) = metaclass {
                 if let Some(prepare) = meta.get_attr("__prepare__") {
                     let name_obj = PyObject::str_val(class_name.clone());
                     let bases_tuple = PyObject::tuple(bases.clone());
                     let result = self.call_object(prepare, vec![name_obj, bases_tuple])?;
-                    // Extract initial contents into IndexMap for frame.local_names
+                    // Extract initial contents into FxAttrMap for frame.local_names
                     let ns = match &result.payload {
                         PyObjectPayload::Dict(d) => {
                             let d = d.read();
-                            let mut ns = IndexMap::new();
+                            let mut ns = FxAttrMap::default();
                             for (k, v) in d.iter() {
                                 if let HashableKey::Str(s) = k {
                                     ns.insert(s.clone(), v.clone());
@@ -611,14 +611,14 @@ impl VirtualMachine {
                             }
                             ns
                         }
-                        _ => IndexMap::new(),
+                        _ => FxAttrMap::default(),
                     };
                     (ns, Some(result))
                 } else {
-                    (IndexMap::new(), None)
+                    (FxAttrMap::default(), None)
                 }
             } else {
-                (IndexMap::new(), None)
+                (FxAttrMap::default(), None)
             };
 
         // Execute class body to get namespace
@@ -648,7 +648,7 @@ impl VirtualMachine {
                 let cells = frame.cells.clone();
                 (frame.local_names.map(|b| *b).unwrap_or_default(), Some((cellvar_names, cells)))
             }
-            _ => (IndexMap::new(), None),
+            _ => (FxAttrMap::default(), None),
         };
         let (namespace, class_cell_info) = namespace;
 
@@ -729,6 +729,11 @@ impl VirtualMachine {
                             has_getattribute: cd.has_getattribute,
                             has_setattr: cd.has_setattr,
                             has_descriptors: cd.has_descriptors,
+                            method_vtable: cd.method_vtable.clone(),
+                            attr_shape: cd.attr_shape.clone(),
+                            class_version: cd.class_version,
+                            is_dict_subclass: cd.is_dict_subclass,
+                            expected_attrs: cd.expected_attrs,
                         })))
                     } else {
                         result

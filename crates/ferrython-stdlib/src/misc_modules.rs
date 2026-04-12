@@ -5,6 +5,7 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
     make_module, make_builtin, check_args, check_args_min,
+    FxAttrMap,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -623,7 +624,7 @@ pub fn create_dataclasses_module() -> PyObjectRef {
             if let PyObjectPayload::Instance(inst) = &instance.payload {
                 let cls = inst.class.clone();
                 // Clone all attrs
-                let mut new_attrs = inst.attrs.read().clone();
+                let mut new_attrs: IndexMap<CompactString, PyObjectRef> = inst.attrs.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 // Apply kwargs overrides
                 if args.len() > 1 {
                     if let PyObjectPayload::Dict(kw_map) = &args[1].payload {
@@ -1245,7 +1246,7 @@ fn deep_copy_with_memo(obj: &PyObjectRef, memo: &mut std::collections::HashMap<u
             // Pre-insert placeholder instance to handle circular refs
             let result = PyObject::instance_with_attrs(inst.class.clone(), IndexMap::new());
             memo.insert(ptr, result.clone());
-            let mut new_attrs = IndexMap::new();
+            let mut new_attrs = FxAttrMap::default();
             for (k, v) in inst.attrs.read().iter() {
                 new_attrs.insert(k.clone(), deep_copy_with_memo(v, memo)?);
             }

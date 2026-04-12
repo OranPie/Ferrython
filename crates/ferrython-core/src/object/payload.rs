@@ -6,11 +6,44 @@ use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHasher};
 use std::any::Any;
+use std::hash::BuildHasherDefault;
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+
+/// FxHash build hasher — ~3-4x faster than SipHash for short strings.
+pub type FxBuildHasher = BuildHasherDefault<FxHasher>;
+
+/// Attribute map using FxHash instead of SipHash.
+/// Used for instance attrs, class namespaces, and module attrs (hot path).
+pub type FxAttrMap = IndexMap<CompactString, PyObjectRef, FxBuildHasher>;
+
+/// Shared attribute map behind Arc<RwLock> — used by InstanceData and InstanceDict.
+pub type SharedFxAttrMap = Arc<RwLock<FxAttrMap>>;
+
+/// Convert a SipHash IndexMap to SharedFxAttrMap (for callers that build with IndexMap::new()).
+#[inline]
+pub fn to_shared_fx(attrs: IndexMap<CompactString, PyObjectRef>) -> SharedFxAttrMap {
+    Arc::new(RwLock::new(attrs.into_iter().collect()))
+}
+
+/// Create a new empty SharedFxAttrMap.
+#[inline]
+pub fn new_shared_fx() -> SharedFxAttrMap {
+    Arc::new(RwLock::new(FxAttrMap::default()))
+}
+
+/// Global monotonic counter for class versioning. Incremented each time a
+/// ClassData is created or mutated. Used by inline caches to detect staleness.
+static CLASS_VERSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Allocate a fresh class version number.
+#[inline(always)]
+pub fn next_class_version() -> u64 {
+    CLASS_VERSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
 
 // Compile-time size check: ensure enum stays compact after boxing
 const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <= 40);
@@ -54,7 +87,7 @@ pub struct ExceptionInstanceData {
     pub kind: ExceptionKind,
     pub message: CompactString,
     pub args: Vec<PyObjectRef>,
-    pub attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
+    pub attrs: SharedFxAttrMap,
 }
 
 /// Boxed partial application data
@@ -91,7 +124,7 @@ pub enum PyObjectPayload {
     FrozenSet(Box<IndexMap<HashableKey, PyObjectRef>>),
     Dict(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     /// A dict that is a live view of an instance's __dict__ (shares backing store)
-    InstanceDict(Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>),
+    InstanceDict(SharedFxAttrMap),
     /// Read-only view of a class namespace (types.MappingProxyType)
     MappingProxy(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
     Function(Box<PyFunction>),
@@ -258,7 +291,7 @@ pub enum AsyncGenAction {
 pub struct ClassData {
     pub name: CompactString,
     pub bases: Vec<PyObjectRef>,
-    pub namespace: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
+    pub namespace: Arc<RwLock<FxAttrMap>>,
     pub mro: Vec<PyObjectRef>,
     /// Custom metaclass, if any (e.g., SingletonMeta). None = default `type`.
     pub metaclass: Option<PyObjectRef>,
@@ -279,13 +312,30 @@ pub struct ClassData {
     /// Fast-path flag: true if this class (or any base) defines a custom __setattr__.
     /// When false, StoreAttr can write directly to instance attrs dict.
     pub has_setattr: bool,
+    /// Pre-computed method vtable: flattened MRO methods for O(1) lookup.
+    /// Built at class creation time from own namespace + all bases in MRO order.
+    /// Cleared on namespace mutation alongside method_cache.
+    pub method_vtable: Arc<RwLock<FxHashMap<CompactString, PyObjectRef>>>,
+    /// Instance attribute shape: maps attr name → dense index for O(1) attr access.
+    /// Built from __init__ analysis or __slots__. Instances store values in a Vec
+    /// indexed by these offsets. Attrs not in the shape fall back to overflow dict.
+    pub attr_shape: Arc<FxHashMap<CompactString, usize>>,
+    /// Monotonic version counter — incremented on any class mutation to invalidate
+    /// inline caches and method vtable.
+    pub class_version: u64,
+    /// Cached flag: true if this class inherits from `dict`.
+    /// Pre-computed at class creation to avoid walking the hierarchy per instance.
+    pub is_dict_subclass: bool,
+    /// Number of expected instance attrs (from attr_shape).
+    /// Used to pre-allocate IndexMap capacity in instance creation.
+    pub expected_attrs: usize,
 }
 
 impl ClassData {
     pub fn new(
         name: CompactString,
         bases: Vec<PyObjectRef>,
-        namespace: IndexMap<CompactString, PyObjectRef>,
+        namespace: FxAttrMap,
         mro: Vec<PyObjectRef>,
         metaclass: Option<PyObjectRef>,
     ) -> Self {
@@ -343,6 +393,49 @@ impl ClassData {
         } else {
             mro
         };
+        // Build method vtable by flattening MRO methods
+        let mut vtable = FxHashMap::default();
+        for base in mro.iter().rev() {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                for (k, v) in bcd.namespace.read().iter() {
+                    vtable.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        for (k, v) in namespace.iter() {
+            vtable.insert(k.clone(), v.clone());
+        }
+
+        // Build attribute shape from __slots__ and __init__ StoreAttr targets
+        let mut attr_shape = FxHashMap::default();
+        if let Some(ref s) = slots {
+            for (i, name) in s.iter().enumerate() {
+                attr_shape.insert(name.clone(), i);
+            }
+        }
+        if let Some(init_fn) = namespace.get("__init__") {
+            if let PyObjectPayload::Function(ref pf) = init_fn.payload {
+                use ferrython_bytecode::Opcode;
+                for instr in &pf.code.instructions {
+                    if instr.op == Opcode::StoreAttr {
+                        let name_idx = instr.arg as usize;
+                        if name_idx < pf.code.names.len() {
+                            let attr_name = &pf.code.names[name_idx];
+                            if !attr_shape.contains_key(attr_name.as_str()) {
+                                let idx = attr_shape.len();
+                                attr_shape.insert(attr_name.clone(), idx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Detect dict subclass (cache once instead of per-instance traversal)
+        let is_dict_subclass = Self::check_dict_subclass(&bases);
+
+        let expected_attrs = attr_shape.len();
+
         Self {
             name,
             bases,
@@ -355,7 +448,29 @@ impl ClassData {
             has_getattribute,
             has_setattr,
             has_descriptors,
+            method_vtable: Arc::new(RwLock::new(vtable)),
+            attr_shape: Arc::new(attr_shape),
+            class_version: next_class_version(),
+            is_dict_subclass,
+            expected_attrs,
         }
+    }
+
+    /// Rebuild method vtable after a class mutation. Call after modifying the namespace.
+    pub fn rebuild_vtable(&mut self) {
+        let mut vtable = FxHashMap::default();
+        for base in self.mro.iter().rev() {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                for (k, v) in bcd.namespace.read().iter() {
+                    vtable.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        for (k, v) in self.namespace.read().iter() {
+            vtable.insert(k.clone(), v.clone());
+        }
+        self.method_vtable = Arc::new(RwLock::new(vtable));
+        self.class_version = next_class_version();
     }
 
     /// Collect all allowed slot names from this class and its MRO.
@@ -414,15 +529,16 @@ impl ClassData {
         }
     }
 
-    /// Invalidate the method cache (call after any namespace mutation).
+    /// Invalidate the method cache and vtable (call after any namespace mutation).
     pub fn invalidate_cache(&self) {
         self.method_cache.write().clear();
+        self.method_vtable.write().clear();
     }
 
     /// Detect if this class or any base has data descriptors (Property, __set__, __delete__).
     /// When false, instance attribute lookup can skip the full descriptor protocol and
     /// check instance __dict__ directly — a significant hot-path optimization.
-    fn detect_descriptors(namespace: &IndexMap<CompactString, PyObjectRef>, mro: &[PyObjectRef]) -> bool {
+    fn detect_descriptors(namespace: &FxAttrMap, mro: &[PyObjectRef]) -> bool {
         // Check own namespace for Property or descriptor-like objects
         for v in namespace.values() {
             match &v.payload {
@@ -453,12 +569,25 @@ impl ClassData {
         }
         false
     }
+
+    /// Check if this class inherits from dict (cached at class creation).
+    fn check_dict_subclass(bases: &[PyObjectRef]) -> bool {
+        for base in bases {
+            let is_dict = match &base.payload {
+                PyObjectPayload::BuiltinType(n) => n.as_str() == "dict",
+                PyObjectPayload::Class(bcd) => bcd.name.as_str() == "dict" || bcd.is_dict_subclass,
+                _ => false,
+            };
+            if is_dict { return true; }
+        }
+        false
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct InstanceData {
     pub class: PyObjectRef,
-    pub attrs: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
+    pub attrs: SharedFxAttrMap,
     /// Internal dict storage for dict subclasses
     pub dict_storage: Option<Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>>,
     /// Fast-path flag: true if this instance has special markers (__namedtuple__, __deque__, etc.)
@@ -469,7 +598,7 @@ pub struct InstanceData {
 #[derive(Debug, Clone)]
 pub struct ModuleData {
     pub name: CompactString,
-    pub attrs: Arc<parking_lot::RwLock<IndexMap<CompactString, PyObjectRef>>>,
+    pub attrs: Arc<parking_lot::RwLock<FxAttrMap>>,
 }
 
 #[derive(Debug, Clone)]

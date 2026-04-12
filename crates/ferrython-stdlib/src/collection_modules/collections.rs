@@ -3,7 +3,7 @@ use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin,
-    CompareOp,
+    CompareOp, SharedFxAttrMap,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -1163,7 +1163,7 @@ fn make_user_dict_class() -> PyObjectRef {
     PyObject::class(CompactString::from("UserDict"), vec![], ns)
 }
 
-fn install_dict_methods(attrs: &Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>, data: &PyObjectRef) {
+fn install_dict_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef) {
     let map = if let PyObjectPayload::Dict(m) = &data.payload { m.clone() } else { return; };
     let m = map.clone();
     attrs.write().insert(CompactString::from("keys"), PyObject::native_closure("keys", move |_| {
@@ -1356,7 +1356,7 @@ fn make_user_list_class() -> PyObjectRef {
     PyObject::class(CompactString::from("UserList"), vec![], ns)
 }
 
-fn install_list_methods(attrs: &Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>, data: &PyObjectRef) {
+fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef) {
     let list = if let PyObjectPayload::List(l) = &data.payload { l.clone() } else { return; };
     let l = list.clone();
     attrs.write().insert(CompactString::from("append"), PyObject::native_closure("append", move |args| {
@@ -1540,7 +1540,7 @@ fn make_user_string_class() -> PyObjectRef {
     PyObject::class(CompactString::from("UserString"), vec![], ns)
 }
 
-fn install_string_methods(attrs: &Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>, data: &PyObjectRef) {
+fn install_string_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef) {
     let s_val = data.as_str().unwrap_or("").to_string();
 
     macro_rules! str_method {

@@ -685,6 +685,33 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // 6-way fusion: LoadFast + LoadConst + BinaryMul + LoadConst + BinaryMod + StoreFast → LoadFastMulModStoreFast
+        // Hot pattern: x = (x * c1) % c2
+        if i + 5 < n && !jump_targets[i + 2] && !is_nop[i + 2]
+            && !jump_targets[i + 3] && !is_nop[i + 3]
+            && !jump_targets[i + 4] && !is_nop[i + 4]
+            && !jump_targets[i + 5] && !is_nop[i + 5]
+            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+            && matches!(code.instructions[i + 2].op, Opcode::BinaryMultiply | Opcode::InplaceMultiply)
+            && code.instructions[i + 3].op == Opcode::LoadConst
+            && matches!(code.instructions[i + 4].op, Opcode::BinaryModulo | Opcode::InplaceModulo)
+            && code.instructions[i + 5].op == Opcode::StoreFast
+            && a.arg <= 0xFF && b.arg <= 0xFF
+            && code.instructions[i + 3].arg <= 0xFF && code.instructions[i + 5].arg <= 0xFF
+        {
+            let const2_idx = code.instructions[i + 3].arg;
+            let store_idx = code.instructions[i + 5].arg;
+            let packed = (a.arg << 24) | (b.arg << 16) | (const2_idx << 8) | store_idx;
+            code.instructions[i] = Instruction::new(Opcode::LoadFastMulModStoreFast, packed);
+            is_nop[i + 1] = true;
+            is_nop[i + 2] = true;
+            is_nop[i + 3] = true;
+            is_nop[i + 4] = true;
+            is_nop[i + 5] = true;
+            i += 6;
+            continue;
+        }
+
         // 4-way fusion: LoadFast + LoadConst + BinaryAdd/InplaceAdd + StoreFast → LoadFastLoadConstBinaryAddStoreFast
         if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
             && !jump_targets[i + 3] && !is_nop[i + 3]
@@ -700,6 +727,56 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             is_nop[i + 2] = true;
             is_nop[i + 3] = true;
             i += 4;
+            continue;
+        }
+
+        // 4-way fusion: LoadFast + LoadConst + BinaryMultiply/InplaceMultiply + StoreFast → LoadFastLoadConstBinaryMulStoreFast
+        if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
+            && !jump_targets[i + 3] && !is_nop[i + 3]
+            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+            && matches!(code.instructions[i + 2].op, Opcode::BinaryMultiply | Opcode::InplaceMultiply)
+            && code.instructions[i + 3].op == Opcode::StoreFast
+            && a.arg <= 0xFF && b.arg <= 0xFF && code.instructions[i + 3].arg <= 0xFF
+        {
+            let store_idx = code.instructions[i + 3].arg;
+            let packed = (a.arg << 16) | (b.arg << 8) | store_idx;
+            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstBinaryMulStoreFast, packed);
+            is_nop[i + 1] = true;
+            is_nop[i + 2] = true;
+            is_nop[i + 3] = true;
+            i += 4;
+            continue;
+        }
+
+        // 4-way fusion: LoadFast + LoadConst + BinarySubtract/InplaceSubtract + StoreFast → LoadFastLoadConstBinarySubStoreFast
+        if i + 3 < n && !jump_targets[i + 2] && !is_nop[i + 2]
+            && !jump_targets[i + 3] && !is_nop[i + 3]
+            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+            && matches!(code.instructions[i + 2].op, Opcode::BinarySubtract | Opcode::InplaceSubtract)
+            && code.instructions[i + 3].op == Opcode::StoreFast
+            && a.arg <= 0xFF && b.arg <= 0xFF && code.instructions[i + 3].arg <= 0xFF
+        {
+            let store_idx = code.instructions[i + 3].arg;
+            let packed = (a.arg << 16) | (b.arg << 8) | store_idx;
+            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstBinarySubStoreFast, packed);
+            is_nop[i + 1] = true;
+            is_nop[i + 2] = true;
+            is_nop[i + 3] = true;
+            i += 4;
+            continue;
+        }
+
+        // 3-way fusion: LoadFast + LoadConst + BinaryMultiply → LoadFastLoadConstBinaryMul
+        if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
+            && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+            && code.instructions[i + 2].op == Opcode::BinaryMultiply
+            && a.arg <= 0xFFFF && b.arg <= 0xFFFF
+        {
+            let packed_arg = (a.arg << 16) | b.arg;
+            code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstBinaryMul, packed_arg);
+            is_nop[i + 1] = true;
+            is_nop[i + 2] = true;
+            i += 3;
             continue;
         }
 
@@ -792,6 +869,19 @@ fn fuse_superinstructions(code: &mut CodeObject) {
         if a.op == Opcode::LoadFast && b.op == Opcode::LoadAttr
             && a.arg <= 0xFFFF && b.arg <= 0xFFFF
         {
+            // Try 3-way: LoadFast + LoadAttr + StoreFast → LoadFastLoadAttrStoreFast
+            if i + 2 < n && !jump_targets[i + 2] && !is_nop[i + 2]
+                && code.instructions[i + 2].op == Opcode::StoreFast
+                && a.arg < 1024 && b.arg < 1024 && code.instructions[i + 2].arg < 1024
+            {
+                let store_idx = code.instructions[i + 2].arg;
+                let packed = (a.arg << 20) | (b.arg << 10) | store_idx;
+                code.instructions[i] = Instruction::new(Opcode::LoadFastLoadAttrStoreFast, packed);
+                is_nop[i + 1] = true;
+                is_nop[i + 2] = true;
+                i += 3;
+                continue;
+            }
             let packed = (a.arg << 16) | b.arg;
             code.instructions[i] = Instruction::new(Opcode::LoadFastLoadAttr, packed);
             is_nop[i + 1] = true;

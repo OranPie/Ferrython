@@ -13,9 +13,18 @@ use super::helpers::*;
 use super::methods::PyObjectMethods;
 
 /// Walk a class and its base classes (MRO) to find an attribute.
-/// Uses per-class method cache to avoid repeated linear MRO scans.
+/// Uses pre-computed vtable for O(1) lookup, falling back to cache+MRO.
 pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
     if let PyObjectPayload::Class(cd) = &class.payload {
+        // Fastest path: check pre-computed method vtable (single hash probe)
+        {
+            let vt = cd.method_vtable.read();
+            if !vt.is_empty() {
+                return vt.get(name).cloned();
+            }
+        }
+
+        // Fallback for classes with empty vtable (e.g., builtin types)
         // Fast path: check method cache first
         {
             let cache = cd.method_cache.read();
@@ -28,7 +37,6 @@ pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRe
         let result = lookup_in_class_mro_uncached(cd, name);
 
         // Populate cache (cache both hits and misses)
-        // Use interned CompactString for dunder names to avoid allocation
         let key = intern::try_intern(name)
             .unwrap_or_else(|| CompactString::from(name));
         cd.method_cache.write().insert(key, result.clone());
@@ -346,7 +354,6 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 if !class_has_descriptors {
                     // ── FAST PATH: no data descriptors ──
                     // Check own class for Python Function overrides BEFORE instance dict
-                    // (Python Functions are data descriptors that shadow instance attrs)
                     if let PyObjectPayload::Class(cd) = &effective_class.payload {
                         if let Some(v) = cd.namespace.read().get(name) {
                             if matches!(&v.payload, PyObjectPayload::Function(_)) {
@@ -1418,7 +1425,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                     "__globals__" => {
                         let g = f.globals.read();
-                        let mut map = IndexMap::new();
+                        let mut map: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
                         for (k, v) in g.iter() {
                             if let Ok(hk) = PyObject::str_val(k.clone()).to_hashable_key() {
                                 map.insert(hk, v.clone());

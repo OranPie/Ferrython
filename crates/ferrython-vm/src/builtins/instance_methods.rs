@@ -8,7 +8,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
-    CompareOp, check_args_min,
+    CompareOp, check_args_min, SharedFxAttrMap,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -429,7 +429,7 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
 }
 
 pub(super) fn call_instance_dict_method(
-    attrs: &Arc<RwLock<IndexMap<CompactString, PyObjectRef>>>,
+    attrs: &SharedFxAttrMap,
     method: &str,
     args: &[PyObjectRef],
 ) -> PyResult<PyObjectRef> {

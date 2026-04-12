@@ -9,7 +9,7 @@ use ferrython_bytecode::{CodeObject, Instruction};
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    has_descriptor_get, lookup_in_class_mro,
+    has_descriptor_get, lookup_in_class_mro, FxAttrMap,
 };
 use ferrython_core::types::{HashableKey, PyFunction};
 use indexmap::IndexMap;
@@ -269,7 +269,7 @@ impl VirtualMachine {
                     frame.push(PyObject::tuple(vec![]));
                 } else {
                     let start = frame.stack.len() - count;
-                    let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
+                    let items = frame.stack.split_off(start);
                     frame.push(PyObject::tuple(items));
                 }
             }
@@ -279,7 +279,7 @@ impl VirtualMachine {
                     frame.push(PyObject::list(vec![]));
                 } else {
                     let start = frame.stack.len() - count;
-                    let items: Vec<PyObjectRef> = frame.stack.drain(start..).collect();
+                    let items = frame.stack.split_off(start);
                     frame.push(PyObject::list(items));
                 }
             }
@@ -956,7 +956,7 @@ impl VirtualMachine {
                     globals: frame.globals.clone(),
                     closure: closure_cells,
                     annotations,
-                    attrs: Arc::new(RwLock::new(IndexMap::new())),
+                    attrs: Arc::new(RwLock::new(FxAttrMap::default())),
                     is_simple,
                 };
                 frame.push(PyObject::function(func));

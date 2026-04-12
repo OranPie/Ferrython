@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_bytecode::CodeObject;
-use ferrython_core::object::PyObjectRef;
+use ferrython_core::object::{FxAttrMap, PyObjectRef};
 use ferrython_core::types::{SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -51,7 +51,7 @@ pub struct Frame {
     pub block_stack: Vec<Block>,
     pub locals: Vec<Option<PyObjectRef>>,
     /// Boxed to reduce Frame size (~48→8 bytes). Only allocated for class/module scope.
-    pub local_names: Option<Box<IndexMap<CompactString, PyObjectRef>>>,
+    pub local_names: Option<Box<FxAttrMap>>,
     pub globals: SharedGlobals,
     pub builtins: SharedBuiltins,
     /// Cell and free variables. Indices 0..cellvars.len() are cell vars,
@@ -76,6 +76,64 @@ pub struct Frame {
     /// True when code/globals/builtins/constant_cache were borrowed (not ref-counted)
     /// from the parent frame via new_recursive(). recycle() must not drop those Arcs.
     pub(crate) borrowed_env: bool,
+    /// Per-frame inline cache for class-level attribute lookups (LoadMethod, LoadAttr).
+    /// Direct-mapped by instruction pointer: slot = ip % IC_SLOTS.
+    /// Each entry: (ip, class_version, cached_value). On hit, skip vtable/MRO lookup.
+    /// Lazily allocated on first IC miss to avoid overhead for functions without attr lookups.
+    pub(crate) attr_ic: Option<Box<AttrInlineCache>>,
+}
+
+/// Fixed-size direct-mapped inline cache for class attribute lookups.
+/// Stores (instruction_pointer, class_version, value) tuples.
+/// Slot = ip % ATTR_IC_SLOTS. Collisions evict the old entry.
+pub const ATTR_IC_SLOTS: usize = 16;
+
+#[derive(Clone)]
+pub struct AttrInlineCache {
+    ips: [u32; ATTR_IC_SLOTS],
+    versions: [u64; ATTR_IC_SLOTS],
+    values: [Option<PyObjectRef>; ATTR_IC_SLOTS],
+}
+
+impl AttrInlineCache {
+    pub const fn empty() -> Self {
+        Self {
+            ips: [u32::MAX; ATTR_IC_SLOTS],
+            versions: [0; ATTR_IC_SLOTS],
+            values: [const { None }; ATTR_IC_SLOTS],
+        }
+    }
+
+    #[inline(always)]
+    pub fn lookup(&self, ip: u32, class_version: u64) -> Option<&PyObjectRef> {
+        let slot = (ip as usize) & (ATTR_IC_SLOTS - 1);
+        unsafe {
+            if *self.ips.get_unchecked(slot) == ip
+                && *self.versions.get_unchecked(slot) == class_version
+            {
+                self.values.get_unchecked(slot).as_ref()
+            } else {
+                None
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub fn insert(&mut self, ip: u32, class_version: u64, value: PyObjectRef) {
+        let slot = (ip as usize) & (ATTR_IC_SLOTS - 1);
+        unsafe {
+            *self.ips.get_unchecked_mut(slot) = ip;
+            *self.versions.get_unchecked_mut(slot) = class_version;
+            *self.values.get_unchecked_mut(slot) = Some(value);
+        }
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.ips = [u32::MAX; ATTR_IC_SLOTS];
+        self.versions = [0; ATTR_IC_SLOTS];
+        self.values = [const { None }; ATTR_IC_SLOTS];
+    }
 }
 
 impl Frame {
@@ -108,6 +166,7 @@ impl Frame {
             global_cache_version: u64::MAX, // force miss on first access
             prepare_dict: None,
             borrowed_env: false,
+            attr_ic: None,
         }
     }
 
@@ -158,6 +217,7 @@ impl Frame {
             global_cache_version: u64::MAX,
             prepare_dict: None,
             borrowed_env: false,
+            attr_ic: None,
         }
     }
 
@@ -207,6 +267,7 @@ impl Frame {
             global_cache_version: parent.global_cache_version,
             prepare_dict: None,
             borrowed_env: true,
+            attr_ic: None,
         }
     }
     pub fn new(
@@ -225,9 +286,9 @@ impl Frame {
     #[inline]
     pub fn recycle(mut self, pool: &mut FramePool) {
         self.stack.clear();
-        for slot in self.locals.iter_mut() {
-            *slot = None;
-        }
+        // Fast locals clear: truncate drops all elements in one pass
+        // (equivalent to setting each to None, but lets Vec handle it internally)
+        self.locals.clear();
         self.block_stack.clear();
 
         if self.borrowed_env {
@@ -238,6 +299,8 @@ impl Frame {
                 let stack = std::ptr::read(&md.stack);
                 let locals = std::ptr::read(&md.locals);
                 let block_stack = std::ptr::read(&md.block_stack);
+                // attr_ic is cloned (not borrowed) — must drop to free cached PyObjectRefs
+                let _attr_ic = std::ptr::read(&md.attr_ic);
                 pool.return_stack(stack);
                 pool.return_locals(locals);
                 pool.return_block_stack(block_stack);
@@ -316,7 +379,7 @@ impl Frame {
             .or_else(|| self.builtins.get(name).cloned())
     }
     pub fn store_name(&mut self, name: CompactString, value: PyObjectRef) {
-        self.local_names.get_or_insert_with(|| Box::new(IndexMap::new())).insert(name, value);
+        self.local_names.get_or_insert_with(|| Box::new(FxAttrMap::default())).insert(name, value);
     }
     /// Get a value from local_names (class/module namespace).
     #[inline]
@@ -336,7 +399,7 @@ impl Frame {
     /// Insert into local_names (allocates if needed).
     #[inline]
     pub fn local_names_insert(&mut self, name: CompactString, value: PyObjectRef) {
-        self.local_names.get_or_insert_with(|| Box::new(IndexMap::new())).insert(name, value);
+        self.local_names.get_or_insert_with(|| Box::new(FxAttrMap::default())).insert(name, value);
     }
     /// Iterate over local_names. Returns empty iter if None.
     #[inline]
@@ -345,7 +408,7 @@ impl Frame {
     }
     /// Take ownership of local_names (for class creation).
     #[inline]
-    pub fn take_local_names(&mut self) -> IndexMap<CompactString, PyObjectRef> {
+    pub fn take_local_names(&mut self) -> FxAttrMap {
         self.local_names.take().map(|b| *b).unwrap_or_default()
     }
 }

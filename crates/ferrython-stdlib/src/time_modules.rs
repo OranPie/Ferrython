@@ -4,12 +4,10 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
-    make_module, make_builtin, check_args,
+    make_module, make_builtin, check_args, new_shared_fx,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::Arc;
 
 pub fn create_time_module() -> PyObjectRef {
     // struct_time class — callable constructor + type object
@@ -626,7 +624,7 @@ pub fn create_datetime_module() -> PyObjectRef {
         let min_date = {
             let class = PyObject::class(CompactString::from("date"), vec![], IndexMap::new());
             let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
-                class, attrs: Arc::new(RwLock::new(IndexMap::new())),
+                class, attrs: new_shared_fx(),
                 is_special: true, dict_storage: None,
             }));
             if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -642,7 +640,7 @@ pub fn create_datetime_module() -> PyObjectRef {
         let max_date = {
             let class = PyObject::class(CompactString::from("date"), vec![], IndexMap::new());
             let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
-                class, attrs: Arc::new(RwLock::new(IndexMap::new())),
+                class, attrs: new_shared_fx(),
                 is_special: true, dict_storage: None,
             }));
             if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -694,7 +692,7 @@ fn make_timezone_utc() -> PyObjectRef {
     let class = PyObject::class(CompactString::from("timezone"), vec![], IndexMap::new());
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
-        attrs: Arc::new(RwLock::new(IndexMap::new())),
+        attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -1063,7 +1061,7 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
     let class = PyObject::class(CompactString::from("datetime"), vec![], dt_ns);
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
-        attrs: Arc::new(RwLock::new(IndexMap::new())),
+        attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
     }));
     install_datetime_methods(&inst, year, month, day, hour, minute, second, microsecond);
@@ -1365,7 +1363,7 @@ fn make_time_instance(hour: i64, minute: i64, second: i64, microsecond: i64) -> 
     let class = PyObject::class(CompactString::from("time"), vec![], IndexMap::new());
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
-        attrs: Arc::new(RwLock::new(IndexMap::new())),
+        attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -1571,7 +1569,7 @@ fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
     let class = PyObject::class(CompactString::from("date"), vec![], date_cls_ns);
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
-        attrs: Arc::new(RwLock::new(IndexMap::new())),
+        attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -1816,7 +1814,7 @@ fn make_timedelta_with_ops(days: i64, seconds: i64, microseconds: i64, total_sec
     let class = PyObject::class(CompactString::from("timedelta"), vec![], td_ns);
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
-        attrs: Arc::new(RwLock::new(IndexMap::new())),
+        attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {

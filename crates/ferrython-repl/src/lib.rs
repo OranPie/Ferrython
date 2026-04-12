@@ -22,6 +22,7 @@ use rustyline::{Config, Editor, Helper};
 
 use compact_str::CompactString;
 use ferrython_core::object::PyObject;
+use ferrython_core::types::SharedGlobals;
 
 /// Python keyword and builtin lists for completion.
 const PYTHON_KEYWORDS: &[&str] = &[
@@ -47,7 +48,7 @@ const PYTHON_BUILTINS: &[&str] = &[
 
 /// REPL helper providing completion, validation, and highlighting.
 struct FerryHelper {
-    globals: Arc<parking_lot::RwLock<indexmap::IndexMap<CompactString, Arc<PyObject>>>>,
+    globals: SharedGlobals,
 }
 
 impl Completer for FerryHelper {
@@ -365,7 +366,7 @@ pub fn run_repl() {
 /// Execute a source string in the VM.
 fn execute_source(
     vm: &mut ferrython_vm::VirtualMachine,
-    globals: &Arc<parking_lot::RwLock<indexmap::IndexMap<CompactString, Arc<PyObject>>>>,
+    globals: &SharedGlobals,
     source: &str,
 ) {
     match ferrython_parser::parse(source, "<stdin>") {

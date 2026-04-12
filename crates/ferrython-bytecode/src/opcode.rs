@@ -232,6 +232,26 @@ pub enum Opcode {
     /// Fused CallMethod + PopTop — common for methods whose return value is discarded.
     /// arg = arg_count (same as CallMethod)
     CallMethodPopTop = 229,
+    /// Fused LoadFast + LoadAttr + StoreFast — common `x = obj.attr` pattern.
+    /// arg encoding: (local_idx << 20) | (name_idx << 10) | store_idx
+    /// Limits: local_idx < 1024, name_idx < 1024, store_idx < 1024
+    LoadFastLoadAttrStoreFast = 230,
+
+    /// Fused LoadFast + LoadConst + BinaryMultiply — hot in `x * c` patterns.
+    /// arg encoding: (fast_idx << 16) | const_idx
+    LoadFastLoadConstBinaryMul = 231,
+    /// Fused LoadFast + LoadConst + BinaryMultiply + StoreFast — hot `x = x * c` pattern.
+    /// arg encoding: (local_idx << 16) | (const_idx << 8) | dest
+    LoadFastLoadConstBinaryMulStoreFast = 232,
+    /// Fused LoadFast + LoadConst + BinarySub + StoreFast — hot `x = x - 1` pattern.
+    /// arg encoding: (local_idx << 16) | (const_idx << 8) | dest
+    LoadFastLoadConstBinarySubStoreFast = 233,
+    /// Fused 6-way: LoadFast + LoadConst + BinaryMul + LoadConst + BinaryMod + StoreFast
+    /// Hot pattern: `x = (x * c1) % c2`
+    /// arg encoding: stored in a u64 but packed as two u32s via arg+arg2:
+    ///   arg = (local_idx << 24) | (const1_idx << 16) | (const2_idx << 8) | dest
+    /// Limits: all indices < 256
+    LoadFastMulModStoreFast = 234,
 }
 
 impl Opcode {
@@ -366,6 +386,11 @@ impl Opcode {
                 // Pops: method + receiver + arg_count args. Pushes nothing (result discarded).
                 -(arg as i32) - 2
             }
+            Self::LoadFastLoadAttrStoreFast => 0, // reads local, gets attr, stores to local (net 0)
+            Self::LoadFastLoadConstBinaryMul => 1, // pushes result
+            Self::LoadFastLoadConstBinaryMulStoreFast => 0, // stores to local
+            Self::LoadFastLoadConstBinarySubStoreFast => 0, // stores to local
+            Self::LoadFastMulModStoreFast => 0, // x = (x * c1) % c2
         }
     }
 

@@ -4,6 +4,7 @@ use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     InstanceData, PartialData,
     make_module, make_builtin,
+    new_shared_fx,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
@@ -326,8 +327,7 @@ fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRe
     );
     let cache_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
     let cache_arc = Arc::new(parking_lot::RwLock::new(cache_dict));
-    let attrs_map: IndexMap<CompactString, PyObjectRef> = IndexMap::new();
-    let attrs_arc = Arc::new(parking_lot::RwLock::new(attrs_map));
+    let attrs_arc = new_shared_fx();
 
     // Build cache_info closure that reads _hits/_misses from attrs
     let info_attrs = attrs_arc.clone();
@@ -428,7 +428,7 @@ fn functools_singledispatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let class = PyObject::class(CompactString::from("singledispatch"), vec![], cls_ns);
     let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
         class,
-        attrs: Arc::new(RwLock::new(IndexMap::new())),
+        attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
     }));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
