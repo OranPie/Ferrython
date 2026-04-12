@@ -1,34 +1,37 @@
 //! Ferrython garbage collector — hybrid ref counting + cycle collector.
 //!
-//! Primary memory management uses `Arc<PyObject>` (reference counting).
+//! Primary memory management uses `Rc<PyObject>` (reference counting).
 //! This module tracks allocations and provides the Python `gc` module API.
 //!
 //! # Design
 //!
-//! - `Arc` handles acyclic objects automatically via reference counting
+//! - `Rc` handles acyclic objects automatically via reference counting
 //! - Cycle detection uses a registered callback from ferrython-core
 //! - Threshold-based trigger: after N allocations → `collect()`
 //! - Three generations mirroring CPython: gen0 (young), gen1, gen2
+//!
+//! # Performance
+//!
+//! All counters use thread-local `Cell<u64>` instead of atomics — Ferrython
+//! is a single-threaded (GIL) interpreter, so atomics are pure overhead.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::cell::Cell;
 use std::sync::Mutex;
 
-// ── Global GC state (thread-safe via atomics) ──
+// ── GC state — thread-local Cells (no atomics, single-threaded interpreter) ──
 
-static ENABLED: AtomicBool = AtomicBool::new(true);
-static ALLOCATION_COUNT: AtomicU64 = AtomicU64::new(0);
-static COLLECTION_COUNT: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    static ENABLED: Cell<bool> = Cell::new(true);
+    static ALLOCATION_COUNT: Cell<u64> = Cell::new(0);
+    static COLLECTION_COUNT: Cell<u64> = Cell::new(0);
+    static THRESHOLD_GEN0: Cell<u64> = Cell::new(700);
+    static THRESHOLD_GEN1: Cell<u64> = Cell::new(10);
+    static THRESHOLD_GEN2: Cell<u64> = Cell::new(10);
+    static GEN0_COLLECTIONS: Cell<u64> = Cell::new(0);
+    static GEN1_COLLECTIONS: Cell<u64> = Cell::new(0);
+}
 
-// CPython default thresholds: (700, 10, 10) — gen0=700 allocs, gen1=10 gen0 cycles, gen2=10 gen1 cycles
-static THRESHOLD_GEN0: AtomicU64 = AtomicU64::new(700);
-static THRESHOLD_GEN1: AtomicU64 = AtomicU64::new(10);
-static THRESHOLD_GEN2: AtomicU64 = AtomicU64::new(10);
-
-// Generation collection counters
-static GEN0_COLLECTIONS: AtomicU64 = AtomicU64::new(0);
-static GEN1_COLLECTIONS: AtomicU64 = AtomicU64::new(0);
-
-// Cycle collection callback — registered by ferrython-core
+// Cycle collection callback — registered once at startup (Mutex is fine here)
 static CYCLE_COLLECTOR: Mutex<Option<Box<dyn Fn() -> usize + Send>>> = Mutex::new(None);
 
 /// Register a cycle collection callback. Called by ferrython-core during init.
@@ -40,13 +43,16 @@ pub fn register_cycle_collector<F: Fn() -> usize + Send + 'static>(f: F) {
 
 /// Notify the GC that an object was allocated. Returns `true` if a
 /// generation-0 collection should be triggered.
-#[inline]
+#[inline(always)]
 pub fn notify_alloc() -> bool {
-    if !ENABLED.load(Ordering::Relaxed) {
-        return false;
-    }
-    let count = ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    count >= THRESHOLD_GEN0.load(Ordering::Relaxed)
+    ENABLED.with(|e| {
+        if !e.get() { return false; }
+        ALLOCATION_COUNT.with(|c| {
+            let count = c.get() + 1;
+            c.set(count);
+            THRESHOLD_GEN0.with(|t| count >= t.get())
+        })
+    })
 }
 
 /// Run a garbage collection cycle. Returns the number of unreachable
@@ -55,16 +61,16 @@ pub fn notify_alloc() -> bool {
 /// Resets allocation counter and increments generation counters to match
 /// CPython's generational promotion logic.
 pub fn collect() -> usize {
-    let _allocs = ALLOCATION_COUNT.swap(0, Ordering::Relaxed);
-    COLLECTION_COUNT.fetch_add(1, Ordering::Relaxed);
+    ALLOCATION_COUNT.with(|c| c.set(0));
+    COLLECTION_COUNT.with(|c| c.set(c.get() + 1));
 
     // Generational promotion: gen0 collection happened
-    let gen0 = GEN0_COLLECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
-    if gen0 >= THRESHOLD_GEN1.load(Ordering::Relaxed) {
-        GEN0_COLLECTIONS.store(0, Ordering::Relaxed);
-        let gen1 = GEN1_COLLECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
-        if gen1 >= THRESHOLD_GEN2.load(Ordering::Relaxed) {
-            GEN1_COLLECTIONS.store(0, Ordering::Relaxed);
+    let gen0 = GEN0_COLLECTIONS.with(|c| { let v = c.get() + 1; c.set(v); v });
+    if gen0 >= THRESHOLD_GEN1.with(|t| t.get()) {
+        GEN0_COLLECTIONS.with(|c| c.set(0));
+        let gen1 = GEN1_COLLECTIONS.with(|c| { let v = c.get() + 1; c.set(v); v });
+        if gen1 >= THRESHOLD_GEN2.with(|t| t.get()) {
+            GEN1_COLLECTIONS.with(|c| c.set(0));
         }
     }
 
@@ -79,41 +85,41 @@ pub fn collect() -> usize {
 
 /// Enable garbage collection.
 pub fn enable() {
-    ENABLED.store(true, Ordering::Relaxed);
+    ENABLED.with(|e| e.set(true));
 }
 
 /// Disable garbage collection.
 pub fn disable() {
-    ENABLED.store(false, Ordering::Relaxed);
+    ENABLED.with(|e| e.set(false));
 }
 
 /// Return whether GC is currently enabled.
 pub fn is_enabled() -> bool {
-    ENABLED.load(Ordering::Relaxed)
+    ENABLED.with(|e| e.get())
 }
 
 /// Get the current collection thresholds as `(gen0, gen1, gen2)`.
 pub fn get_threshold() -> (u64, u64, u64) {
     (
-        THRESHOLD_GEN0.load(Ordering::Relaxed),
-        THRESHOLD_GEN1.load(Ordering::Relaxed),
-        THRESHOLD_GEN2.load(Ordering::Relaxed),
+        THRESHOLD_GEN0.with(|t| t.get()),
+        THRESHOLD_GEN1.with(|t| t.get()),
+        THRESHOLD_GEN2.with(|t| t.get()),
     )
 }
 
 /// Set the collection thresholds `(gen0, gen1, gen2)`.
 pub fn set_threshold(gen0: u64, gen1: u64, gen2: u64) {
-    THRESHOLD_GEN0.store(gen0, Ordering::Relaxed);
-    THRESHOLD_GEN1.store(gen1, Ordering::Relaxed);
-    THRESHOLD_GEN2.store(gen2, Ordering::Relaxed);
+    THRESHOLD_GEN0.with(|t| t.set(gen0));
+    THRESHOLD_GEN1.with(|t| t.set(gen1));
+    THRESHOLD_GEN2.with(|t| t.set(gen2));
 }
 
 /// Get GC statistics: `(alloc_count, total_collections, enabled)`.
 pub fn get_stats() -> GcStats {
     GcStats {
-        allocations: ALLOCATION_COUNT.load(Ordering::Relaxed),
-        collections: COLLECTION_COUNT.load(Ordering::Relaxed),
-        enabled: ENABLED.load(Ordering::Relaxed),
+        allocations: ALLOCATION_COUNT.with(|c| c.get()),
+        collections: COLLECTION_COUNT.with(|c| c.get()),
+        enabled: ENABLED.with(|e| e.get()),
         threshold: get_threshold(),
     }
 }

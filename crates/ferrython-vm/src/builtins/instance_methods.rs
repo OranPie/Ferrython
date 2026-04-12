@@ -201,7 +201,7 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
         inst.attrs.read().get("__maxlen__").and_then(|v| v.as_int()).map(|n| n as usize)
     };
     // Helper: enforce maxlen by trimming from the appropriate end
-    let enforce_maxlen_right = |list: &Rc<PyCell<Vec<PyObjectRef>>>| {
+    let enforce_maxlen_right = |list: &PyCell<Vec<PyObjectRef>>| {
         if let Some(ml) = get_maxlen() {
             let mut v = list.write();
             while v.len() > ml {
@@ -209,7 +209,7 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
             }
         }
     };
-    let enforce_maxlen_left = |list: &Rc<PyCell<Vec<PyObjectRef>>>| {
+    let enforce_maxlen_left = |list: &PyCell<Vec<PyObjectRef>>| {
         if let Some(ml) = get_maxlen() {
             let mut v = list.write();
             while v.len() > ml {

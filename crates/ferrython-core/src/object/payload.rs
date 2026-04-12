@@ -323,7 +323,7 @@ pub enum PyObjectPayload {
     Str(CompactString),
     Bytes(Vec<u8>),
     ByteArray(Vec<u8>),
-    List(Rc<PyCell<Vec<PyObjectRef>>>),
+    List(PyCell<Vec<PyObjectRef>>),
     Tuple(Vec<PyObjectRef>),
     Set(Rc<PyCell<FxHashKeyMap>>),
     FrozenSet(Box<FxHashKeyMap>),

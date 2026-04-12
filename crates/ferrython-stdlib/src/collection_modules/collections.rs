@@ -788,8 +788,8 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
         let mut attrs = inst_data.attrs.write();
         attrs.insert(CompactString::from("__deque__"), PyObject::bool_val(true));
-        // Share the same Arc so mutations through closures are visible via _data
-        attrs.insert(CompactString::from("_data"), PyObject::wrap(PyObjectPayload::List(data.clone())));
+        // Store a reference list for _data (closures share the backing Rc<PyCell> directly)
+        attrs.insert(CompactString::from("_data"), PyObject::list(data.read().clone()));
         attrs.insert(
             CompactString::from("__maxlen__"),
             match maxlen {
@@ -1358,92 +1358,106 @@ fn make_user_list_class() -> PyObjectRef {
 }
 
 fn install_list_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef) {
-    let list = if let PyObjectPayload::List(l) = &data.payload { l.clone() } else { return; };
-    let l = list.clone();
+    if !matches!(&data.payload, PyObjectPayload::List(_)) { return; }
+    let l = data.clone();
     attrs.write().insert(CompactString::from("append"), PyObject::native_closure("append", move |args| {
         if args.is_empty() { return Err(PyException::type_error("append() requires 1 argument")); }
-        l.write().push(args[0].clone());
+        if let PyObjectPayload::List(items) = &l.payload { items.write().push(args[0].clone()); }
         Ok(PyObject::none())
     }));
-    let l = list.clone();
+    let l = data.clone();
     attrs.write().insert(CompactString::from("extend"), PyObject::native_closure("extend", move |args| {
         if args.is_empty() { return Err(PyException::type_error("extend() requires 1 argument")); }
-        let items = args[0].to_list()?;
-        l.write().extend(items);
+        let new_items = args[0].to_list()?;
+        if let PyObjectPayload::List(items) = &l.payload { items.write().extend(new_items); }
         Ok(PyObject::none())
     }));
-    let l = list.clone();
+    let l = data.clone();
     attrs.write().insert(CompactString::from("insert"), PyObject::native_closure("insert", move |args| {
         if args.len() < 2 { return Err(PyException::type_error("insert() requires 2 arguments")); }
         let idx = args[0].to_int()? as usize;
-        let mut w = l.write();
-        let idx = idx.min(w.len());
-        w.insert(idx, args[1].clone());
+        if let PyObjectPayload::List(items) = &l.payload {
+            let mut w = items.write();
+            let idx = idx.min(w.len());
+            w.insert(idx, args[1].clone());
+        }
         Ok(PyObject::none())
     }));
-    let l = list.clone();
+    let l = data.clone();
     attrs.write().insert(CompactString::from("pop"), PyObject::native_closure("pop", move |args| {
-        let mut w = l.write();
-        if w.is_empty() { return Err(PyException::index_error("pop from empty list")); }
-        let idx = if !args.is_empty() {
-            let i = args[0].to_int()? as i64;
-            let len = w.len() as i64;
-            (if i < 0 { (len + i).max(0) } else { i.min(len - 1) }) as usize
-        } else { w.len() - 1 };
-        if idx < w.len() { Ok(w.remove(idx)) } else { Err(PyException::index_error("pop index out of range")) }
+        if let PyObjectPayload::List(items) = &l.payload {
+            let mut w = items.write();
+            if w.is_empty() { return Err(PyException::index_error("pop from empty list")); }
+            let idx = if !args.is_empty() {
+                let i = args[0].to_int()? as i64;
+                let len = w.len() as i64;
+                (if i < 0 { (len + i).max(0) } else { i.min(len - 1) }) as usize
+            } else { w.len() - 1 };
+            if idx < w.len() { Ok(w.remove(idx)) } else { Err(PyException::index_error("pop index out of range")) }
+        } else { Err(PyException::type_error("not a list")) }
     }));
-    let l = list.clone();
+    let l = data.clone();
     attrs.write().insert(CompactString::from("remove"), PyObject::native_closure("remove", move |args| {
         if args.is_empty() { return Err(PyException::type_error("remove() requires 1 argument")); }
-        let mut w = l.write();
-        let target = &args[0];
-        if let Some(pos) = w.iter().position(|x| x.compare(target, CompareOp::Eq).map_or(false, |v| v.is_truthy())) {
-            w.remove(pos);
-            Ok(PyObject::none())
-        } else {
-            Err(PyException::value_error("list.remove(x): x not in list"))
-        }
+        if let PyObjectPayload::List(items) = &l.payload {
+            let mut w = items.write();
+            let target = &args[0];
+            if let Some(pos) = w.iter().position(|x| x.compare(target, CompareOp::Eq).map_or(false, |v| v.is_truthy())) {
+                w.remove(pos);
+                Ok(PyObject::none())
+            } else {
+                Err(PyException::value_error("list.remove(x): x not in list"))
+            }
+        } else { Err(PyException::type_error("not a list")) }
     }));
-    let l = list.clone();
+    let l = data.clone();
     attrs.write().insert(CompactString::from("clear"), PyObject::native_closure("clear", move |_| {
-        l.write().clear();
+        if let PyObjectPayload::List(items) = &l.payload { items.write().clear(); }
         Ok(PyObject::none())
     }));
-    let l = list.clone();
+    let l = data.clone();
     attrs.write().insert(CompactString::from("reverse"), PyObject::native_closure("reverse", move |_| {
-        l.write().reverse();
+        if let PyObjectPayload::List(items) = &l.payload { items.write().reverse(); }
         Ok(PyObject::none())
     }));
-    let l = list.clone();
+    let l = data.clone();
     attrs.write().insert(CompactString::from("count"), PyObject::native_closure("count", move |args| {
         if args.is_empty() { return Err(PyException::type_error("count() requires 1 argument")); }
         let target = &args[0];
-        let count = l.read().iter().filter(|x| x.compare(target, CompareOp::Eq).map_or(false, |v| v.is_truthy())).count();
-        Ok(PyObject::int(count as i64))
+        if let PyObjectPayload::List(items) = &l.payload {
+            let count = items.read().iter().filter(|x| x.compare(target, CompareOp::Eq).map_or(false, |v| v.is_truthy())).count();
+            Ok(PyObject::int(count as i64))
+        } else { Ok(PyObject::int(0)) }
     }));
-    let l = list.clone();
+    let l = data.clone();
     attrs.write().insert(CompactString::from("index"), PyObject::native_closure("index", move |args| {
         if args.is_empty() { return Err(PyException::type_error("index() requires 1 argument")); }
         let target = &args[0];
-        let r = l.read();
-        for (i, x) in r.iter().enumerate() {
-            if x.compare(target, CompareOp::Eq).map_or(false, |v| v.is_truthy()) {
-                return Ok(PyObject::int(i as i64));
+        if let PyObjectPayload::List(items) = &l.payload {
+            let r = items.read();
+            for (i, x) in r.iter().enumerate() {
+                if x.compare(target, CompareOp::Eq).map_or(false, |v| v.is_truthy()) {
+                    return Ok(PyObject::int(i as i64));
+                }
             }
         }
         Err(PyException::value_error("x not in list"))
     }));
-    let l = list.clone();
+    let l = data.clone();
     attrs.write().insert(CompactString::from("sort"), PyObject::native_closure("sort", move |_| {
-        let mut w = l.write();
-        let mut items: Vec<_> = w.drain(..).collect();
-        items.sort_by(|a, b| a.compare(b, CompareOp::Lt).map_or(std::cmp::Ordering::Equal, |v| if v.is_truthy() { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }));
-        *w = items;
+        if let PyObjectPayload::List(items) = &l.payload {
+            let mut w = items.write();
+            let mut sorted: Vec<_> = w.drain(..).collect();
+            sorted.sort_by(|a, b| a.compare(b, CompareOp::Lt).map_or(std::cmp::Ordering::Equal, |v| if v.is_truthy() { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }));
+            *w = sorted;
+        }
         Ok(PyObject::none())
     }));
-    let l = list.clone();
+    let l = data.clone();
     attrs.write().insert(CompactString::from("copy"), PyObject::native_closure("copy", move |_| {
-        Ok(PyObject::list(l.read().clone()))
+        if let PyObjectPayload::List(items) = &l.payload {
+            Ok(PyObject::list(items.read().clone()))
+        } else { Ok(PyObject::list(vec![])) }
     }));
 }
 

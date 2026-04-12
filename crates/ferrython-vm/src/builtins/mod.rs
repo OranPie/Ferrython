@@ -483,7 +483,7 @@ pub fn call_method(receiver: &PyObjectRef, method: &str, args: &[PyObjectRef]) -
     }
     match &receiver.payload {
         PyObjectPayload::Str(s) => call_str_method(s, method, args),
-        PyObjectPayload::List(items) => call_list_method(items.clone(), method, args),
+        PyObjectPayload::List(items) => call_list_method(items, method, args),
         PyObjectPayload::Dict(map) | PyObjectPayload::MappingProxy(map) => call_dict_method(map, method, args),
         PyObjectPayload::InstanceDict(attrs) => call_instance_dict_method(attrs, method, args),
         PyObjectPayload::Int(_) => call_int_method(receiver, method, args),

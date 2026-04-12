@@ -1,13 +1,13 @@
 //! Singleton values and PyObject factory/constructor methods.
 
 use std::rc::Rc;
+use std::cell::RefCell;
 use crate::error::{ExceptionKind, PyResult};
 use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use std::any::Any;
-use std::sync::Mutex;
 
 use super::payload::*;
 use super::methods::PyObjectMethods;
@@ -41,7 +41,10 @@ static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyOb
 static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new(PyObject { payload: PyObjectPayload::Bytes(vec![]) }));
 
 // ── GC Tracking for cycle-capable objects (Instance, Dict, List) ──
-static TRACKED_OBJECTS: LazyLock<Mutex<Vec<PyWeakRef>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+// Thread-local tracking: no mutex, no atomics — single-threaded GIL interpreter.
+thread_local! {
+    static TRACKED_OBJECTS: RefCell<Vec<PyWeakRef>> = RefCell::new(Vec::new());
+}
 
 /// Register the cycle collector callback with the GC crate.
 pub fn init_gc() {
@@ -59,61 +62,60 @@ pub fn init_gc() {
 /// 4. If strong_count == internal_refs, the object is only reachable from within cycles
 /// 5. Clear contents on unreachable objects to break cycles (dropping internal refs)
 fn run_cycle_collection() -> usize {
-    let mut tracked = match TRACKED_OBJECTS.lock() {
-        Ok(t) => t,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    TRACKED_OBJECTS.with(|cell| {
+        let mut tracked = cell.borrow_mut();
 
-    // 1. Upgrade weak refs, purge dead ones
-    let alive: Vec<PyObjectRef> = tracked.iter()
-        .filter_map(|w| w.upgrade())
-        .collect();
-    tracked.retain(|w| w.strong_count() > 0);
+        // 1. Upgrade weak refs, purge dead ones
+        let alive: Vec<PyObjectRef> = tracked.iter()
+            .filter_map(|w| w.upgrade())
+            .collect();
+        tracked.retain(|w| w.strong_count() > 0);
 
-    if alive.is_empty() {
-        return 0;
-    }
-
-    // 2. Build pointer → index map for fast lookup
-    let ptr_map: std::collections::HashMap<usize, usize> = alive.iter()
-        .enumerate()
-        .map(|(i, obj)| (PyObjectRef::as_ptr(obj) as usize, i))
-        .collect();
-
-    // 3. Count internal references (refs from one tracked object to another)
-    let mut internal_refs = vec![0usize; alive.len()];
-    for obj in &alive {
-        count_internal_refs(&obj.payload, &ptr_map, &mut internal_refs);
-    }
-
-    // 4. Trial deletion: objects where strong_count == internal_refs + 1
-    // (+1 for our own `alive` Vec holding a ref)
-    let mut garbage_indices: Vec<usize> = Vec::new();
-    for (i, obj) in alive.iter().enumerate() {
-        let strong = PyObjectRef::strong_count(obj);
-        if strong <= internal_refs[i] + 1 {
-            garbage_indices.push(i);
+        if alive.is_empty() {
+            return 0;
         }
-    }
 
-    // 5. Verify: all garbage objects must only reference other garbage objects
-    // (conservative: only collect fully isolated cycles)
-    let garbage_set: std::collections::HashSet<usize> = garbage_indices.iter().copied().collect();
-    let mut confirmed_garbage: Vec<usize> = Vec::new();
-    for &gi in &garbage_indices {
-        let obj = &alive[gi];
-        if verify_all_refs_in_garbage(&obj.payload, &ptr_map, &garbage_set) {
-            confirmed_garbage.push(gi);
+        // 2. Build pointer → index map for fast lookup
+        let ptr_map: std::collections::HashMap<usize, usize> = alive.iter()
+            .enumerate()
+            .map(|(i, obj)| (PyObjectRef::as_ptr(obj) as usize, i))
+            .collect();
+
+        // 3. Count internal references (refs from one tracked object to another)
+        let mut internal_refs = vec![0usize; alive.len()];
+        for obj in &alive {
+            count_internal_refs(&obj.payload, &ptr_map, &mut internal_refs);
         }
-    }
 
-    // 6. Break cycles by clearing contents on garbage objects
-    let collected = confirmed_garbage.len();
-    for &gi in &confirmed_garbage {
-        break_cycles(&alive[gi].payload);
-    }
+        // 4. Trial deletion: objects where strong_count == internal_refs + 1
+        // (+1 for our own `alive` Vec holding a ref)
+        let mut garbage_indices: Vec<usize> = Vec::new();
+        for (i, obj) in alive.iter().enumerate() {
+            let strong = PyObjectRef::strong_count(obj);
+            if strong <= internal_refs[i] + 1 {
+                garbage_indices.push(i);
+            }
+        }
 
-    collected
+        // 5. Verify: all garbage objects must only reference other garbage objects
+        // (conservative: only collect fully isolated cycles)
+        let garbage_set: std::collections::HashSet<usize> = garbage_indices.iter().copied().collect();
+        let mut confirmed_garbage: Vec<usize> = Vec::new();
+        for &gi in &garbage_indices {
+            let obj = &alive[gi];
+            if verify_all_refs_in_garbage(&obj.payload, &ptr_map, &garbage_set) {
+                confirmed_garbage.push(gi);
+            }
+        }
+
+        // 6. Break cycles by clearing contents on garbage objects
+        let collected = confirmed_garbage.len();
+        for &gi in &confirmed_garbage {
+            break_cycles(&alive[gi].payload);
+        }
+
+        collected
+    })
 }
 
 /// Count references from a payload to other tracked objects.
@@ -220,9 +222,9 @@ fn break_cycles(payload: &PyObjectPayload) {
 }
 
 fn track_object(obj: &PyObjectRef) {
-    if let Ok(mut tracked) = TRACKED_OBJECTS.lock() {
-        tracked.push(PyObjectRef::downgrade(obj));
-    }
+    TRACKED_OBJECTS.with(|cell| {
+        cell.borrow_mut().push(PyObjectRef::downgrade(obj));
+    });
 }
 
 // ── PyObject constructors ──
@@ -285,7 +287,7 @@ impl PyObject {
     }
     pub fn bytearray(v: Vec<u8>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::ByteArray(v)) }
     pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef {
-        let obj = Self::wrap(PyObjectPayload::List(Rc::new(PyCell::new(items))));
+        let obj = Self::wrap(PyObjectPayload::List(PyCell::new(items)));
         track_object(&obj);
         obj
     }
