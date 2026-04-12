@@ -10,9 +10,8 @@ use ferrython_core::object::{PyCell,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 /// Global Path class reference so helper functions can create proper Path instances.
 static PATH_CLASS: OnceLock<PyObjectRef> = OnceLock::new();
@@ -1151,7 +1150,7 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     #[cfg(unix)]
     {
         use std::os::unix::io::IntoRawFd;
-        use std::sync::{Arc, RwLock};
+        
         let fd = file.into_raw_fd();
         let state = Rc::new(PyCell::new((fd, false))); // (fd, closed)
         let mut attrs = IndexMap::new();

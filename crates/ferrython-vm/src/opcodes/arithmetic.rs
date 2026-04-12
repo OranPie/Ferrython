@@ -10,7 +10,6 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
-use std::sync::Arc;
 
 // ── Group 4: Unary operations ────────────────────────────────────────
 impl VirtualMachine {

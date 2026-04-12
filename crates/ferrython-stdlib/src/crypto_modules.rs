@@ -8,8 +8,6 @@ use ferrython_core::object::{PyCell,
     to_shared_fx,
 };
 use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::Arc;
 use std::rc::Rc;
 
 use super::serial_modules::extract_bytes;

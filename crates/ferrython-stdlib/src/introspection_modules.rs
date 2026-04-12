@@ -668,7 +668,7 @@ pub fn create_inspect_module() -> PyObjectRef {
 
             // replace(**kwargs) → new Signature (returns self with updated attrs)
             let sig_ref = sig.clone();
-            w.insert(CompactString::from("replace"), PyObject::native_closure("Signature.replace", move |args: &[PyObjectRef]| {
+            w.insert(CompactString::from("replace"), PyObject::native_closure("Signature.replace", move |_args: &[PyObjectRef]| {
                 // For now, return a copy of self — full kwarg handling would need
                 // parameters= and return_annotation= support
                 Ok(sig_ref.clone())

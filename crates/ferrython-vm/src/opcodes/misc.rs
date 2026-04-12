@@ -11,7 +11,6 @@ use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
 use ferrython_core::types::PyInt;
 use indexmap::IndexMap;
-use std::sync::Arc;
 
 // ── Misc ops ─────────────────────────────────────────────────────────
 impl VirtualMachine {

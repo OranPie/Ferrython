@@ -11,8 +11,6 @@ use ferrython_core::object::{ PyCell,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::Mutex;
 use std::sync::Arc;
 use std::rc::Rc;
 

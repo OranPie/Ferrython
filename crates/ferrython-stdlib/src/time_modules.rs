@@ -93,11 +93,11 @@ pub fn create_time_module() -> PyObjectRef {
             {
                 let has_dst = unsafe {
                     use std::mem::MaybeUninit;
-                    let mut winter: libc::time_t = 0;
+                    let winter: libc::time_t = 0;
                     let mut tm_w = MaybeUninit::<libc::tm>::zeroed();
                     libc::localtime_r(&winter, tm_w.as_mut_ptr());
                     let w_off = (*tm_w.as_ptr()).tm_gmtoff;
-                    let mut summer: libc::time_t = 15778800;
+                    let summer: libc::time_t = 15778800;
                     let mut tm_s = MaybeUninit::<libc::tm>::zeroed();
                     libc::localtime_r(&summer, tm_s.as_mut_ptr());
                     let s_off = (*tm_s.as_ptr()).tm_gmtoff;
@@ -115,13 +115,13 @@ pub fn create_time_module() -> PyObjectRef {
                     use std::mem::MaybeUninit;
                     use std::ffi::CStr;
                     // Get standard time zone name (winter)
-                    let mut winter: libc::time_t = 0;
+                    let winter: libc::time_t = 0;
                     let mut tm_w = MaybeUninit::<libc::tm>::zeroed();
                     libc::localtime_r(&winter, tm_w.as_mut_ptr());
                     let std_n = if (*tm_w.as_ptr()).tm_zone.is_null() { "UTC".to_string() }
                     else { CStr::from_ptr((*tm_w.as_ptr()).tm_zone).to_str().unwrap_or("UTC").to_string() };
                     // Get DST zone name (summer)
-                    let mut summer: libc::time_t = 15778800;
+                    let summer: libc::time_t = 15778800;
                     let mut tm_s = MaybeUninit::<libc::tm>::zeroed();
                     libc::localtime_r(&summer, tm_s.as_mut_ptr());
                     let dst_n = if (*tm_s.as_ptr()).tm_zone.is_null() { "UTC".to_string() }

@@ -8,7 +8,6 @@ use ferrython_core::object::{PyCell,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::sync::Arc;
 use std::rc::Rc;
 
@@ -2165,8 +2164,8 @@ pub fn create_unittest_module() -> PyObjectRef {
                 w.insert(CompactString::from("output"), PyObject::list(vec![]));
 
                 // Build a capturing handler
-                let recs_enter = records.clone();
-                let outs_enter = output.clone();
+                let _recs_enter = records.clone();
+                let _outs_enter = output.clone();
                 let ln = logger_name.clone();
                 let lnum = level_num;
 
@@ -2765,7 +2764,7 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
         let kwargs = extract_mock_kwargs(&args[2..]);
         let rv_key = HashableKey::Str(CompactString::from("return_value"));
         // Build replacement value
-        let replacement = if let Some(rv) = kwargs.get(&rv_key) {
+        let replacement = if let Some(_rv) = kwargs.get(&rv_key) {
             build_mock_instance("MagicMock", &kwargs)
         } else if args.len() >= 3 {
             args[2].clone()

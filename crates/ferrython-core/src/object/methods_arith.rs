@@ -6,8 +6,6 @@ use crate::intern::intern_or_new;
 use crate::types::{PyInt, HashableKey};
 use compact_str::CompactString;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::Arc;
 
 use super::payload::*;
 use super::helpers::*;

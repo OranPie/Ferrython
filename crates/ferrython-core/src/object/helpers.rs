@@ -1,13 +1,11 @@
 //! Formatting helpers, slice resolution, coercion, and module-building utilities.
 
-use std::rc::Rc;
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use super::payload::*;
 use super::methods::PyObjectMethods;

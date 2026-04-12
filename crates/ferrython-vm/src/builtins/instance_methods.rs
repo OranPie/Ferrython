@@ -14,7 +14,6 @@ use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use std::sync::Arc;
 use std::rc::Rc;
-use parking_lot::RwLock;
 
 use super::core_fns::{builtin_dict_fromkeys, builtin_type};
 use super::dispatch;

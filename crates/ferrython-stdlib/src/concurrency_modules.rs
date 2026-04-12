@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::PyException;
-use ferrython_core::object::{PyCell, SharedFxAttrMap,
+use ferrython_core::object::{PyCell,
     PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods, PyWeakRef,
     make_module, make_builtin, check_args_min,
 };
@@ -1718,7 +1718,7 @@ pub fn create_signal_module() -> PyObjectRef {
                 } else if handler_is_callable && signum < 64 {
                     // Install a C handler that sets the pending bit
                     unsafe {
-                        libc::signal(signum as libc::c_int, flag_signal_handler as libc::sighandler_t);
+                        libc::signal(signum as libc::c_int, flag_signal_handler as *const () as libc::sighandler_t);
                     }
                 }
 
@@ -1728,7 +1728,7 @@ pub fn create_signal_module() -> PyObjectRef {
                     }
                     // Re-arm (System V signal semantics reset to SIG_DFL after delivery)
                     unsafe {
-                        libc::signal(sig, flag_signal_handler as libc::sighandler_t);
+                        libc::signal(sig, flag_signal_handler as *const () as libc::sighandler_t);
                     }
                 }
             }

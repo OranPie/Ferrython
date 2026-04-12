@@ -9,7 +9,6 @@ use ferrython_bytecode::code::CodeFlags;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
-use parking_lot::RwLock;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::cell::RefCell;

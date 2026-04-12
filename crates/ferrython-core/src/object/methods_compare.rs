@@ -1,12 +1,10 @@
 //! Comparison methods.
 
-use std::rc::Rc;
 use crate::error::PyResult;
 
 use super::payload::*;
 use super::helpers::{partial_cmp_objects, unwrap_builtin_subclass};
 use super::methods::CompareOp;
-use std::sync::Arc;
 
 pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyResult<PyObjectRef> {
         // Unwrap builtin subclass instances for comparison

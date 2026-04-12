@@ -6,7 +6,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub fn create_itertools_module() -> PyObjectRef {
     // chain is a callable object with a from_iterable class method attribute

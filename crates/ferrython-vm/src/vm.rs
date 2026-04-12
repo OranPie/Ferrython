@@ -97,12 +97,11 @@ use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{ PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
-    lookup_in_class_mro, SyncI64, FxAttrMap, new_shared_fx, to_shared_fx,
+    lookup_in_class_mro, SyncI64, FxAttrMap,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
 use std::rc::Rc;
 
@@ -1470,7 +1469,7 @@ impl VirtualMachine {
                             unsafe { frame.binary_op_result(PyObject::float(r)) };
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
+                        (PyObjectPayload::Str(_x), PyObjectPayload::Str(y)) => {
                             // CPython-style in-place string resize: if the LHS string has
                             // refcount 2 (one on stack, one in a local) and the next
                             // instruction is STORE_FAST, clear the local to get refcount 1,

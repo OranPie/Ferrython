@@ -4,7 +4,6 @@ use compact_str::CompactString;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::rc::Rc;
-use parking_lot::RwLock;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
@@ -1202,7 +1201,7 @@ pub fn create_os_module() -> PyObjectRef {
             let mode = if args.len() > 1 { args[1].py_to_string() } else { "r".to_string() };
             #[cfg(unix)]
             {
-                use std::sync::{Arc, RwLock};
+                
                 let is_binary = mode.contains('b');
                 // State: (fd, closed, name)
                 let state = Rc::new(PyCell::new((fd, false)));

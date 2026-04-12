@@ -41,7 +41,6 @@ pub fn register_cycle_collector<F: Fn() -> usize + Send + 'static>(f: F) {
 /// Notify the GC that an object was allocated. Returns `true` if a
 /// generation-0 collection should be triggered.
 #[inline]
-#[inline(always)]
 pub fn notify_alloc() -> bool {
     if !ENABLED.load(Ordering::Relaxed) {
         return false;

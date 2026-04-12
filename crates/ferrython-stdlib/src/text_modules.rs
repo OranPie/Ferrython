@@ -2782,7 +2782,7 @@ pub fn create_html_parser_module() -> PyObjectRef {
                 for (method_name, arg, attrs) in &pending {
                     if *method_name == "handle_startendtag_or_split" {
                         // Check if subclass overrides handle_startendtag
-                        let has_override = if let Some(m) = inst.attrs.read().get(&CompactString::from("handle_startendtag")).cloned() {
+                        let has_override = if let Some(_m) = inst.attrs.read().get(&CompactString::from("handle_startendtag")).cloned() {
                             true
                         } else {
                             // Check if class override differs from HTMLParser base
@@ -2881,7 +2881,7 @@ pub fn create_html_parser_module() -> PyObjectRef {
     }
 
     // handle_startendtag default: calls handle_starttag + handle_endtag (CPython behavior)
-    ns.insert(CompactString::from("handle_startendtag"), make_builtin(|args: &[PyObjectRef]| {
+    ns.insert(CompactString::from("handle_startendtag"), make_builtin(|_args: &[PyObjectRef]| {
         // Default: just no-op. The real delegation happens in the feed loop
         // where we check for user-override of handle_startendtag and fall back
         // to handle_starttag + handle_endtag if not overridden.

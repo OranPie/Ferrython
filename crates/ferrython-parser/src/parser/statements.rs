@@ -828,7 +828,7 @@ impl Parser {
             }
             // String literal
             TokenKind::String(_) | TokenKind::Bytes(_) | TokenKind::FString(_) => {
-                let loc = self.current_location();
+                let _loc = self.current_location();
                 let value = self.parse_atom()?;
                 Ok(Pattern::MatchLiteral { value })
             }

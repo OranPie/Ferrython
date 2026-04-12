@@ -276,7 +276,6 @@ fn escape_xml(s: &str) -> String {
 // list (Rc<PyCell<Vec<PyObjectRef>>>).  This eliminates the dual-state problem
 // where `child.text = "hello"` updated instance attrs but not the inner struct.
 
-use std::sync::RwLock;
 
 type ChildrenList = Rc<PyCell<Vec<PyObjectRef>>>;
 

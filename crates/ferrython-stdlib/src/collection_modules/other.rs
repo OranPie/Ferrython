@@ -5,7 +5,6 @@ use ferrython_core::object::{PyCell,
     make_module, make_builtin, check_args_min,
 };
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 

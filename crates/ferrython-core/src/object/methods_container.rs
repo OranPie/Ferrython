@@ -1,6 +1,5 @@
 //! Container operation methods (len, getitem, contains, iter).
 
-use std::rc::Rc;
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::types::HashableKey;
@@ -347,7 +346,7 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
 }
 
 pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
-        use std::sync::Mutex;
+        
         match &obj.payload {
             PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: items.read().clone(), index: 0 }))))),
             PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::Tuple { items: items.clone(), index: 0 }))))),

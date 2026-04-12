@@ -19,8 +19,6 @@ use ferrython_core::object::{PyCell,
     PyObject, PyObjectMethods, PyObjectRef,
 };
 use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::Arc;
 
 /// The state of a Task or Future.
 #[derive(Debug, Clone, PartialEq, Eq)]

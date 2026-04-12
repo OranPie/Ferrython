@@ -8,7 +8,6 @@ use ferrython_bytecode::Instruction;
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
-use std::sync::Arc;
 
 impl VirtualMachine {
     pub(crate) fn exec_exception_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {

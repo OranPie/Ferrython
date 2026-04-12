@@ -3900,7 +3900,7 @@ fn smtp_connect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Read greeting
     let stream = std::sync::Arc::new(std::sync::Mutex::new(stream));
     {
-        let mut sock = stream.lock().unwrap();
+        let sock = stream.lock().unwrap();
         let mut reader = BufReader::new(&*sock);
         let mut greeting = String::new();
         reader.read_line(&mut greeting).map_err(|e| PyException::os_error(&format!("SMTP read greeting: {}", e)))?;

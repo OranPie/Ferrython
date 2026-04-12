@@ -17,8 +17,6 @@ use ferrython_core::object::{ PyCell,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, FxAttrMap,
 };
 use ferrython_core::types::{HashableKey, SharedGlobals};
-use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::sync::Arc;
 use std::rc::Rc;
 
@@ -163,7 +161,7 @@ impl VirtualMachine {
                         self.cache_module(&fq_name, &m);
                         m
                     }
-                    ferrython_import::ResolvedModule::Source { code, name: mod_name, file_path } => {
+                    ferrython_import::ResolvedModule::Source { code, name: _mod_name, file_path } => {
                         self.exec_module_source(&fq_name, code, CompactString::from(fq_name.as_str()), file_path)?
                     }
                 };

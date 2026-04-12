@@ -1,10 +1,8 @@
 //! Type introspection & conversion methods.
 
-use std::rc::Rc;
 use crate::error::{PyException, PyResult};
 use crate::types::HashableKey;
 use compact_str::CompactString;
-use std::sync::Arc;
 
 use super::payload::*;
 use super::helpers::*;

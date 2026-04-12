@@ -3,7 +3,7 @@
 use std::fmt;
 use thiserror::Error;
 
-use crate::object::{PyObject, PyObjectRef};
+use crate::object::PyObjectRef;
 
 /// The kind of exception (maps to Python's exception classes).
 #[derive(Debug, Clone, PartialEq, Eq)]

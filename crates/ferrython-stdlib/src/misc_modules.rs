@@ -9,8 +9,6 @@ use ferrython_core::object::{PyCell,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::Arc;
 use std::rc::Rc;
 
 // ── contextlib module ──
@@ -1904,8 +1902,8 @@ pub fn create_runpy_module() -> PyObjectRef {
         // Use the compile + exec mechanism via deferred call
         // Since we can't directly invoke the VM here, we compile to code object
         // and attach it along with the namespace for the VM to pick up
-        let code_src = PyObject::str_val(CompactString::from(source.as_str()));
-        let filename = PyObject::str_val(CompactString::from(&*path));
+        let _code_src = PyObject::str_val(CompactString::from(source.as_str()));
+        let _filename = PyObject::str_val(CompactString::from(&*path));
 
         // Store (source, filename, globals_dict) for deferred execution
         // The caller should use exec() in Python land instead.

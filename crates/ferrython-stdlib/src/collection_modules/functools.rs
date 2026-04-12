@@ -8,8 +8,6 @@ use ferrython_core::object::{PyCell,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::Arc;
 use std::rc::Rc;
 
 pub fn create_functools_module() -> PyObjectRef {
@@ -191,7 +189,7 @@ pub fn create_functools_module() -> PyObjectRef {
                             // We can't call the function directly from here without VM,
                             // so wrap as a callable that stores the info
                             Ok(PyObject::native_closure("_partial_call", {
-                                let f2 = f.clone();
+                                let _f2 = f.clone();
                                 let args2 = all_args.clone();
                                 move |extra| {
                                     let mut a = args2.clone();

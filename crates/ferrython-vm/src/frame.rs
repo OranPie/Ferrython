@@ -5,7 +5,6 @@ use ferrython_bytecode::CodeObject;
 use ferrython_core::object::{ PyCell, FxAttrMap, PyObjectRef};
 use ferrython_core::types::{SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::rc::Rc;

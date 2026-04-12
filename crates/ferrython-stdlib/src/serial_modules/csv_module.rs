@@ -380,8 +380,8 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }))));
 
     // __iter__ returns self (the iterator facade)
-    let idx_ref = iter_index.clone();
-    let rows_ref = shared_rows.clone();
+    let _idx_ref = iter_index.clone();
+    let _rows_ref = shared_rows.clone();
     // We create a closure-based iterator that the VM can iterate
     attrs.insert(CompactString::from("__iter__"), {
         // Build a proper Iterator payload for the VM's for-loop

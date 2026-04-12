@@ -6,9 +6,8 @@ use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
-use parking_lot::RwLock;
 use std::any::Any;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use super::payload::*;
 use super::methods::PyObjectMethods;
@@ -230,7 +229,7 @@ fn track_object(obj: &PyObjectRef) {
 
 impl PyObject {
     #[inline]
-    #[inline(always)]
+    
     pub fn wrap(payload: PyObjectPayload) -> PyObjectRef {
         ferrython_gc::notify_alloc();
         PyObjectRef::new(PyObject { payload })

@@ -1927,7 +1927,7 @@ impl Compiler {
                     }
                 }
             }
-            Pattern::MatchMapping { keys, patterns, rest } => {
+            Pattern::MatchMapping { keys: _, patterns, rest } => {
                 for (i, pat) in patterns.iter().enumerate() {
                     let val_temp = CompactString::from(format!("$match_val_{}$", i));
                     let val_temp_idx = self.varname_index(&val_temp);

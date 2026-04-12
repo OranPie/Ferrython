@@ -2,13 +2,10 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{ PyCell, 
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+use ferrython_core::object::{ PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::sync::{Arc, Mutex};
-use std::rc::Rc;
 
 // ── File I/O ──
 

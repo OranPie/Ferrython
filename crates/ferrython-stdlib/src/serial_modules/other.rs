@@ -6,7 +6,6 @@ use ferrython_core::object::{PyCell,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::sync::Arc;
 use std::rc::Rc;
 
@@ -2284,7 +2283,7 @@ fn rot13(c: char) -> char {
 }
 
 fn punycode_digit(d: u32) -> u8 {
-    if d < 26 { (b'a' + d as u8) } else { (b'0' + (d as u8 - 26)) }
+    if d < 26 { b'a' + d as u8  } else { b'0' + (d as u8 - 26)  }
 }
 
 fn punycode_adapt(delta: u32, numpoints: u32, firsttime: bool) -> u32 {
