@@ -3147,6 +3147,61 @@ impl VirtualMachine {
                                     }
                                 }
                                 _ => {
+                                    // Check for isinstance(obj, cls) where cls is what we just loaded
+                                    // Stack layout: [..., isinstance_func, obj, ...existing args...]
+                                    // func_obj = the global we loaded (e.g., BuiltinType("int"))
+                                    if arg_count == 2 {
+                                        let stack_len = frame.stack.len();
+                                        // The function (isinstance) should be 2 positions back
+                                        if stack_len >= 2 {
+                                            let func = sget!(frame, stack_len - 2);
+                                            if let PyObjectPayload::BuiltinFunction(ref fn_name) = func.payload {
+                                                if fn_name.as_str() == "isinstance" {
+                                                    let obj = sget!(frame, stack_len - 1);
+                                                    let fast_result = match &func_obj.payload {
+                                                        PyObjectPayload::BuiltinType(bt) => {
+                                                            match bt.as_str() {
+                                                                "int" => Some(matches!(&obj.payload, PyObjectPayload::Int(_) | PyObjectPayload::Bool(_))),
+                                                                "float" => Some(matches!(&obj.payload, PyObjectPayload::Float(_))),
+                                                                "str" => Some(matches!(&obj.payload, PyObjectPayload::Str(_))),
+                                                                "bool" => Some(matches!(&obj.payload, PyObjectPayload::Bool(_))),
+                                                                "list" => Some(matches!(&obj.payload, PyObjectPayload::List(_))),
+                                                                "dict" => Some(matches!(&obj.payload, PyObjectPayload::Dict(_) | PyObjectPayload::InstanceDict(_))),
+                                                                "tuple" => Some(matches!(&obj.payload, PyObjectPayload::Tuple(_))),
+                                                                "set" => Some(matches!(&obj.payload, PyObjectPayload::Set(_))),
+                                                                "bytes" => Some(matches!(&obj.payload, PyObjectPayload::Bytes(_))),
+                                                                "bytearray" => Some(matches!(&obj.payload, PyObjectPayload::ByteArray(_))),
+                                                                _ => None,
+                                                            }
+                                                        }
+                                                        PyObjectPayload::Class(cd) => {
+                                                            if let PyObjectPayload::Instance(inst) = &obj.payload {
+                                                                if let PyObjectPayload::Class(obj_cd) = &inst.class.payload {
+                                                                    if obj_cd.name == cd.name { Some(true) }
+                                                                    else {
+                                                                        Some(obj_cd.mro.iter().any(|b| {
+                                                                            matches!(&b.payload, PyObjectPayload::Class(bc) if bc.name == cd.name)
+                                                                        }))
+                                                                    }
+                                                                } else { None }
+                                                            } else { None }
+                                                        }
+                                                        _ => None,
+                                                    };
+                                                    if let Some(result) = fast_result {
+                                                        unsafe {
+                                                            let base = frame.stack.as_ptr();
+                                                            let _ = std::ptr::read(base.add(stack_len - 2)); // drop isinstance
+                                                            let _ = std::ptr::read(base.add(stack_len - 1)); // drop obj
+                                                            frame.stack.set_len(stack_len - 2);
+                                                        }
+                                                        spush!(frame, PyObject::bool_val(result));
+                                                        hot_ok!(profiling, self.profiler, instr.op)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     // Not a simple function — decompose to LoadGlobal + CallFunction
                                     spush!(frame, func_obj.clone());
                                     let call_instr = Instruction::new(Opcode::CallFunction, arg_count as u32);
@@ -4045,10 +4100,13 @@ impl VirtualMachine {
                         let obj = spop!(frame);
                         let value = spop!(frame);
                         if let PyObjectPayload::Instance(inst) = &obj.payload {
-                            unsafe { &mut *inst.attrs.data_ptr() }.insert(
-                                ferrython_core::intern::intern_or_new(name.as_str()),
-                                value,
-                            );
+                            let map = unsafe { &mut *inst.attrs.data_ptr() };
+                            // Fast path: update existing attr without key allocation
+                            if let Some(slot) = map.get_mut(name) {
+                                *slot = value;
+                            } else {
+                                map.insert(name.clone(), value);
+                            }
                         }
                         hot_ok!(profiling, self.profiler, instr.op)
                     } else {
@@ -4278,6 +4336,13 @@ impl VirtualMachine {
                     if frame.global_cache_version == ver {
                         if let Some(ref cache) = frame.global_cache {
                             if let Some(ref v) = unsafe { cache.get_unchecked(name_idx) } {
+                                // Skip clone if destination already holds the same Arc
+                                let dest = unsafe { frame.locals.get_unchecked(store_idx) };
+                                if let Some(ref existing) = dest {
+                                    if Arc::ptr_eq(existing, v) {
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    }
+                                }
                                 sset_local!(frame, store_idx, v.clone());
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }

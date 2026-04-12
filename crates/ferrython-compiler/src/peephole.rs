@@ -29,6 +29,7 @@ pub fn optimize(code: &mut CodeObject) {
         changed |= eliminate_dead_stores(code);
         changed |= eliminate_dead_code(code);
         changed |= collapse_jump_chains(code);
+        changed |= eliminate_safe_try_blocks(code);
     }
 
     // Final cleanup: remove NOP instructions and fix jump targets
@@ -320,6 +321,56 @@ fn collapse_jump_chains(code: &mut CodeObject) -> bool {
         }
     }
     changed
+}
+
+/// Eliminate block operations for try blocks whose body cannot raise.
+/// Pattern: SETUP_FINALLY handler ... POP_BLOCK JUMP end
+/// If all instructions between SETUP_FINALLY and POP_BLOCK are "safe" (cannot raise),
+/// the block push/pop is dead overhead. Replace SETUP_FINALLY and POP_BLOCK with NOP.
+fn eliminate_safe_try_blocks(code: &mut CodeObject) -> bool {
+    let mut changed = false;
+    let n = code.instructions.len();
+    for i in 0..n {
+        if code.instructions[i].op != Opcode::SetupFinally
+            && code.instructions[i].op != Opcode::SetupExcept {
+            continue;
+        }
+        // Find matching POP_BLOCK
+        let mut all_safe = true;
+        let mut pop_block_idx = None;
+        for j in (i + 1)..n {
+            let op = code.instructions[j].op;
+            if op == Opcode::PopBlock {
+                pop_block_idx = Some(j);
+                break;
+            }
+            // An instruction is "safe" if it cannot raise an exception
+            if !is_safe_opcode(op) {
+                all_safe = false;
+                break;
+            }
+        }
+        if all_safe {
+            if let Some(pb_idx) = pop_block_idx {
+                code.instructions[i] = Instruction::simple(Opcode::Nop);
+                code.instructions[pb_idx] = Instruction::simple(Opcode::Nop);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Returns true if the opcode cannot raise an exception (is "safe" in a try body).
+fn is_safe_opcode(op: Opcode) -> bool {
+    matches!(op,
+        Opcode::LoadConst | Opcode::StoreFast | Opcode::LoadFast
+        | Opcode::Nop | Opcode::PopTop | Opcode::DupTop
+        | Opcode::RotTwo | Opcode::RotThree
+        // Fused superinstructions that only access locals/consts
+        | Opcode::LoadConstStoreFast | Opcode::StoreFastLoadFast
+        | Opcode::LoadFastLoadFast | Opcode::LoadFastLoadConst
+    )
 }
 
 /// Remove NOP instructions and rewrite jump targets accordingly.
