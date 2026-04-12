@@ -1491,7 +1491,7 @@ impl VirtualMachine {
                         // SAFETY: stack non-empty for well-formed bytecode
                         let val = spop!(frame);
                         Ok(Some(val))
-                    } else if frame.block_stack.iter().any(|b| b.kind == BlockKind::Finally) {
+                    } else if frame.block_stack.iter().any(|b| b.kind() == BlockKind::Finally) {
                         self.execute_one(instr)
                     } else {
                         // SAFETY: stack non-empty for well-formed bytecode
@@ -5551,25 +5551,25 @@ impl VirtualMachine {
     pub(crate) fn unwind_except(&mut self) -> Option<usize> {
         let frame = self.call_stack.last_mut()?;
         while let Some(block) = frame.pop_block() {
-            match block.kind {
+            match block.kind() {
                 BlockKind::Except | BlockKind::Finally => {
                     // Unwind value stack to block level
-                    while frame.stack.len() > block.stack_level {
+                    while frame.stack.len() > block.stack_level() {
                         frame.pop();
                     }
                     // Push an ExceptHandler block so PopExcept can find it
                     frame.push_block(BlockKind::ExceptHandler, 0);
-                    return Some(block.handler);
+                    return Some(block.handler());
                 }
                 BlockKind::ExceptHandler => {
                     // Clean up a previous except handler (exception in except body)
-                    while frame.stack.len() > block.stack_level {
+                    while frame.stack.len() > block.stack_level() {
                         frame.pop();
                     }
                     continue;
                 }
                 BlockKind::Loop => {
-                    while frame.stack.len() > block.stack_level {
+                    while frame.stack.len() > block.stack_level() {
                         frame.pop();
                     }
                     continue;
@@ -5577,10 +5577,10 @@ impl VirtualMachine {
                 BlockKind::With => {
                     // With block exception — jump to cleanup handler which will
                     // call __exit__ with exception info
-                    while frame.stack.len() > block.stack_level {
+                    while frame.stack.len() > block.stack_level() {
                         frame.pop();
                     }
-                    return Some(block.handler);
+                    return Some(block.handler());
                 }
             }
         }

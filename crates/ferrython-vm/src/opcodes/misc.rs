@@ -421,7 +421,7 @@ impl VirtualMachine {
                 // Also pop the ExceptHandler block that was pushed by unwind_except
                 let frame = self.vm_frame();
                 if let Some(block) = frame.block_stack.last() {
-                    if matches!(block.kind, BlockKind::ExceptHandler) {
+                    if matches!(block.kind(), BlockKind::ExceptHandler) {
                         frame.pop_block();
                     }
                 }

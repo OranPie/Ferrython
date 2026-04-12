@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Developer tools for Ferrython: debugger, profiler, coverage"
 
+[features]
+profiling = []
+
 [dependencies]
 ferrython-core = { workspace = true }
 ferrython-bytecode = { workspace = true }

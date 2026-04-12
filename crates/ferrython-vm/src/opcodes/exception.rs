@@ -238,8 +238,8 @@ impl VirtualMachine {
         if let Some(ret_val) = frame.pending_return.take() {
             let mut has_finally = false;
             while let Some(block) = frame.block_stack.last() {
-                if block.kind == BlockKind::Finally {
-                    let handler = block.handler;
+                if block.kind() == BlockKind::Finally {
+                    let handler = block.handler();
                     frame.block_stack.pop();
                     frame.pending_return = Some(ret_val.clone());
                     frame.push(PyObject::none());

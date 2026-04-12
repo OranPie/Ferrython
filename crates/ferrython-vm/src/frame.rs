@@ -54,16 +54,34 @@ pub enum BlockKind { Loop, Except, Finally, With, ExceptHandler }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeKind { Module, Function, Class }
 
+/// Packed block entry — 8 bytes (down from 24 with usize fields).
+/// handler: u32 covers up to 4B instruction indices (more than enough).
+/// stack_level: u16 covers up to 65K stack depth (more than enough).
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct Block {
-    pub kind: BlockKind,
-    pub handler: usize,
-    pub stack_level: usize,
+    handler: u32,
+    stack_level: u16,
+    kind: BlockKind,
+    _pad: u8,
+}
+
+impl Block {
+    #[inline(always)]
+    pub fn new(kind: BlockKind, handler: usize, stack_level: usize) -> Self {
+        Self { handler: handler as u32, stack_level: stack_level as u16, kind, _pad: 0 }
+    }
+    #[inline(always)]
+    pub fn kind(&self) -> BlockKind { self.kind }
+    #[inline(always)]
+    pub fn handler(&self) -> usize { self.handler as usize }
+    #[inline(always)]
+    pub fn stack_level(&self) -> usize { self.stack_level as usize }
 }
 
 /// Fixed-capacity inline block stack (avoids Vec heap allocation).
-/// Python rarely nests more than 8 blocks; overflow spills to a Vec.
-const BLOCK_STACK_INLINE: usize = 8;
+/// 4 inline slots cover typical nesting; overflow spills to a Vec.
+const BLOCK_STACK_INLINE: usize = 4;
 
 #[derive(Debug, Clone)]
 pub struct BlockStack {
@@ -90,7 +108,7 @@ impl BlockStack {
     #[inline(always)]
     pub fn push(&mut self, block: Block) {
         if (self.len as usize) < BLOCK_STACK_INLINE {
-            unsafe { self.inline[self.len as usize].write(block); }
+            self.inline[self.len as usize].write(block);
             self.len += 1;
         } else {
             self.overflow.get_or_insert_with(|| Vec::with_capacity(4)).push(block);
@@ -589,7 +607,7 @@ impl Frame {
     pub fn get_local(&self, idx: usize) -> Option<&PyObjectRef> { self.locals[idx].as_ref() }
     pub fn set_local(&mut self, idx: usize, v: PyObjectRef) { self.locals[idx] = Some(v); }
     pub fn push_block(&mut self, kind: BlockKind, handler: usize) {
-        self.block_stack.push(Block { kind, handler, stack_level: self.stack.len() });
+        self.block_stack.push(Block::new(kind, handler, self.stack.len()));
     }
     pub fn pop_block(&mut self) -> Option<Block> { self.block_stack.pop() }
     pub fn load_name(&self, name: &str) -> Option<PyObjectRef> {

@@ -47,16 +47,29 @@ impl ExecutionProfiler {
         }
     }
 
-    /// Enable or disable profiling. When disabled, all calls are no-ops.
+    /// Enable or disable profiling. No-op when `profiling` feature is not enabled.
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-        if enabled {
-            self.start_time = Instant::now();
+        #[cfg(feature = "profiling")]
+        {
+            self.enabled = enabled;
+            if enabled {
+                self.start_time = Instant::now();
+            }
         }
+        #[cfg(not(feature = "profiling"))]
+        { let _ = enabled; }
     }
 
+    /// Returns whether profiling is enabled.
+    /// When the `profiling` feature is disabled (default), this is a compile-time
+    /// constant `false`, allowing LLVM to dead-code-eliminate all `if profiling { }`
+    /// checks in the hot dispatch loop.
+    #[inline(always)]
     pub fn is_enabled(&self) -> bool {
-        self.enabled
+        #[cfg(feature = "profiling")]
+        { self.enabled }
+        #[cfg(not(feature = "profiling"))]
+        { false }
     }
 
     /// Record the start of an instruction execution.

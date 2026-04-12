@@ -997,8 +997,8 @@ impl VirtualMachine {
                 // If inside a finally block, the new return overrides any pending return
                 let mut found_finally = false;
                 while let Some(block) = frame.block_stack.last() {
-                    if block.kind == BlockKind::Finally {
-                        let handler = block.handler;
+                    if block.kind() == BlockKind::Finally {
+                        let handler = block.handler();
                         frame.block_stack.pop();
                         frame.pending_return = Some(value.clone());
                         frame.push(PyObject::none());
@@ -1025,8 +1025,8 @@ impl VirtualMachine {
                 // Handle finally blocks
                 let mut found_finally = false;
                 while let Some(block) = frame.block_stack.last() {
-                    if block.kind == BlockKind::Finally {
-                        let handler = block.handler;
+                    if block.kind() == BlockKind::Finally {
+                        let handler = block.handler();
                         frame.block_stack.pop();
                         frame.pending_return = Some(val.clone());
                         frame.push(PyObject::none());
@@ -1046,8 +1046,8 @@ impl VirtualMachine {
                 let val = frame.constant_cache[instr.arg as usize].clone();
                 let mut found_finally = false;
                 while let Some(block) = frame.block_stack.last() {
-                    if block.kind == BlockKind::Finally {
-                        let handler = block.handler;
+                    if block.kind() == BlockKind::Finally {
+                        let handler = block.handler();
                         frame.block_stack.pop();
                         frame.pending_return = Some(val.clone());
                         frame.push(PyObject::none());
