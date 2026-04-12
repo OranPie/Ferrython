@@ -7,9 +7,11 @@ use compact_str::CompactString;
 use indexmap::IndexMap;
 use rustc_hash::{FxHashMap, FxHasher};
 use std::any::Any;
-use std::cell::UnsafeCell;
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::hash::BuildHasherDefault;
 use std::fmt;
+use std::mem::MaybeUninit;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -131,10 +133,68 @@ pub fn next_class_version() -> u64 {
 // Target: ≤32 bytes (down from 40). Further reduction possible by boxing more variants.
 const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <= 40);
 
+// ── PyObject Freelist Allocator ──
+// Replaces Rc<PyObject> with a custom ref-counted pointer backed by a
+// thread-local freelist. Eliminates malloc/free for hot object creation
+// (CPython uses the same freelist strategy via pymalloc + per-type freelists).
+
+/// Internal block layout for a reference-counted Python object.
+/// Placed on the heap; recycled via thread-local freelist when ref count hits 0.
+#[repr(C)]
+struct PyObjectBlock {
+    /// Strong reference count (u32 is sufficient for single-threaded interpreter).
+    strong: Cell<u32>,
+    /// Weak reference count (tracked for PyWeakRef support).
+    weak: Cell<u32>,
+    /// The Python object data (may be uninitialized after strong reaches 0 but weak > 0).
+    obj: MaybeUninit<PyObject>,
+}
+
+const MAX_OBJECT_POOL: usize = 512;
+
+thread_local! {
+    static OBJECT_POOL: RefCell<Vec<NonNull<PyObjectBlock>>> =
+        RefCell::new(Vec::with_capacity(256));
+}
+
+#[inline(always)]
+fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
+    let block = OBJECT_POOL.with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_else(|| {
+            // Allocate new block
+            let layout = std::alloc::Layout::new::<PyObjectBlock>();
+            let ptr = unsafe { std::alloc::alloc(layout) as *mut PyObjectBlock };
+            NonNull::new(ptr).expect("allocation failed")
+        });
+    unsafe {
+        let p = block.as_ptr();
+        (*p).strong = Cell::new(1);
+        (*p).weak = Cell::new(0);
+        (*p).obj.as_mut_ptr().write(obj);
+    }
+    block
+}
+
+#[inline(always)]
+fn pool_recycle(block: NonNull<PyObjectBlock>) {
+    OBJECT_POOL.with(|pool| {
+        let mut p = pool.borrow_mut();
+        if p.len() < MAX_OBJECT_POOL {
+            p.push(block);
+        } else {
+            unsafe {
+                std::alloc::dealloc(
+                    block.as_ptr() as *mut u8,
+                    std::alloc::Layout::new::<PyObjectBlock>(),
+                );
+            }
+        }
+    });
+}
+
 /// A reference-counted handle to a Python object.
-/// Uses non-atomic Rc for performance — Ferrython is single-threaded.
-#[repr(transparent)]
-pub struct PyObjectRef(Rc<PyObject>);
+/// Backed by a thread-local freelist — allocation is a Vec::pop, not malloc.
+pub struct PyObjectRef(NonNull<PyObjectBlock>);
 
 // SAFETY: Ferrython is a single-threaded interpreter (GIL equivalent).
 // PyObjectRef values never cross thread boundaries during normal operation.
@@ -145,52 +205,103 @@ unsafe impl Sync for PyObjectRef {}
 
 impl PyObjectRef {
     #[inline(always)]
-    pub fn new(obj: PyObject) -> Self { Self(Rc::new(obj)) }
+    pub fn new(obj: PyObject) -> Self { Self(pool_alloc(obj)) }
 
     #[inline(always)]
-    pub fn ptr_eq(a: &Self, b: &Self) -> bool { Rc::ptr_eq(&a.0, &b.0) }
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool { a.0 == b.0 }
 
     #[inline(always)]
-    pub fn as_ptr(this: &Self) -> *const PyObject { Rc::as_ptr(&this.0) }
+    pub fn as_ptr(this: &Self) -> *const PyObject {
+        unsafe { (*this.0.as_ptr()).obj.as_ptr() }
+    }
 
     #[inline(always)]
-    pub fn strong_count(this: &Self) -> usize { Rc::strong_count(&this.0) }
+    pub fn strong_count(this: &Self) -> usize {
+        unsafe { (*this.0.as_ptr()).strong.get() as usize }
+    }
 
     #[inline(always)]
-    pub fn downgrade(this: &Self) -> PyWeakRef { PyWeakRef(Rc::downgrade(&this.0)) }
+    pub fn downgrade(this: &Self) -> PyWeakRef {
+        unsafe {
+            let p = this.0.as_ptr();
+            (*p).weak.set((*p).weak.get() + 1);
+        }
+        PyWeakRef(this.0)
+    }
 
     #[inline(always)]
-    pub fn weak_count(this: &Self) -> usize { Rc::weak_count(&this.0) }
+    pub fn weak_count(this: &Self) -> usize {
+        unsafe { (*this.0.as_ptr()).weak.get() as usize }
+    }
 
     #[inline(always)]
-    pub fn get_mut(this: &mut Self) -> Option<&mut PyObject> { Rc::get_mut(&mut this.0) }
+    pub fn get_mut(this: &mut Self) -> Option<&mut PyObject> {
+        unsafe {
+            let p = this.0.as_ptr();
+            if (*p).strong.get() == 1 && (*p).weak.get() == 0 {
+                Some(&mut *(*p).obj.as_mut_ptr())
+            } else {
+                None
+            }
+        }
+    }
 }
 
 impl Clone for PyObjectRef {
     #[inline(always)]
-    fn clone(&self) -> Self { Self(Rc::clone(&self.0)) }
+    fn clone(&self) -> Self {
+        unsafe {
+            let c = &(*self.0.as_ptr()).strong;
+            c.set(c.get() + 1);
+        }
+        Self(self.0)
+    }
+}
+
+impl Drop for PyObjectRef {
+    #[inline(always)]
+    fn drop(&mut self) {
+        unsafe {
+            let p = self.0.as_ptr();
+            let new_strong = (*p).strong.get() - 1;
+            (*p).strong.set(new_strong);
+            if new_strong == 0 {
+                // Drop the PyObject value
+                std::ptr::drop_in_place((*p).obj.as_mut_ptr());
+                // If no weak refs, recycle immediately
+                if (*p).weak.get() == 0 {
+                    pool_recycle(self.0);
+                }
+                // else: block stays alive for weak refs; recycled when last weak drops
+            }
+        }
+    }
 }
 
 impl std::ops::Deref for PyObjectRef {
     type Target = PyObject;
     #[inline(always)]
-    fn deref(&self) -> &PyObject { &self.0 }
+    fn deref(&self) -> &PyObject {
+        unsafe { &*(*self.0.as_ptr()).obj.as_ptr() }
+    }
 }
 
 impl AsRef<PyObject> for PyObjectRef {
     #[inline(always)]
-    fn as_ref(&self) -> &PyObject { &self.0 }
+    fn as_ref(&self) -> &PyObject {
+        unsafe { &*(*self.0.as_ptr()).obj.as_ptr() }
+    }
 }
 
 impl fmt::Debug for PyObjectRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        (**self).fmt(f)
     }
 }
 
 /// Weak reference to a Python object (for GC cycle detection and weakref module).
-#[repr(transparent)]
-pub struct PyWeakRef(std::rc::Weak<PyObject>);
+/// Keeps the PyObjectBlock alive but does not prevent the PyObject from being dropped.
+pub struct PyWeakRef(NonNull<PyObjectBlock>);
 
 // SAFETY: Same as PyObjectRef — single-threaded interpreter.
 unsafe impl Send for PyWeakRef {}
@@ -198,15 +309,49 @@ unsafe impl Sync for PyWeakRef {}
 
 impl PyWeakRef {
     #[inline(always)]
-    pub fn upgrade(&self) -> Option<PyObjectRef> { self.0.upgrade().map(PyObjectRef) }
+    pub fn upgrade(&self) -> Option<PyObjectRef> {
+        unsafe {
+            let p = self.0.as_ptr();
+            let s = (*p).strong.get();
+            if s > 0 {
+                (*p).strong.set(s + 1);
+                Some(PyObjectRef(self.0))
+            } else {
+                None
+            }
+        }
+    }
 
     #[inline(always)]
-    pub fn strong_count(&self) -> usize { self.0.strong_count() }
+    pub fn strong_count(&self) -> usize {
+        unsafe { (*self.0.as_ptr()).strong.get() as usize }
+    }
 }
 
 impl Clone for PyWeakRef {
     #[inline(always)]
-    fn clone(&self) -> Self { Self(self.0.clone()) }
+    fn clone(&self) -> Self {
+        unsafe {
+            let c = &(*self.0.as_ptr()).weak;
+            c.set(c.get() + 1);
+        }
+        Self(self.0)
+    }
+}
+
+impl Drop for PyWeakRef {
+    #[inline(always)]
+    fn drop(&mut self) {
+        unsafe {
+            let p = self.0.as_ptr();
+            let new_weak = (*p).weak.get() - 1;
+            (*p).weak.set(new_weak);
+            // Recycle block when both strong and weak reach 0
+            if new_weak == 0 && (*p).strong.get() == 0 {
+                pool_recycle(self.0);
+            }
+        }
+    }
 }
 
 impl fmt::Debug for PyWeakRef {
