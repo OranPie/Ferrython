@@ -14,7 +14,6 @@ use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── PyCell: zero-overhead interior mutability (replaces parking_lot::RwLock) ──
 
@@ -119,14 +118,20 @@ pub fn new_shared_fx() -> SharedFxAttrMap {
     Rc::new(PyCell::new(FxAttrMap::default()))
 }
 
-/// Global monotonic counter for class versioning. Incremented each time a
+/// Thread-local monotonic counter for class versioning. Incremented each time a
 /// ClassData is created or mutated. Used by inline caches to detect staleness.
-static CLASS_VERSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+thread_local! {
+    static CLASS_VERSION_COUNTER: Cell<u64> = const { Cell::new(1) };
+}
 
 /// Allocate a fresh class version number.
 #[inline(always)]
 pub fn next_class_version() -> u64 {
-    CLASS_VERSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    CLASS_VERSION_COUNTER.with(|c| {
+        let v = c.get();
+        c.set(v.wrapping_add(1));
+        v
+    })
 }
 
 // Compile-time size check: ensure enum stays compact after boxing cold variants
