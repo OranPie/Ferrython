@@ -241,11 +241,22 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
         "join" => {
             check_args_min("join", args, 1)?;
             let items = args[0].to_list()?;
-            let strs: Result<Vec<String>, _> = items.iter()
-                .map(|x| x.as_str().map(String::from).ok_or_else(||
-                    PyException::type_error("sequence item: expected str")))
-                .collect();
-            Ok(PyObject::str_val(CompactString::from(strs?.join(s))))
+            // Compute total length and validate all items are str upfront
+            let mut total_len = if items.is_empty() { 0 } else { s.len() * (items.len() - 1) };
+            for item in &items {
+                match item.as_str() {
+                    Some(part) => total_len += part.len(),
+                    None => return Err(PyException::type_error("sequence item: expected str")),
+                }
+            }
+            let mut result = String::with_capacity(total_len);
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 { result.push_str(s); }
+                if let Some(part) = item.as_str() {
+                    result.push_str(part);
+                }
+            }
+            Ok(PyObject::str_val(CompactString::from(result)))
         }
         "replace" => {
             check_args_min("replace", args, 2)?;

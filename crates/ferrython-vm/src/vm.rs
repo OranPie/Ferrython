@@ -2174,7 +2174,74 @@ impl VirtualMachine {
                         }
                     }
                 }
-                | Opcode::FormatValue | Opcode::BuildString => self.execute_one(instr),
+                // Inline FormatValue for common primitives (int, str, float, bool, None)
+                Opcode::FormatValue => {
+                    let has_fmt_spec = instr.arg & 0x04 != 0;
+                    let conversion = (instr.arg & 0x03) as u8;
+                    if !has_fmt_spec && (conversion == 0 || conversion == 1) {
+                        let val = speek!(frame);
+                        let fast_str = match &val.payload {
+                            PyObjectPayload::Str(s) => Some(s.clone()),
+                            PyObjectPayload::Int(PyInt::Small(n)) => {
+                                let mut buf = itoa::Buffer::new();
+                                Some(CompactString::from(buf.format(*n)))
+                            }
+                            PyObjectPayload::Float(f) => {
+                                let mut buf = ryu::Buffer::new();
+                                Some(CompactString::from(buf.format(*f)))
+                            }
+                            PyObjectPayload::Bool(b) => Some(CompactString::from(if *b { "True" } else { "False" })),
+                            PyObjectPayload::None => Some(CompactString::from("None")),
+                            _ => None,
+                        };
+                        if let Some(s) = fast_str {
+                            let len = frame.stack.len();
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::str_val(s) };
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        } else {
+                            self.execute_one(instr)
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline BuildString for the all-str fast path
+                Opcode::BuildString => {
+                    let count = instr.arg as usize;
+                    if count <= 1 {
+                        // 0 or 1 items — trivial
+                        if count == 0 {
+                            spush!(frame, PyObject::str_val(CompactString::from("")));
+                        }
+                        // count == 1 → already a string from FormatValue, nothing to do
+                        hot_ok!(profiling, self.profiler, instr.op)
+                    } else {
+                        let start = frame.stack.len() - count;
+                        let mut total_len = 0usize;
+                        let mut all_str = true;
+                        for i in start..frame.stack.len() {
+                            if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
+                                total_len += s.len();
+                            } else {
+                                all_str = false;
+                                break;
+                            }
+                        }
+                        if all_str {
+                            let mut result = String::with_capacity(total_len);
+                            for i in start..frame.stack.len() {
+                                if let PyObjectPayload::Str(s) = &frame.stack[i].payload {
+                                    result.push_str(s.as_str());
+                                }
+                            }
+                            frame.stack.truncate(start);
+                            spush!(frame, PyObject::str_val(CompactString::from(result)));
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        } else {
+                            self.execute_one(instr)
+                        }
+                    }
+                }
                 // Inline UnpackSequence for tuple fast path
                 Opcode::UnpackSequence => {
                     let top = speek!(frame);
@@ -4927,7 +4994,7 @@ impl VirtualMachine {
                     if profiling { self.profiler.end_instruction(instr.op); }
                 }
                 Err(mut exc) => {
-                    // Fire "exception" trace event
+                    // Fire "exception" trace event (cold — only when tracing)
                     if has_trace {
                         let exc_info = PyObject::tuple(vec![
                             PyObject::exception_type(exc.kind),
@@ -4936,14 +5003,9 @@ impl VirtualMachine {
                         ]);
                         self.fire_trace_event("exception", exc_info);
                     }
-                    // Lazy traceback: only attach when the exception
-                    // escapes (no handler found). Caught exceptions skip
-                    // the expensive traceback construction entirely.
-                    // Implicit chaining: if there's an active exception and the
-                    // new one doesn't already have context, set __context__
+                    // Implicit chaining: link to active exception (only when present)
                     if exc.context.is_none() {
                         if let Some(ref active) = self.active_exception {
-                            // Shallow link — avoid deep-cloning the entire chain.
                             exc.context = Some(Box::new(PyException::new(
                                 active.kind,
                                 active.message.clone(),
@@ -4953,40 +5015,28 @@ impl VirtualMachine {
                     // Iterative exception unwind: try current frame, then parents
                     loop {
                         if let Some(handler_ip) = self.unwind_except() {
-                            // Store active exception for bare `raise` re-raise
-                            self.active_exception = Some(exc.clone());
-                            // Update core thread-local (used by ferrython-traceback).
-                            // Pass empty traceback — built lazily on demand.
-                            ferrython_core::error::set_thread_exc_info(
-                                exc.kind,
-                                exc.message.clone(),
-                                Vec::new(),
-                            );
-                            let frame = self.call_stack.last_mut().unwrap();
-                            // CPython pushes (traceback, value, type) — 3 items
+                            // Extract exc_value and exc_type, reusing original when available
+                            let exc_kind = exc.kind;
                             let (exc_value, exc_type) = if let Some(orig) = &exc.original {
                                 let cls = if let PyObjectPayload::Instance(inst) = &orig.payload {
                                     inst.class.clone()
                                 } else {
-                                    PyObject::exception_type(exc.kind)
+                                    PyObject::exception_type(exc_kind)
                                 };
                                 (orig.clone(), cls)
                             } else {
                                 let inst = if let Some(val) = &exc.value {
-                                    PyObject::exception_instance_with_args(exc.kind, exc.message.clone(), vec![val.clone()])
+                                    PyObject::exception_instance_with_args(exc_kind, exc.message.clone(), vec![val.clone()])
                                 } else {
-                                    PyObject::exception_instance(exc.kind, exc.message.clone())
+                                    PyObject::exception_instance(exc_kind, exc.message.clone())
                                 };
-                                (
-                                    inst,
-                                    PyObject::exception_type(exc.kind),
-                                )
+                                (inst, PyObject::exception_type(exc_kind))
                             };
-                            // Store StopIteration.value if present
+                            // Only store attributes that have non-default values
+                            // (avoids 4+ hash-map inserts for the common raise/catch case)
                             if let Some(val) = &exc.value {
                                 Self::store_exc_attr(&exc_value, "value", val.clone());
                             }
-                            // Store OSError attributes (.errno, .strerror, .filename) if present
                             if let Some(info) = &exc.os_error_info {
                                 Self::store_exc_attr(&exc_value, "errno", PyObject::int(info.errno as i64));
                                 Self::store_exc_attr(&exc_value, "strerror", PyObject::str_val(CompactString::from(info.strerror.as_str())));
@@ -4996,7 +5046,6 @@ impl VirtualMachine {
                                     Self::store_exc_attr(&exc_value, "filename", PyObject::none());
                                 }
                             }
-                            // Attach __cause__ from exception chaining (raise X from Y)
                             if let Some(cause) = &exc.cause {
                                 let cause_obj = if let Some(corig) = &cause.original {
                                     corig.clone()
@@ -5004,10 +5053,8 @@ impl VirtualMachine {
                                     PyObject::exception_instance(cause.kind, cause.message.clone())
                                 };
                                 Self::store_exc_attr(&exc_value, "__cause__", cause_obj);
-                            } else {
-                                Self::store_exc_attr(&exc_value, "__cause__", PyObject::none());
+                                Self::store_exc_attr(&exc_value, "__suppress_context__", PyObject::bool_val(true));
                             }
-                            // Attach __context__ from implicit exception chaining
                             if let Some(ctx) = &exc.context {
                                 let ctx_obj = if let Some(corig) = &ctx.original {
                                     corig.clone()
@@ -5015,27 +5062,20 @@ impl VirtualMachine {
                                     PyObject::exception_instance(ctx.kind, ctx.message.clone())
                                 };
                                 Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
-                            } else {
-                                Self::store_exc_attr(&exc_value, "__context__", PyObject::none());
                             }
-                            // Store __suppress_context__ (True when explicit cause is set)
-                            if exc.cause.is_some() {
-                                Self::store_exc_attr(&exc_value, "__suppress_context__", PyObject::bool_val(true));
-                            }
-                            // Lazy traceback: push None to stack. The full
-                            // traceback object is only built when accessed via
-                            // __traceback__ or traceback.format_exc().
-                            Self::store_exc_attr(&exc_value, "__traceback__", PyObject::none());
                             // Update thread-local for sys.exc_info()
                             ferrython_stdlib::set_exc_info(
-                                exc.kind,
+                                exc_kind,
                                 exc.message.clone(),
                                 Some(exc_value.clone()),
                             );
+                            let frame = self.call_stack.last_mut().unwrap();
                             frame.push(PyObject::none());         // traceback (lazy)
                             frame.push(exc_value);            // value
                             frame.push(exc_type);             // type
                             frame.ip = handler_ip;
+                            // Move exc into active_exception (avoids clone)
+                            self.active_exception = Some(exc);
                             break; // handler found, continue main loop
                         }
                         // No handler in current frame — unwind iteratively
@@ -5046,7 +5086,6 @@ impl VirtualMachine {
                             continue; // try parent frame's block stack
                         }
                         // Exception escapes — attach traceback now
-                        // (only pays the cost for uncaught exceptions).
                         if exc.traceback.is_empty() {
                             self.attach_traceback(&mut exc);
                         }
