@@ -3613,20 +3613,25 @@ impl VirtualMachine {
                     let base_idx = stack_len - arg_count - 2;
                     let slot_0 = sget!(frame, base_idx);
                     // Fast path: slot_0 is a Python function (unbound method)
-                    let fast_data = if !matches!(&slot_0.payload, PyObjectPayload::None) {
+                    let is_simple_method = if !matches!(&slot_0.payload, PyObjectPayload::None) {
                         if let PyObjectPayload::Function(pf) = &slot_0.payload {
-                            if pf.is_simple && pf.code.arg_count as usize == arg_count + 1 {
-                                Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache)))
-                            } else { None }
-                        } else { None }
-                    } else { None };
-                    if let Some((code, globals, cc)) = fast_data {
-                        let mut new_frame = Frame::new_from_pool(
-                            code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool,
-                        );
-                        // Stack: [..., method, receiver, arg0, ..., argN-1]
-                        // Move args + receiver + method off stack with direct reads
+                            pf.is_simple && pf.code.arg_count as usize == arg_count + 1
+                        } else { false }
+                    } else { false };
+                    if is_simple_method {
+                        // Borrowed path: take method object, borrow its Arc fields
+                        let method_idx = frame.stack.len() - arg_count - 2;
                         let arg_start = frame.stack.len() - arg_count;
+                        let mut new_frame = unsafe {
+                            let method_obj: PyObjectRef = std::ptr::read(frame.stack.as_ptr().add(method_idx));
+                            let pf_ptr = match &method_obj.payload {
+                                PyObjectPayload::Function(pf) => &**pf as *const ferrython_core::types::PyFunction,
+                                _ => std::hint::unreachable_unchecked(),
+                            };
+                            Frame::new_borrowed(&*pf_ptr, method_obj, &self.builtins, &mut self.frame_pool)
+                        };
+                        // Stack: [..., method, receiver, arg0, ..., argN-1]
+                        // Move args + receiver off stack with direct reads
                         unsafe {
                             let base = frame.stack.as_ptr();
                             for i in 0..arg_count {
@@ -3634,10 +3639,9 @@ impl VirtualMachine {
                                     std::ptr::read(base.add(arg_start + i))
                                 );
                             }
-                            // receiver at arg_start - 1, method at arg_start - 2
+                            // receiver at arg_start - 1; method already consumed above
                             new_frame.locals[0] = Some(std::ptr::read(base.add(arg_start - 1)));
-                            let _method = std::ptr::read(base.add(arg_start - 2));
-                            frame.stack.set_len(arg_start - 2);
+                            frame.stack.set_len(method_idx);
                         }
                         // Inherit global cache for recursive calls (same code object)
                         if Arc::ptr_eq(&frame.code, &new_frame.code) {
