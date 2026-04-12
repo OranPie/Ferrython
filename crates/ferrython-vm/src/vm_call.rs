@@ -265,7 +265,7 @@ impl VirtualMachine {
     pub(crate) fn call_function(
         &mut self,
         code: &Arc<CodeObject>,
-        args: Vec<PyObjectRef>,
+        mut args: Vec<PyObjectRef>,
         defaults: &[PyObjectRef],
         kw_defaults: &IndexMap<CompactString, PyObjectRef>,
         globals: SharedGlobals,
@@ -278,17 +278,23 @@ impl VirtualMachine {
         let has_varargs = code.flags.contains(CodeFlags::VARARGS);
         let has_varkw = code.flags.contains(CodeFlags::VARKEYWORDS);
 
-        // Assign positional parameters
-        let positional_count = args.len().min(nparams);
-        for i in 0..positional_count {
-            frame.set_local(i, args[i].clone());
+        let nargs = args.len();
+        let positional_count = nargs.min(nparams);
+
+        // Move positional args into locals (zero-clone via drain)
+        {
+            let mut drain = args.drain(..positional_count);
+            for i in 0..positional_count {
+                frame.set_local(i, drain.next().unwrap());
+            }
         }
+        // `args` now contains only surplus positional args (if any)
 
         // Fill in defaults for missing positional args
-        if args.len() < nparams && !defaults.is_empty() {
+        if nargs < nparams && !defaults.is_empty() {
             let ndefaults = defaults.len();
             let first_default_param = nparams - ndefaults;
-            for i in args.len()..nparams {
+            for i in nargs..nparams {
                 if i >= first_default_param {
                     let default_idx = i - first_default_param;
                     frame.set_local(i, defaults[default_idx].clone());
@@ -297,13 +303,13 @@ impl VirtualMachine {
         }
 
         // Check for missing required positional args
-        if args.len() < nparams {
+        if nargs < nparams {
             let ndefaults = defaults.len();
             let required = nparams - ndefaults;
-            if args.len() < required {
-                let missing = required - args.len();
+            if nargs < required {
+                let missing = required - nargs;
                 let fname = code.name.as_str();
-                let missing_names: Vec<&str> = (args.len()..required)
+                let missing_names: Vec<&str> = (nargs..required)
                     .filter_map(|i| code.varnames.get(i).map(|s| s.as_str()))
                     .collect();
                 return Err(PyException::type_error(format!(
@@ -316,18 +322,18 @@ impl VirtualMachine {
 
         // Pack extra positional args into *args tuple, or raise TypeError
         if has_varargs {
-            let extra: Vec<PyObjectRef> = if args.len() > nparams {
-                args[nparams..].to_vec()
+            let extra: Vec<PyObjectRef> = if nargs > nparams {
+                args // already drained to only surplus args
             } else {
                 Vec::new()
             };
             frame.set_local(nparams, PyObject::tuple(extra));
-        } else if args.len() > nparams {
+        } else if nargs > nparams {
             let fname = code.name.as_str();
             return Err(PyException::type_error(format!(
                 "{}() takes {} positional argument{} but {} {} given",
                 fname, nparams, if nparams == 1 { "" } else { "s" },
-                args.len(), if args.len() == 1 { "was" } else { "were" }
+                nargs, if nargs == 1 { "was" } else { "were" }
             )));
         }
 
@@ -358,7 +364,7 @@ impl VirtualMachine {
     pub(crate) fn call_function_kw(
         &mut self,
         code: &Arc<CodeObject>,
-        pos_args: Vec<PyObjectRef>,
+        mut pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
         defaults: &[PyObjectRef],
         kw_defaults: &IndexMap<CompactString, PyObjectRef>,
@@ -379,11 +385,17 @@ impl VirtualMachine {
         // Keyword-only params start after *args slot (if present)
         let kwonly_start = if has_varargs { nparams + 1 } else { nparams };
 
-        // Assign positional parameters
-        let positional_count = pos_args.len().min(nparams);
-        for i in 0..positional_count {
-            frame.set_local(i, pos_args[i].clone());
+        let npos = pos_args.len();
+        let positional_count = npos.min(nparams);
+
+        // Move positional args into locals (zero-clone via drain)
+        {
+            let mut drain = pos_args.drain(..positional_count);
+            for i in 0..positional_count {
+                frame.set_local(i, drain.next().unwrap());
+            }
         }
+        // `pos_args` now contains only surplus positional args (if any)
 
         // Place keyword args at their correct parameter positions
         // Build a name→index lookup for O(1) kwarg matching
@@ -395,7 +407,7 @@ impl VirtualMachine {
         } else {
             None
         };
-        for (name, val) in &kwargs {
+        for (name, val) in kwargs {
             let found_idx = if let Some(ref map) = varname_map {
                 map.get(name.as_str()).copied()
             } else {
@@ -413,14 +425,14 @@ impl VirtualMachine {
                 let is_positional = idx < nparams;
                 let is_kwonly = idx >= kwonly_start && idx < kwonly_start + nkwonly;
                 if is_positional || is_kwonly {
-                    frame.set_local(idx, val.clone());
+                    frame.set_local(idx, val);
                     continue;
                 }
             }
             // Not a known parameter — goes into **kwargs
             extra_kwargs.insert(
-                HashableKey::Str(name.clone()),
-                val.clone(),
+                HashableKey::Str(name),
+                val,
             );
         }
 
@@ -450,18 +462,18 @@ impl VirtualMachine {
 
         // Pack extra positional args into *args tuple, or raise TypeError
         if has_varargs {
-            let extra: Vec<PyObjectRef> = if pos_args.len() > nparams {
-                pos_args[nparams..].to_vec()
+            let extra: Vec<PyObjectRef> = if npos > nparams {
+                pos_args // already drained to only surplus args
             } else {
                 Vec::new()
             };
             frame.set_local(varargs_slot, PyObject::tuple(extra));
-        } else if pos_args.len() > nparams {
+        } else if npos > nparams {
             let fname = code.name.as_str();
             return Err(PyException::type_error(format!(
                 "{}() takes {} positional argument{} but {} {} given",
                 fname, nparams, if nparams == 1 { "" } else { "s" },
-                pos_args.len(), if pos_args.len() == 1 { "was" } else { "were" }
+                npos, if npos == 1 { "was" } else { "were" }
             )));
         }
 
