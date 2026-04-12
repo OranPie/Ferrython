@@ -264,6 +264,14 @@ pub enum Opcode {
     /// Hot in try/except — pops exception block and jumps in one dispatch.
     /// arg encoding: jump_target
     PopBlockJump = 237,
+    /// Fused 4-way: LoadConst + LoadFast + CompareOp(in/not_in) + StoreFast
+    /// Zero-clone: reads constant and local by reference, stores bool result in-place.
+    /// arg encoding: (not_in_flag << 31) | (const_idx << 20) | (fast_idx << 10) | store_idx
+    LoadConstLoadFastContainsStoreFast = 238,
+    /// Fused 4-way: LoadFast + LoadConst + BinarySubscr + StoreFast
+    /// Zero-clone for container and index; only clones element (with in-place mutation fallback).
+    /// arg encoding: (fast_idx << 20) | (const_idx << 10) | store_idx
+    LoadFastLoadConstSubscrStoreFast = 239,
 }
 
 impl Opcode {
@@ -406,6 +414,8 @@ impl Opcode {
             Self::LoadFastLoadFastCompareJump => 0, // reads two locals by ref, compares, no stack change
             Self::LoadGlobalStoreFast => 0, // stores global directly to local (net 0)
             Self::PopBlockJump => 0, // pops block, jumps (no stack change)
+            Self::LoadConstLoadFastContainsStoreFast => 0, // reads const+local by ref, stores bool to local
+            Self::LoadFastLoadConstSubscrStoreFast => 0, // reads local+const by ref, stores element to local
         }
     }
 

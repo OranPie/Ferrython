@@ -1332,8 +1332,34 @@ impl VirtualMachine {
                 Opcode::LoadConstStoreFast => {
                     let const_idx = (instr.arg >> 16) as usize;
                     let store_idx = (instr.arg & 0xFFFF) as usize;
-                    let val = unsafe { frame.constant_cache.get_unchecked(const_idx) }.clone();
-                    sset_local!(frame, store_idx, val);
+                    let const_ref = unsafe { frame.constant_cache.get_unchecked(const_idx) };
+                    // In-place mutation: if dest holds same type with refcount 1, overwrite payload
+                    let dest_slot = unsafe { frame.locals.get_unchecked_mut(store_idx) };
+                    if let Some(ref mut arc) = dest_slot {
+                        if let Some(obj) = Arc::get_mut(arc) {
+                            match (&const_ref.payload, &mut obj.payload) {
+                                (PyObjectPayload::Int(src), PyObjectPayload::Int(dst)) => {
+                                    *dst = src.clone();
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                                (PyObjectPayload::Bool(src), PyObjectPayload::Bool(dst)) => {
+                                    *dst = *src;
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                                (PyObjectPayload::None, PyObjectPayload::None) => {
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                                (PyObjectPayload::Float(src), PyObjectPayload::Float(dst)) => {
+                                    *dst = *src;
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    // Fallback: clone constant
+                    let val = const_ref.clone();
+                    *unsafe { frame.locals.get_unchecked_mut(store_idx) } = Some(val);
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
 
@@ -4271,6 +4297,193 @@ impl VirtualMachine {
                     frame.ip = instr.arg as usize;
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
+                // Fused LoadConst + LoadFast + CompareOp(in/not_in) + StoreFast
+                // Zero-Arc: reads constant and local by reference, does containment check,
+                // stores bool result to local with in-place mutation.
+                Opcode::LoadConstLoadFastContainsStoreFast => {
+                    let not_in = (instr.arg >> 31) != 0;
+                    let const_idx = ((instr.arg >> 20) & 0x3FF) as usize;
+                    let fast_idx = ((instr.arg >> 10) & 0x3FF) as usize;
+                    let store_idx = (instr.arg & 0x3FF) as usize;
+                    let needle = unsafe { frame.constant_cache.get_unchecked(const_idx) };
+                    let haystack_opt = slocal!(frame, fast_idx);
+                    if let Some(haystack) = haystack_opt {
+                        let found = match (&needle.payload, &haystack.payload) {
+                            (PyObjectPayload::Str(s), PyObjectPayload::Dict(map)) => {
+                                let r = unsafe { &*map.data_ptr() };
+                                Some(r.contains_key(&BorrowedStrKey(s.as_str())))
+                            }
+                            (PyObjectPayload::Int(PyInt::Small(n)), PyObjectPayload::Dict(map)) => {
+                                let r = unsafe { &*map.data_ptr() };
+                                Some(r.contains_key(&BorrowedIntKey(*n)))
+                            }
+                            (PyObjectPayload::Bool(b), PyObjectPayload::Dict(map)) => {
+                                let r = unsafe { &*map.data_ptr() };
+                                Some(r.contains_key(&BorrowedIntKey(*b as i64)))
+                            }
+                            (PyObjectPayload::Str(s), PyObjectPayload::Set(items)) => {
+                                let r = unsafe { &*items.data_ptr() };
+                                Some(r.contains_key(&BorrowedStrKey(s.as_str())))
+                            }
+                            (PyObjectPayload::Int(PyInt::Small(n)), PyObjectPayload::Set(items)) => {
+                                let r = unsafe { &*items.data_ptr() };
+                                Some(r.contains_key(&BorrowedIntKey(*n)))
+                            }
+                            (PyObjectPayload::Str(needle_s), PyObjectPayload::List(items_arc)) => {
+                                let items = unsafe { &*items_arc.data_ptr() };
+                                Some(items.iter().any(|x| {
+                                    if let PyObjectPayload::Str(s) = &x.payload { s == needle_s } else { false }
+                                }))
+                            }
+                            (PyObjectPayload::Int(PyInt::Small(nv)), PyObjectPayload::List(items_arc)) => {
+                                let items = unsafe { &*items_arc.data_ptr() };
+                                Some(items.iter().any(|x| {
+                                    if let PyObjectPayload::Int(PyInt::Small(v)) = &x.payload { v == nv } else { false }
+                                }))
+                            }
+                            (PyObjectPayload::Str(needle_s), PyObjectPayload::Tuple(items)) => {
+                                Some(items.iter().any(|x| {
+                                    if let PyObjectPayload::Str(s) = &x.payload { s == needle_s } else { false }
+                                }))
+                            }
+                            (PyObjectPayload::Int(PyInt::Small(nv)), PyObjectPayload::Tuple(items)) => {
+                                Some(items.iter().any(|x| {
+                                    if let PyObjectPayload::Int(PyInt::Small(v)) = &x.payload { v == nv } else { false }
+                                }))
+                            }
+                            (PyObjectPayload::Str(needle_s), PyObjectPayload::Str(haystack_s)) => {
+                                Some(haystack_s.contains(needle_s.as_str()))
+                            }
+                            _ => None,
+                        };
+                        if let Some(is_in) = found {
+                            let result = if not_in { !is_in } else { is_in };
+                            // In-place mutation for bool result
+                            let dest = unsafe { frame.locals.get_unchecked_mut(store_idx) };
+                            if let Some(ref mut arc) = dest {
+                                if let Some(obj) = Arc::get_mut(arc) {
+                                    obj.payload = PyObjectPayload::Bool(result);
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                            }
+                            *dest = Some(PyObject::bool_val(result));
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                    }
+                    // Fallback: decompose to individual ops
+                    spush!(frame, unsafe { frame.constant_cache.get_unchecked(const_idx) }.clone());
+                    if let Some(v) = slocal!(frame, fast_idx) {
+                        spush!(frame, v.clone());
+                    } else {
+                        let _ = spop!(frame);
+                        Self::err_unbound_local(&frame.code.varnames, fast_idx)?;
+                        unreachable!();
+                    }
+                    let cmp_arg = if not_in { 7u32 } else { 6u32 };
+                    let cmp_instr = Instruction::new(Opcode::CompareOp, cmp_arg);
+                    self.execute_one(cmp_instr)?;
+                    let frame = self.call_stack.last_mut().unwrap();
+                    let v = spop!(frame);
+                    sset_local!(frame, store_idx, v);
+                    hot_ok!(profiling, self.profiler, instr.op)
+                }
+                // Fused LoadFast + LoadConst + BinarySubscr + StoreFast
+                // Zero-Arc for container/index; clones element with in-place mutation fallback.
+                Opcode::LoadFastLoadConstSubscrStoreFast => {
+                    let fast_idx = ((instr.arg >> 20) & 0x3FF) as usize;
+                    let const_idx = ((instr.arg >> 10) & 0x3FF) as usize;
+                    let store_idx = (instr.arg & 0x3FF) as usize;
+                    // Use raw pointer to read local without borrowing frame.locals
+                    // SAFETY: fast_idx is a valid local index from well-formed bytecode
+                    let locals_ptr = frame.locals.as_mut_ptr();
+                    let obj_opt = unsafe { &*locals_ptr.add(fast_idx) };
+                    let key = unsafe { frame.constant_cache.get_unchecked(const_idx) };
+                    if let Some(obj) = obj_opt {
+                        match (&obj.payload, &key.payload) {
+                            (PyObjectPayload::List(items_arc), PyObjectPayload::Int(PyInt::Small(idx))) => {
+                                let items = unsafe { &*items_arc.data_ptr() };
+                                let i = *idx;
+                                let actual = if i < 0 { i + items.len() as i64 } else { i };
+                                if actual >= 0 && (actual as usize) < items.len() {
+                                    let elem = &items[actual as usize];
+                                    // In-place mutation via raw pointer (bypasses borrow checker)
+                                    let dest = unsafe { &mut *locals_ptr.add(store_idx) };
+                                    if let Some(ref mut arc) = dest {
+                                        if let Some(dest_obj) = Arc::get_mut(arc) {
+                                            match (&elem.payload, &mut dest_obj.payload) {
+                                                (PyObjectPayload::Int(src), PyObjectPayload::Int(dst)) => {
+                                                    *dst = src.clone();
+                                                    hot_ok!(profiling, self.profiler, instr.op)
+                                                }
+                                                (PyObjectPayload::Float(src), PyObjectPayload::Float(dst)) => {
+                                                    *dst = *src;
+                                                    hot_ok!(profiling, self.profiler, instr.op)
+                                                }
+                                                (PyObjectPayload::Bool(src), PyObjectPayload::Bool(dst)) => {
+                                                    *dst = *src;
+                                                    hot_ok!(profiling, self.profiler, instr.op)
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    *dest = Some(elem.clone());
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                            }
+                            (PyObjectPayload::Tuple(items), PyObjectPayload::Int(PyInt::Small(idx))) => {
+                                let i = *idx;
+                                let actual = if i < 0 { i + items.len() as i64 } else { i };
+                                if actual >= 0 && (actual as usize) < items.len() {
+                                    let elem = &items[actual as usize];
+                                    let dest = unsafe { &mut *locals_ptr.add(store_idx) };
+                                    if let Some(ref mut arc) = dest {
+                                        if let Some(dest_obj) = Arc::get_mut(arc) {
+                                            match (&elem.payload, &mut dest_obj.payload) {
+                                                (PyObjectPayload::Int(src), PyObjectPayload::Int(dst)) => {
+                                                    *dst = src.clone();
+                                                    hot_ok!(profiling, self.profiler, instr.op)
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    *dest = Some(elem.clone());
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                            }
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
+                                let val = unsafe { &*map.data_ptr() }.get(&BorrowedStrKey(s.as_str())).cloned();
+                                if let Some(v) = val {
+                                    sset_local!(frame, store_idx, v);
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                            }
+                            (PyObjectPayload::Dict(map), PyObjectPayload::Int(PyInt::Small(n))) => {
+                                let val = unsafe { &*map.data_ptr() }.get(&BorrowedIntKey(*n)).cloned();
+                                if let Some(v) = val {
+                                    sset_local!(frame, store_idx, v);
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Fallback: decompose
+                    if let Some(v) = slocal!(frame, fast_idx) {
+                        spush!(frame, v.clone());
+                    } else {
+                        Self::err_unbound_local(&frame.code.varnames, fast_idx)?;
+                        unreachable!();
+                    }
+                    spush!(frame, unsafe { frame.constant_cache.get_unchecked(const_idx) }.clone());
+                    let subscr_instr = Instruction::new(Opcode::BinarySubscr, 0);
+                    self.execute_one(subscr_instr)?;
+                    let frame = self.call_stack.last_mut().unwrap();
+                    let v = spop!(frame);
+                    sset_local!(frame, store_idx, v);
+                    hot_ok!(profiling, self.profiler, instr.op)
+                }
                 _ => self.execute_one(instr),
             };
 
@@ -4600,6 +4813,8 @@ impl VirtualMachine {
             | Opcode::LoadFastLoadFast | Opcode::LoadFastLoadConst
             | Opcode::StoreFastLoadFast | Opcode::StoreFastJumpAbsolute
             | Opcode::LoadConstStoreFast | Opcode::LoadGlobalStoreFast
+            | Opcode::LoadConstLoadFastContainsStoreFast
+            | Opcode::LoadFastLoadConstSubscrStoreFast
                 => self.exec_name_ops(instr),
 
             Opcode::LoadAttr | Opcode::StoreAttr | Opcode::DeleteAttr

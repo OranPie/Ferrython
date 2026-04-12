@@ -916,6 +916,57 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             continue;
         }
 
+        // LoadConst + LoadFast + CompareOp(in/not_in) + StoreFast → LoadConstLoadFastContainsStoreFast
+        // Zero-Arc: reads constant and local by reference, does containment check, stores bool in-place.
+        // Encoding: (not_in_flag << 31) | (const_idx << 20) | (fast_idx << 10) | store_idx
+        if i + 3 < n && a.op == Opcode::LoadConst && b.op == Opcode::LoadFast
+            && !jump_targets[i + 2] && !is_nop[i + 2]
+        {
+            let c = &code.instructions[i + 2];
+            if c.op == Opcode::CompareOp && (c.arg == 6 || c.arg == 7) // in / not in
+                && !jump_targets[i + 3] && !is_nop[i + 3]
+            {
+                let d = &code.instructions[i + 3];
+                if d.op == Opcode::StoreFast
+                    && a.arg < 1024 && b.arg < 1024 && d.arg < 1024
+                {
+                    let not_in_flag = if c.arg == 7 { 1u32 << 31 } else { 0 };
+                    let packed = not_in_flag | (a.arg << 20) | (b.arg << 10) | d.arg;
+                    code.instructions[i] = Instruction::new(Opcode::LoadConstLoadFastContainsStoreFast, packed);
+                    is_nop[i + 1] = true;
+                    is_nop[i + 2] = true;
+                    is_nop[i + 3] = true;
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+
+        // LoadFast + LoadConst + BinarySubscr + StoreFast → LoadFastLoadConstSubscrStoreFast
+        // Zero-Arc for container and index: reads local and const by reference.
+        // Encoding: (fast_idx << 20) | (const_idx << 10) | store_idx
+        if i + 3 < n && a.op == Opcode::LoadFast && b.op == Opcode::LoadConst
+            && !jump_targets[i + 2] && !is_nop[i + 2]
+        {
+            let c = &code.instructions[i + 2];
+            if c.op == Opcode::BinarySubscr
+                && !jump_targets[i + 3] && !is_nop[i + 3]
+            {
+                let d = &code.instructions[i + 3];
+                if d.op == Opcode::StoreFast
+                    && a.arg < 1024 && b.arg < 1024 && d.arg < 1024
+                {
+                    let packed = (a.arg << 20) | (b.arg << 10) | d.arg;
+                    code.instructions[i] = Instruction::new(Opcode::LoadFastLoadConstSubscrStoreFast, packed);
+                    is_nop[i + 1] = true;
+                    is_nop[i + 2] = true;
+                    is_nop[i + 3] = true;
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+
         // LoadFast + LoadAttr → LoadFastLoadAttr
         // Encoding: (local_idx << 16) | name_idx
         if a.op == Opcode::LoadFast && b.op == Opcode::LoadAttr
