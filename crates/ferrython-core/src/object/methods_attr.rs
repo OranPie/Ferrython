@@ -335,11 +335,13 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             return Some(result);
                         }
                     }
-                    // 4. __getattr__ fallback (cached negative = fast)
-                    if let Some(getattr_fn) = lookup_in_class_mro(&inst.class, "__getattr__") {
-                        let name_obj = PyObject::str_val(CompactString::from(name));
-                        if let Ok(result) = call_callable(&getattr_fn, &[obj.clone(), name_obj]) {
-                            return Some(result);
+                    // 4. __getattr__ fallback (only if class defines it)
+                    if inst.class_flags & CLASS_FLAG_HAS_GETATTR != 0 {
+                        if let Some(getattr_fn) = lookup_in_class_mro(&inst.class, "__getattr__") {
+                            let name_obj = PyObject::str_val(CompactString::from(name));
+                            if let Ok(result) = call_callable(&getattr_fn, &[obj.clone(), name_obj]) {
+                                return Some(result);
+                            }
                         }
                     }
                     return None;

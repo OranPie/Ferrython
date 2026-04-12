@@ -726,6 +726,7 @@ impl VirtualMachine {
                             subclasses: Rc::new(PyCell::new(Vec::new())),
                             slots: cd.slots.clone(),
                             has_getattribute: cd.has_getattribute,
+                            has_getattr: cd.has_getattr,
                             has_setattr: cd.has_setattr,
                             has_descriptors: cd.has_descriptors,
                             method_vtable: cd.method_vtable.clone(),

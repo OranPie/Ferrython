@@ -59,6 +59,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                     IteratorData::List { .. } => "list_iterator",
                     IteratorData::Tuple { .. } => "tuple_iterator",
                     IteratorData::Str { .. } => "str_ascii_iterator",
+                    IteratorData::DictEntries { .. } => "dict_itemiterator",
                 }
             }
             PyObjectPayload::Range { .. } => "range",
@@ -586,7 +587,8 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                     | IteratorData::Cycle { .. }
                     | IteratorData::Repeat { .. }
                     | IteratorData::Chain { .. }
-                    | IteratorData::Starmap { .. } => {
+                    | IteratorData::Starmap { .. }
+                    | IteratorData::DictEntries { .. } => {
                         Err(PyException::type_error("lazy iterator requires VM to collect"))
                     }
                 }

@@ -846,6 +846,9 @@ pub struct ClassData {
     /// enum, abstract methods, custom __new__, or dataclass markers.
     /// Computed once at class creation time.
     pub is_simple_class: bool,
+    /// Fast-path flag: true if this class or any base defines __getattr__.
+    /// When false, negative attribute lookups can skip the __getattr__ MRO scan.
+    pub has_getattr: bool,
 }
 
 impl ClassData {
@@ -877,6 +880,14 @@ impl ClassData {
         let has_getattribute = namespace.contains_key("__getattribute__") || mro.iter().any(|base| {
             if let PyObjectPayload::Class(bcd) = &base.payload {
                 bcd.namespace.read().contains_key("__getattribute__")
+            } else {
+                false
+            }
+        });
+        // Detect __getattr__ fallback in namespace or any base class
+        let has_getattr = namespace.contains_key("__getattr__") || mro.iter().any(|base| {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                bcd.namespace.read().contains_key("__getattr__")
             } else {
                 false
             }
@@ -972,6 +983,7 @@ impl ClassData {
             subclasses: Rc::new(PyCell::new(Vec::new())),
             slots,
             has_getattribute,
+            has_getattr,
             has_setattr,
             has_descriptors,
             method_vtable: Rc::new(PyCell::new(vtable)),
@@ -1130,6 +1142,7 @@ pub const CLASS_FLAG_HAS_GETATTRIBUTE: u8 = 1 << 0;
 pub const CLASS_FLAG_HAS_DESCRIPTORS: u8 = 1 << 1;
 pub const CLASS_FLAG_HAS_SETATTR: u8 = 1 << 2;
 pub const CLASS_FLAG_HAS_SLOTS: u8 = 1 << 3;
+pub const CLASS_FLAG_HAS_GETATTR: u8 = 1 << 4;
 
 impl InstanceData {
     /// Compute class_flags from a class PyObjectRef.
@@ -1141,6 +1154,7 @@ impl InstanceData {
             if cd.has_descriptors { f |= CLASS_FLAG_HAS_DESCRIPTORS; }
             if cd.has_setattr { f |= CLASS_FLAG_HAS_SETATTR; }
             if cd.slots.is_some() { f |= CLASS_FLAG_HAS_SLOTS; }
+            if cd.has_getattr { f |= CLASS_FLAG_HAS_GETATTR; }
             f
         } else {
             // Not a class — set all flags to force slow path
@@ -1178,5 +1192,7 @@ pub enum IteratorData {
     Chain { sources: Vec<PyObjectRef>, current: usize },
     /// Starmap: apply func to each tuple of args
     Starmap { func: PyObjectRef, source: PyObjectRef },
+    /// Lazy dict items iteration with cached tuple reuse (CPython-style)
+    DictEntries { keys: Vec<PyObjectRef>, values: Vec<PyObjectRef>, index: usize, cached_tuple: Option<PyObjectRef> },
 }
 

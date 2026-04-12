@@ -6,6 +6,7 @@ mod type_methods;
 mod file_io;
 mod instance_methods;
 
+use std::rc::Rc;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
@@ -278,7 +279,8 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 | IteratorData::Cycle { .. }
                 | IteratorData::Repeat { .. }
                 | IteratorData::Chain { .. }
-                | IteratorData::Starmap { .. } => {
+                | IteratorData::Starmap { .. }
+                | IteratorData::DictEntries { .. } => {
                     Err(PyException::type_error("lazy iterator requires VM-level iteration"))
                 }
             }
@@ -331,6 +333,35 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         let v = PyObject::str_val(CompactString::from(chars[*index].to_string()));
                         *index += 1;
                         Ok(Some(v))
+                    } else { Ok(None) }
+                }
+                IteratorData::DictEntries { keys, values, index, cached_tuple } => {
+                    if *index < keys.len() {
+                        let k = keys[*index].clone();
+                        let v = values[*index].clone();
+                        *index += 1;
+                        let tuple = if let Some(ref mut cached) = cached_tuple {
+                            if let Some(obj) = PyObjectRef::get_mut(cached) {
+                                if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
+                                    items[0] = k;
+                                    items[1] = v;
+                                    cached.clone()
+                                } else {
+                                    let t = PyObject::tuple(vec![k, v]);
+                                    *cached = t.clone();
+                                    t
+                                }
+                            } else {
+                                let t = PyObject::tuple(vec![k, v]);
+                                *cached = t.clone();
+                                t
+                            }
+                        } else {
+                            let t = PyObject::tuple(vec![k, v]);
+                            *cached_tuple = Some(t.clone());
+                            t
+                        };
+                        Ok(Some(tuple))
                     } else { Ok(None) }
                 }
                 _ => Err(PyException::type_error("lazy iterator requires VM-level iteration")),
