@@ -1,5 +1,8 @@
 //! Ferrython — A Rust implementation of the Python 3.8 interpreter.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::env;
 use std::fs;
 use std::io::{self, Read};
