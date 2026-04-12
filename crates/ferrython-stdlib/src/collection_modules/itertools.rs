@@ -247,7 +247,7 @@ fn itertools_accumulate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     for item in iter_items {
         acc = if let Some(ref f) = func {
             match &f.payload {
-                PyObjectPayload::NativeFunction { func: nf, .. } => nf(&[acc, item.clone()])?,
+                PyObjectPayload::NativeFunction(nf) => (nf.func)(&[acc, item.clone()])?,
                 PyObjectPayload::NativeClosure(nc) => (nc.func)(&[acc, item.clone()])?,
                 _ => {
                     let a = acc.to_float().unwrap_or(acc.as_int().unwrap_or(0) as f64);
@@ -423,7 +423,7 @@ fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut vals = Vec::with_capacity(items.len());
         for item in &items {
             let kv = match &kf.payload {
-                PyObjectPayload::NativeFunction { func, .. } => func(&[item.clone()])?,
+                PyObjectPayload::NativeFunction(nf) => (nf.func)(&[item.clone()])?,
                 PyObjectPayload::NativeClosure(nc) => (nc.func)(&[item.clone()])?,
                 _ => item.clone(),
             };
@@ -438,7 +438,7 @@ fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let mut current_key_str = key_values[0].clone();
     let mut current_key_obj = if let Some(ref kf) = key_fn {
         match &kf.payload {
-            PyObjectPayload::NativeFunction { func, .. } => func(&[items[0].clone()])?,
+            PyObjectPayload::NativeFunction(nf) => (nf.func)(&[items[0].clone()])?,
             PyObjectPayload::NativeClosure(nc) => (nc.func)(&[items[0].clone()])?,
             _ => items[0].clone(),
         }
@@ -461,7 +461,7 @@ fn itertools_groupby(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             current_key_str = k.clone();
             current_key_obj = if let Some(ref kf) = key_fn {
                 match &kf.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => func(&[item.clone()])?,
+                    PyObjectPayload::NativeFunction(nf) => (nf.func)(&[item.clone()])?,
                     PyObjectPayload::NativeClosure(nc) => (nc.func)(&[item.clone()])?,
                     _ => item.clone(),
                 }
@@ -535,7 +535,7 @@ fn itertools_filterfalse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let mut result = Vec::new();
     for item in &items {
         let val = match &pred.payload {
-            PyObjectPayload::NativeFunction { func, .. } => func(&[item.clone()])?,
+            PyObjectPayload::NativeFunction(nf) => (nf.func)(&[item.clone()])?,
             PyObjectPayload::NativeClosure(nc) => (nc.func)(&[item.clone()])?,
             _ => return Err(PyException::type_error("filterfalse with callable predicate requires VM dispatch")),
         };

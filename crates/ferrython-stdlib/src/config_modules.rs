@@ -385,8 +385,8 @@ fn argparse_parse_args(
         if let Some(type_obj) = kwargs.get("type") {
             // Check if it's a callable (NativeFunction/NativeClosure/Class)
             match &type_obj.payload {
-                PyObjectPayload::NativeFunction { func, .. } => {
-                    return func(&[PyObject::str_val(CompactString::from(val_str))]);
+                PyObjectPayload::NativeFunction(nf) => {
+                    return (nf.func)(&[PyObject::str_val(CompactString::from(val_str))]);
                 }
                 PyObjectPayload::NativeClosure(nc) => {
                     return (nc.func)(&[PyObject::str_val(CompactString::from(val_str))]);
@@ -556,7 +556,7 @@ fn argparse_parse_args(
                         // Call the registry function to get (name, parser) tuples
                         let registry_list = match &reg_fn.payload {
                             PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]),
-                            PyObjectPayload::NativeFunction { func, .. } => func(&[]),
+                            PyObjectPayload::NativeFunction(nf) => (nf.func)(&[]),
                             _ => Err(PyException::runtime_error("bad subparser registry")),
                         };
                         if let Ok(rlist) = registry_list {
@@ -581,7 +581,7 @@ fn argparse_parse_args(
                                             if let Some(parse_fn) = child_parser.get_attr("parse_args") {
                                                 let child_ns = match &parse_fn.payload {
                                                     PyObjectPayload::NativeClosure(nc) => (nc.func)(&[PyObject::list(child_args)])?,
-                                                    PyObjectPayload::NativeFunction { func, .. } => func(&[PyObject::list(child_args)])?,
+                                                    PyObjectPayload::NativeFunction(nf) => (nf.func)(&[PyObject::list(child_args)])?,
                                                     _ => return Err(PyException::runtime_error("parse_args not callable")),
                                                 };
                                                 // Merge child namespace into parent
@@ -1345,8 +1345,8 @@ pub fn create_configparser_module() -> PyObjectRef {
                 PyObjectPayload::NativeClosure(nc) => {
                     (nc.func)(&[text])?;
                 }
-                PyObjectPayload::NativeFunction { func, .. } => {
-                    func(&[text])?;
+                PyObjectPayload::NativeFunction(nf) => {
+                    (nf.func)(&[text])?;
                 }
                 _ => {
                     // For bound methods or other callables, we can't invoke from stdlib.

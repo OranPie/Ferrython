@@ -963,7 +963,7 @@ pub fn create_inspect_module() -> PyObjectRef {
         ("isbuiltin", make_builtin(|args| {
             check_args("inspect.isbuiltin", args, 1)?;
             Ok(PyObject::bool_val(matches!(&args[0].payload,
-                PyObjectPayload::NativeFunction { .. } | PyObjectPayload::BuiltinFunction(_) | PyObjectPayload::BuiltinType(_))))
+                PyObjectPayload::NativeFunction(_) | PyObjectPayload::BuiltinFunction(_) | PyObjectPayload::BuiltinType(_))))
         })),
         ("isgenerator", make_builtin(|args| {
             check_args("inspect.isgenerator", args, 1)?;
@@ -989,8 +989,8 @@ pub fn create_inspect_module() -> PyObjectRef {
             check_args("inspect.isroutine", args, 1)?;
             Ok(PyObject::bool_val(matches!(&args[0].payload,
                 PyObjectPayload::Function(_) | PyObjectPayload::BoundMethod { .. } |
-                PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) |
-                PyObjectPayload::BuiltinBoundMethod { .. } | PyObjectPayload::BuiltinFunction(_))))
+                PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) |
+                PyObjectPayload::BuiltinBoundMethod(_) | PyObjectPayload::BuiltinFunction(_))))
         })),
         ("isabstract", make_builtin(|args| {
             check_args("inspect.isabstract", args, 1)?;
@@ -1329,8 +1329,8 @@ pub fn create_dis_module() -> PyObjectRef {
             if let PyObjectPayload::Instance(ref inst) = fobj.payload {
                 if let Some(write_fn) = inst.attrs.read().get("write").cloned() {
                     match &write_fn.payload {
-                        PyObjectPayload::NativeFunction { func, .. } => {
-                            func(&[PyObject::str_val(CompactString::from(output.as_str()))])?;
+                        PyObjectPayload::NativeFunction(nf) => {
+                            (nf.func)(&[PyObject::str_val(CompactString::from(output.as_str()))])?;
                             written = true;
                         }
                         PyObjectPayload::NativeClosure(nc) => {
@@ -3291,11 +3291,11 @@ pub fn create_token_module() -> PyObjectRef {
 /// Helper: create a simple namespace-like instance with the given attrs.
 fn make_ns(cls_name: &str, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
     let cls = PyObject::class(CompactString::from(cls_name), vec![], IndexMap::new());
-    PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+    PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
         class: cls,
         attrs: to_shared_fx(attrs),
         is_special: true, dict_storage: None,
-    }))
+    })))
 }
 
 // ── tokenize module ──

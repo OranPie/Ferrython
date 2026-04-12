@@ -288,9 +288,9 @@ impl VirtualMachine {
                     !k.starts_with('_')
                     && !matches!(&v.payload,
                         PyObjectPayload::Function(_) |
-                        PyObjectPayload::NativeFunction { .. } |
+                        PyObjectPayload::NativeFunction(_) |
                         PyObjectPayload::BuiltinFunction(_) |
-                        PyObjectPayload::Property { .. } |
+                        PyObjectPayload::Property(_) |
                         PyObjectPayload::NativeClosure(_) |
                         PyObjectPayload::StaticMethod(_) |
                         PyObjectPayload::ClassMethod(_))

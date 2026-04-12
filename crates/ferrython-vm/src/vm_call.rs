@@ -8,7 +8,7 @@ use ferrython_bytecode::code::{CodeFlags, CodeObject};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
 use ferrython_core::object::{ PyCell, 
-    AsyncGenAction, CompareOp, IteratorData, PartialData, PyObject, PyObjectMethods,
+    AsyncGenAction, CompareOp, IteratorData, PartialData, PropertyData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, is_data_descriptor, has_descriptor_get, lookup_in_class_mro,
     get_builtin_base_type_name,
 };
@@ -113,7 +113,7 @@ impl VirtualMachine {
             match &write_fn.payload {
                 // Bound methods already include self in dispatch
                 PyObjectPayload::BoundMethod { .. }
-                | PyObjectPayload::BuiltinBoundMethod { .. } => {
+                | PyObjectPayload::BuiltinBoundMethod(_) => {
                     self.call_object(write_fn, vec![text_obj])?;
                 }
                 // NativeClosure (e.g. StringIO.write): instance method stored on instance dict
@@ -571,9 +571,9 @@ impl VirtualMachine {
             let is_abstract_marker = |val: &PyObjectRef| -> bool {
                 if let PyObjectPayload::Tuple(items) = &val.payload {
                     items.len() == 2 && items[0].as_str() == Some("__abstract__")
-                } else if let PyObjectPayload::Property { fget, .. } = &val.payload {
+                } else if let PyObjectPayload::Property(pd) = &val.payload {
                     // @property @abstractmethod: fget is the abstract marker tuple
-                    if let Some(fg) = fget {
+                    if let Some(fg) = &pd.fget {
                         if let PyObjectPayload::Tuple(items) = &fg.payload {
                             return items.len() == 2 && items[0].as_str() == Some("__abstract__");
                         }
@@ -634,13 +634,13 @@ impl VirtualMachine {
         let instance = if let Some(new_method) = cls.get_attr("__new__") {
             // If __new__ is from a BuiltinType base (dict, list, etc.), just create instance
             let is_builtin_new = matches!(&new_method.payload,
-                PyObjectPayload::BuiltinBoundMethod { receiver, .. }
-                    if matches!(&receiver.payload, PyObjectPayload::BuiltinType(_))
+                PyObjectPayload::BuiltinBoundMethod(bbm)
+                    if matches!(&bbm.receiver.payload, PyObjectPayload::BuiltinType(_))
             );
             // Also recognize builtin __new__ NativeFunctions (tuple.__new__, list.__new__, etc.)
             let is_native_builtin_new = matches!(&new_method.payload,
-                PyObjectPayload::NativeFunction { name, .. }
-                    if name.ends_with(".__new__") && matches!(name.as_str(),
+                PyObjectPayload::NativeFunction(nf)
+                    if nf.name.ends_with(".__new__") && matches!(nf.name.as_str(),
                         "tuple.__new__" | "list.__new__" | "str.__new__" | "int.__new__"
                         | "float.__new__" | "object.__new__")
             );
@@ -927,8 +927,8 @@ impl VirtualMachine {
         } else if let Some(init) = cls.get_attr("__init__") {
             // Skip builtin __init__ — instance already created, no user code to run
             let is_builtin_init = matches!(&init.payload,
-                PyObjectPayload::BuiltinBoundMethod { receiver, .. }
-                    if matches!(&receiver.payload, PyObjectPayload::BuiltinType(_)));
+                PyObjectPayload::BuiltinBoundMethod(bbm)
+                    if matches!(&bbm.receiver.payload, PyObjectPayload::BuiltinType(_)));
             if !is_builtin_init {
                 let init_fn = match &init.payload {
                     PyObjectPayload::BoundMethod { method, .. } => method.clone(),
@@ -1157,9 +1157,9 @@ impl VirtualMachine {
                     if let Some(call_method) = meta.get_attr("__call__") {
                         let is_inherited_type_call = matches!(
                             &call_method.payload,
-                            PyObjectPayload::BuiltinBoundMethod { receiver, method_name }
-                                if method_name.as_str() == "__call__"
-                                && matches!(&receiver.payload, PyObjectPayload::BuiltinType(t) if t.as_str() == "type")
+                            PyObjectPayload::BuiltinBoundMethod(bbm)
+                                if bbm.method_name.as_str() == "__call__"
+                                && matches!(&bbm.receiver.payload, PyObjectPayload::BuiltinType(t) if t.as_str() == "type")
                         );
                         if !is_inherited_type_call {
                             let mut call_args = vec![func.clone()];
@@ -1176,10 +1176,10 @@ impl VirtualMachine {
             }
             _ => {
                 // For BuiltinBoundMethod on str.format, pass kwargs as a dict
-                if let PyObjectPayload::BuiltinBoundMethod { receiver, method_name } = &func.payload {
+                if let PyObjectPayload::BuiltinBoundMethod(bbm) = &func.payload {
                     // Handle list.sort(key=..., reverse=...)
-                    if method_name.as_str() == "sort" {
-                        if let PyObjectPayload::List(items_arc) = &receiver.payload {
+                    if bbm.method_name.as_str() == "sort" {
+                        if let PyObjectPayload::List(items_arc) = &bbm.receiver.payload {
                             let mut items_vec = items_arc.read().clone();
                             let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
                             let reverse = kwargs.iter().find(|(k, _)| k.as_str() == "reverse")
@@ -1190,8 +1190,8 @@ impl VirtualMachine {
                         }
                     }
                     // Handle dict.update(key=val, ...)
-                    if method_name.as_str() == "update" && !kwargs.is_empty() {
-                        if let PyObjectPayload::Dict(map) = &receiver.payload {
+                    if bbm.method_name.as_str() == "update" && !kwargs.is_empty() {
+                        if let PyObjectPayload::Dict(map) = &bbm.receiver.payload {
                             // First process positional arg (another dict or iterable)
                             if !pos_args.is_empty() {
                                 if let PyObjectPayload::Dict(other) = &pos_args[0].payload {
@@ -1210,17 +1210,17 @@ impl VirtualMachine {
                             return Ok(PyObject::none());
                         }
                     }
-                    if method_name.as_str() == "format" && !kwargs.is_empty() {
-                        if let PyObjectPayload::Str(s) = &receiver.payload {
+                    if bbm.method_name.as_str() == "format" && !kwargs.is_empty() {
+                        if let PyObjectPayload::Str(s) = &bbm.receiver.payload {
                             // Handle str.format() with named args via VM-aware formatter
                             return self.vm_str_format_kw(s, &pos_args, &kwargs);
                         }
                     }
                 }
                 // BuiltinBoundMethod kwargs: resolve known kwargs to positional args
-                if let PyObjectPayload::BuiltinBoundMethod { method_name, .. } = &func.payload {
+                if let PyObjectPayload::BuiltinBoundMethod(bbm) = &func.payload {
                     if !kwargs.is_empty() {
-                        match method_name.as_str() {
+                        match bbm.method_name.as_str() {
                             // str.encode(encoding=, errors=) / bytes.decode(encoding=, errors=)
                             "encode" | "decode" => {
                                 let mut resolved = pos_args;
@@ -1463,9 +1463,9 @@ impl VirtualMachine {
                 }
                 // Handle other payload types that support kwargs
                 match &func.payload {
-                    PyObjectPayload::NativeFunction { func: nf, name } => {
+                    PyObjectPayload::NativeFunction(nf_data) => {
                         // property.__init__(self, fget=None, fset=None, fdel=None, doc=None)
-                        if name.as_str() == "property.__init__" {
+                        if nf_data.name.as_str() == "property.__init__" {
                             if pos_args.is_empty() { return Ok(PyObject::none()); }
                             let fget = kwargs.iter().find(|(k, _)| k.as_str() == "fget").map(|(_, v)| v.clone())
                                 .or_else(|| pos_args.get(1).cloned());
@@ -1482,7 +1482,7 @@ impl VirtualMachine {
                             return Ok(PyObject::none());
                         }
                         // OrderedDict(**kwargs) / Counter(**kwargs) / defaultdict(factory, **kwargs) — dict-like init
-                        if name.as_str() == "collections.OrderedDict" || name.as_str() == "collections.Counter" {
+                        if nf_data.name.as_str() == "collections.OrderedDict" || nf_data.name.as_str() == "collections.Counter" {
                             let mut map = IndexMap::new();
                             if !pos_args.is_empty() {
                                 if let PyObjectPayload::Dict(src) = &pos_args[0].payload {
@@ -1501,12 +1501,12 @@ impl VirtualMachine {
                             for (k, v) in &kwargs {
                                 map.insert(HashableKey::Str(k.clone()), v.clone());
                             }
-                            if name.as_str() == "collections.Counter" {
-                                return nf(&[PyObject::dict(map)]);
+                            if nf_data.name.as_str() == "collections.Counter" {
+                                return (nf_data.func)(&[PyObject::dict(map)]);
                             }
                             return Ok(PyObject::dict(map));
                         }
-                        if name.as_str() == "collections.defaultdict" {
+                        if nf_data.name.as_str() == "collections.defaultdict" {
                             // defaultdict(factory, mapping_or_iterable, **kwargs) or defaultdict(factory, **kwargs)
                             let mut all = pos_args.clone();
                             if !kwargs.is_empty() {
@@ -1525,18 +1525,18 @@ impl VirtualMachine {
                                     all.push(PyObject::dict(map));
                                 }
                             }
-                            return nf(&all);
+                            return (nf_data.func)(&all);
                         }
-                        if name.as_str() == "collections.deque" {
+                        if nf_data.name.as_str() == "collections.deque" {
                             // deque(iterable, maxlen=N)
                             let mut all = pos_args.clone();
                             if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "maxlen") {
                                 while all.len() < 1 { all.push(PyObject::list(vec![])); }
                                 if all.len() < 2 { all.push(v.clone()); } else { all[1] = v.clone(); }
                             }
-                            return nf(&all);
+                            return (nf_data.func)(&all);
                         }
-                        if name.as_str() == "functools.partial" {
+                        if nf_data.name.as_str() == "functools.partial" {
                             // functools.partial(func, *args, **kwargs)
                             if pos_args.is_empty() {
                                 return Err(PyException::type_error("partial() requires at least 1 argument"));
@@ -1548,11 +1548,11 @@ impl VirtualMachine {
                             }))));
                         }
                         // re.sub / re.subn with callable replacement
-                        if (name.as_str() == "re.sub" || name.as_str() == "re.subn") && pos_args.len() >= 3 {
+                        if (nf_data.name.as_str() == "re.sub" || nf_data.name.as_str() == "re.subn") && pos_args.len() >= 3 {
                             let repl = &pos_args[1];
                             let is_callable = matches!(&repl.payload,
                                 PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
-                                | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_)
+                                | PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_)
                                 | PyObjectPayload::Partial(_));
                             if is_callable {
                                 // Merge kwargs into args as a trailing dict
@@ -1564,11 +1564,11 @@ impl VirtualMachine {
                                     }
                                     merged.push(PyObject::dict(kw_map));
                                 }
-                                return self.re_sub_with_callable(&merged, name.as_str() == "re.subn");
+                                return self.re_sub_with_callable(&merged, nf_data.name.as_str() == "re.subn");
                             }
                         }
                         // re.compile(pattern, flags=...) / re.match/search/findall/sub with flags kwarg
-                        if name.starts_with("re.") {
+                        if nf_data.name.starts_with("re.") {
                             if let Some((_, flags_val)) = kwargs.iter().find(|(k, _)| k.as_str() == "flags") {
                                 let mut all = pos_args.clone();
                                 // Insert flags as second positional arg
@@ -1577,18 +1577,18 @@ impl VirtualMachine {
                                 } else {
                                     all[1] = flags_val.clone();
                                 }
-                                return nf(&all);
+                                return (nf_data.func)(&all);
                             }
                         }
                         // itertools.groupby with key function
-                        if name.as_str() == "itertools.groupby" {
+                        if nf_data.name.as_str() == "itertools.groupby" {
                             let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone())
                                 .or_else(|| if pos_args.len() >= 2 { Some(pos_args[1].clone()) } else { None });
                             let iterable = vec![pos_args[0].clone()];
                             return self.vm_itertools_groupby(&iterable, key_fn);
                         }
                         // itertools.accumulate with initial kwarg
-                        if name.as_str() == "itertools.accumulate" && !kwargs.is_empty() {
+                        if nf_data.name.as_str() == "itertools.accumulate" && !kwargs.is_empty() {
                             let initial = kwargs.iter().find(|(k, _)| k.as_str() == "initial").map(|(_, v)| v.clone());
                             let func_arg = if pos_args.len() >= 2 && !matches!(&pos_args[1].payload, PyObjectPayload::None) {
                                 Some(pos_args[1].clone())
@@ -1598,10 +1598,10 @@ impl VirtualMachine {
                             let mut all = vec![pos_args[0].clone()];
                             all.push(func_arg.unwrap_or_else(PyObject::none));
                             all.push(initial.unwrap_or_else(PyObject::none));
-                            return nf(&all);
+                            return (nf_data.func)(&all);
                         }
                         // re.split with maxsplit kwarg
-                        if name.as_str() == "re.split" && !kwargs.is_empty() {
+                        if nf_data.name.as_str() == "re.split" && !kwargs.is_empty() {
                             let mut all = pos_args.clone();
                             if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "maxsplit") {
                                 while all.len() < 3 { all.push(PyObject::int(0)); }
@@ -1611,19 +1611,19 @@ impl VirtualMachine {
                                 while all.len() < 4 { all.push(PyObject::int(0)); }
                                 all[3] = v.clone();
                             }
-                            return nf(&all);
+                            return (nf_data.func)(&all);
                         }
                         // re.sub with count kwarg
-                        if name.as_str() == "re.sub" && !kwargs.is_empty() {
+                        if nf_data.name.as_str() == "re.sub" && !kwargs.is_empty() {
                             let mut all = pos_args.clone();
                             if let Some((_, v)) = kwargs.iter().find(|(k, _)| k.as_str() == "count") {
                                 while all.len() < 4 { all.push(PyObject::int(0)); }
                                 all[3] = v.clone();
                             }
-                            return nf(&all);
+                            return (nf_data.func)(&all);
                         }
                         // type.__call__(cls, *args, **kwargs) — standard class instantiation
-                        if name.as_str() == "__type_call__" {
+                        if nf_data.name.as_str() == "__type_call__" {
                             if pos_args.is_empty() {
                                 return Err(PyException::type_error("type.__call__ requires cls"));
                             }
@@ -1632,7 +1632,7 @@ impl VirtualMachine {
                             return self.instantiate_class(&cls, rest, kwargs);
                         }
                         // json.loads with object_hook/parse_float/parse_int Python callables
-                        if name.as_str() == "json.loads" && !kwargs.is_empty() {
+                        if nf_data.name.as_str() == "json.loads" && !kwargs.is_empty() {
                             let has_py_hook = kwargs.iter().any(|(k, v)| {
                                 matches!(k.as_str(), "object_hook" | "parse_float" | "parse_int" | "object_pairs_hook")
                                 && matches!(&v.payload, PyObjectPayload::Function(_) | PyObjectPayload::Class(_))
@@ -1651,7 +1651,7 @@ impl VirtualMachine {
                                     }
                                     load_args.push(PyObject::dict(kw_map));
                                 }
-                                let parsed = nf(&load_args)?;
+                                let parsed = (nf_data.func)(&load_args)?;
                                 // Apply hooks via VM (can call Python functions)
                                 let object_hook = kwargs.iter().find(|(k, _)| k.as_str() == "object_hook").map(|(_, v)| v.clone());
                                 let parse_float = kwargs.iter().find(|(k, _)| k.as_str() == "parse_float").map(|(_, v)| v.clone());
@@ -1660,7 +1660,7 @@ impl VirtualMachine {
                             }
                         }
                         // json.dumps / json.dump with `default` kwarg that may be a Python function
-                        if (name.as_str() == "json.dumps" || name.as_str() == "json.dump") && !kwargs.is_empty() {
+                        if (nf_data.name.as_str() == "json.dumps" || nf_data.name.as_str() == "json.dump") && !kwargs.is_empty() {
                             let default_fn = kwargs.iter()
                                 .find(|(k, _)| k.as_str() == "default")
                                 .map(|(_, v)| v.clone());
@@ -1685,7 +1685,7 @@ impl VirtualMachine {
                                     PyObjectPayload::BoundMethod { method, .. } => {
                                         matches!(&method.payload, PyObjectPayload::Function(_))
                                     }
-                                    PyObjectPayload::NativeFunction { .. }
+                                    PyObjectPayload::NativeFunction(_)
                                     | PyObjectPayload::NativeClosure(_)
                                     | PyObjectPayload::Class(_)
                                     | PyObjectPayload::BuiltinFunction(_)
@@ -1699,7 +1699,7 @@ impl VirtualMachine {
                                     let filtered_kwargs: Vec<(CompactString, PyObjectRef)> = kwargs.into_iter()
                                         .filter(|(k, _)| k.as_str() != "default" && k.as_str() != "cls")
                                         .collect();
-                                    if name.as_str() == "json.dump" {
+                                    if nf_data.name.as_str() == "json.dump" {
                                         // json.dump(obj, fp, **kwargs) → dump prepared obj to fp
                                         let mut dump_args = vec![prepared];
                                         if pos_args.len() > 1 { dump_args.push(pos_args[1].clone()); }
@@ -1710,7 +1710,7 @@ impl VirtualMachine {
                                             }
                                             dump_args.push(PyObject::dict(kw_map));
                                         }
-                                        return nf(&dump_args);
+                                        return (nf_data.func)(&dump_args);
                                     }
                                     // json.dumps(prepared, **remaining_kwargs)
                                     let mut dump_args = vec![prepared];
@@ -1721,7 +1721,7 @@ impl VirtualMachine {
                                         }
                                         dump_args.push(PyObject::dict(kw_map));
                                     }
-                                    return nf(&dump_args);
+                                    return (nf_data.func)(&dump_args);
                                 }
                             }
                         }
@@ -1733,9 +1733,9 @@ impl VirtualMachine {
                                 kw_map.insert(HashableKey::Str(k), v);
                             }
                             all_args.push(PyObject::dict(kw_map));
-                            return nf(&all_args);
+                            return (nf_data.func)(&all_args);
                         }
-                        return nf(&pos_args);
+                        return (nf_data.func)(&pos_args);
                     }
                     PyObjectPayload::NativeClosure(nc) => {
                         let result = if !kwargs.is_empty() {
@@ -2241,7 +2241,7 @@ impl VirtualMachine {
                                 }
                                 // Check for custom __len__ (skip BuiltinBoundMethod from BuiltinType base)
                                 if let Some(method) = args[0].get_attr("__len__") {
-                                    if !matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod { .. }) {
+                                    if !matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod(_)) {
                                         let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] };
                                         return self.call_object(method, ca);
                                     }
@@ -2462,8 +2462,8 @@ impl VirtualMachine {
                         match args[0].get_attr(attr_name) {
                             Some(v) => {
                                 // Invoke descriptor protocol (Property, custom __get__)
-                                if let PyObjectPayload::Property { fget, .. } = &v.payload {
-                                    if let Some(getter) = fget {
+                                if let PyObjectPayload::Property(pd) = &v.payload {
+                                    if let Some(getter) = pd.fget.as_ref() {
                                         let getter = crate::builtins::unwrap_abstract_fget(getter);
                                         return self.call_object(getter, vec![args[0].clone()]);
                                     }
@@ -2510,8 +2510,8 @@ impl VirtualMachine {
                         let value = args[2].clone();
                         if let PyObjectPayload::Instance(inst) = &args[0].payload {
                             if let Some(desc) = lookup_in_class_mro(&inst.class, &attr_name) {
-                                if let PyObjectPayload::Property { fset, .. } = &desc.payload {
-                                    if let Some(setter) = fset {
+                                if let PyObjectPayload::Property(pd) = &desc.payload {
+                                    if let Some(setter) = pd.fset.as_ref() {
                                         self.call_object(setter.clone(), vec![args[0].clone(), value])?;
                                         return Ok(PyObject::none());
                                     } else {
@@ -2550,8 +2550,8 @@ impl VirtualMachine {
                         let attr_name = args[1].py_to_string();
                         if let PyObjectPayload::Instance(inst) = &args[0].payload {
                             if let Some(desc) = lookup_in_class_mro(&inst.class, &attr_name) {
-                                if let PyObjectPayload::Property { fdel, .. } = &desc.payload {
-                                    if let Some(deleter) = fdel {
+                                if let PyObjectPayload::Property(pd) = &desc.payload {
+                                    if let Some(deleter) = pd.fdel.as_ref() {
                                         self.call_object(deleter.clone(), vec![args[0].clone()])?;
                                         return Ok(PyObject::none());
                                     }
@@ -2651,9 +2651,9 @@ impl VirtualMachine {
                         // Skip if this is just the inherited type.__call__ builtin
                         let is_inherited_type_call = matches!(
                             &call_method.payload,
-                            PyObjectPayload::BuiltinBoundMethod { receiver, method_name }
-                                if method_name.as_str() == "__call__"
-                                && matches!(&receiver.payload, PyObjectPayload::BuiltinType(t) if t.as_str() == "type")
+                            PyObjectPayload::BuiltinBoundMethod(bbm)
+                                if bbm.method_name.as_str() == "__call__"
+                                && matches!(&bbm.receiver.payload, PyObjectPayload::BuiltinType(t) if t.as_str() == "type")
                         );
                         if !is_inherited_type_call {
                             let mut call_args = vec![func.clone()];
@@ -2666,12 +2666,12 @@ impl VirtualMachine {
             }
             PyObjectPayload::BoundMethod { receiver, method } => {
                 // VM intercept: RawIOBase.read(size=-1) → calls self.readinto()
-                if let PyObjectPayload::NativeFunction { name, .. } = &method.payload {
-                    if name.as_str() == "RawIOBase.read" {
+                if let PyObjectPayload::NativeFunction(nf) = &method.payload {
+                    if nf.name.as_str() == "RawIOBase.read" {
                         let size: i64 = args.first().and_then(|a| a.as_int()).unwrap_or(-1);
                         return self.rawiobase_read(receiver, size);
                     }
-                    if name.as_str() == "RawIOBase.readall" {
+                    if nf.name.as_str() == "RawIOBase.readall" {
                         return self.rawiobase_readall(receiver);
                     }
                 }
@@ -2679,17 +2679,17 @@ impl VirtualMachine {
                 bound_args.extend(args);
                 self.call_object(method.clone(), bound_args)
             }
-            PyObjectPayload::BuiltinBoundMethod { receiver, method_name } => {
+            PyObjectPayload::BuiltinBoundMethod(bbm) => {
                 // ── Generator / Coroutine / AsyncGenerator dispatch ──
-                // Extract gen_arc and discriminate the receiver kind for proper protocol.
-                let gen_kind = match &receiver.payload {
+                // Extract gen_arc and discriminate the bbm.receiver kind for proper protocol.
+                let gen_kind = match &bbm.receiver.payload {
                     PyObjectPayload::Generator(g) => Some(("generator", g.clone())),
                     PyObjectPayload::Coroutine(g) => Some(("coroutine", g.clone())),
                     PyObjectPayload::AsyncGenerator(g) => Some(("async_generator", g.clone())),
                     _ => None,
                 };
                 if let Some((kind, ref gen_arc)) = gen_kind {
-                    match method_name.as_str() {
+                    match bbm.method_name.as_str() {
                         "send" => {
                             let val = if args.is_empty() { PyObject::none() } else { args[0].clone() };
                             return self.resume_generator(gen_arc, val);
@@ -2788,7 +2788,7 @@ impl VirtualMachine {
                         // ── Async generator protocol methods ──
                         // __aiter__ returns self (async generator is its own async iterator)
                         "__aiter__" if kind == "async_generator" => {
-                            return Ok(receiver.clone());
+                            return Ok(bbm.receiver.clone());
                         }
                         // These return AsyncGenAwaitable objects, not direct results.
                         "__anext__" if kind == "async_generator" => {
@@ -2830,24 +2830,24 @@ impl VirtualMachine {
                 }
 
                 // ── Iterator protocol dispatch ──
-                if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } = &receiver.payload {
-                    match method_name.as_str() {
+                if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } = &bbm.receiver.payload {
+                    match bbm.method_name.as_str() {
                         "__next__" => {
-                            match crate::builtins::iter_advance(&receiver)? {
+                            match crate::builtins::iter_advance(&bbm.receiver)? {
                                 Some((_new_iter, value)) => return Ok(value),
                                 None => return Err(ferrython_core::error::PyException::stop_iteration()),
                             }
                         }
                         "__iter__" => {
-                            return Ok(receiver.clone());
+                            return Ok(bbm.receiver.clone());
                         }
                         _ => {}
                     }
                 }
 
                 // ── AsyncGenAwaitable dispatch (driving the awaitable) ──
-                if let PyObjectPayload::AsyncGenAwaitable { gen, action } = &receiver.payload {
-                    match method_name.as_str() {
+                if let PyObjectPayload::AsyncGenAwaitable { gen, action } = &bbm.receiver.payload {
+                    match bbm.method_name.as_str() {
                         "send" => {
                             let send_val = if args.is_empty() { PyObject::none() } else { args[0].clone() };
                             return self.drive_async_gen_awaitable(gen, action, send_val);
@@ -2874,8 +2874,8 @@ impl VirtualMachine {
                     }
                 }
                 // VM-level methods that need iterable collection
-                if method_name.as_str() == "join" {
-                    if let PyObjectPayload::Str(sep) = &receiver.payload {
+                if bbm.method_name.as_str() == "join" {
+                    if let PyObjectPayload::Str(sep) = &bbm.receiver.payload {
                         if !args.is_empty() {
                             let items = self.collect_iterable(&args[0])?;
                             let strs: Result<Vec<String>, _> = items.iter()
@@ -2885,7 +2885,7 @@ impl VirtualMachine {
                             return Ok(PyObject::str_val(CompactString::from(strs?.join(sep.as_str()))));
                         }
                     }
-                    if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &receiver.payload {
+                    if let PyObjectPayload::Bytes(sep) | PyObjectPayload::ByteArray(sep) = &bbm.receiver.payload {
                         if !args.is_empty() {
                             let sep = sep.clone();
                             let items = self.collect_iterable(&args[0])?;
@@ -2902,8 +2902,8 @@ impl VirtualMachine {
                     }
                 }
                 // VM-level list.sort with key function
-                if method_name.as_str() == "sort" {
-                    if let PyObjectPayload::List(items_arc) = &receiver.payload {
+                if bbm.method_name.as_str() == "sort" {
+                    if let PyObjectPayload::List(items_arc) = &bbm.receiver.payload {
                         let items_arc = items_arc.clone();
                         let mut items_vec = items_arc.read().clone();
                         self.vm_sort(&mut items_vec)?;
@@ -2912,9 +2912,9 @@ impl VirtualMachine {
                     }
                 }
                 // Range methods
-                if let PyObjectPayload::Range { start, stop, step } = &receiver.payload {
+                if let PyObjectPayload::Range { start, stop, step } = &bbm.receiver.payload {
                     let (rs, re, rst) = (*start, *stop, *step);
-                    match method_name.as_str() {
+                    match bbm.method_name.as_str() {
                         "count" => {
                             if args.is_empty() { return Err(PyException::type_error("count() takes exactly one argument")); }
                             let val = args[0].to_int().unwrap_or(i64::MIN);
@@ -2938,8 +2938,8 @@ impl VirtualMachine {
                     }
                 }
                 // Class introspection methods
-                if let PyObjectPayload::Class(cd) = &receiver.payload {
-                    match method_name.as_str() {
+                if let PyObjectPayload::Class(cd) = &bbm.receiver.payload {
+                    match bbm.method_name.as_str() {
                         "__subclasses__" => {
                             let subs = cd.subclasses.read();
                             let alive: Vec<PyObjectRef> = subs.iter()
@@ -2951,7 +2951,7 @@ impl VirtualMachine {
                             return Ok(PyObject::list(alive));
                         }
                         "mro" => {
-                            let mut mro_list = vec![receiver.clone()];
+                            let mut mro_list = vec![bbm.receiver.clone()];
                             mro_list.extend(cd.mro.iter().cloned());
                             return Ok(PyObject::list(mro_list));
                         }
@@ -2959,40 +2959,40 @@ impl VirtualMachine {
                     }
                 }
                 // Property descriptor methods: setter/getter/deleter
-                if let PyObjectPayload::Property { fget, fset, fdel } = &receiver.payload {
+                if let PyObjectPayload::Property(pd) = &bbm.receiver.payload {
                     if args.len() == 1 {
                         let func = args[0].clone();
-                        let new_prop = match method_name.as_str() {
-                            "setter" => PyObjectPayload::Property { fget: fget.clone(), fset: Some(func), fdel: fdel.clone() },
-                            "getter" => PyObjectPayload::Property { fget: Some(func), fset: fset.clone(), fdel: fdel.clone() },
-                            "deleter" => PyObjectPayload::Property { fget: fget.clone(), fset: fset.clone(), fdel: Some(func) },
-                            _ => return Err(PyException::attribute_error(format!("property has no attribute '{}'", method_name))),
+                        let new_prop = match bbm.method_name.as_str() {
+                            "setter" => PyObjectPayload::Property(Box::new(PropertyData { fget: pd.fget.clone(), fset: Some(func), fdel: pd.fdel.clone() })),
+                            "getter" => PyObjectPayload::Property(Box::new(PropertyData { fget: Some(func), fset: pd.fset.clone(), fdel: pd.fdel.clone() })),
+                            "deleter" => PyObjectPayload::Property(Box::new(PropertyData { fget: pd.fget.clone(), fset: pd.fset.clone(), fdel: Some(func) })),
+                            _ => return Err(PyException::attribute_error(format!("property has no attribute '{}'", bbm.method_name))),
                         };
                         return Ok(PyObjectRef::new(PyObject { payload: new_prop }));
                     }
                 }
                 // namedtuple methods — delegated to builtins
-                if let PyObjectPayload::Instance(inst) = &receiver.payload {
+                if let PyObjectPayload::Instance(inst) = &bbm.receiver.payload {
                     if matches!(&inst.class.payload, PyObjectPayload::Class(cd) if cd.namespace.read().contains_key("__namedtuple__"))
                         || inst.attrs.read().contains_key("__deque__")
                     {
                         // deque extend/extendleft need iterable collection via VM
-                        if inst.attrs.read().contains_key("__deque__") && matches!(method_name.as_str(), "extend" | "extendleft") {
+                        if inst.attrs.read().contains_key("__deque__") && matches!(bbm.method_name.as_str(), "extend" | "extendleft") {
                             let items = self.collect_iterable(&args[0])?;
-                            return builtins::call_method(receiver, method_name.as_str(), &[PyObject::list(items)]);
+                            return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &[PyObject::list(items)]);
                         }
-                        return builtins::call_method(receiver, method_name.as_str(), &args);
+                        return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &args);
                     }
                     // Hashlib methods — delegated to builtins
                     let class_name = if let PyObjectPayload::Class(cd) = &inst.class.payload { cd.name.to_string() } else { String::new() };
                     if matches!(class_name.as_str(), "md5" | "sha1" | "sha256" | "sha224" | "sha384" | "sha512") {
-                        return builtins::call_method(receiver, method_name.as_str(), &args);
+                        return builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &args);
                     }
                 }
                 // Unbound method call: str.upper("hello") → call_method("hello", "upper", [])
-                if let PyObjectPayload::BuiltinType(tn) = &receiver.payload {
+                if let PyObjectPayload::BuiltinType(tn) = &bbm.receiver.payload {
                     // type.__call__(cls, *args) → instantiate the class
-                    if tn.as_str() == "type" && method_name.as_str() == "__call__" && !args.is_empty() {
+                    if tn.as_str() == "type" && bbm.method_name.as_str() == "__call__" && !args.is_empty() {
                         if matches!(&args[0].payload, PyObjectPayload::Class(_)) {
                             let cls = args[0].clone();
                             let mut rest = args[1..].to_vec();
@@ -3020,20 +3020,20 @@ impl VirtualMachine {
                         }
                     }
                     // Class methods (e.g., int.from_bytes, dict.fromkeys)
-                    if let Some(class_method) = builtins::resolve_type_class_method(tn, method_name) {
-                        if let PyObjectPayload::NativeFunction { func, .. } = &class_method.payload {
-                            return func(&args);
+                    if let Some(class_method) = builtins::resolve_type_class_method(tn, bbm.method_name.as_str()) {
+                        if let PyObjectPayload::NativeFunction(nf) = &class_method.payload {
+                            return (nf.func)(&args);
                         }
                     }
                     if !args.is_empty() {
                         let instance = args[0].clone();
                         let rest_args = if args.len() > 1 { args[1..].to_vec() } else { vec![] };
-                        return builtins::call_method(&instance, method_name.as_str(), &rest_args);
+                        return builtins::call_method(&instance, bbm.method_name.as_str(), &rest_args);
                     }
                 }
                 // list.extend with generator/lazy iterator/instance needs VM-level collection
-                if method_name.as_str() == "extend" && !args.is_empty() {
-                    if matches!(receiver.payload, PyObjectPayload::List(_)) {
+                if bbm.method_name.as_str() == "extend" && !args.is_empty() {
+                    if matches!(bbm.receiver.payload, PyObjectPayload::List(_)) {
                         if matches!(args[0].payload, PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_)) ||
                            (matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
                                let data = d.lock();
@@ -3043,13 +3043,13 @@ impl VirtualMachine {
                            }))
                         {
                             let items = self.collect_iterable(&args[0])?;
-                            return builtins::call_method(receiver, "extend", &[PyObject::list(items)]);
+                            return builtins::call_method(&bbm.receiver, "extend", &[PyObject::list(items)]);
                         }
                     }
                 }
                 // list.sort(key=, reverse=) needs VM for key function calls
-                if method_name.as_str() == "sort" {
-                    if let PyObjectPayload::List(items) = &receiver.payload {
+                if bbm.method_name.as_str() == "sort" {
+                    if let PyObjectPayload::List(items) = &bbm.receiver.payload {
                         // Extract key and reverse from trailing kwargs dict
                         let mut key_fn: Option<PyObjectRef> = None;
                         let mut reverse = false;
@@ -3107,14 +3107,14 @@ impl VirtualMachine {
                     }
                 }
                 // str.format with positional args: needs VM for __str__ on instances
-                if method_name.as_str() == "format" {
-                    if let PyObjectPayload::Str(s) = &receiver.payload {
+                if bbm.method_name.as_str() == "format" {
+                    if let PyObjectPayload::Str(s) = &bbm.receiver.payload {
                         return self.vm_str_format(s, &args);
                     }
                 }
                 // str.format_map with dict subclass: needs VM for __missing__ calls
-                if method_name.as_str() == "format_map" && !args.is_empty() {
-                    if let PyObjectPayload::Str(s) = &receiver.payload {
+                if bbm.method_name.as_str() == "format_map" && !args.is_empty() {
+                    if let PyObjectPayload::Str(s) = &bbm.receiver.payload {
                         if let PyObjectPayload::Instance(inst) = &args[0].payload {
                             if let Some(ref ds) = inst.dict_storage {
                                 return self.vm_format_map(s, &args[0], ds, &inst.class);
@@ -3129,7 +3129,7 @@ impl VirtualMachine {
                         }
                     }
                 }
-                builtins::call_method(receiver, method_name.as_str(), &args)
+                builtins::call_method(&bbm.receiver, bbm.method_name.as_str(), &args)
             }
             PyObjectPayload::ExceptionType(kind) => {
                 // Calling an exception type creates an exception instance
@@ -3179,10 +3179,10 @@ impl VirtualMachine {
                 }
                 Ok(inst)
             }
-            PyObjectPayload::NativeFunction { func, name } => {
+            PyObjectPayload::NativeFunction(nf_data) => {
                 // Intercept functions that need VM access to call Python callables
                 // property.__get__(self, obj, objtype) — must call fget(obj) and return result
-                if name.as_str() == "property.__get__" {
+                if nf_data.name.as_str() == "property.__get__" {
                     if args.is_empty() {
                         return Err(PyException::type_error("descriptor '__get__' requires a property object"));
                     }
@@ -3197,8 +3197,8 @@ impl VirtualMachine {
                     }
                     let obj = obj.unwrap();
                     // Try native Property payload first
-                    if let PyObjectPayload::Property { fget, .. } = &prop.payload {
-                        if let Some(getter) = fget {
+                    if let PyObjectPayload::Property(pd) = &prop.payload {
+                        if let Some(getter) = pd.fget.as_ref() {
                             let getter = crate::builtins::unwrap_abstract_fget(getter);
                             return self.call_object(getter, vec![obj.clone()]);
                         }
@@ -3214,18 +3214,18 @@ impl VirtualMachine {
                     }
                     return Ok(prop.clone());
                 }
-                if name.as_str() == "functools.reduce" {
+                if nf_data.name.as_str() == "functools.reduce" {
                     return self.vm_functools_reduce(&args);
                 }
-                if name.as_str() == "itertools.islice" {
+                if nf_data.name.as_str() == "itertools.islice" {
                     return self.vm_itertools_islice(&args);
                 }
                 // singledispatch.register: register(type) → decorator
-                if name.as_str() == "singledispatch.register" {
+                if nf_data.name.as_str() == "singledispatch.register" {
                     return self.vm_singledispatch_register(&args);
                 }
                 // type.__call__(cls, *args) — standard class instantiation protocol
-                if name.as_str() == "__type_call__" {
+                if nf_data.name.as_str() == "__type_call__" {
                     if args.is_empty() {
                         return Err(PyException::type_error("type.__call__ requires cls"));
                     }
@@ -3234,17 +3234,17 @@ impl VirtualMachine {
                     return self.instantiate_class(&cls, rest, vec![]);
                 }
                 // re.sub / re.subn with callable replacement
-                if (name.as_str() == "re.sub" || name.as_str() == "re.subn") && args.len() >= 3 {
+                if (nf_data.name.as_str() == "re.sub" || nf_data.name.as_str() == "re.subn") && args.len() >= 3 {
                     let repl = &args[1];
                     let is_callable = matches!(&repl.payload,
                         PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
-                        | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_)
+                        | PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_)
                         | PyObjectPayload::Partial(_));
                     if is_callable {
-                        return self.re_sub_with_callable(&args, name.as_str() == "re.subn");
+                        return self.re_sub_with_callable(&args, nf_data.name.as_str() == "re.subn");
                     }
                 }
-                if name.as_str() == "itertools.groupby" {
+                if nf_data.name.as_str() == "itertools.groupby" {
                     let mut key_fn = None;
                     let mut iterable_end = args.len();
                     // Check last arg for kwargs dict with "key"
@@ -3264,19 +3264,19 @@ impl VirtualMachine {
                     }
                     return self.vm_itertools_groupby(&args[..iterable_end], key_fn);
                 }
-                if name.as_str() == "itertools.filterfalse" && args.len() >= 2 {
+                if nf_data.name.as_str() == "itertools.filterfalse" && args.len() >= 2 {
                     return self.vm_itertools_filterfalse(&args);
                 }
-                if name.as_str() == "itertools.starmap" && args.len() >= 2 {
+                if nf_data.name.as_str() == "itertools.starmap" && args.len() >= 2 {
                     return self.vm_itertools_starmap(&args);
                 }
-                if name.as_str() == "itertools.accumulate" && args.len() >= 2 {
+                if nf_data.name.as_str() == "itertools.accumulate" && args.len() >= 2 {
                     return self.vm_itertools_accumulate(&args);
                 }
                 // math.trunc / math.floor / math.ceil — dispatch to __trunc__ / __floor__ / __ceil__
                 if args.len() == 1 {
                     if let PyObjectPayload::Instance(_) = &args[0].payload {
-                        let dunder = match name.as_str() {
+                        let dunder = match nf_data.name.as_str() {
                             "math.trunc" => Some("__trunc__"),
                             "math.floor" => Some("__floor__"),
                             "math.ceil" => Some("__ceil__"),
@@ -3291,7 +3291,7 @@ impl VirtualMachine {
                     }
                 }
                 // os.fspath — dispatch to __fspath__
-                if name.as_str() == "os.fspath" && args.len() == 1 {
+                if nf_data.name.as_str() == "os.fspath" && args.len() == 1 {
                     if let PyObjectPayload::Instance(_) = &args[0].payload {
                         if let Some(method) = args[0].get_attr("__fspath__") {
                             let ca = if matches!(&method.payload, PyObjectPayload::BoundMethod{..}) { vec![] } else { vec![args[0].clone()] };
@@ -3307,9 +3307,9 @@ impl VirtualMachine {
                     let mut resolved = Vec::with_capacity(args.len());
                     resolved.push(PyObject::list(self.collect_iterable(&args[0])?));
                     resolved.extend_from_slice(&args[1..]);
-                    return func(&resolved);
+                    return (nf_data.func)(&resolved);
                 }
-                let result = func(&args)?;
+                let result = (nf_data.func)(&args)?;
                 // Check if native function requested VM method calls
                 let collect_mode = ferrython_core::error::take_collect_vm_call_results();
                 if collect_mode {

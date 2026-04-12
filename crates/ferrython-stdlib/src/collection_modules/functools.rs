@@ -46,7 +46,7 @@ pub fn create_functools_module() -> PyObjectRef {
                 }));
             }
             match &args[0].payload {
-                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } 
+                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_) 
                 | PyObjectPayload::BuiltinFunction(_) | PyObjectPayload::NativeClosure(_) => {
                     // @lru_cache directly on function — default maxsize=128
                     Ok(create_cached_function(args[0].clone(), Some(128)))
@@ -277,11 +277,11 @@ fn functools_reduce(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     for item in &items[start_idx..] {
         // Call func(acc, item) — dispatch to native or closure
         acc = match &func.payload {
-            PyObjectPayload::NativeFunction { func: f, .. } => f(&[acc, item.clone()])?,
+            PyObjectPayload::NativeFunction(nf) => (nf.func)(&[acc, item.clone()])?,
             PyObjectPayload::NativeClosure(nc) => (nc.func)(&[acc, item.clone()])?,
             PyObjectPayload::BoundMethod { method, .. } => {
                 match &method.payload {
-                    PyObjectPayload::NativeFunction { func: f, .. } => f(&[acc, item.clone()])?,
+                    PyObjectPayload::NativeFunction(nf) => (nf.func)(&[acc, item.clone()])?,
                     PyObjectPayload::NativeClosure(nc) => (nc.func)(&[acc, item.clone()])?,
                     _ => return Err(PyException::type_error(
                         "reduce(): Python-defined functions require VM dispatch — use operator module functions instead")),
@@ -389,11 +389,11 @@ fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRe
 
     // Build the Instance manually with the shared attrs Arc
     PyObjectRef::new(PyObject {
-        payload: PyObjectPayload::Instance(InstanceData {
+        payload: PyObjectPayload::Instance(Box::new(InstanceData {
             class: cache_class,
             attrs: attrs_arc,
             is_special: true, dict_storage: None,
-        }),
+        })),
     })
 }
 
@@ -425,11 +425,11 @@ fn functools_singledispatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     ));
 
     let class = PyObject::class(CompactString::from("singledispatch"), vec![], cls_ns);
-    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+    let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
         class,
         attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
-    }));
+    })));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
         w.insert(CompactString::from("__singledispatch__"), PyObject::bool_val(true));

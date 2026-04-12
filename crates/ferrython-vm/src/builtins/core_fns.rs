@@ -4,7 +4,7 @@ use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{ PyCell, 
     check_args, check_args_min,
-    IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
+    IteratorData, PropertyData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     FxAttrMap,
 };
 use ferrython_core::types::HashableKey;
@@ -305,10 +305,10 @@ pub(super) fn builtin_round(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             // Check for __round__ dunder method
             if let Some(round_method) = args[0].get_attr("__round__") {
                 match &round_method.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => {
+                    PyObjectPayload::NativeFunction(nf) => {
                         let mut call_args = vec![args[0].clone()];
                         if args.len() >= 2 { call_args.push(args[1].clone()); }
-                        return func(&call_args);
+                        return (nf.func)(&call_args);
                     }
                     PyObjectPayload::NativeClosure(nc) => {
                         let mut call_args = vec![args[0].clone()];
@@ -650,14 +650,14 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
         }
         // NativeFunction/NativeClosure used as constructor (e.g., ChainMap, OrderedDict):
         // Check if the instance's class name matches
-        PyObjectPayload::NativeFunction { name: func_name, .. } => {
+        PyObjectPayload::NativeFunction(nf) => {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
                 if let PyObjectPayload::Class(cd) = &inst.class.payload {
                     let cls_name = cd.name.as_str();
-                    if !func_name.is_empty() && cls_name == func_name.as_str() {
+                    if !nf.name.is_empty() && cls_name == nf.name.as_str() {
                         return true;
                     }
-                    return class_is_subclass_of(&inst.class, func_name.as_str());
+                    return class_is_subclass_of(&inst.class, nf.name.as_str());
                 }
             }
             false
@@ -854,13 +854,13 @@ fn resolve_index(obj: &PyObjectRef, func_name: &str) -> PyResult<i64> {
         if let Some(func) = index_fn {
             let result = match &func.payload {
                 PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
-                PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
+                PyObjectPayload::NativeFunction(nf) => (nf.func)(&[])?,
                 PyObjectPayload::BoundMethod { receiver: _, method } => {
                     // Call the bound method — for simple __index__ methods that
                     // just return an int, we can try NativeFunction/NativeClosure
                     match &method.payload {
                         PyObjectPayload::NativeClosure(nc) => (nc.func)(&[obj.clone()])?,
-                        PyObjectPayload::NativeFunction { func, .. } => func(&[obj.clone()])?,
+                        PyObjectPayload::NativeFunction(nf) => (nf.func)(&[obj.clone()])?,
                         // Python-defined __index__ needs VM; we can't call it here.
                         // Fall through to error.
                         _ => return Err(PyException::type_error(format!(
@@ -1037,8 +1037,8 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                             let result = (nc.func)(&[receiver.clone()])?;
                             return get_iter_from_obj(&result);
                         }
-                        if let PyObjectPayload::NativeFunction { func, .. } = &method.payload {
-                            let result = func(&[receiver.clone()])?;
+                        if let PyObjectPayload::NativeFunction(nf) = &method.payload {
+                            let result = (nf.func)(&[receiver.clone()])?;
                             return get_iter_from_obj(&result);
                         }
                     }
@@ -1047,8 +1047,8 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                         let result = (nc.func)(&[obj.clone()])?;
                         return get_iter_from_obj(&result);
                     }
-                    PyObjectPayload::NativeFunction { func, .. } => {
-                        let result = func(&[obj.clone()])?;
+                    PyObjectPayload::NativeFunction(nf) => {
+                        let result = (nf.func)(&[obj.clone()])?;
                         return get_iter_from_obj(&result);
                     }
                     _ => {}
@@ -1340,7 +1340,7 @@ pub(super) fn builtin_property(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // is_abstract_marker() detects Property.fget abstract markers.
     // unwrap_abstract_fget() unwraps the marker when actually calling the getter.
     Ok(PyObjectRef::new(PyObject {
-        payload: PyObjectPayload::Property { fget: fget_raw, fset, fdel },
+        payload: PyObjectPayload::Property(Box::new(PropertyData { fget: fget_raw, fset, fdel })),
     }))
 }
 
@@ -1391,7 +1391,7 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Function(f) => {
             f.attrs.write().insert(CompactString::from(name), args[2].clone());
         }
-        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) |
+        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) |
         PyObjectPayload::BuiltinFunction(_) => {
             // Silently accept — native functions don't have persistent attrs
         }
@@ -1503,7 +1503,7 @@ pub(super) fn builtin_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             // Check for __bytes__ dunder method
             if let Some(bytes_method) = args[0].get_attr("__bytes__") {
                 match &bytes_method.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => return func(&[args[0].clone()]),
+                    PyObjectPayload::NativeFunction(nf) => return (nf.func)(&[args[0].clone()]),
                     PyObjectPayload::NativeClosure(nc) => return (nc.func)(&[args[0].clone()]),
                     _ => {}
                 }

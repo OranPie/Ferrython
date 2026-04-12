@@ -1037,7 +1037,7 @@ fn re_sub(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     // Check if repl is callable
     let repl_is_callable = matches!(&repl_obj.payload,
-        PyObjectPayload::Function { .. } | PyObjectPayload::NativeFunction { .. }
+        PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)
         | PyObjectPayload::NativeClosure(_) | PyObjectPayload::BoundMethod { .. });
     if repl_is_callable {
         return re_sub_callable(&pattern, repl_obj, &text, count, flags);
@@ -1100,7 +1100,7 @@ fn re_sub_callable(pattern: &str, repl_fn: &PyObjectRef, text: &str, count: usiz
                         .map(|i| caps.get(i).map(|m| m.as_str().to_string())).collect();
                     let match_obj = make_fancy_match_object(text, abs_start, abs_end, whole.as_str(), groups, extract_fancy_group_names(&re));
                     let replacement = match &repl_fn.payload {
-                        PyObjectPayload::NativeFunction { func, .. } => func(&[match_obj])?,
+                        PyObjectPayload::NativeFunction(nf) => (nf.func)(&[match_obj])?,
                         PyObjectPayload::NativeClosure(nc) => (nc.func)(&[match_obj])?,
                         _ => PyObject::str_val(CompactString::from(whole.as_str())),
                     };
@@ -1125,7 +1125,7 @@ fn re_sub_callable(pattern: &str, repl_fn: &PyObjectRef, text: &str, count: usiz
             result.push_str(&text[last..whole.start()]);
             let match_obj = make_match_object_from_captures(&caps, text, &re);
             let replacement = match &repl_fn.payload {
-                PyObjectPayload::NativeFunction { func, .. } => func(&[match_obj])?,
+                PyObjectPayload::NativeFunction(nf) => (nf.func)(&[match_obj])?,
                 PyObjectPayload::NativeClosure(nc) => (nc.func)(&[match_obj])?,
                 _ => PyObject::str_val(CompactString::from(whole.as_str())),
             };
@@ -3939,7 +3939,7 @@ pub fn create_pprint_module() -> PyObjectRef {
                     let line = format!("{}\n", text);
                     let text_arg = PyObject::str_val(CompactString::from(&line));
                     match &write_fn.payload {
-                        PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&[text_arg]); }
+                        PyObjectPayload::NativeFunction(nf) => { let _ = (nf.func)(&[text_arg]); }
                         PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&[text_arg]); }
                         _ => { println!("{}", text); }
                     }

@@ -306,8 +306,8 @@ pub fn create_logging_module() -> PyObjectRef {
                             PyObjectPayload::NativeClosure(nc) => {
                                 let _ = (nc.func)(&[line_obj]);
                             }
-                            PyObjectPayload::NativeFunction { func, .. } => {
-                                let _ = func(&[line_obj]);
+                            PyObjectPayload::NativeFunction(nf) => {
+                                let _ = (nf.func)(&[line_obj]);
                             }
                             _ => { eprintln!("{}", formatted); }
                         }
@@ -1019,7 +1019,7 @@ fn logging_log(level: i64, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         for handler in r.iter() {
                             if let Some(emit_fn) = handler.get_attr("emit") {
                                 match &emit_fn.payload {
-                                    PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&[record.clone()]); }
+                                    PyObjectPayload::NativeFunction(nf) => { let _ = (nf.func)(&[record.clone()]); }
                                     PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&[record.clone()]); }
                                     _ => {}
                                 }
@@ -1153,8 +1153,8 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         }
                         if let Some(emit_fn) = handler.get_attr("emit") {
                             match &emit_fn.payload {
-                                PyObjectPayload::NativeFunction { func, .. } => {
-                                    let _ = func(&[handler.clone(), record.clone()]);
+                                PyObjectPayload::NativeFunction(nf) => {
+                                    let _ = (nf.func)(&[handler.clone(), record.clone()]);
                                 }
                                 PyObjectPayload::NativeClosure(nc) => {
                                     let _ = (nc.func)(&[handler.clone(), record.clone()]);
@@ -2914,7 +2914,7 @@ pub fn create_pdb_module() -> PyObjectRef {
         let func = &args[0];
         let call_args = if args.len() > 1 { &args[1..] } else { &[] };
         match &func.payload {
-            PyObjectPayload::NativeFunction { func: f, .. } => f(call_args),
+            PyObjectPayload::NativeFunction(nf) => (nf.func)(call_args),
             PyObjectPayload::NativeClosure(nc) => (nc.func)(call_args),
             _ => Ok(PyObject::none()),
         }
@@ -3055,7 +3055,7 @@ pub fn create_profile_module() -> PyObjectRef {
                     let func_args = if args.len() > 1 { &args[1..] } else { &[] };
                     let start = std::time::Instant::now();
                     let result = match &func.payload {
-                        PyObjectPayload::NativeFunction { func: f, .. } => f(func_args)?,
+                        PyObjectPayload::NativeFunction(nf) => (nf.func)(func_args)?,
                         PyObjectPayload::NativeClosure(nc) => (nc.func)(func_args)?,
                         _ => PyObject::none(),
                     };
@@ -3145,7 +3145,7 @@ pub fn create_cprofile_module() -> PyObjectRef {
                     let func_args = if args.len() > 1 { &args[1..] } else { &[] };
                     let start = std::time::Instant::now();
                     let result = match &func.payload {
-                        PyObjectPayload::NativeFunction { func: f, .. } => f(func_args)?,
+                        PyObjectPayload::NativeFunction(nf) => (nf.func)(func_args)?,
                         PyObjectPayload::NativeClosure(nc) => (nc.func)(func_args)?,
                         _ => PyObject::none(),
                     };
@@ -3192,8 +3192,8 @@ pub fn create_cprofile_module() -> PyObjectRef {
                             }
                             // Fallback: call the write method
                             match &_write.payload {
-                                PyObjectPayload::NativeFunction { func, .. } => {
-                                    let _ = func(&[PyObject::str_val(CompactString::from(output.as_str()))]);
+                                PyObjectPayload::NativeFunction(nf) => {
+                                    let _ = (nf.func)(&[PyObject::str_val(CompactString::from(output.as_str()))]);
                                     wrote_to_stream = true;
                                     break;
                                 }
@@ -3245,7 +3245,7 @@ pub fn create_cprofile_module() -> PyObjectRef {
 /// Call a callable (NativeFunction or NativeClosure) with no args
 fn call_callable(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     match &obj.payload {
-        PyObjectPayload::NativeFunction { func, .. } => func(&[]),
+        PyObjectPayload::NativeFunction(nf) => (nf.func)(&[]),
         PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]),
         _ => Ok(PyObject::none()),
     }
@@ -3254,7 +3254,7 @@ fn call_callable(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
 /// Check if object is callable
 fn is_callable(obj: &PyObjectRef) -> bool {
     matches!(&obj.payload,
-        PyObjectPayload::NativeFunction { .. } |
+        PyObjectPayload::NativeFunction(_) |
         PyObjectPayload::NativeClosure(_) |
         PyObjectPayload::Function(_) |
         PyObjectPayload::BoundMethod { .. }
@@ -3684,7 +3684,7 @@ pub fn create_pydoc_module() -> PyObjectRef {
             let desc = match &obj.payload {
                 PyObjectPayload::Module(_) => format!("module {}", name),
                 PyObjectPayload::Class(_) => format!("class {}", name),
-                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }
+                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)
                 | PyObjectPayload::NativeClosure(_) => format!("function {}", name),
                 PyObjectPayload::BoundMethod { .. } => format!("method {}", name),
                 _ => obj.type_name().to_string(),

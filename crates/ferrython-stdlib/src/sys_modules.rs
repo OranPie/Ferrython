@@ -137,11 +137,11 @@ pub fn create_sys_module() -> PyObjectRef {
                             PyObject::str_val(CompactString::from("final")), PyObject::int(0),
                         ];
                         // Handle slice
-                        if let PyObjectPayload::Slice { start, stop, step } = &idx_obj.payload {
+                        if let PyObjectPayload::Slice(sd) = &idx_obj.payload {
                             let len = 5i64;
-                            let s = start.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
-                            let e = stop.as_ref().and_then(|v| v.as_int()).unwrap_or(len);
-                            let st = step.as_ref().and_then(|v| v.as_int()).unwrap_or(1);
+                            let s = sd.start.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
+                            let e = sd.stop.as_ref().and_then(|v| v.as_int()).unwrap_or(len);
+                            let st = sd.step.as_ref().and_then(|v| v.as_int()).unwrap_or(1);
                             let s = if s < 0 { (len + s).max(0) } else { s.min(len) } as usize;
                             let e = if e < 0 { (len + e).max(0) } else { e.min(len) } as usize;
                             if st == 1 && s <= e {
@@ -1681,7 +1681,7 @@ fn os_fspath(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             // Check for __fspath__ method
             if let Some(method) = args[0].get_attr("__fspath__") {
                 match &method.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => func(&[args[0].clone()]),
+                    PyObjectPayload::NativeFunction(nf) => (nf.func)(&[args[0].clone()]),
                     PyObjectPayload::NativeClosure(nc) => (nc.func)(&[args[0].clone()]),
                     PyObjectPayload::Function(_) => {
                         Ok(PyObject::str_val(CompactString::from(args[0].py_to_string())))
@@ -2986,7 +2986,7 @@ pub fn create_sched_module() -> PyObjectRef {
                             vec![]
                         };
                         match &action.payload {
-                            PyObjectPayload::NativeFunction { func, .. } => { func(&call_args)?; }
+                            PyObjectPayload::NativeFunction(nf) => { (nf.func)(&call_args)?; }
                             PyObjectPayload::NativeClosure(nc) => { (nc.func)(&call_args)?; }
                             _ => {
                                 // Python function — defer via request_vm_call
@@ -3304,9 +3304,9 @@ pub fn create_mmap_module() -> PyObjectRef {
                 let d = d8.read();
                 let len = d.len() as i64;
                 // Check for slice (Tuple with start/stop/step from VM slice dispatch)
-                if let PyObjectPayload::Slice { start, stop, step: _ } = &args[0].payload {
-                    let s = start.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
-                    let e = stop.as_ref().and_then(|v| v.as_int()).unwrap_or(len);
+                if let PyObjectPayload::Slice(sd) = &args[0].payload {
+                    let s = sd.start.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
+                    let e = sd.stop.as_ref().and_then(|v| v.as_int()).unwrap_or(len);
                     let s = if s < 0 { (len + s).max(0) } else { s.min(len) } as usize;
                     let e = if e < 0 { (len + e).max(0) } else { e.min(len) } as usize;
                     let result = if s < e { d[s..e].to_vec() } else { vec![] };

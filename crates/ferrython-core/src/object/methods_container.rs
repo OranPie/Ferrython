@@ -54,8 +54,8 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                     found
                 };
                 if let Some(len_method) = len_fn {
-                    if let PyObjectPayload::NativeFunction { func, .. } = &len_method.payload {
-                        let result = func(&[obj.clone()])?;
+                    if let PyObjectPayload::NativeFunction(nf) = &len_method.payload {
+                        let result = (nf.func)(&[obj.clone()])?;
                         if let Some(n) = result.as_int() {
                             return Ok(n as usize);
                         }
@@ -112,8 +112,8 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
 
 pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyObjectRef> {
         // Check for slice key first
-        if let PyObjectPayload::Slice { start, stop, step } = &key.payload {
-            return get_slice_impl(obj, start, stop, step);
+        if let PyObjectPayload::Slice(sd) = &key.payload {
+            return get_slice_impl(obj, &sd.start, &sd.stop, &sd.step);
         }
         match &obj.payload {
             PyObjectPayload::List(items) => {

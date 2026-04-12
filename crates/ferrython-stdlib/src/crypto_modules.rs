@@ -152,11 +152,11 @@ fn make_hash_object(name: &str, data: Vec<u8>, _digest_hex: String, _digest_byte
         Ok(PyObject::bytes(digest_bytes))
     }));
 
-    let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+    let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
         class,
         attrs: to_shared_fx(attrs),
         is_special: true, dict_storage: None,
-    }));
+    })));
     inst
 }
 
@@ -538,22 +538,22 @@ pub fn create_hmac_module() -> PyObjectRef {
             if args.is_empty() { return Err(PyException::type_error("copy() requires self")); }
             if let PyObjectPayload::Instance(inst) = &args[0].payload {
                 let attrs_copy = inst.attrs.read().clone();
-                let new_inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+                let new_inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
                     class: inst.class.clone(),
                     attrs: Rc::new(PyCell::new(attrs_copy)),
                     is_special: true, dict_storage: None,
-                }));
+                })));
                 return Ok(new_inst);
             }
             Err(PyException::type_error("copy() requires HMAC instance"))
         }));
 
         let class = PyObject::class(CompactString::from("HMAC"), vec![], ns);
-        let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
             class,
             attrs: to_shared_fx(attrs),
             is_special: true, dict_storage: None,
-        }));
+        })));
         Ok(inst)
     }
 

@@ -373,10 +373,10 @@ impl VirtualMachine {
                 if let Some(class_val) = cd.namespace.read().get(name.as_str()).cloned() {
                     if matches!(&class_val.payload,
                         PyObjectPayload::Function(_) |
-                        PyObjectPayload::Property { .. }
+                        PyObjectPayload::Property(_)
                     ) {
-                        if let PyObjectPayload::Property { fget, .. } = &class_val.payload {
-                            if let Some(getter) = fget {
+                        if let PyObjectPayload::Property(pd) = &class_val.payload {
+                            if let Some(getter) = &pd.fget {
                                 let getter = crate::builtins::unwrap_abstract_fget(getter);
                                 let result = self.call_object(getter, vec![obj.clone()])?;
                                 self.vm_push(result);
@@ -399,16 +399,16 @@ impl VirtualMachine {
         }
         match obj.get_attr(name) {
             Some(v) => {
-                if let PyObjectPayload::Property { fget, .. } = &v.payload {
+                if let PyObjectPayload::Property(pd) = &v.payload {
                     // On class-level access (e.g. MyClass.prop), return the property
-                    // object itself — don't invoke fget.
+                    // object itself — don't invoke pd.fget.
                     if matches!(&obj.payload, PyObjectPayload::Class(_)) {
                         self.vm_push(v);
-                    } else if let Some(getter) = fget {
+                    } else if let Some(getter) = &pd.fget {
                         // Unwrap abstract marker if present (@property @abstractmethod)
                         let getter = crate::builtins::unwrap_abstract_fget(getter);
                         // When property is accessed via super() proxy, pass the
-                        // underlying instance to fget, not the Super wrapper.
+                        // underlying instance to pd.fget, not the Super wrapper.
                         let receiver = if let PyObjectPayload::Super { instance, .. } = &obj.payload {
                             instance.clone()
                         } else {
@@ -456,7 +456,7 @@ impl VirtualMachine {
                     let result = self.call_object(get_method_bound, vec![instance_arg, owner_arg])?;
                     self.vm_push(result);
                 } else if matches!(&obj.payload, PyObjectPayload::Module(_))
-                    && matches!(&v.payload, PyObjectPayload::NativeFunction { .. })
+                    && matches!(&v.payload, PyObjectPayload::NativeFunction(_))
                     && obj.get_attr("_bind_methods").is_some()
                 {
                     self.vm_push(PyObjectRef::new(PyObject {
@@ -472,7 +472,7 @@ impl VirtualMachine {
             None => {
                 // Type method access: e.g., dict.fromkeys, object.__getattribute__
                 let type_name = match &obj.payload {
-                    PyObjectPayload::NativeFunction { name: fn_name, .. } => Some(fn_name.as_str()),
+                    PyObjectPayload::NativeFunction(nf) => Some(nf.name.as_str()),
                     PyObjectPayload::BuiltinType(tn) => Some(tn.as_str()),
                     PyObjectPayload::BuiltinFunction(fn_name) => Some(fn_name.as_str()),
                     _ => None,
@@ -504,7 +504,7 @@ impl VirtualMachine {
                             } else {
                                 ga_raw
                             }
-                        } else if matches!(&ga_raw.payload, PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                        } else if matches!(&ga_raw.payload, PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
                             // Regular function: bind as method
                             PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
@@ -541,8 +541,8 @@ impl VirtualMachine {
     fn exec_store_attr(&mut self, name: &CompactString, obj: PyObjectRef, value: PyObjectRef) -> Result<Option<PyObjectRef>, PyException> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             if let Some(desc) = lookup_in_class_mro(&inst.class, name) {
-                if let PyObjectPayload::Property { fset, .. } = &desc.payload {
-                    if let Some(setter) = fset {
+                if let PyObjectPayload::Property(pd) = &desc.payload {
+                    if let Some(setter) = &pd.fset {
                         let setter = setter.clone();
                         self.call_object(setter, vec![obj, value])?;
                         return Ok(None);
@@ -585,7 +585,7 @@ impl VirtualMachine {
                         self.call_object(method, vec![name_arg, value])?;
                         return Ok(None);
                     }
-                    PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) => {
+                    PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => {
                         let name_arg = PyObject::str_val(name.clone());
                         self.call_object(sa, vec![obj, name_arg, value])?;
                         return Ok(None);
@@ -648,7 +648,7 @@ impl VirtualMachine {
                 f.attrs.write().insert(name.clone(), value);
             }
             // Native functions: silently accept attribute assignment (common in decorators)
-            PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) |
+            PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) |
             PyObjectPayload::BuiltinFunction(_) => {
                 // No persistent storage, but don't error — many decorators set __wrapped__ etc.
             }
@@ -669,8 +669,8 @@ impl VirtualMachine {
             PyObjectPayload::Instance(inst) => {
                 // Check for descriptor with __delete__ or property fdel first
                 if let Some(class_attr) = lookup_in_class_mro(&inst.class, name.as_str()) {
-                    if let PyObjectPayload::Property { fdel, .. } = &class_attr.payload {
-                        if let Some(fdel_fn) = fdel {
+                    if let PyObjectPayload::Property(pd) = &class_attr.payload {
+                        if let Some(fdel_fn) = &pd.fdel {
                             let bound = PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::BoundMethod {
                                     receiver: obj.clone(),

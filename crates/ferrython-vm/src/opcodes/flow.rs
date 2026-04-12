@@ -772,7 +772,7 @@ impl VirtualMachine {
                         if let Some(method) = lookup_in_class_mro(&effective_class, &name) {
                             match &method.payload {
                                 PyObjectPayload::Function(_)
-                                | PyObjectPayload::NativeFunction { .. } => {
+                                | PyObjectPayload::NativeFunction(_) => {
                                     // Two-item: method + receiver
                                     frame.push(method);
                                     frame.push(obj);
@@ -794,8 +794,8 @@ impl VirtualMachine {
                                     frame.push(effective_class.clone());
                                     return Ok(None);
                                 }
-                                PyObjectPayload::Property { fget, .. } => {
-                                    if let Some(getter) = fget {
+                                PyObjectPayload::Property(pd) => {
+                                    if let Some(getter) = pd.fget.as_ref() {
                                         let getter = crate::builtins::unwrap_abstract_fget(getter);
                                         let result = self.call_object(getter, vec![obj])?;
                                         let frame = self.vm_frame();
@@ -846,7 +846,7 @@ impl VirtualMachine {
                 match obj.get_attr(&name) {
                     Some(method) => {
                         if matches!(&obj.payload, PyObjectPayload::Module(_))
-                            && matches!(&method.payload, PyObjectPayload::NativeFunction { .. })
+                            && matches!(&method.payload, PyObjectPayload::NativeFunction(_))
                             && obj.get_attr("_bind_methods").is_some()
                         {
                             // Module method binding → two-item: method + module
@@ -861,7 +861,7 @@ impl VirtualMachine {
                     None => {
                         let type_name = match &obj.payload {
                             PyObjectPayload::BuiltinType(tn) => Some(tn.as_str()),
-                            PyObjectPayload::NativeFunction { name: fn_name, .. } => Some(fn_name.as_str()),
+                            PyObjectPayload::NativeFunction(nf) => Some(nf.name.as_str()),
                             _ => None,
                         };
                         if let Some(tn) = type_name {

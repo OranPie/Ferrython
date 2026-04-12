@@ -1739,8 +1739,8 @@ fn write_tar_to_disk(inner: &TarInner) -> PyResult<()> {
         // Write data back to the BytesIO by calling its write method
         if let Some(write_fn) = fobj.get_attr("write") {
             match &write_fn.payload {
-                PyObjectPayload::NativeFunction { func, .. } => {
-                    func(&[PyObject::bytes(data)])?;
+                PyObjectPayload::NativeFunction(nf) => {
+                    (nf.func)(&[PyObject::bytes(data)])?;
                 }
                 PyObjectPayload::NativeClosure(nc) => {
                     (nc.func)(&[PyObject::bytes(data)])?;
@@ -1751,7 +1751,7 @@ fn write_tar_to_disk(inner: &TarInner) -> PyResult<()> {
         // Seek back to beginning
         if let Some(seek_fn) = fobj.get_attr("seek") {
             match &seek_fn.payload {
-                PyObjectPayload::NativeFunction { func, .. } => { let _ = func(&[PyObject::int(0)]); }
+                PyObjectPayload::NativeFunction(nf) => { let _ = (nf.func)(&[PyObject::int(0)]); }
                 PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&[PyObject::int(0)]); }
                 _ => {}
             }
@@ -1851,8 +1851,8 @@ fn extract_bytes_from_fileobj(fobj: &PyObjectRef) -> PyResult<Vec<u8>> {
     // Try getvalue() method
     if let Some(getvalue) = fobj.get_attr("getvalue") {
         // Can't call Python method from native code, but NativeFunction is OK
-        if let PyObjectPayload::NativeFunction { func, .. } = &getvalue.payload {
-            let result = func(&[])?;
+        if let PyObjectPayload::NativeFunction(nf) = &getvalue.payload {
+            let result = (nf.func)(&[])?;
             if let PyObjectPayload::Bytes(b) = &result.payload {
                 return Ok(b.clone());
             }

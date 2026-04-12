@@ -2736,7 +2736,7 @@ fn handle_one_connection(stream: &mut TcpStream, handler_cls: &PyObjectRef) {
             // Call the handler method, passing the handler instance as self
             let result = match &func.payload {
                 PyObjectPayload::NativeClosure(nc) => (nc.func)(&[handler_inst.clone()]),
-                PyObjectPayload::NativeFunction { func: f, .. } => f(&[handler_inst.clone()]),
+                PyObjectPayload::NativeFunction(nf) => (nf.func)(&[handler_inst.clone()]),
                 _ => Ok(PyObject::none()),
             };
             if let Err(_) = result {
@@ -3449,13 +3449,13 @@ pub fn create_http_cookies_module() -> PyObjectRef {
 /// Helper: invoke a callable PyObject (NativeFunction, NativeClosure, or BoundMethod).
 fn ssl_call_fn(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match &func.payload {
-        PyObjectPayload::NativeFunction { func: f, .. } => f(args),
+        PyObjectPayload::NativeFunction(nf) => (nf.func)(args),
         PyObjectPayload::NativeClosure(nc) => (nc.func)(args),
         PyObjectPayload::BoundMethod { receiver, method } => {
             let mut full_args = vec![receiver.clone()];
             full_args.extend_from_slice(args);
             match &method.payload {
-                PyObjectPayload::NativeFunction { func: f, .. } => f(&full_args),
+                PyObjectPayload::NativeFunction(nf) => (nf.func)(&full_args),
                 PyObjectPayload::NativeClosure(nc) => (nc.func)(&full_args),
                 _ => Ok(PyObject::none()),
             }
@@ -4006,7 +4006,7 @@ fn smtp_connect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }).map(|v| v.py_to_string()).unwrap_or_default();
         let body = if let Some(as_string) = msg_obj.get_attr("as_string") {
             match &as_string.payload {
-                PyObjectPayload::NativeFunction { func, .. } => func(&[]).map(|v| v.py_to_string()).unwrap_or_default(),
+                PyObjectPayload::NativeFunction(nf) => (nf.func)(&[]).map(|v| v.py_to_string()).unwrap_or_default(),
                 PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]).map(|v| v.py_to_string()).unwrap_or_default(),
                 _ => msg_obj.py_to_string(),
             }

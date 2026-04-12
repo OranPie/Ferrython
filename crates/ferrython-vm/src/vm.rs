@@ -3359,7 +3359,7 @@ impl VirtualMachine {
                                             let ip = frame.ip as u32;
                                             if let Some(cached) = frame.attr_ic.as_ref().and_then(|ic| ic.lookup(ip, cd.class_version)) {
                                                 if matches!(&cached.payload,
-                                                    PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                                                    PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
                                                     fast_kind = 1;
                                                     fast_val = Some(cached.clone());
                                                 }
@@ -3374,7 +3374,7 @@ impl VirtualMachine {
                                                 };
                                                 if let Some(class_val) = method_hit {
                                                     if matches!(&class_val.payload,
-                                                        PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                                                        PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
                                                         fast_kind = 1;
                                                         frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, class_val.clone());
                                                         fast_val = Some(class_val);
@@ -3385,7 +3385,7 @@ impl VirtualMachine {
                                                 } else if unsafe { &*cd.method_vtable.data_ptr() }.is_empty() {
                                                     if let Some(method) = lookup_in_class_mro(class, name.as_str()) {
                                                         if matches!(&method.payload,
-                                                            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                                                            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
                                                             fast_kind = 1;
                                                             frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, method.clone());
                                                             fast_val = Some(method);
@@ -3930,7 +3930,7 @@ impl VirtualMachine {
                                     if let Some(v) = attrs.get(name.as_str()) {
                                         match &v.payload {
                                             PyObjectPayload::Function(_)
-                                            | PyObjectPayload::Property { .. } => None,
+                                            | PyObjectPayload::Property(_) => None,
                                             _ => Some(v.clone()),
                                         }
                                     } else {
@@ -3942,7 +3942,7 @@ impl VirtualMachine {
                                                 if let Some(class_val) = vt.get(name.as_str()) {
                                                     match &class_val.payload {
                                                         PyObjectPayload::Function(_)
-                                                        | PyObjectPayload::Property { .. }
+                                                        | PyObjectPayload::Property(_)
                                                         | PyObjectPayload::ClassMethod(_)
                                                         | PyObjectPayload::StaticMethod(_) => None,
                                                         _ => Some(class_val.clone()),
@@ -3993,7 +3993,7 @@ impl VirtualMachine {
                                     if let Some(v) = attrs.get(name.as_str()) {
                                         match &v.payload {
                                             PyObjectPayload::Function(_)
-                                            | PyObjectPayload::Property { .. } => None,
+                                            | PyObjectPayload::Property(_) => None,
                                             _ => Some(v.clone()),
                                         }
                                     } else {
@@ -4004,7 +4004,7 @@ impl VirtualMachine {
                                             if let Some(class_val) = vt.get(name.as_str()) {
                                                 match &class_val.payload {
                                                     PyObjectPayload::Function(_)
-                                                    | PyObjectPayload::Property { .. }
+                                                    | PyObjectPayload::Property(_)
                                                     | PyObjectPayload::ClassMethod(_)
                                                     | PyObjectPayload::StaticMethod(_) => None,
                                                     _ => {
@@ -4067,7 +4067,7 @@ impl VirtualMachine {
                                         let ip = frame.ip as u32;
                                         if let Some(cached) = frame.attr_ic.as_ref().and_then(|ic| ic.lookup(ip, cd.class_version)) {
                                             if matches!(&cached.payload,
-                                                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                                                PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
                                                 fast_kind = 1;
                                                 fast_val = Some(cached.clone());
                                             }
@@ -4083,7 +4083,7 @@ impl VirtualMachine {
                                             };
                                             if let Some(class_val) = method_hit {
                                                 if matches!(&class_val.payload,
-                                                    PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                                                    PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
                                                     fast_kind = 1;
                                                     // Populate IC for next time
                                                     frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, class_val.clone());
@@ -4095,7 +4095,7 @@ impl VirtualMachine {
                                             } else if unsafe { &*cd.method_vtable.data_ptr() }.is_empty() {
                                                 if let Some(method) = lookup_in_class_mro(class, name.as_str()) {
                                                     if matches!(&method.payload,
-                                                        PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. }) {
+                                                        PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)) {
                                                         fast_kind = 1;
                                                         frame.attr_ic.get_or_insert_with(|| Box::new(AttrInlineCache::empty())).insert(ip, cd.class_version, method.clone());
                                                         fast_val = Some(method);
@@ -4163,7 +4163,7 @@ impl VirtualMachine {
                                     if let Some(v) = attrs.get(name.as_str()) {
                                         match &v.payload {
                                             PyObjectPayload::Function(_)
-                                            | PyObjectPayload::Property { .. } => None,
+                                            | PyObjectPayload::Property(_) => None,
                                             _ => Some(v.clone()),
                                         }
                                     } else {
@@ -4177,7 +4177,7 @@ impl VirtualMachine {
                                                     match &class_val.payload {
                                                         // Functions need BoundMethod wrapping — cold path
                                                         PyObjectPayload::Function(_)
-                                                        | PyObjectPayload::Property { .. }
+                                                        | PyObjectPayload::Property(_)
                                                         | PyObjectPayload::ClassMethod(_)
                                                         | PyObjectPayload::StaticMethod(_) => None,
                                                         _ => Some(class_val.clone()),
@@ -4936,15 +4936,18 @@ impl VirtualMachine {
                         ]);
                         self.fire_trace_event("exception", exc_info);
                     }
-                    // Always attach traceback from the call stack
-                    if exc.traceback.is_empty() {
-                        self.attach_traceback(&mut exc);
-                    }
+                    // Lazy traceback: only attach when the exception
+                    // escapes (no handler found). Caught exceptions skip
+                    // the expensive traceback construction entirely.
                     // Implicit chaining: if there's an active exception and the
                     // new one doesn't already have context, set __context__
                     if exc.context.is_none() {
                         if let Some(ref active) = self.active_exception {
-                            exc.context = Some(Box::new(active.clone()));
+                            // Shallow link — avoid deep-cloning the entire chain.
+                            exc.context = Some(Box::new(PyException::new(
+                                active.kind.clone(),
+                                active.message.clone(),
+                            )));
                         }
                     }
                     // Iterative exception unwind: try current frame, then parents
@@ -4952,11 +4955,12 @@ impl VirtualMachine {
                         if let Some(handler_ip) = self.unwind_except() {
                             // Store active exception for bare `raise` re-raise
                             self.active_exception = Some(exc.clone());
-                            // Also update core thread-local (used by ferrython-traceback)
+                            // Update core thread-local (used by ferrython-traceback).
+                            // Pass empty traceback — built lazily on demand.
                             ferrython_core::error::set_thread_exc_info(
                                 exc.kind.clone(),
                                 exc.message.clone(),
-                                exc.traceback.clone(),
+                                Vec::new(),
                             );
                             let frame = self.call_stack.last_mut().unwrap();
                             // CPython pushes (traceback, value, type) — 3 items
@@ -5018,16 +5022,17 @@ impl VirtualMachine {
                             if exc.cause.is_some() {
                                 Self::store_exc_attr(&exc_value, "__suppress_context__", PyObject::bool_val(true));
                             }
-                            // Store __traceback__ on the exception value
-                            let tb_obj = Self::build_traceback_object(&exc.traceback);
-                            Self::store_exc_attr(&exc_value, "__traceback__", tb_obj.clone());
-                            // Update thread-local for sys.exc_info() — after exc_value and __traceback__ are ready
+                            // Lazy traceback: push None to stack. The full
+                            // traceback object is only built when accessed via
+                            // __traceback__ or traceback.format_exc().
+                            Self::store_exc_attr(&exc_value, "__traceback__", PyObject::none());
+                            // Update thread-local for sys.exc_info()
                             ferrython_stdlib::set_exc_info(
                                 exc.kind.clone(),
                                 exc.message.clone(),
                                 Some(exc_value.clone()),
                             );
-                            frame.push(tb_obj);               // traceback
+                            frame.push(PyObject::none());         // traceback (lazy)
                             frame.push(exc_value);            // value
                             frame.push(exc_type);             // type
                             frame.ip = handler_ip;
@@ -5039,6 +5044,11 @@ impl VirtualMachine {
                                 child.recycle(&mut self.frame_pool);
                             }
                             continue; // try parent frame's block stack
+                        }
+                        // Exception escapes — attach traceback now
+                        // (only pays the cost for uncaught exceptions).
+                        if exc.traceback.is_empty() {
+                            self.attach_traceback(&mut exc);
                         }
                         return Err(exc);
                     }

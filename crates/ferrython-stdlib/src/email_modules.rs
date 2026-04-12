@@ -728,7 +728,7 @@ pub fn create_email_contentmanager_module() -> PyObjectRef {
     let raw_mgr = content_manager_fn.clone();
     // Create a default ContentManager instance
     let default_mgr = match &raw_mgr.payload {
-        PyObjectPayload::NativeFunction { func, .. } => func(&[]).unwrap_or_else(|_| PyObject::none()),
+        PyObjectPayload::NativeFunction(nf) => (nf.func)(&[]).unwrap_or_else(|_| PyObject::none()),
         _ => PyObject::none(),
     };
 

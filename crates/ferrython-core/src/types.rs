@@ -390,9 +390,9 @@ impl HashableKey {
                 }
             }
             // Functions/methods are hashable by identity in CPython
-            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } |
+            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_) |
             PyObjectPayload::NativeClosure(_) | PyObjectPayload::BuiltinFunction(_) |
-            PyObjectPayload::BoundMethod { .. } | PyObjectPayload::BuiltinBoundMethod { .. } => {
+            PyObjectPayload::BoundMethod { .. } | PyObjectPayload::BuiltinBoundMethod(_) => {
                 let ptr = PyObjectRef::as_ptr(obj) as usize;
                 Ok(HashableKey::Identity(ptr, obj.clone()))
             }

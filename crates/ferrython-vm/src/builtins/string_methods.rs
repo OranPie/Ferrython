@@ -894,7 +894,7 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                                 if let Some(factory) = guard.get(&factory_key).cloned() {
                                     drop(guard);
                                     let val = match &factory.payload {
-                                        PyObjectPayload::NativeFunction { func, .. } => func(&[])?,
+                                        PyObjectPayload::NativeFunction(nf) => (nf.func)(&[])?,
                                         PyObjectPayload::NativeClosure(nc) => (nc.func)(&[])?,
                                         _ => return Err(PyException::key_error(field)),
                                     };
@@ -909,8 +909,8 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             let key_obj = PyObject::str_val(CompactString::from(&field));
                             let resolved = if let Some(getitem) = mapping.get_attr("__getitem__") {
                                 match &getitem.payload {
-                                    PyObjectPayload::NativeFunction { func, .. } => {
-                                        Some(func(&[key_obj])?)
+                                    PyObjectPayload::NativeFunction(nf) => {
+                                        Some((nf.func)(&[key_obj])?)
                                     }
                                     PyObjectPayload::NativeClosure(nc) => {
                                         Some((nc.func)(&[key_obj])?)

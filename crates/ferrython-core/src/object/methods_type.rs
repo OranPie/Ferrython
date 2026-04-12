@@ -30,7 +30,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
             PyObjectPayload::BuiltinFunction(_) => "builtin_function_or_method",
             PyObjectPayload::BuiltinType(_) => "type",
             PyObjectPayload::BoundMethod { .. } => "method",
-            PyObjectPayload::BuiltinBoundMethod { .. } => "builtin_method",
+            PyObjectPayload::BuiltinBoundMethod(_) => "builtin_method",
             PyObjectPayload::Code(_) => "code",
             PyObjectPayload::Class(_) => "type",
             PyObjectPayload::Instance(inst) => {
@@ -70,9 +70,9 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
             PyObjectPayload::Coroutine(_) => "coroutine",
             PyObjectPayload::AsyncGenerator(_) => "async_generator",
             PyObjectPayload::AsyncGenAwaitable { .. } => "async_generator_asend",
-            PyObjectPayload::NativeFunction { .. } => "builtin_function_or_method",
+            PyObjectPayload::NativeFunction(_) => "builtin_function_or_method",
             PyObjectPayload::NativeClosure(_) => "builtin_function_or_method",
-            PyObjectPayload::Property { .. } => "property",
+            PyObjectPayload::Property(_) => "property",
             PyObjectPayload::StaticMethod(_) => "staticmethod",
             PyObjectPayload::ClassMethod(_) => "classmethod",
             PyObjectPayload::Super { .. } => "super",
@@ -119,9 +119,9 @@ pub(super) fn py_is_truthy(obj: &PyObjectRef) -> bool {
 pub(super) fn py_is_callable(obj: &PyObjectRef) -> bool {
         matches!(&obj.payload, PyObjectPayload::Function(_) | PyObjectPayload::BuiltinFunction(_)
             | PyObjectPayload::BuiltinType(_) | PyObjectPayload::BoundMethod { .. }
-            | PyObjectPayload::BuiltinBoundMethod { .. }
+            | PyObjectPayload::BuiltinBoundMethod(_)
             | PyObjectPayload::Class(_) | PyObjectPayload::ExceptionType(_)
-            | PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) | PyObjectPayload::Partial(_))
+            | PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) | PyObjectPayload::Partial(_))
             || (matches!(&obj.payload, PyObjectPayload::Instance(_)) && obj.get_attr("__call__").is_some())
 }
 
@@ -337,7 +337,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 }
                 // Check for __str__ method first
                 if let Some(str_fn) = obj.get_attr("__str__") {
-                    if !matches!(&str_fn.payload, PyObjectPayload::BuiltinBoundMethod { .. }) {
+                    if !matches!(&str_fn.payload, PyObjectPayload::BuiltinBoundMethod(_)) {
                         // __str__ exists but we can't call it from here (no VM)
                         // Fall through to default
                     }

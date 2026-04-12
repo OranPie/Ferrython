@@ -185,15 +185,15 @@ pub(super) fn call_list_method(items: Rc<PyCell<Vec<PyObjectRef>>>, method: &str
         }
         "__getitem__" => {
             check_args_min("__getitem__", args, 1)?;
-            if let PyObjectPayload::Slice { start, stop, step } = &args[0].payload {
+            if let PyObjectPayload::Slice(sd) = &args[0].payload {
                 let r = items.read();
                 let len = r.len() as i64;
-                let step_val = step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
                 if step_val == 0 {
                     return Err(PyException::value_error("slice step cannot be zero"));
                 }
-                let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 })).unwrap_or(if step_val > 0 { 0 } else { len - 1 });
-                let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { len } else { -len - 1 })).unwrap_or(if step_val > 0 { len } else { -len - 1 });
+                let s_val = sd.start.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 })).unwrap_or(if step_val > 0 { 0 } else { len - 1 });
+                let e_val = sd.stop.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { len } else { -len - 1 })).unwrap_or(if step_val > 0 { len } else { -len - 1 });
                 let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
                 let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
                 let mut result = Vec::new();
@@ -221,28 +221,28 @@ pub(super) fn call_list_method(items: Rc<PyCell<Vec<PyObjectRef>>>, method: &str
         }
         "__setitem__" => {
             check_args_min("__setitem__", args, 2)?;
-            if let PyObjectPayload::Slice { start, stop, step } = &args[0].payload {
+            if let PyObjectPayload::Slice(sd) = &args[0].payload {
                 let new_items = args[1].to_list()?;
                 let mut w = items.write();
                 let len = w.len() as i64;
-                let step_val = step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
                 if step_val == 1 || step_val == 0 {
-                    let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
-                    let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
+                    let s_val = sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
+                    let e_val = sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
                     let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
                     let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
                     let e = e.max(s);
                     w.splice(s..e, new_items);
                 } else {
                     let s_val = if step_val > 0 {
-                        start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
+                        sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
                     } else {
-                        start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
+                        sd.start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
                     };
                     let e_val = if step_val > 0 {
-                        stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
+                        sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
                     } else {
-                        stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
+                        sd.stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
                     };
                     let mut indices = Vec::new();
                     let mut i = if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) };
@@ -277,12 +277,12 @@ pub(super) fn call_list_method(items: Rc<PyCell<Vec<PyObjectRef>>>, method: &str
         }
         "__delitem__" => {
             check_args_min("__delitem__", args, 1)?;
-            if let PyObjectPayload::Slice { start, stop, step } = &args[0].payload {
+            if let PyObjectPayload::Slice(sd) = &args[0].payload {
                 let mut w = items.write();
                 let len = w.len() as i64;
-                let step_val = step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
-                let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 })).unwrap_or(if step_val > 0 { 0 } else { len - 1 });
-                let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { len } else { -len - 1 })).unwrap_or(if step_val > 0 { len } else { -len - 1 });
+                let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                let s_val = sd.start.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { 0 } else { len - 1 })).unwrap_or(if step_val > 0 { 0 } else { len - 1 });
+                let e_val = sd.stop.as_ref().map(|v| v.as_int().unwrap_or(if step_val > 0 { len } else { -len - 1 })).unwrap_or(if step_val > 0 { len } else { -len - 1 });
                 let mut indices = Vec::new();
                 let mut i = if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) };
                 let end = if e_val < 0 { (len + e_val).max(if step_val > 0 { 0 } else { -1 }) } else { e_val.min(len) };

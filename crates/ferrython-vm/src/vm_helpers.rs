@@ -95,7 +95,7 @@ impl VirtualMachine {
         }
         // For non-Instance payloads, just try get_attr (skipping BuiltinBoundMethod)
         if let Some(method) = obj.get_attr(name) {
-            if matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod { .. }) {
+            if matches!(&method.payload, PyObjectPayload::BuiltinBoundMethod(_)) {
                 return None;
             }
             return Some(method);
@@ -107,7 +107,7 @@ impl VirtualMachine {
     /// and leave descriptors (Instance with __get__) as-is for the VM to invoke __get__.
     fn bind_class_val_for_instance(obj: &PyObjectRef, inst: &ferrython_core::object::InstanceData, class_val: PyObjectRef) -> PyObjectRef {
         match &class_val.payload {
-            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction { .. } => {
+            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_) => {
                 PyObjectRef::new(PyObject {
                     payload: PyObjectPayload::BoundMethod {
                         receiver: obj.clone(),
@@ -170,7 +170,7 @@ impl VirtualMachine {
                 if let Some(str_method) = Self::resolve_instance_dunder(obj, "__str__") {
                     let method = self.resolve_descriptor(&str_method, obj)?;
                     let args = match &method.payload {
-                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
+                        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
@@ -181,7 +181,7 @@ impl VirtualMachine {
                 if let Some(repr_method) = Self::resolve_instance_dunder(obj, "__repr__") {
                     let method = self.resolve_descriptor(&repr_method, obj)?;
                     let args = match &method.payload {
-                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
+                        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
@@ -497,7 +497,7 @@ impl VirtualMachine {
                     // If it's a descriptor (Instance with __get__), invoke __get__
                     let method = self.resolve_descriptor(&repr_method, obj)?;
                     let args = match &method.payload {
-                        PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
+                        PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) => vec![obj.clone()],
                         _ => vec![],
                     };
                     let result = self.call_object(method, args)?;
@@ -1677,7 +1677,7 @@ impl VirtualMachine {
         if let PyObjectPayload::Instance(_inst) = &a.payload {
             if let Some(method) = a.get_attr("__lt__") {
                 // If method is from class namespace (not bound), pass self explicitly
-                let result = if matches!(&method.payload, PyObjectPayload::NativeFunction { .. } | PyObjectPayload::NativeClosure(_) | PyObjectPayload::Function(_)) {
+                let result = if matches!(&method.payload, PyObjectPayload::NativeFunction(_) | PyObjectPayload::NativeClosure(_) | PyObjectPayload::Function(_)) {
                     self.call_object(method, vec![a.clone(), b.clone()])?
                 } else {
                     self.call_object(method, vec![b.clone()])?

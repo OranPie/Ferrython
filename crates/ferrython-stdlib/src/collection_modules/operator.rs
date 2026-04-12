@@ -393,13 +393,13 @@ pub fn create_operator_module() -> PyObjectRef {
                 let mut full_args = vec![obj.clone()];
                 full_args.extend(extra_args.iter().cloned());
                 match &method.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => func(&full_args),
+                    PyObjectPayload::NativeFunction(nf) => (nf.func)(&full_args),
                     PyObjectPayload::NativeClosure(nc) => (nc.func)(&full_args),
-                    PyObjectPayload::BuiltinBoundMethod { receiver, method_name, .. } => {
+                    PyObjectPayload::BuiltinBoundMethod(bbm) => {
                         // Handle BuiltinBoundMethod with extra args by dispatching common methods
                         if !extra_args.is_empty() {
-                            let s = receiver.py_to_string();
-                            match method_name.as_str() {
+                            let s = bbm.receiver.py_to_string();
+                            match bbm.method_name.as_str() {
                                 "split" => {
                                     let sep = extra_args[0].py_to_string();
                                     let maxsplit = if extra_args.len() > 1 { extra_args[1].as_int().unwrap_or(-1) } else { -1 };
@@ -467,7 +467,7 @@ pub fn create_operator_module() -> PyObjectRef {
                                         s.clone()
                                     } else {
                                         let pad = width - s.len();
-                                        match method_name.as_str() {
+                                        match bbm.method_name.as_str() {
                                             "center" => {
                                                 let left = pad / 2;
                                                 let right = pad - left;
@@ -488,14 +488,14 @@ pub fn create_operator_module() -> PyObjectRef {
                             }
                         }
                         // No extra args: try common zero-arg string methods
-                        let result_str = match method_name.as_str() {
-                            "upper" => Some(receiver.py_to_string().to_uppercase()),
-                            "lower" => Some(receiver.py_to_string().to_lowercase()),
-                            "strip" => Some(receiver.py_to_string().trim().to_string()),
-                            "lstrip" => Some(receiver.py_to_string().trim_start().to_string()),
-                            "rstrip" => Some(receiver.py_to_string().trim_end().to_string()),
+                        let result_str = match bbm.method_name.as_str() {
+                            "upper" => Some(bbm.receiver.py_to_string().to_uppercase()),
+                            "lower" => Some(bbm.receiver.py_to_string().to_lowercase()),
+                            "strip" => Some(bbm.receiver.py_to_string().trim().to_string()),
+                            "lstrip" => Some(bbm.receiver.py_to_string().trim_start().to_string()),
+                            "rstrip" => Some(bbm.receiver.py_to_string().trim_end().to_string()),
                             "title" => {
-                                let s = receiver.py_to_string();
+                                let s = bbm.receiver.py_to_string();
                                 let mut result = String::with_capacity(s.len());
                                 let mut capitalize_next = true;
                                 for c in s.chars() {
@@ -507,7 +507,7 @@ pub fn create_operator_module() -> PyObjectRef {
                                 Some(result)
                             }
                             "capitalize" => {
-                                let s = receiver.py_to_string();
+                                let s = bbm.receiver.py_to_string();
                                 let mut chars = s.chars();
                                 Some(match chars.next() {
                                     None => String::new(),
@@ -515,7 +515,7 @@ pub fn create_operator_module() -> PyObjectRef {
                                 })
                             }
                             "swapcase" => {
-                                let s = receiver.py_to_string();
+                                let s = bbm.receiver.py_to_string();
                                 Some(s.chars().map(|c| {
                                     if c.is_uppercase() { c.to_lowercase().collect::<String>() }
                                     else { c.to_uppercase().collect::<String>() }
@@ -532,10 +532,10 @@ pub fn create_operator_module() -> PyObjectRef {
                     }
                     PyObjectPayload::BoundMethod { receiver, method: meth, .. } => {
                         match &meth.payload {
-                            PyObjectPayload::NativeFunction { func, .. } => {
+                            PyObjectPayload::NativeFunction(nf) => {
                                 let mut bound_args = vec![receiver.clone()];
                                 bound_args.extend(extra_args.iter().cloned());
-                                func(&bound_args)
+                                (nf.func)(&bound_args)
                             }
                             PyObjectPayload::NativeClosure(nc) => {
                                 let mut bound_args = vec![receiver.clone()];
@@ -568,14 +568,14 @@ pub fn create_operator_module() -> PyObjectRef {
             // Try to call a method natively; fall back to VM callback for Python funcs.
             let try_dunder = |method: &PyObjectRef| -> Option<Result<i64, ()>> {
                 match &method.payload {
-                    PyObjectPayload::NativeFunction { func, .. } =>
-                        func(&[]).ok().and_then(|r| r.to_int().ok()).map(Ok),
+                    PyObjectPayload::NativeFunction(nf) =>
+                        (nf.func)(&[]).ok().and_then(|r| r.to_int().ok()).map(Ok),
                     PyObjectPayload::NativeClosure(nc) =>
                         (nc.func)(&[]).ok().and_then(|r| r.to_int().ok()).map(Ok),
                     PyObjectPayload::BoundMethod { receiver, method: m } => {
                         match &m.payload {
-                            PyObjectPayload::NativeFunction { func, .. } =>
-                                func(&[receiver.clone()]).ok().and_then(|r| r.to_int().ok()).map(Ok),
+                            PyObjectPayload::NativeFunction(nf) =>
+                                (nf.func)(&[receiver.clone()]).ok().and_then(|r| r.to_int().ok()).map(Ok),
                             PyObjectPayload::NativeClosure(nc) =>
                                 (nc.func)(&[receiver.clone()]).ok().and_then(|r| r.to_int().ok()).map(Ok),
                             _ => Some(Err(())), // needs VM

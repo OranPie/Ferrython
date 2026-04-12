@@ -1087,11 +1087,11 @@ pub fn create_decimal_module() -> PyObjectRef {
 
     fn make_decimal(s: &str) -> PyObjectRef {
         let class = get_decimal_class();
-        let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
             class,
             attrs: new_shared_fx(),
             is_special: true, dict_storage: None,
-        }));
+        })));
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
             w.insert(CompactString::from("__decimal__"), PyObject::bool_val(true));
@@ -1665,11 +1665,11 @@ pub fn create_decimal_module() -> PyObjectRef {
                 ns
             };
             let cls = PyObject::class(CompactString::from("Context"), vec![], cls_ns);
-            let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+            let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
                 class: cls,
                 attrs: to_shared_fx(ctx_ns),
                 is_special: true, dict_storage: None,
-            }));
+            })));
             Ok(inst)
         })),
         ("setcontext", make_builtin(|args| {
@@ -1726,11 +1726,11 @@ pub fn create_decimal_module() -> PyObjectRef {
                 ns
             };
             let cls = PyObject::class(CompactString::from("Context"), vec![], cls_ns);
-            let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+            let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
                 class: cls,
                 attrs: to_shared_fx(ctx_ns),
                 is_special: true, dict_storage: None,
-            }));
+            })));
             // Add __enter__ and __exit__ for context manager
             if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
                 let mut attrs = inst_data.attrs.write();
@@ -1761,11 +1761,11 @@ pub fn create_decimal_module() -> PyObjectRef {
             ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
             ns.insert(CompactString::from("Emax"), PyObject::int(999999));
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
-            PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+            PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
                 class: cls,
                 attrs: to_shared_fx(ns),
                 is_special: true, dict_storage: None,
-            }))
+            })))
         }),
         ("ExtendedContext", {
             let mut ns = IndexMap::new();
@@ -1774,11 +1774,11 @@ pub fn create_decimal_module() -> PyObjectRef {
             ns.insert(CompactString::from("Emin"), PyObject::int(-999999));
             ns.insert(CompactString::from("Emax"), PyObject::int(999999));
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
-            PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+            PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
                 class: cls,
                 attrs: to_shared_fx(ns),
                 is_special: true, dict_storage: None,
-            }))
+            })))
         }),
         ("Context", make_builtin(|args| {
             // Context(prec=28, rounding=ROUND_HALF_EVEN, ...)
@@ -1797,11 +1797,11 @@ pub fn create_decimal_module() -> PyObjectRef {
             ctx_ns.insert(CompactString::from("capitals"), PyObject::int(1));
             ctx_ns.insert(CompactString::from("clamp"), PyObject::int(0));
             let cls = PyObject::class(CompactString::from("Context"), vec![], IndexMap::new());
-            Ok(PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+            Ok(PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
                 class: cls,
                 attrs: to_shared_fx(ctx_ns),
                 is_special: true, dict_storage: None,
-            })))
+            }))))
         })),
     ])
 }
@@ -2500,11 +2500,11 @@ pub fn create_fractions_module() -> PyObjectRef {
             Ok(PyObject::tuple(vec![PyObject::int(n), PyObject::int(d)]))
         }));
         let class = PyObject::class(CompactString::from("Fraction"), vec![], frac_ns);
-        let inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
+        let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
             class,
             attrs: new_shared_fx(),
             is_special: true, dict_storage: None,
-        }));
+        })));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut w = inst_data.attrs.write();
             w.insert(CompactString::from("__fraction__"), PyObject::bool_val(true));

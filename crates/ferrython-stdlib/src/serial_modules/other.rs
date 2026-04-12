@@ -969,7 +969,7 @@ fn pickle_extract_instance(
     };
     let state_dict = if let Some(getstate) = obj.get_attr("__getstate__") {
         match &getstate.payload {
-            PyObjectPayload::NativeFunction { func, .. } => func(&[obj.clone()]).ok(),
+            PyObjectPayload::NativeFunction(nf) => (nf.func)(&[obj.clone()]).ok(),
             PyObjectPayload::NativeClosure(nc) => (nc.func)(&[obj.clone()]).ok(),
             _ => None,
         }
@@ -989,7 +989,7 @@ fn pickle_extract_instance(
         let attrs_r = inst.attrs.read();
         for (k, v) in attrs_r.iter() {
             match &v.payload {
-                PyObjectPayload::NativeFunction { .. }
+                PyObjectPayload::NativeFunction(_)
                 | PyObjectPayload::NativeClosure(_)
                 | PyObjectPayload::Function(_)
                 | PyObjectPayload::Class(_) => continue,
@@ -2088,8 +2088,8 @@ fn pickle_dump(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Try file-like object with write method (BytesIO, etc.)
     if let Some(write_method) = args[1].get_attr("write") {
         match &write_method.payload {
-            PyObjectPayload::NativeFunction { func, .. } => {
-                let _ = func(&[PyObject::bytes(data_bytes.clone())]);
+            PyObjectPayload::NativeFunction(nf) => {
+                let _ = (nf.func)(&[PyObject::bytes(data_bytes.clone())]);
                 return Ok(PyObject::none());
             }
             PyObjectPayload::NativeClosure(nc) => {
@@ -2124,7 +2124,7 @@ fn pickle_load(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Try file-like object with read method (BytesIO, etc.)
     if let Some(read_method) = args[0].get_attr("read") {
         let read_result = match &read_method.payload {
-            PyObjectPayload::NativeFunction { func, .. } => func(&[]).ok(),
+            PyObjectPayload::NativeFunction(nf) => (nf.func)(&[]).ok(),
             PyObjectPayload::NativeClosure(nc) => (nc.func)(&[]).ok(),
             _ => None,
         };

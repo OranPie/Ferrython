@@ -629,16 +629,16 @@ impl VirtualMachine {
                 let value = self.vm_pop();
                 match &obj.payload {
                     PyObjectPayload::List(items) => {
-                        if let PyObjectPayload::Slice { start, stop, step } = &key.payload {
-                            let step_val = step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                        if let PyObjectPayload::Slice(sd) = &key.payload {
+                            let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
                             let new_items = value.to_list()?;
                             let mut w = items.write();
                             let len = w.len() as i64;
                             
                             if step_val == 1 || step_val == 0 {
                                 // Contiguous slice assignment: a[s:e] = items
-                                let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
-                                let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
+                                let s_val = sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
+                                let e_val = sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
                                 let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
                                 let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
                                 let e = e.max(s);
@@ -646,14 +646,14 @@ impl VirtualMachine {
                             } else {
                                 // Extended slice assignment: a[s:e:step] = items
                                 let s_val = if step_val > 0 {
-                                    start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
+                                    sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
                                 } else {
-                                    start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
+                                    sd.start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
                                 };
                                 let e_val = if step_val > 0 {
-                                    stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
+                                    sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
                                 } else {
-                                    stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
+                                    sd.stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
                                 };
                                 // Collect indices
                                 let mut indices = Vec::new();
@@ -696,10 +696,10 @@ impl VirtualMachine {
                         map.write().insert(hk, value);
                     }
                     PyObjectPayload::ByteArray(ref bytes) => {
-                        if let PyObjectPayload::Slice { start, stop, step } = &key.payload {
+                        if let PyObjectPayload::Slice(sd) = &key.payload {
                             // Slice assignment on bytearray
                             let len = bytes.len() as i64;
-                            let step_val = step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
+                            let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
                             let new_bytes: Vec<u8> = if let PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) = &value.payload {
                                 b.clone()
                             } else if let Some(n) = value.as_int() {
@@ -711,8 +711,8 @@ impl VirtualMachine {
                             };
                             
                             if step_val == 1 || step_val == 0 {
-                                let s_val = start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
-                                let e_val = stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
+                                let s_val = sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
+                                let e_val = sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len);
                                 let s = (if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) }) as usize;
                                 let e = (if e_val < 0 { (len + e_val).max(0) } else { e_val.min(len) }) as usize;
                                 let e = e.max(s);
@@ -736,14 +736,14 @@ impl VirtualMachine {
                                 // Extended slice: collect indices
                                 let mut indices = Vec::new();
                                 let s_val = if step_val > 0 {
-                                    start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
+                                    sd.start.as_ref().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0)
                                 } else {
-                                    start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
+                                    sd.start.as_ref().map(|v| v.as_int().unwrap_or(len - 1)).unwrap_or(len - 1)
                                 };
                                 let e_val = if step_val > 0 {
-                                    stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
+                                    sd.stop.as_ref().map(|v| v.as_int().unwrap_or(len)).unwrap_or(len)
                                 } else {
-                                    stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
+                                    sd.stop.as_ref().map(|v| v.as_int().unwrap_or(-len - 1)).unwrap_or(-len - 1)
                                 };
                                 let mut i = if s_val < 0 { (len + s_val).max(0) } else { s_val.min(len) };
                                 let end = if e_val < 0 { (len + e_val).max(-1) } else { e_val.min(len) };
@@ -822,12 +822,12 @@ impl VirtualMachine {
                 let obj = self.vm_pop();
                 match &obj.payload {
                     PyObjectPayload::List(items) => {
-                        if let PyObjectPayload::Slice { start, stop, step } = &key.payload {
+                        if let PyObjectPayload::Slice(sd) = &key.payload {
                             let mut w = items.write();
                             let len = w.len() as i64;
-                            let s = start.as_ref().map(|v| v.to_int().unwrap_or(0)).unwrap_or(0);
-                            let e = stop.as_ref().map(|v| v.to_int().unwrap_or(len)).unwrap_or(len);
-                            let st = step.as_ref().map(|v| v.to_int().unwrap_or(1)).unwrap_or(1);
+                            let s = sd.start.as_ref().map(|v| v.to_int().unwrap_or(0)).unwrap_or(0);
+                            let e = sd.stop.as_ref().map(|v| v.to_int().unwrap_or(len)).unwrap_or(len);
+                            let st = sd.step.as_ref().map(|v| v.to_int().unwrap_or(1)).unwrap_or(1);
                             let s = if s < 0 { (len + s).max(0) } else { s.min(len) };
                             let e = if e < 0 { (len + e).max(0) } else { e.min(len) };
                             if st == 1 && s <= e {

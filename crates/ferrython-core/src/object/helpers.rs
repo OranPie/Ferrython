@@ -55,15 +55,15 @@ where
 pub fn call_callable(func: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Fast path: native functions don't need VM
     match &func.payload {
-        PyObjectPayload::NativeFunction { func: f, .. } => return f(args),
+        PyObjectPayload::NativeFunction(nf) => return (nf.func)(args),
         PyObjectPayload::NativeClosure(nc) => return (nc.func)(args),
         PyObjectPayload::BoundMethod { receiver, method } => {
             // If the underlying method is native, call directly
             match &method.payload {
-                PyObjectPayload::NativeFunction { func: f, .. } => {
+                PyObjectPayload::NativeFunction(nf) => {
                     let mut full_args = vec![receiver.clone()];
                     full_args.extend_from_slice(args);
-                    return f(&full_args);
+                    return (nf.func)(&full_args);
                 }
                 PyObjectPayload::NativeClosure(nc) => {
                     let mut full_args = vec![receiver.clone()];
@@ -389,8 +389,8 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
             }
             if let Some(eq_fn) = find_in_mro(&inst_a.class, "__eq__") {
                 match &eq_fn.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => {
-                        if let Ok(result) = func(&[a.clone(), b.clone()]) {
+                    PyObjectPayload::NativeFunction(nf) => {
+                        if let Ok(result) = (nf.func)(&[a.clone(), b.clone()]) {
                             return if result.is_truthy() { Some(std::cmp::Ordering::Equal) } else { None };
                         }
                     }
@@ -405,11 +405,11 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
             // For __lt__ comparison (used by sorted), also check
             if let Some(lt_fn) = find_in_mro(&inst_a.class, "__lt__") {
                 match &lt_fn.payload {
-                    PyObjectPayload::NativeFunction { func, .. } => {
-                        if let Ok(result) = func(&[a.clone(), b.clone()]) {
+                    PyObjectPayload::NativeFunction(nf) => {
+                        if let Ok(result) = (nf.func)(&[a.clone(), b.clone()]) {
                             if result.is_truthy() { return Some(std::cmp::Ordering::Less); }
                         }
-                        if let Ok(result) = func(&[b.clone(), a.clone()]) {
+                        if let Ok(result) = (nf.func)(&[b.clone(), a.clone()]) {
                             if result.is_truthy() { return Some(std::cmp::Ordering::Greater); }
                         }
                         return Some(std::cmp::Ordering::Equal);

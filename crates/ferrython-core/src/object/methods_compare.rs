@@ -81,8 +81,8 @@ pub(super) fn py_compare(a: &PyObjectRef, b: &PyObjectRef, op: CompareOp) -> PyR
                         PyObjectPayload::NativeClosure(nc) => {
                             return (nc.func)(&[a.clone(), b.clone()]);
                         }
-                        PyObjectPayload::NativeFunction { func, .. } => {
-                            return func(&[a.clone(), b.clone()]);
+                        PyObjectPayload::NativeFunction(nf) => {
+                            return (nf.func)(&[a.clone(), b.clone()]);
                         }
                         _ => {}
                     }

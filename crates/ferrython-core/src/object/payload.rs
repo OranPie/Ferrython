@@ -112,7 +112,8 @@ pub fn next_class_version() -> u64 {
     CLASS_VERSION_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
-// Compile-time size check: ensure enum stays compact after boxing
+// Compile-time size check: ensure enum stays compact after boxing cold variants
+// Target: ≤32 bytes (down from 40). Further reduction possible by boxing more variants.
 const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <= 40);
 
 /// A reference-counted handle to a Python object.
@@ -265,6 +266,35 @@ pub struct NativeClosureData {
 unsafe impl Send for NativeClosureData {}
 unsafe impl Sync for NativeClosureData {}
 
+/// Boxed slice data (cold variant, moved out to shrink PyObjectPayload)
+#[derive(Clone, Debug)]
+pub struct SliceData {
+    pub start: Option<PyObjectRef>,
+    pub stop: Option<PyObjectRef>,
+    pub step: Option<PyObjectRef>,
+}
+
+/// Boxed property descriptor data (cold variant)
+#[derive(Clone, Debug)]
+pub struct PropertyData {
+    pub fget: Option<PyObjectRef>,
+    pub fset: Option<PyObjectRef>,
+    pub fdel: Option<PyObjectRef>,
+}
+
+/// Boxed native function data (cold variant — registered once at startup)
+#[derive(Clone, Debug)]
+pub struct NativeFunctionData {
+    pub name: CompactString,
+    pub func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>,
+}
+
+/// Boxed builtin bound method data (cold variant)
+#[derive(Clone, Debug)]
+pub struct BuiltinBoundMethodData {
+    pub receiver: PyObjectRef,
+    pub method_name: CompactString,
+}
 /// The actual data of a Python value.
 #[derive(Clone)]
 pub enum PyObjectPayload {
@@ -292,15 +322,15 @@ pub enum PyObjectPayload {
     /// Built-in type object (int, str, float, etc.) — callable as constructor
     BuiltinType(CompactString),
     BoundMethod { receiver: PyObjectRef, method: PyObjectRef },
-    BuiltinBoundMethod { receiver: PyObjectRef, method_name: CompactString },
+    BuiltinBoundMethod(Box<BuiltinBoundMethodData>),
     Code(std::sync::Arc<ferrython_bytecode::CodeObject>),
     Class(Box<ClassData>),
-    Instance(InstanceData),
-    Module(ModuleData),
+    Instance(Box<InstanceData>),
+    Module(Box<ModuleData>),
     Iterator(Arc<parking_lot::Mutex<IteratorData>>),
     /// Lock-free range iterator — avoids Mutex overhead for `for i in range(n)`.
     RangeIter { current: SyncI64, stop: i64, step: i64 },
-    Slice { start: Option<PyObjectRef>, stop: Option<PyObjectRef>, step: Option<PyObjectRef> },
+    Slice(Box<SliceData>),
     /// A cell object wrapping a shared mutable reference (for closures).
     Cell(Rc<PyCell<Option<PyObjectRef>>>),
     /// Exception type object (e.g. ValueError, TypeError)
@@ -320,16 +350,13 @@ pub enum PyObjectPayload {
         action: AsyncGenAction,
     },
     /// Native Rust function callable from Python (for module functions)
-    NativeFunction {
-        name: CompactString,
-        func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>,
-    },
+    NativeFunction(Box<NativeFunctionData>),
     /// Native closure — a Rust function that captures state (for itemgetter, partial, etc.)
     NativeClosure(Box<NativeClosureData>),
     /// Partial application (functools.partial)
     Partial(Box<PartialData>),
     /// Property descriptor
-    Property { fget: Option<PyObjectRef>, fset: Option<PyObjectRef>, fdel: Option<PyObjectRef> },
+    Property(Box<PropertyData>),
     /// Static method wrapper
     StaticMethod(PyObjectRef),
     /// Class method wrapper  
@@ -374,14 +401,14 @@ impl fmt::Debug for PyObjectPayload {
             Self::BuiltinFunction(name) => write!(f, "BuiltinFunction({name})"),
             Self::BuiltinType(name) => write!(f, "BuiltinType({name})"),
             Self::BoundMethod { .. } => write!(f, "BoundMethod(...)"),
-            Self::BuiltinBoundMethod { method_name, .. } => write!(f, "BuiltinBoundMethod({method_name})"),
+            Self::BuiltinBoundMethod(bbm) => write!(f, "BuiltinBoundMethod({})", bbm.method_name),
             Self::Code(_) => write!(f, "Code(...)"),
             Self::Class(cd) => write!(f, "Class({})", cd.name),
             Self::Instance(id) => write!(f, "Instance(class={:?})", id.class.payload),
             Self::Module(md) => write!(f, "Module({})", md.name),
             Self::Iterator(_) => write!(f, "Iterator(...)"),
             Self::RangeIter { current, stop, step } => write!(f, "RangeIter({}, {stop}, {step})", current.get()),
-            Self::Slice { .. } => write!(f, "Slice(...)"),
+            Self::Slice(_) => write!(f, "Slice(...)"),
             Self::Cell(_) => write!(f, "Cell(...)"),
             Self::ExceptionType(k) => write!(f, "ExceptionType({k:?})"),
             Self::ExceptionInstance(ei) => write!(f, "ExceptionInstance({:?}, {:?})", ei.kind, ei.message),
@@ -389,12 +416,12 @@ impl fmt::Debug for PyObjectPayload {
             Self::Coroutine(_) => write!(f, "Coroutine(...)"),
             Self::AsyncGenerator(_) => write!(f, "AsyncGenerator(...)"),
             Self::AsyncGenAwaitable { action, .. } => write!(f, "AsyncGenAwaitable({action:?})"),
-            Self::NativeFunction { name, .. } => write!(f, "NativeFunction({name})"),
+            Self::NativeFunction(nf) => write!(f, "NativeFunction({})", nf.name),
             Self::NativeClosure(nc) => write!(f, "NativeClosure({})", nc.name),
             Self::InstanceDict(_) => write!(f, "InstanceDict(...)"),
             Self::MappingProxy(_) => write!(f, "MappingProxy(...)"),
             Self::Partial(_) => write!(f, "Partial(...)"),
-            Self::Property { .. } => write!(f, "Property(...)"),
+            Self::Property(_) => write!(f, "Property(...)"),
             Self::StaticMethod(_) => write!(f, "StaticMethod(...)"),
             Self::ClassMethod(_) => write!(f, "ClassMethod(...)"),
             Self::Super { .. } => write!(f, "Super(...)"),

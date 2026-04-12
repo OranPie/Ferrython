@@ -579,8 +579,8 @@ fn write_to_file_or_stderr(file_obj: &Option<PyObjectRef>, text: &str) {
                     let _ = (nc.func)(&[text_obj]);
                     return;
                 }
-                PyObjectPayload::NativeFunction { func, .. } => {
-                    let _ = func(&[text_obj]);
+                PyObjectPayload::NativeFunction(nf) => {
+                    let _ = (nf.func)(&[text_obj]);
                     return;
                 }
                 PyObjectPayload::BoundMethod { receiver, method } => {
@@ -589,8 +589,8 @@ fn write_to_file_or_stderr(file_obj: &Option<PyObjectRef>, text: &str) {
                             let _ = (nc.func)(&[text_obj]);
                             return;
                         }
-                        PyObjectPayload::NativeFunction { func, .. } => {
-                            let _ = func(&[receiver.clone(), text_obj]);
+                        PyObjectPayload::NativeFunction(nf) => {
+                            let _ = (nf.func)(&[receiver.clone(), text_obj]);
                             return;
                         }
                         _ => {}

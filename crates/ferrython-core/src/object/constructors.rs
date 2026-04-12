@@ -322,7 +322,7 @@ impl PyObject {
         } else {
             (Self::detect_dict_subclass(&class), FxAttrMap::default())
         };
-        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Rc::new(PyCell::new(attrs)), dict_storage, is_special: false }));
+        let obj = Self::wrap(PyObjectPayload::Instance(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(attrs)), dict_storage, is_special: false })));
         track_object(&obj);
         obj
     }
@@ -335,7 +335,7 @@ impl PyObject {
             Self::detect_dict_subclass(&class)
         };
         let fx_attrs: FxAttrMap = attrs.into_iter().collect();
-        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Rc::new(PyCell::new(fx_attrs)), dict_storage, is_special: false }));
+        let obj = Self::wrap(PyObjectPayload::Instance(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(fx_attrs)), dict_storage, is_special: false })));
         track_object(&obj);
         obj
     }
@@ -367,7 +367,7 @@ impl PyObject {
         attrs.insert(CompactString::from("__loader__"), PyObject::none());
         attrs.insert(CompactString::from("__spec__"), PyObject::none());
         attrs.insert(CompactString::from("__package__"), PyObject::none());
-        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Rc::new(PyCell::new(attrs)) }))
+        Self::wrap(PyObjectPayload::Module(Box::new(ModuleData { name, attrs: Rc::new(PyCell::new(attrs)) })))
     }
     pub fn module_with_attrs(name: CompactString, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
         let mut fx_attrs: FxAttrMap = attrs.into_iter().collect();
@@ -383,7 +383,7 @@ impl PyObject {
         if !fx_attrs.contains_key("__package__") {
             fx_attrs.insert(CompactString::from("__package__"), PyObject::none());
         }
-        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Rc::new(PyCell::new(fx_attrs)) }))
+        Self::wrap(PyObjectPayload::Module(Box::new(ModuleData { name, attrs: Rc::new(PyCell::new(fx_attrs)) })))
     }
     /// Create a module that shares an existing globals Arc (for circular import support).
     pub fn module_with_shared_globals(name: CompactString, globals: Rc<PyCell<FxAttrMap>>) -> PyObjectRef {
@@ -402,10 +402,10 @@ impl PyObject {
                 g.insert(CompactString::from("__package__"), PyObject::none());
             }
         }
-        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: globals }))
+        Self::wrap(PyObjectPayload::Module(Box::new(ModuleData { name, attrs: globals })))
     }
     pub fn native_function(name: &str, func: fn(&[PyObjectRef]) -> PyResult<PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::NativeFunction { name: CompactString::from(name), func })
+        Self::wrap(PyObjectPayload::NativeFunction(Box::new(NativeFunctionData { name: CompactString::from(name), func })))
     }
     pub fn native_closure(name: &str, func: impl Fn(&[PyObjectRef]) -> PyResult<PyObjectRef> + 'static) -> PyObjectRef {
         Self::wrap(PyObjectPayload::NativeClosure(Box::new(NativeClosureData { name: CompactString::from(name), func: std::rc::Rc::new(func) })))
@@ -422,7 +422,7 @@ impl PyObject {
         obj
     }
     pub fn slice(start: Option<PyObjectRef>, stop: Option<PyObjectRef>, step: Option<PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Slice { start, stop, step })
+        Self::wrap(PyObjectPayload::Slice(Box::new(SliceData { start, stop, step })))
     }
     pub fn frozenset(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::FrozenSet(Box::new(items)))
