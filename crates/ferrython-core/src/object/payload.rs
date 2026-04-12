@@ -7,7 +7,7 @@ use compact_str::CompactString;
 use indexmap::IndexMap;
 use rustc_hash::{FxHashMap, FxHasher};
 use std::any::Any;
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{Cell, UnsafeCell};
 use std::hash::BuildHasherDefault;
 use std::fmt;
 use std::mem::MaybeUninit;
@@ -159,22 +159,89 @@ struct PyObjectBlock {
 /// Clone and Drop are no-ops when strong == IMMORTAL_REFCOUNT.
 const IMMORTAL_REFCOUNT: u32 = u32::MAX;
 
-const MAX_OBJECT_POOL: usize = 512;
+const MAX_POOL_SIZE: usize = 1024;
+const SLAB_SIZE: usize = 64;
+
+/// Pool state: intrusive singly-linked freelist through freed blocks.
+/// When a block is free, its `obj` area stores a `*mut PyObjectBlock` next-pointer.
+/// This eliminates RefCell borrow overhead and Vec capacity tracking.
+#[derive(Clone, Copy)]
+struct PoolState {
+    head: *mut PyObjectBlock,
+    count: u32,
+}
 
 thread_local! {
-    static OBJECT_POOL: RefCell<Vec<NonNull<PyObjectBlock>>> =
-        RefCell::new(Vec::with_capacity(256));
+    static POOL: Cell<PoolState> = const { Cell::new(PoolState { head: std::ptr::null_mut(), count: 0 }) };
+}
+
+/// Read the next-free pointer from a freed block's obj area.
+#[inline(always)]
+unsafe fn free_next(block: *mut PyObjectBlock) -> *mut PyObjectBlock {
+    *((*block).obj.as_ptr() as *const *mut PyObjectBlock)
+}
+
+/// Write the next-free pointer into a freed block's obj area.
+#[inline(always)]
+unsafe fn set_free_next(block: *mut PyObjectBlock, next: *mut PyObjectBlock) {
+    *((*block).obj.as_mut_ptr() as *mut *mut PyObjectBlock) = next;
+}
+
+/// Allocate a slab of SLAB_SIZE blocks, return one, push rest into pool.
+#[cold]
+#[inline(never)]
+fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
+    let layout = std::alloc::Layout::new::<PyObjectBlock>();
+    // Allocate SLAB_SIZE individual blocks (mimalloc handles batching internally)
+    let mut first: *mut PyObjectBlock = std::ptr::null_mut();
+    let mut chain_head: *mut PyObjectBlock = std::ptr::null_mut();
+    let mut chain_count: u32 = 0;
+
+    for i in 0..SLAB_SIZE {
+        let ptr = unsafe { std::alloc::alloc(layout) as *mut PyObjectBlock };
+        assert!(!ptr.is_null(), "allocation failed");
+        if i == 0 {
+            first = ptr;
+        } else {
+            unsafe { set_free_next(ptr, chain_head); }
+            chain_head = ptr;
+            chain_count += 1;
+        }
+    }
+
+    // Push chain into pool
+    if chain_count > 0 {
+        POOL.with(|pool| {
+            let mut state = pool.get();
+            // Find tail of new chain to link to existing head
+            let mut tail = chain_head;
+            for _ in 1..chain_count {
+                tail = unsafe { free_next(tail) };
+            }
+            unsafe { set_free_next(tail, state.head); }
+            state.head = chain_head;
+            state.count += chain_count;
+            pool.set(state);
+        });
+    }
+
+    unsafe { NonNull::new_unchecked(first) }
 }
 
 #[inline(always)]
 fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
-    let block = OBJECT_POOL.with(|pool| pool.borrow_mut().pop())
-        .unwrap_or_else(|| {
-            // Allocate new block
-            let layout = std::alloc::Layout::new::<PyObjectBlock>();
-            let ptr = unsafe { std::alloc::alloc(layout) as *mut PyObjectBlock };
-            NonNull::new(ptr).expect("allocation failed")
-        });
+    let block = POOL.with(|pool| {
+        let mut state = pool.get();
+        if !state.head.is_null() {
+            let block = state.head;
+            state.head = unsafe { free_next(block) };
+            state.count -= 1;
+            pool.set(state);
+            unsafe { NonNull::new_unchecked(block) }
+        } else {
+            alloc_slab_and_pop()
+        }
+    });
     unsafe {
         let p = block.as_ptr();
         (*p).strong = Cell::new(1);
@@ -186,10 +253,13 @@ fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
 
 #[inline(always)]
 fn pool_recycle(block: NonNull<PyObjectBlock>) {
-    OBJECT_POOL.with(|pool| {
-        let mut p = pool.borrow_mut();
-        if p.len() < MAX_OBJECT_POOL {
-            p.push(block);
+    POOL.with(|pool| {
+        let mut state = pool.get();
+        if state.count < MAX_POOL_SIZE as u32 {
+            unsafe { set_free_next(block.as_ptr(), state.head); }
+            state.head = block.as_ptr();
+            state.count += 1;
+            pool.set(state);
         } else {
             unsafe {
                 std::alloc::dealloc(
