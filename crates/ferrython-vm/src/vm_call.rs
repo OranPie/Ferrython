@@ -22,7 +22,7 @@ use std::rc::Rc;
 fn attach_eg_methods(eg: &PyObjectRef) {
     if let PyObjectPayload::ExceptionInstance(ei) = &eg.payload {
         let (msg, exc_list) = {
-            let a = ei.attrs.read();
+            let a = ei.ensure_attrs().read();
             let msg = a.get(&CompactString::from("message"))
                 .cloned()
                 .unwrap_or_else(|| PyObject::str_val(CompactString::from("")));
@@ -35,7 +35,7 @@ fn attach_eg_methods(eg: &PyObjectRef) {
         let exc_sg = exc_list.clone();
         let msg_sp = msg;
         let exc_sp = exc_list;
-        let mut a = ei.attrs.write();
+        let mut a = ei.ensure_attrs().write();
         a.insert(CompactString::from("subgroup"), PyObject::native_closure(
             "ExceptionGroup.subgroup",
             move |sg_args| {
@@ -58,7 +58,7 @@ fn attach_eg_methods(eg: &PyObjectRef) {
                 if matched.is_empty() { return Ok(PyObject::none()); }
                 let new_eg = PyObject::exception_instance(ExceptionKind::ExceptionGroup, msg_sg.py_to_string());
                 if let PyObjectPayload::ExceptionInstance(ei) = &new_eg.payload {
-                    let mut ew = ei.attrs.write();
+                    let mut ew = ei.ensure_attrs().write();
                     ew.insert(CompactString::from("message"), msg_sg.clone());
                     ew.insert(CompactString::from("exceptions"), PyObject::list(matched));
                 }
@@ -91,7 +91,7 @@ fn attach_eg_methods(eg: &PyObjectRef) {
                     if items.is_empty() { return PyObject::none(); }
                     let eg = PyObject::exception_instance(ExceptionKind::ExceptionGroup, msg.py_to_string());
                     if let PyObjectPayload::ExceptionInstance(ei) = &eg.payload {
-                        let mut ew = ei.attrs.write();
+                        let mut ew = ei.ensure_attrs().write();
                         ew.insert(CompactString::from("message"), msg.clone());
                         ew.insert(CompactString::from("exceptions"), PyObject::list(items));
                     }
@@ -1774,7 +1774,7 @@ impl VirtualMachine {
                         if matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup) {
                             if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
                                 {
-                                    let mut a = ei.attrs.write();
+                                    let mut a = ei.ensure_attrs().write();
                                     if !pos_args.is_empty() {
                                         a.insert(CompactString::from("message"), pos_args[0].clone());
                                     }
@@ -1795,7 +1795,7 @@ impl VirtualMachine {
                         // OSError and subclasses: OSError(errno, strerror[, filename])
                         if kind.is_subclass_of(&ExceptionKind::OSError) && pos_args.len() >= 2 {
                             if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
-                                let mut a = ei.attrs.write();
+                                let mut a = ei.ensure_attrs().write();
                                 a.insert(CompactString::from("errno"), pos_args[0].clone());
                                 a.insert(CompactString::from("strerror"), pos_args[1].clone());
                                 if pos_args.len() >= 3 {
@@ -1808,7 +1808,7 @@ impl VirtualMachine {
                         // SystemExit: store .code attribute
                         if *kind == ExceptionKind::SystemExit && !pos_args.is_empty() {
                             if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
-                                ei.attrs.write().insert(CompactString::from("code"), pos_args[0].clone());
+                                ei.ensure_attrs().write().insert(CompactString::from("code"), pos_args[0].clone());
                             }
                         }
                         return Ok(inst);
@@ -3133,16 +3133,18 @@ impl VirtualMachine {
             }
             PyObjectPayload::ExceptionType(kind) => {
                 // Calling an exception type creates an exception instance
-                let msg = if args.is_empty() {
-                    String::new()
+                let msg: CompactString = if args.is_empty() {
+                    CompactString::default()
+                } else if let PyObjectPayload::Str(s) = &args[0].payload {
+                    s.clone()
                 } else {
-                    args[0].py_to_string()
+                    CompactString::from(args[0].py_to_string())
                 };
                 let inst = PyObject::exception_instance_with_args(kind.clone(), msg, args.clone());
                 // ExceptionGroup/BaseExceptionGroup: store .message and .exceptions attrs
                 if matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup) {
                     if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
-                        let mut a = ei.attrs.write();
+                        let mut a = ei.ensure_attrs().write();
                         if !args.is_empty() {
                             a.insert(CompactString::from("message"), args[0].clone());
                         }
@@ -3161,7 +3163,7 @@ impl VirtualMachine {
                 // OSError and subclasses: OSError(errno, strerror[, filename])
                 if kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2 {
                     if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
-                        let mut a = ei.attrs.write();
+                        let mut a = ei.ensure_attrs().write();
                         a.insert(CompactString::from("errno"), args[0].clone());
                         a.insert(CompactString::from("strerror"), args[1].clone());
                         if args.len() >= 3 {
@@ -3174,7 +3176,7 @@ impl VirtualMachine {
                 // SystemExit: store .code attribute
                 if *kind == ExceptionKind::SystemExit && !args.is_empty() {
                     if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
-                        ei.attrs.write().insert(CompactString::from("code"), args[0].clone());
+                        ei.ensure_attrs().write().insert(CompactString::from("code"), args[0].clone());
                     }
                 }
                 Ok(inst)

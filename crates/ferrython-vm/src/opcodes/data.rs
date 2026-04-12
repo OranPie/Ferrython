@@ -653,7 +653,7 @@ impl VirtualMachine {
                 // No persistent storage, but don't error — many decorators set __wrapped__ etc.
             }
             PyObjectPayload::ExceptionInstance(ei) => {
-                ei.attrs.write().insert(name.clone(), value);
+                ei.ensure_attrs().write().insert(name.clone(), value);
             }
             _ => {
                 return Err(PyException::attribute_error(format!(

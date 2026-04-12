@@ -2731,7 +2731,7 @@ fn subprocess_check_call(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ex.original = Some(PyObject::wrap(PyObjectPayload::ExceptionInstance(Box::new(ExceptionInstanceData {
             kind: ExceptionKind::CalledProcessError,
             message: msg.into(),            args: vec![PyObject::int(rc)],
-            attrs: to_shared_fx(exc_attrs),
+            attrs: Some(to_shared_fx(exc_attrs)),
         }))));
         return Err(ex);
     }

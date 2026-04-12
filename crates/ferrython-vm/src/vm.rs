@@ -5276,7 +5276,7 @@ impl VirtualMachine {
                 unsafe { &mut *inst.attrs.data_ptr() }.insert(CompactString::from(name), value);
             }
             PyObjectPayload::ExceptionInstance(ei) => {
-                ei.attrs.write().insert(CompactString::from(name), value);
+                ei.ensure_attrs().write().insert(CompactString::from(name), value);
             }
             _ => {}
         }

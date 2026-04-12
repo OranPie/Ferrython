@@ -1438,7 +1438,7 @@ pub(super) fn builtin_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             m.attrs.write().insert(CompactString::from(name), args[2].clone());
         }
         PyObjectPayload::ExceptionInstance(ei) => {
-            ei.attrs.write().insert(CompactString::from(name), args[2].clone());
+            ei.ensure_attrs().write().insert(CompactString::from(name), args[2].clone());
         }
         PyObjectPayload::Function(f) => {
             f.attrs.write().insert(CompactString::from(name), args[2].clone());

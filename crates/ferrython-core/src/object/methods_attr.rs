@@ -1196,7 +1196,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     );
                                 }
                                 PyObjectPayload::ExceptionInstance(ei) => {
-                                    ei.attrs.write().insert(
+                                    ei.ensure_attrs().write().insert(
                                         CompactString::from("args"),
                                         PyObject::tuple(init_args),
                                     );
@@ -1253,7 +1253,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 match name {
                     "args" => {
                         // Check attrs first (may be overwritten by __init__)
-                        if let Some(v) = ei.attrs.read().get("args").cloned() {
+                        if let Some(v) = ei.get_attrs().and_then(|a| a.read().get("args").cloned()) {
                             return Some(v);
                         }
                         if ei.args.is_empty() {
@@ -1284,7 +1284,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                     "value" => {
                         // StopIteration.value — check attrs first, then args[0], then None
-                        if let Some(v) = ei.attrs.read().get("value").cloned() {
+                        if let Some(v) = ei.get_attrs().and_then(|a| a.read().get("value").cloned()) {
                             Some(v)
                         } else if !ei.args.is_empty() {
                             Some(ei.args[0].clone())
@@ -1293,19 +1293,19 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }
                     }
                     "__cause__" => {
-                        ei.attrs.read().get("__cause__").cloned().or_else(|| Some(PyObject::none()))
+                        ei.get_attrs().and_then(|a| a.read().get("__cause__").cloned()).or_else(|| Some(PyObject::none()))
                     }
                     "__context__" => {
-                        ei.attrs.read().get("__context__").cloned().or_else(|| Some(PyObject::none()))
+                        ei.get_attrs().and_then(|a| a.read().get("__context__").cloned()).or_else(|| Some(PyObject::none()))
                     }
                     "__suppress_context__" => {
-                        ei.attrs.read().get("__suppress_context__").cloned().or_else(|| Some(PyObject::bool_val(false)))
+                        ei.get_attrs().and_then(|a| a.read().get("__suppress_context__").cloned()).or_else(|| Some(PyObject::bool_val(false)))
                     }
                     "__traceback__" => {
-                        ei.attrs.read().get("__traceback__").cloned().or_else(|| Some(PyObject::none()))
+                        ei.get_attrs().and_then(|a| a.read().get("__traceback__").cloned()).or_else(|| Some(PyObject::none()))
                     }
                     "__notes__" => {
-                        ei.attrs.read().get("__notes__").cloned()
+                        ei.get_attrs().and_then(|a| a.read().get("__notes__").cloned())
                     }
                     "add_note" => {
                         let obj_ref = obj.clone();
@@ -1316,7 +1316,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             }
                             let note = &args[0];
                             if let PyObjectPayload::ExceptionInstance(ref ei) = obj_ref.payload {
-                                let mut w = ei.attrs.write();
+                                let mut w = ei.ensure_attrs().write();
                                 let notes = w.entry(CompactString::from("__notes__"))
                                     .or_insert_with(|| PyObject::list(vec![]));
                                 if let PyObjectPayload::List(list) = &notes.payload {
@@ -1331,7 +1331,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         Some(PyObject::native_closure("with_traceback", move |args| {
                             if !args.is_empty() {
                                 if let PyObjectPayload::ExceptionInstance(ref ei) = obj_ref.payload {
-                                    ei.attrs.write().insert(
+                                    ei.ensure_attrs().write().insert(
                                         CompactString::from("__traceback__"), args[0].clone());
                                 }
                             }
@@ -1340,11 +1340,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                     // OSError attributes: .errno, .strerror, .filename
                     "errno" | "strerror" | "filename" if ei.kind.is_subclass_of(&ExceptionKind::OSError) => {
-                        ei.attrs.read().get(name).cloned().or_else(|| Some(PyObject::none()))
+                        ei.get_attrs().and_then(|a| a.read().get(name).cloned()).or_else(|| Some(PyObject::none()))
                     }
                     _ => {
                         // Check user-set attrs (e.g., __cause__)
-                        ei.attrs.read().get(name).cloned()
+                        ei.get_attrs().and_then(|a| a.read().get(name).cloned())
                     }
                 }
             }
@@ -2308,7 +2308,7 @@ fn resolve_exception_type_method(name: &str, _instance: &PyObjectRef) -> Option<
                         list.write().push(note.clone());
                     }
                 } else if let PyObjectPayload::ExceptionInstance(ref ei) = target.payload {
-                    let mut w = ei.attrs.write();
+                    let mut w = ei.ensure_attrs().write();
                     let notes = w.entry(CompactString::from("__notes__"))
                         .or_insert_with(|| PyObject::list(vec![]));
                     if let PyObjectPayload::List(list) = &notes.payload {
@@ -2326,7 +2326,7 @@ fn resolve_exception_type_method(name: &str, _instance: &PyObjectRef) -> Option<
                         idata.attrs.write().insert(
                             CompactString::from("__traceback__"), args[0].clone());
                     } else if let PyObjectPayload::ExceptionInstance(ref ei) = inst.payload {
-                        ei.attrs.write().insert(
+                        ei.ensure_attrs().write().insert(
                             CompactString::from("__traceback__"), args[0].clone());
                     }
                 }

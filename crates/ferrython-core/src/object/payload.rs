@@ -414,7 +414,27 @@ pub struct ExceptionInstanceData {
     pub kind: ExceptionKind,
     pub message: CompactString,
     pub args: Vec<PyObjectRef>,
-    pub attrs: SharedFxAttrMap,
+    /// Lazy attrs — None until first write. Saves 1 Rc allocation per exception
+    /// for the common case where exceptions are raised and caught without attr access.
+    pub attrs: Option<SharedFxAttrMap>,
+}
+
+impl ExceptionInstanceData {
+    /// Get attrs for reading. Returns None if no attrs have been set.
+    #[inline]
+    pub fn get_attrs(&self) -> Option<&SharedFxAttrMap> {
+        self.attrs.as_ref()
+    }
+
+    /// Get or create attrs for writing. Uses interior mutability (safe under GIL).
+    #[inline]
+    pub fn ensure_attrs(&self) -> &SharedFxAttrMap {
+        // SAFETY: Single-threaded under GIL. No concurrent access possible.
+        let attrs_ptr = &self.attrs as *const Option<SharedFxAttrMap> as *mut Option<SharedFxAttrMap>;
+        unsafe {
+            (*attrs_ptr).get_or_insert_with(|| Rc::new(PyCell::new(FxAttrMap::default())))
+        }
+    }
 }
 
 /// Boxed partial application data

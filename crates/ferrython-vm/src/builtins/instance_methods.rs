@@ -1049,7 +1049,7 @@ pub(super) fn builtin_object_setattr(args: &[PyObjectRef]) -> PyResult<PyObjectR
         inst.attrs.write().insert(CompactString::from(name), value);
         Ok(PyObject::none())
     } else if let PyObjectPayload::ExceptionInstance(ei) = &obj.payload {
-        ei.attrs.write().insert(CompactString::from(name), value);
+        ei.ensure_attrs().write().insert(CompactString::from(name), value);
         Ok(PyObject::none())
     } else if let PyObjectPayload::Function(f) = &obj.payload {
         f.attrs.write().insert(CompactString::from(name), value);

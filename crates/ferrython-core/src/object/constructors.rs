@@ -512,7 +512,7 @@ impl PyObject {
             kind,
             message: msg,
             args,
-            attrs: Rc::new(PyCell::new(FxAttrMap::default())),
+            attrs: None,
         })))
     }
     pub fn exception_instance_with_args(kind: ExceptionKind, message: impl Into<CompactString>, args: Vec<PyObjectRef>) -> PyObjectRef {
@@ -520,7 +520,7 @@ impl PyObject {
             kind,
             message: message.into(),
             args,
-            attrs: Rc::new(PyCell::new(FxAttrMap::default())),
+            attrs: None,
         })))
     }
     pub fn generator(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {

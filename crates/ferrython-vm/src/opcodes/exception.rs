@@ -366,7 +366,7 @@ impl VirtualMachine {
                     py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
                         if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
-                            let mut w = ei.attrs.write();
+                            let mut w = ei.ensure_attrs().write();
                             w.insert(intern_or_new("__cause__"), PyObject::none());
                             w.insert(intern_or_new("__suppress_context__"), PyObject::bool_val(true));
                         }
@@ -376,7 +376,7 @@ impl VirtualMachine {
                     py_exc.ensure_original();
                     if let Some(ref original) = py_exc.original {
                         if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
-                            let mut w = ei.attrs.write();
+                            let mut w = ei.ensure_attrs().write();
                             w.insert(intern_or_new("__cause__"), cause.clone());
                             w.insert(intern_or_new("__suppress_context__"), PyObject::bool_val(true));
                         }
@@ -390,7 +390,7 @@ impl VirtualMachine {
                         if let PyObjectPayload::ExceptionInstance(ei) = &original.payload {
                             // Store __context__ as the active exception's original object
                             if let Some(ref ctx_orig) = active.original {
-                                ei.attrs.write().insert(intern_or_new("__context__"), ctx_orig.clone());
+                                ei.ensure_attrs().write().insert(intern_or_new("__context__"), ctx_orig.clone());
                             }
                         }
                     }
