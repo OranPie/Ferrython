@@ -1020,8 +1020,9 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let sources: Vec<PyObjectRef> = iter_args.iter()
         .map(|a| get_iter_from_obj(a))
         .collect::<PyResult<Vec<_>>>()?;
+    let n = sources.len();
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Rc::new(PyCell::new(IteratorData::Zip { sources, strict, cached_tuple: None }))
+        Rc::new(PyCell::new(IteratorData::Zip { sources, strict, cached_tuple: None, items_buf: Vec::with_capacity(n) }))
     )))
 }
 

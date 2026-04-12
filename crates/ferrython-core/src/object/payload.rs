@@ -1176,7 +1176,7 @@ pub enum IteratorData {
     Range { current: i64, stop: i64, step: i64 },
     Str { chars: Vec<char>, index: usize },
     Enumerate { source: PyObjectRef, index: i64, cached_tuple: Option<PyObjectRef> },
-    Zip { sources: Vec<PyObjectRef>, strict: bool, cached_tuple: Option<PyObjectRef> },
+    Zip { sources: Vec<PyObjectRef>, strict: bool, cached_tuple: Option<PyObjectRef>, items_buf: Vec<PyObjectRef> },
     Map { func: PyObjectRef, source: PyObjectRef },
     Filter { func: PyObjectRef, source: PyObjectRef },
     Sentinel { callable: PyObjectRef, sentinel: PyObjectRef },

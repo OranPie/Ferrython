@@ -1409,11 +1409,67 @@ impl VirtualMachine {
                                     }
                                 }
                             }
-                            IteratorData::Zip { sources, strict, cached_tuple } => {
-                                // Inline advance for zip with known source types
+                            IteratorData::Zip { sources, strict, cached_tuple, items_buf } => {
                                 let is_strict = *strict;
                                 let n = sources.len();
-                                let mut items_buf = Vec::with_capacity(n);
+
+                                // ── 2-source fast path (most common: zip(a, b)) ──
+                                if n == 2 {
+                                    let v0 = Self::advance_source_inline(&sources[0]);
+                                    let v1 = Self::advance_source_inline(&sources[1]);
+                                    match (v0, v1) {
+                                        (Some(Some(a)), Some(Some(b))) => {
+                                            // Both sources yielded — reuse cached tuple
+                                            let tuple = if let Some(ref mut cached) = cached_tuple {
+                                                if let Some(obj) = PyObjectRef::get_mut(cached) {
+                                                    if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
+                                                        items[0] = a;
+                                                        items[1] = b;
+                                                        cached.clone()
+                                                    } else {
+                                                        let t = PyObject::tuple(vec![a, b]);
+                                                        *cached = t.clone();
+                                                        t
+                                                    }
+                                                } else {
+                                                    let t = PyObject::tuple(vec![a, b]);
+                                                    *cached = t.clone();
+                                                    t
+                                                }
+                                            } else {
+                                                let t = PyObject::tuple(vec![a, b]);
+                                                *cached_tuple = Some(t.clone());
+                                                t
+                                            };
+                                            drop(data);
+                                            spush!(frame, tuple);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                        (Some(None), Some(None)) if is_strict => {
+                                            drop(data);
+                                            drop(spop!(frame));
+                                            frame.ip = instr.arg as usize;
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                        (Some(None), _) | (_, Some(None)) if is_strict => {
+                                            drop(data);
+                                            return Err(PyException::value_error(
+                                                "zip() has arguments with different lengths"));
+                                        }
+                                        (Some(None), _) | (_, Some(None)) => {
+                                            drop(data);
+                                            drop(spop!(frame));
+                                            frame.ip = instr.arg as usize;
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                        _ => {
+                                            drop(data);
+                                            self.execute_one(instr)
+                                        }
+                                    }
+                                } else {
+                                // ── General N-source path (reuse items_buf) ──
+                                items_buf.clear();
                                 let mut all_ok = true;
                                 let mut exhausted_count = 0usize;
                                 let mut needs_vm = false;
@@ -1430,28 +1486,31 @@ impl VirtualMachine {
                                             }
                                         }
                                         None => {
-                                            // Unknown source — fall back to VM dispatch
                                             needs_vm = true;
                                             break;
                                         }
                                     }
                                 }
                                 if needs_vm {
+                                    items_buf.clear();
                                     drop(data);
                                     self.execute_one(instr)
                                 } else {
                                     if !all_ok || (is_strict && exhausted_count > 0 && exhausted_count == n) {
                                         if is_strict && exhausted_count > 0 && exhausted_count != n {
+                                            items_buf.clear();
                                             drop(data);
                                             return Err(PyException::value_error(
                                                 "zip() has arguments with different lengths"));
                                         }
+                                        items_buf.clear();
                                         drop(data);
                                         drop(spop!(frame));
                                         frame.ip = instr.arg as usize;
                                     } else {
-                                        // CPython-style tuple reuse for zip
-                                        let tuple = if n == items_buf.len() {
+                                        // Tuple reuse
+                                        let buf_len = items_buf.len();
+                                        let tuple = if buf_len == n {
                                             if let Some(ref mut cached) = cached_tuple {
                                                 if let Some(obj) = PyObjectRef::get_mut(cached) {
                                                     if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
@@ -1461,33 +1520,39 @@ impl VirtualMachine {
                                                             }
                                                             cached.clone()
                                                         } else {
-                                                            let t = PyObject::tuple(items_buf);
+                                                            let buf: Vec<_> = items_buf.drain(..).collect();
+                                                            let t = PyObject::tuple(buf);
                                                             *cached = t.clone();
                                                             t
                                                         }
                                                     } else {
-                                                        let t = PyObject::tuple(items_buf);
+                                                        let buf: Vec<_> = items_buf.drain(..).collect();
+                                                        let t = PyObject::tuple(buf);
                                                         *cached = t.clone();
                                                         t
                                                     }
                                                 } else {
-                                                    let t = PyObject::tuple(items_buf);
+                                                    let buf: Vec<_> = items_buf.drain(..).collect();
+                                                    let t = PyObject::tuple(buf);
                                                     *cached = t.clone();
                                                     t
                                                 }
                                             } else {
-                                                let t = PyObject::tuple(items_buf);
+                                                let buf: Vec<_> = items_buf.drain(..).collect();
+                                                let t = PyObject::tuple(buf);
                                                 *cached_tuple = Some(t.clone());
                                                 t
                                             }
                                         } else {
-                                            PyObject::tuple(items_buf)
+                                            let buf: Vec<_> = items_buf.drain(..).collect();
+                                            PyObject::tuple(buf)
                                         };
                                         drop(data);
                                         spush!(frame, tuple);
                                     }
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 }
+                                } // close else (N-source path)
                             }
                             IteratorData::DictEntries { keys, values, index, cached_tuple } => {
                                 if *index < keys.len() {
@@ -3295,6 +3360,42 @@ impl VirtualMachine {
                                     self.execute_one(instr)
                                 }
                             }
+                            // Inline sum(iterable) — native i64 accumulation for list/tuple of ints
+                            (Some("sum"), 1) | (Some("sum"), 2) => {
+                                let iterable = sget!(frame, func_idx + 1);
+                                let items: Option<&[PyObjectRef]> = match &iterable.payload {
+                                    PyObjectPayload::List(v) => Some(unsafe { &*v.data_ptr() }),
+                                    PyObjectPayload::Tuple(v) => Some(v.as_slice()),
+                                    _ => None,
+                                };
+                                let mut fast_result: Option<i64> = None;
+                                if let Some(items) = items {
+                                    let start_val: i64 = if arg_count == 2 {
+                                        if let PyObjectPayload::Int(PyInt::Small(s)) = &sget!(frame, func_idx + 2).payload {
+                                            *s
+                                        } else { i64::MIN } // sentinel: fall back
+                                    } else { 0 };
+                                    if start_val != i64::MIN {
+                                        let mut total: i64 = start_val;
+                                        let mut ok = true;
+                                        for item in items {
+                                            if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
+                                                if let Some(t) = total.checked_add(*n) {
+                                                    total = t;
+                                                } else { ok = false; break; }
+                                            } else { ok = false; break; }
+                                        }
+                                        if ok { fast_result = Some(total); }
+                                    }
+                                }
+                                if let Some(total) = fast_result {
+                                    unsafe { frame.stack.set_len(func_idx); }
+                                    spush!(frame, PyObject::int(total));
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
                             _ => self.execute_one(instr),
                         }
                     }
@@ -3757,6 +3858,36 @@ impl VirtualMachine {
                                         { let _ = spop!(frame); }
                                         spush!(frame, v);
                                         hot_ok!(profiling, self.profiler, instr.op)
+                                    } else {
+                                        spush!(frame, func_obj.clone());
+                                        self.execute_one(Instruction::new(Opcode::CallFunction, 1))
+                                    }
+                                }
+                                (Some("sum"), 1) => {
+                                    let arg = sget!(frame, frame.stack.len() - 1);
+                                    let items: Option<&[PyObjectRef]> = match &arg.payload {
+                                        PyObjectPayload::List(v) => Some(unsafe { &*v.data_ptr() }),
+                                        PyObjectPayload::Tuple(v) => Some(v.as_slice()),
+                                        _ => None,
+                                    };
+                                    if let Some(items) = items {
+                                        let mut total: i64 = 0;
+                                        let mut ok = true;
+                                        for item in items {
+                                            if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
+                                                if let Some(t) = total.checked_add(*n) {
+                                                    total = t;
+                                                } else { ok = false; break; }
+                                            } else { ok = false; break; }
+                                        }
+                                        if ok {
+                                            { let _ = spop!(frame); }
+                                            spush!(frame, PyObject::int(total));
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        } else {
+                                            spush!(frame, func_obj.clone());
+                                            self.execute_one(Instruction::new(Opcode::CallFunction, 1))
+                                        }
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 1))
