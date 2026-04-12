@@ -14,7 +14,7 @@ use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── PyCell: zero-overhead interior mutability (replaces parking_lot::RwLock) ──
 
@@ -360,17 +360,17 @@ impl fmt::Debug for PyWeakRef {
     }
 }
 
-/// Wrapper around AtomicI64 that implements Clone (loads current value).
+/// Single-threaded i64 wrapper using Cell (no atomics needed under GIL).
 #[repr(transparent)]
-pub struct SyncI64(pub AtomicI64);
+pub struct SyncI64(pub Cell<i64>);
 
 impl SyncI64 {
     #[inline(always)]
-    pub fn new(v: i64) -> Self { Self(AtomicI64::new(v)) }
+    pub fn new(v: i64) -> Self { Self(Cell::new(v)) }
     #[inline(always)]
-    pub fn get(&self) -> i64 { self.0.load(Ordering::Relaxed) }
+    pub fn get(&self) -> i64 { self.0.get() }
     #[inline(always)]
-    pub fn set(&self, v: i64) { self.0.store(v, Ordering::Relaxed) }
+    pub fn set(&self, v: i64) { self.0.set(v) }
 }
 
 impl Clone for SyncI64 {
@@ -383,6 +383,11 @@ impl fmt::Debug for SyncI64 {
         write!(f, "SyncI64({})", self.get())
     }
 }
+
+// Safety: SyncI64 is used inside PyObjectPayload which needs Send+Sync for static
+// singletons. Under GIL semantics, Cell<i64> is safe (single-threaded access).
+unsafe impl Send for SyncI64 {}
+unsafe impl Sync for SyncI64 {}
 
 /// A Python object.
 #[derive(Debug, Clone)]
