@@ -1927,7 +1927,7 @@ impl VirtualMachine {
                         if args.len() == 2 {
                             let source = self.resolve_iterable(&args[1])?;
                             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                                Arc::new(parking_lot::Mutex::new(IteratorData::Map { func: func_obj, source }))
+                                Rc::new(PyCell::new(IteratorData::Map { func: func_obj, source }))
                             )));
                         } else {
                             let mut iters: Vec<Vec<PyObjectRef>> = Vec::new();
@@ -1939,7 +1939,7 @@ impl VirtualMachine {
                                 result.push(self.call_object(func_obj.clone(), call_args)?);
                             }
                             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                                Arc::new(parking_lot::Mutex::new(IteratorData::List { items: result, index: 0 }))
+                                Rc::new(PyCell::new(IteratorData::List { items: result, index: 0 }))
                             )));
                         }
                     }
@@ -1950,7 +1950,7 @@ impl VirtualMachine {
                         let func_obj = args[0].clone();
                         let source = self.resolve_iterable(&args[1])?;
                         return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                            Arc::new(parking_lot::Mutex::new(IteratorData::Filter { func: func_obj, source }))
+                            Rc::new(PyCell::new(IteratorData::Filter { func: func_obj, source }))
                         )));
                     }
                     "iter" => {
@@ -3036,7 +3036,7 @@ impl VirtualMachine {
                     if matches!(bbm.receiver.payload, PyObjectPayload::List(_)) {
                         if matches!(args[0].payload, PyObjectPayload::Generator(_) | PyObjectPayload::Instance(_)) ||
                            (matches!(&args[0].payload, PyObjectPayload::Iterator(ref d) if {
-                               let data = d.lock();
+                               let data = d.read();
                                matches!(&*data, IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
                                    | IteratorData::Map { .. } | IteratorData::Filter { .. }
                                    | IteratorData::Sentinel { .. })

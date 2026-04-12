@@ -3,14 +3,14 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    FxHashKeyMap, new_fx_hashkey_map,
+    FxHashKeyMap, new_fx_hashkey_map, PyCell,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     IteratorData,
     make_module, make_builtin, check_args_min,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use super::fs_modules::glob_match;
 
@@ -995,7 +995,7 @@ fn re_finditer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 _ => break,
             }
         }
-        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
             IteratorData::List { items: matches, index: 0 }
         )))))
     } else {
@@ -1003,7 +1003,7 @@ fn re_finditer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let matches: Vec<PyObjectRef> = re.captures_iter(&text)
             .map(|caps| make_match_object_from_captures(&caps, &text, &re))
             .collect();
-        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
             IteratorData::List { items: matches, index: 0 }
         )))))
     }

@@ -41,7 +41,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
             PyObjectPayload::Module(_) => "module",
             PyObjectPayload::RangeIter { .. } => "range_iterator",
             PyObjectPayload::Iterator(iter_data) => {
-                let guard = iter_data.lock();
+                let guard = iter_data.read();
                 match &*guard {
                     IteratorData::Map { .. } => "map",
                     IteratorData::Filter { .. } => "filter",
@@ -558,7 +558,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                 Ok(result)
             }
             PyObjectPayload::Iterator(iter_data) => {
-                let data = iter_data.lock();
+                let data = iter_data.read();
                 match &*data {
                     IteratorData::List { items, index } => Ok(items[*index..].to_vec()),
                     IteratorData::Tuple { items, index } => Ok(items[*index..].to_vec()),

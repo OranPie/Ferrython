@@ -750,7 +750,7 @@ impl VirtualMachine {
                 }
             }
             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(parking_lot::Mutex::new(IteratorData::List { items: result, index: 0 }))
+                Rc::new(PyCell::new(IteratorData::List { items: result, index: 0 }))
             )));
         }
 
@@ -787,7 +787,7 @@ impl VirtualMachine {
                 }
             }
             return Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(parking_lot::Mutex::new(IteratorData::List { items: result, index: 0 }))
+                Rc::new(PyCell::new(IteratorData::List { items: result, index: 0 }))
             )));
         }
 
@@ -810,7 +810,7 @@ impl VirtualMachine {
             .step_by(step)
             .collect();
         Ok(PyObject::wrap(PyObjectPayload::Iterator(
-            Arc::new(parking_lot::Mutex::new(IteratorData::List { items: result, index: 0 }))
+            Rc::new(PyCell::new(IteratorData::List { items: result, index: 0 }))
         )))
     }
 
@@ -935,7 +935,7 @@ impl VirtualMachine {
             PyObjectPayload::Iterator(iter_data_arc) => {
                 // Check for lazy iterators that need VM context
                 let is_lazy = {
-                    let data = iter_data_arc.lock();
+                    let data = iter_data_arc.read();
                     matches!(&*data, IteratorData::Enumerate { .. }
                         | IteratorData::Zip { .. }
                         | IteratorData::Map { .. }
@@ -1329,7 +1329,7 @@ impl VirtualMachine {
             PyObjectPayload::Iterator(iter_data_arc) => {
                 // Check for lazy iterators first
                 {
-                    let data = iter_data_arc.lock();
+                    let data = iter_data_arc.read();
                     match &*data {
                         IteratorData::Enumerate { .. }
                         | IteratorData::Zip { .. }
@@ -1367,7 +1367,7 @@ impl VirtualMachine {
             PyObjectPayload::Iterator(arc) => arc.clone(),
             _ => return Err(PyException::type_error("not an iterator")),
         };
-        let mut data = iter_data_arc.lock();
+        let mut data = iter_data_arc.write();
         match &mut *data {
             IteratorData::Enumerate { source, index } => {
                 let src = source.clone();
@@ -1467,7 +1467,7 @@ impl VirtualMachine {
                         } else {
                             // Mark done
                             if let PyObjectPayload::Iterator(arc) = &iter_obj.payload {
-                                if let IteratorData::TakeWhile { done, .. } = &mut *arc.lock() {
+                                if let IteratorData::TakeWhile { done, .. } = &mut *arc.write() {
                                     *done = true;
                                 }
                             }
@@ -1490,7 +1490,7 @@ impl VirtualMachine {
                                 if !self.vm_is_truthy(&test)? {
                                     // Stop dropping, mark state
                                     if let PyObjectPayload::Iterator(arc) = &iter_obj.payload {
-                                        if let IteratorData::DropWhile { dropping, .. } = &mut *arc.lock() {
+                                        if let IteratorData::DropWhile { dropping, .. } = &mut *arc.write() {
                                             *dropping = false;
                                         }
                                     }
@@ -1550,7 +1550,7 @@ impl VirtualMachine {
                     match self.vm_iter_next(&srcs[cur])? {
                         Some(val) => {
                             // Update current index
-                            let mut d = iter_data_arc.lock();
+                            let mut d = iter_data_arc.write();
                             if let IteratorData::Chain { current, .. } = &mut *d {
                                 *current = cur;
                             }
@@ -1562,7 +1562,7 @@ impl VirtualMachine {
                     }
                 }
                 // All exhausted
-                let mut d = iter_data_arc.lock();
+                let mut d = iter_data_arc.write();
                 if let IteratorData::Chain { current, .. } = &mut *d {
                     *current = cur;
                 }
@@ -2123,7 +2123,7 @@ impl VirtualMachine {
         }
         let items = args[0].to_list()?;
         if items.is_empty() {
-            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
+            return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
                 IteratorData::List { items: vec![], index: 0 }
             )))));
         }
@@ -2146,7 +2146,7 @@ impl VirtualMachine {
             if k.py_to_string() == current_key.py_to_string() {
                 current_group.push(item.clone());
             } else {
-                let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
+                let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
                     IteratorData::List { items: current_group, index: 0 }
                 ))));
                 result.push(PyObject::tuple(vec![current_key, group_iter]));
@@ -2154,11 +2154,11 @@ impl VirtualMachine {
                 current_group = vec![item.clone()];
             }
         }
-        let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
+        let group_iter = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
             IteratorData::List { items: current_group, index: 0 }
         ))));
         result.push(PyObject::tuple(vec![current_key, group_iter]));
-        Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
+        Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
             IteratorData::List { items: result, index: 0 }
         )))))
     }

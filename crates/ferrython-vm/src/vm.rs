@@ -1167,7 +1167,7 @@ impl VirtualMachine {
                         PyObjectPayload::List(items) => {
                             let items_vec = unsafe { &*items.data_ptr() }.clone();
                             let iter = PyObject::wrap(PyObjectPayload::Iterator(
-                                std::sync::Arc::new(parking_lot::Mutex::new(
+                                std::rc::Rc::new(PyCell::new(
                                     IteratorData::List { items: items_vec, index: 0 }
                                 ))
                             ));
@@ -1178,7 +1178,7 @@ impl VirtualMachine {
                         PyObjectPayload::Tuple(items) => {
                             let items_vec = items.clone();
                             let iter = PyObject::wrap(PyObjectPayload::Iterator(
-                                std::sync::Arc::new(parking_lot::Mutex::new(
+                                std::rc::Rc::new(PyCell::new(
                                     IteratorData::Tuple { items: items_vec, index: 0 }
                                 ))
                             ));
@@ -1207,7 +1207,7 @@ impl VirtualMachine {
                         }
                         hot_ok!(profiling, self.profiler, instr.op)
                     } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
-                        let mut data = iter_data.lock();
+                        let mut data = iter_data.write();
                         match &mut *data {
                             IteratorData::Range { current, stop, step } => {
                                 let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
@@ -1284,7 +1284,7 @@ impl VirtualMachine {
                         }
                         hot_ok!(profiling, self.profiler, instr.op)
                     } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
-                        let mut data = iter_data.lock();
+                        let mut data = iter_data.write();
                         match &mut *data {
                             IteratorData::Range { current, stop, step } => {
                                 let done = if *step > 0 { *current >= *stop } else { *current <= *stop };

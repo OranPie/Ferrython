@@ -166,7 +166,7 @@ pub(super) fn call_list_method(items: Rc<PyCell<Vec<PyObjectRef>>>, method: &str
         "__iter__" => {
             let snapshot = items.read().clone();
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(parking_lot::Mutex::new(IteratorData::List {
+                Rc::new(PyCell::new(IteratorData::List {
                     items: snapshot,
                     index: 0,
                 })),
@@ -342,7 +342,7 @@ pub(super) fn call_list_method(items: Rc<PyCell<Vec<PyObjectRef>>>, method: &str
             let mut snapshot = items.read().clone();
             snapshot.reverse();
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(parking_lot::Mutex::new(IteratorData::List {
+                Rc::new(PyCell::new(IteratorData::List {
                     items: snapshot,
                     index: 0,
                 })),
@@ -703,7 +703,7 @@ pub(super) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyO
         }
         "__iter__" => {
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(parking_lot::Mutex::new(IteratorData::List {
+                Rc::new(PyCell::new(IteratorData::List {
                     items: items.to_vec(),
                     index: 0,
                 })),

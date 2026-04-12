@@ -342,7 +342,7 @@ pub enum PyObjectPayload {
     Class(Box<ClassData>),
     Instance(Box<InstanceData>),
     Module(Box<ModuleData>),
-    Iterator(Arc<parking_lot::Mutex<IteratorData>>),
+    Iterator(Rc<PyCell<IteratorData>>),
     /// Lock-free range iterator — avoids Mutex overhead for `for i in range(n)`.
     RangeIter { current: SyncI64, stop: i64, step: i64 },
     Slice(Box<SliceData>),

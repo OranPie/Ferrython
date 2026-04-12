@@ -3,10 +3,11 @@ use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData, NativeClosureData,
-    make_module, make_builtin, check_args_min,
+    make_module, make_builtin, check_args_min, PyCell,
 };
 use ferrython_core::types::HashableKey;
 use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 use std::collections::HashMap;
 
 /// Global dialect registry.
@@ -387,7 +388,7 @@ fn csv_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     attrs.insert(CompactString::from("__iter__"), {
         // Build a proper Iterator payload for the VM's for-loop
         let rows_vec = shared_rows.to_vec();
-        let iter_obj = PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(
+        let iter_obj = PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
             IteratorData::List { items: rows_vec, index: 0 },
         ))));
         let it = iter_obj.clone();
@@ -571,7 +572,7 @@ fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         args[0].to_list()?
     };
     if lines.is_empty() {
-        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: vec![], index: 0 })))));
+        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::List { items: vec![], index: 0 })))));
     }
     // Optional fieldnames as second arg
     let fieldnames: Vec<String> = if args.len() >= 2 && !matches!(&args[1].payload, PyObjectPayload::None) {
@@ -596,7 +597,7 @@ fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         }
         rows.push(PyObject::dict(map));
     }
-    Ok(PyObject::wrap(PyObjectPayload::Iterator(Arc::new(parking_lot::Mutex::new(IteratorData::List { items: rows, index: 0 })))))
+    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::List { items: rows, index: 0 })))))
 }
 
 fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

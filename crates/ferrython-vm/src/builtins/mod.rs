@@ -235,7 +235,7 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
     match &iter_obj.payload {
         PyObjectPayload::Iterator(iter_data) => {
             use ferrython_core::object::IteratorData;
-            let mut data = iter_data.lock();
+            let mut data = iter_data.write();
             match &mut *data {
                 IteratorData::List { items, index } => {
                     if *index < items.len() {
@@ -302,7 +302,7 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
     match &iter_obj.payload {
         PyObjectPayload::Iterator(iter_data) => {
             use ferrython_core::object::IteratorData;
-            let mut data = iter_data.lock();
+            let mut data = iter_data.write();
             match &mut *data {
                 IteratorData::List { items, index } => {
                     if *index < items.len() {

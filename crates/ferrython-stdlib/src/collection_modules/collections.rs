@@ -739,7 +739,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         "deque.__iter__", move |_: &[PyObjectRef]| {
             let snapshot = d.read().clone();
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Arc::new(parking_lot::Mutex::new(ferrython_core::object::IteratorData::List {
+                Rc::new(PyCell::new(ferrython_core::object::IteratorData::List {
                     items: snapshot,
                     index: 0,
                 }))
