@@ -137,6 +137,7 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         class_version: cd.class_version,
                         is_dict_subclass: cd.is_dict_subclass,
                         expected_attrs: cd.expected_attrs,
+                        is_simple_class: false, // has metaclass
                     }))));
                 }
             }

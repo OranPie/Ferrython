@@ -310,11 +310,44 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
 pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {
         match &obj.payload {
             PyObjectPayload::Instance(inst) => {
-                // Special instance attributes (cheap string comparisons)
+                // ── ULTRA-FAST PATH ──
+                // For simple instances: no descriptors, no __getattribute__, no
+                // dict_storage, and name is NOT a dunder. Skips the expensive
+                // __class__-override attr-map lookup that the standard path does
+                // on every single call.
+                let is_dunder = name.as_bytes().first() == Some(&b'_')
+                    && name.as_bytes().get(1) == Some(&b'_');
+                if !is_dunder
+                    && inst.class_flags & (CLASS_FLAG_HAS_DESCRIPTORS | CLASS_FLAG_HAS_GETATTRIBUTE) == 0
+                    && inst.dict_storage.is_none()
+                {
+                    // 1. Instance dict first (data attributes)
+                    if let Some(v) = inst.attrs.read().get(name) {
+                        return Some(v.clone());
+                    }
+                    // 2. Class + MRO via vtable/cache (methods & class attrs)
+                    if let Some(v) = lookup_in_class_mro(&inst.class, name) {
+                        return Some(wrap_class_attr_for_instance(obj, inst, v));
+                    }
+                    // 3. Builtin instance methods (only for special instances)
+                    if inst.is_special {
+                        if let Some(result) = instance_builtin_method(obj, inst, name) {
+                            return Some(result);
+                        }
+                    }
+                    // 4. __getattr__ fallback (cached negative = fast)
+                    if let Some(getattr_fn) = lookup_in_class_mro(&inst.class, "__getattr__") {
+                        let name_obj = PyObject::str_val(CompactString::from(name));
+                        if let Ok(result) = call_callable(&getattr_fn, &[obj.clone(), name_obj]) {
+                            return Some(result);
+                        }
+                    }
+                    return None;
+                }
+
+                // ── STANDARD PATH ── (dunders, descriptors, __getattribute__, dict subclasses)
+                // Special instance attributes
                 if name == "__class__" {
-                    // CPython allows `obj.__class__ = NewClass`; honour overrides
-                    // stored in attrs by StoreAttr before falling back to the
-                    // structural class reference.
                     if let Some(cls_override) = inst.attrs.read().get("__class__") {
                         return Some(cls_override.clone());
                     }
@@ -328,7 +361,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     }
                     return Some(PyObject::wrap(PyObjectPayload::InstanceDict(inst.attrs.clone())));
                 }
-                // Dict subclass: intercept dict method lookups before MRO returns BuiltinType methods
+                // Dict subclass: intercept dict method lookups
                 if inst.dict_storage.is_some() {
                     if let Some(result) = instance_builtin_method(obj, inst, name) {
                         return Some(result);
@@ -342,26 +375,14 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     .unwrap_or_else(|| inst.class.clone());
 
                 // Determine if this class has data descriptors
-                let class_has_descriptors = match &effective_class.payload {
-                    PyObjectPayload::Class(cd) => cd.has_descriptors,
-                    _ => false,
-                };
+                let class_has_descriptors = inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS != 0;
 
                 if !class_has_descriptors {
                     // ── FAST PATH: no data descriptors ──
-                    // Check own class for Python Function overrides BEFORE instance dict
-                    if let PyObjectPayload::Class(cd) = &effective_class.payload {
-                        if let Some(v) = cd.namespace.read().get(name) {
-                            if matches!(&v.payload, PyObjectPayload::Function(_)) {
-                                return Some(wrap_class_attr_for_instance(obj, inst, v.clone()));
-                            }
-                        }
-                    }
-                    // Check instance dict
+                    // Check instance dict first, then class MRO
                     if let Some(v) = inst.attrs.read().get(name) {
                         return Some(v.clone());
                     }
-                    // Then class MRO for methods/class attrs
                     if let Some(v) = lookup_in_class_mro(&effective_class, name) {
                         return Some(wrap_class_attr_for_instance(obj, inst, v));
                     }

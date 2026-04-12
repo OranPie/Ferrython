@@ -492,6 +492,25 @@ impl VirtualMachine {
         pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
     ) -> PyResult<PyObjectRef> {
+        // ── FAST PATH: simple class with no enum/abstract/__new__/dataclass ──
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            if cd.is_simple_class && kwargs.is_empty() {
+                let instance = PyObject::instance(cls.clone());
+                // Look up __init__ via MRO (may be inherited from a base class).
+                // Use namespace first (own class), then fall back to MRO.
+                let init_fn = cd.namespace.read().get("__init__").cloned()
+                    .or_else(|| lookup_in_class_mro(cls, "__init__"));
+                if let Some(init_fn) = init_fn {
+                    let mut init_args = Vec::with_capacity(1 + pos_args.len());
+                    init_args.push(instance.clone());
+                    init_args.extend(pos_args);
+                    self.call_object(init_fn, init_args)?;
+                }
+                return Ok(instance);
+            }
+        }
+
+        // ── STANDARD PATH ──
         // Enum lookup: Color(2) returns the member with that value
         // Also handle Enum functional API: Enum("Name", "mem1 mem2") or Enum("Name", ["mem1", "mem2"])
         if let PyObjectPayload::Class(cd) = &cls.payload {

@@ -733,6 +733,7 @@ impl VirtualMachine {
                             class_version: cd.class_version,
                             is_dict_subclass: cd.is_dict_subclass,
                             expected_attrs: cd.expected_attrs,
+                            is_simple_class: false, // has metaclass
                         })))
                     } else {
                         result

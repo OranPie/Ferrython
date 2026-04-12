@@ -842,6 +842,10 @@ pub struct ClassData {
     /// Number of expected instance attrs (from attr_shape).
     /// Used to pre-allocate IndexMap capacity in instance creation.
     pub expected_attrs: usize,
+    /// Fast-path flag: true if this class can be instantiated without checking
+    /// enum, abstract methods, custom __new__, or dataclass markers.
+    /// Computed once at class creation time.
+    pub is_simple_class: bool,
 }
 
 impl ClassData {
@@ -949,6 +953,15 @@ impl ClassData {
 
         let expected_attrs = attr_shape.len();
 
+        // A class is "simple" if instantiation needs no special dispatch:
+        // no enum, no abstract methods, no custom __new__, no __dataclass__,
+        // and no metaclass __call__. This lets instantiate_class skip all the
+        // expensive checks on every call.
+        let is_simple_class = metaclass.is_none()
+            && !namespace.contains_key("__enum__")
+            && !namespace.contains_key("__dataclass__")
+            && !namespace.contains_key("__new__");
+
         Self {
             name,
             bases,
@@ -966,6 +979,7 @@ impl ClassData {
             class_version: next_class_version(),
             is_dict_subclass,
             expected_attrs,
+            is_simple_class,
         }
     }
 
