@@ -35,8 +35,8 @@ pub fn is_profile_active() -> bool {
 // Thread-local active exception info for sys.exc_info().
 // Set by the VM when entering an except block, cleared when leaving.
 thread_local! {
-    static ACTIVE_EXC_INFO: std::cell::RefCell<Option<(ExceptionKind, CompactString, Option<PyObjectRef>)>> =
-        const { std::cell::RefCell::new(None) };
+    static ACTIVE_EXC_INFO: std::cell::UnsafeCell<Option<(ExceptionKind, CompactString, Option<PyObjectRef>)>> =
+        const { std::cell::UnsafeCell::new(None) };
     static TRACE_FUNC: std::cell::RefCell<Option<PyObjectRef>> =
         const { std::cell::RefCell::new(None) };
     static PROFILE_FUNC: std::cell::RefCell<Option<PyObjectRef>> =
@@ -49,19 +49,18 @@ thread_local! {
 
 /// Called by VM when entering an except handler.
 pub fn set_exc_info(kind: ExceptionKind, msg: CompactString, obj: Option<PyObjectRef>) {
-    ACTIVE_EXC_INFO.with(|c| *c.borrow_mut() = Some((kind, msg, obj)));
+    ACTIVE_EXC_INFO.with(|c| unsafe { *c.get() = Some((kind, msg, obj)) });
 }
 
 /// Called by VM when leaving an except handler.
 pub fn clear_exc_info() {
-    ACTIVE_EXC_INFO.with(|c| *c.borrow_mut() = None);
+    ACTIVE_EXC_INFO.with(|c| unsafe { *c.get() = None });
 }
 
 /// Read active exception info for traceback.format_exc() etc.
+/// Now reads lazily through the VM's active_exception pointer.
 pub fn get_exc_info() -> Option<(ExceptionKind, CompactString)> {
-    ACTIVE_EXC_INFO.with(|c| {
-        c.borrow().as_ref().map(|(k, m, _)| (*k, m.clone()))
-    })
+    ferrython_core::error::get_active_exc_info()
 }
 
 /// Get the current trace function (for VM hook dispatch).
@@ -461,23 +460,20 @@ pub fn create_sys_module() -> PyObjectRef {
         ("meta_path", PyObject::list(vec![])),
         ("path_hooks", PyObject::list(vec![])),
         ("exc_info", make_builtin(|_| {
-            ACTIVE_EXC_INFO.with(|c| {
-                let borrow = c.borrow();
-                if let Some((kind, msg, obj)) = borrow.as_ref() {
-                    let type_obj = PyObject::exception_type(kind.clone());
-                    let value_obj = if let Some(o) = obj {
-                        o.clone()
-                    } else {
-                        PyObject::str_val(CompactString::from(msg.as_str()))
-                    };
-                    // Extract __traceback__ from the exception value
-                    let tb_obj = value_obj.get_attr("__traceback__")
-                        .unwrap_or_else(|| PyObject::none());
-                    Ok(PyObject::tuple(vec![type_obj, value_obj, tb_obj]))
+            // Read active exception lazily through VM pointer (zero TLS writes on raise/catch)
+            if let Some((kind, msg, obj)) = ferrython_core::error::get_active_exc_object() {
+                let type_obj = PyObject::exception_type(kind);
+                let value_obj = if let Some(o) = obj {
+                    o
                 } else {
-                    Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none(), PyObject::none()]))
-                }
-            })
+                    PyObject::str_val(CompactString::from(msg.as_str()))
+                };
+                let tb_obj = value_obj.get_attr("__traceback__")
+                    .unwrap_or_else(|| PyObject::none());
+                Ok(PyObject::tuple(vec![type_obj, value_obj, tb_obj]))
+            } else {
+                Ok(PyObject::tuple(vec![PyObject::none(), PyObject::none(), PyObject::none()]))
+            }
         })),
         ("_getframe", make_builtin(|args| {
             // sys._getframe([depth]) — return frame at given depth

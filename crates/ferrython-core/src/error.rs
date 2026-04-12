@@ -375,6 +375,38 @@ use std::cell::{RefCell, Cell};
 thread_local! {
     static THREAD_EXC_INFO: RefCell<Option<(ExceptionKind, CompactString, Vec<TracebackEntry>)>>
         = RefCell::new(None);
+    /// Raw pointer to the VM's `active_exception: Option<PyException>` field.
+    /// Set once when the VM starts; sys.exc_info() reads through this pointer
+    /// instead of maintaining a separate TLS copy (avoids clone+TLS per raise/catch).
+    static ACTIVE_EXC_PTR: Cell<*const Option<PyException>> = const { Cell::new(std::ptr::null()) };
+}
+
+/// Register a pointer to the VM's active_exception field.
+/// Called once at VM startup. SAFETY: pointer must remain valid for the VM's lifetime.
+pub fn register_active_exc_ptr(ptr: *const Option<PyException>) {
+    ACTIVE_EXC_PTR.with(|c| c.set(ptr));
+}
+
+/// Read the active exception directly from the VM's field (zero-copy for hot path).
+/// Returns None if no exception is active or VM pointer not registered.
+pub fn get_active_exc_info() -> Option<(ExceptionKind, CompactString)> {
+    ACTIVE_EXC_PTR.with(|c| {
+        let ptr = c.get();
+        if ptr.is_null() { return None; }
+        // SAFETY: pointer registered by VM, valid during VM lifetime, single-threaded
+        let exc_opt = unsafe { &*ptr };
+        exc_opt.as_ref().map(|exc| (exc.kind, exc.message.clone()))
+    })
+}
+
+/// Read the active exception's original PyObjectRef (for sys.exc_info() value).
+pub fn get_active_exc_object() -> Option<(ExceptionKind, CompactString, Option<crate::object::PyObjectRef>)> {
+    ACTIVE_EXC_PTR.with(|c| {
+        let ptr = c.get();
+        if ptr.is_null() { return None; }
+        let exc_opt = unsafe { &*ptr };
+        exc_opt.as_ref().map(|exc| (exc.kind, exc.message.clone(), exc.original.clone()))
+    })
 }
 
 /// Store the current exception info in thread-local storage.

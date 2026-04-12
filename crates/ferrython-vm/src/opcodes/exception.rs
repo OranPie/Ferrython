@@ -22,8 +22,6 @@ impl VirtualMachine {
             Opcode::PopExcept => {
                 self.vm_frame().pop_block();
                 self.active_exception = None;
-                ferrython_stdlib::clear_exc_info();
-                ferrython_core::error::clear_thread_exc_info();
             }
             Opcode::EndFinally => {
                 return self.exec_end_finally();

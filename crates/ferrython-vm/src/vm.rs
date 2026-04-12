@@ -421,6 +421,9 @@ impl VirtualMachine {
 
     /// Execute a code object as a function call with arguments.
     pub(crate) fn run_frame(&mut self) -> PyResult<PyObjectRef> {
+        // Register active_exception pointer for lazy sys.exc_info() reads
+        ferrython_core::error::register_active_exc_ptr(&self.active_exception as *const _);
+
         let profiling = self.profiler.is_enabled();
         // Use fast atomic flags instead of thread-local RefCell access.
         // These are ~1ns (atomic load) vs ~15ns (thread-local + RefCell borrow + Option clone).
@@ -1731,7 +1734,12 @@ impl VirtualMachine {
                     match (&a.payload, &b.payload) {
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) if *y != 0 => {
                             // Python modulo: result has same sign as divisor
-                            let r = ((*x % *y) + *y) % *y;
+                            // Fast path: both non-negative → single modulo
+                            let r = if *x >= 0 && *y > 0 {
+                                *x % *y
+                            } else {
+                                ((*x % *y) + *y) % *y
+                            };
                             unsafe { frame.binary_op_result(PyObject::int(r)) };
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
@@ -2043,9 +2051,28 @@ impl VirtualMachine {
                 Opcode::PopExcept => {
                     frame.pop_block();
                     self.active_exception = None;
-                    ferrython_stdlib::clear_exc_info();
-                    ferrython_core::error::clear_thread_exc_info();
+                    // sys.exc_info() reads through active_exception pointer — clearing
+                    // active_exception is sufficient, no TLS clear needed
                     hot_ok!(profiling, self.profiler, instr.op)
+                }
+                // Inline RaiseVarargs(1) for the common case: raise ExceptionInstance
+                Opcode::RaiseVarargs if instr.arg == 1 => {
+                    let tos = unsafe { frame.peek_unchecked() };
+                    match &tos.payload {
+                        PyObjectPayload::ExceptionInstance(ei) => {
+                            let kind = ei.kind;
+                            let msg = ei.message.clone();
+                            let orig = tos.clone();
+                            frame.pop();
+                            Err(PyException::with_original(kind, msg, orig))
+                        }
+                        PyObjectPayload::ExceptionType(kind) => {
+                            let kind = *kind;
+                            frame.pop();
+                            Err(PyException::new(kind, ""))
+                        }
+                        _ => self.exec_exception_ops(instr)
+                    }
                 }
                 Opcode::BeginFinally => {
                     spush!(frame, PyObject::none());
@@ -5260,12 +5287,8 @@ impl VirtualMachine {
                                 };
                                 Self::store_exc_attr(&exc_value, "__context__", ctx_obj);
                             }
-                            // Update thread-local for sys.exc_info()
-                            ferrython_stdlib::set_exc_info(
-                                exc_kind,
-                                exc.message.clone(),
-                                Some(exc_value.clone()),
-                            );
+                            // sys.exc_info() reads lazily through active_exception pointer
+                            // (registered at run_frame start) — no TLS write needed here
                             let frame = self.call_stack.last_mut().unwrap();
                             frame.push(PyObject::none());         // traceback (lazy)
                             frame.push(exc_value);            // value
