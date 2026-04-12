@@ -1249,6 +1249,75 @@ impl VirtualMachine {
                                 }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
+                            IteratorData::Enumerate { source, index } => {
+                                // Inline advance for enumerate with known source types
+                                let idx = *index;
+                                match Self::advance_source_inline(source) {
+                                    Some(Some(val)) => {
+                                        *index = idx + 1;
+                                        drop(data);
+                                        spush!(frame, PyObject::tuple(vec![PyObject::int(idx), val]));
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    }
+                                    Some(None) => {
+                                        // Source exhausted
+                                        drop(data);
+                                        drop(spop!(frame));
+                                        frame.ip = instr.arg as usize;
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    }
+                                    None => {
+                                        // Unknown source type — need VM dispatch
+                                        drop(data);
+                                        self.execute_one(instr)
+                                    }
+                                }
+                            }
+                            IteratorData::Zip { sources, strict } => {
+                                // Inline advance for zip with known source types
+                                let is_strict = *strict;
+                                let n = sources.len();
+                                let mut items_buf = Vec::with_capacity(n);
+                                let mut all_ok = true;
+                                let mut exhausted_count = 0usize;
+                                let mut needs_vm = false;
+                                for src in sources.iter() {
+                                    match Self::advance_source_inline(src) {
+                                        Some(Some(val)) => items_buf.push(val),
+                                        Some(None) => {
+                                            exhausted_count += 1;
+                                            if is_strict {
+                                                items_buf.push(PyObject::none());
+                                            } else {
+                                                all_ok = false;
+                                                break;
+                                            }
+                                        }
+                                        None => {
+                                            // Unknown source — fall back to VM dispatch
+                                            needs_vm = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if needs_vm {
+                                    drop(data);
+                                    self.execute_one(instr)
+                                } else {
+                                    drop(data);
+                                    if !all_ok || (is_strict && exhausted_count > 0 && exhausted_count == n) {
+                                        if is_strict && exhausted_count > 0 && exhausted_count != n {
+                                            return Err(PyException::value_error(
+                                                "zip() has arguments with different lengths"));
+                                        }
+                                        drop(spop!(frame));
+                                        frame.ip = instr.arg as usize;
+                                    } else {
+                                        spush!(frame, PyObject::tuple(items_buf));
+                                    }
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                            }
                             _ => {
                                 drop(data);
                                 self.execute_one(instr)
@@ -5193,6 +5262,61 @@ impl VirtualMachine {
                     }
                 }
             }
+        }
+    }
+
+    /// Advance a source iterator inline without VM dispatch.
+    /// Works for List, Tuple, Range, and RangeIter sources.
+    /// Returns `Some(Some(value))` if advanced, `Some(None)` if exhausted,
+    /// `None` if the source type requires VM dispatch.
+    #[inline(always)]
+    fn advance_source_inline(source: &PyObjectRef) -> Option<Option<PyObjectRef>> {
+        match &source.payload {
+            PyObjectPayload::Iterator(arc) => {
+                let mut data = arc.write();
+                match &mut *data {
+                    IteratorData::List { items, index } => {
+                        if *index < items.len() {
+                            let v = items[*index].clone();
+                            *index += 1;
+                            Some(Some(v))
+                        } else {
+                            Some(None)
+                        }
+                    }
+                    IteratorData::Tuple { items, index } => {
+                        if *index < items.len() {
+                            let v = items[*index].clone();
+                            *index += 1;
+                            Some(Some(v))
+                        } else {
+                            Some(None)
+                        }
+                    }
+                    IteratorData::Range { current, stop, step } => {
+                        let done = if *step > 0 { *current >= *stop } else { *current <= *stop };
+                        if done {
+                            Some(None)
+                        } else {
+                            let v = PyObject::int(*current);
+                            *current += *step;
+                            Some(Some(v))
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            PyObjectPayload::RangeIter { current, stop, step } => {
+                let cur = current.get();
+                let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
+                if done {
+                    Some(None)
+                } else {
+                    current.set(cur + *step);
+                    Some(Some(PyObject::int(cur)))
+                }
+            }
+            _ => None,
         }
     }
 

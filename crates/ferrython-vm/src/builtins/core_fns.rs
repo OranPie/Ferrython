@@ -7,7 +7,7 @@ use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell,
     IteratorData, PropertyData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     FxAttrMap,
 };
-use ferrython_core::types::HashableKey;
+use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -257,11 +257,63 @@ pub(super) fn builtin_sum(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("sum expected at least 1 argument, got 0"));
     }
-    let items = args[0].to_list()?;
-    let start = if args.len() > 1 { args[1].clone() } else { PyObject::int(0) };
-    let mut total = start;
+    let start_val = if args.len() > 1 { &args[1] } else { &PyObject::int(0) };
+
+    // Direct accumulation over list/tuple without cloning the entire container
+    let items_ref: &[PyObjectRef] = match &args[0].payload {
+        PyObjectPayload::List(v) => unsafe { &*v.data_ptr() },
+        PyObjectPayload::Tuple(v) => v.as_slice(),
+        _ => {
+            // Fallback: materialize to list
+            let items = args[0].to_list()?;
+            return sum_items(&items, start_val);
+        }
+    };
+    sum_items(items_ref, start_val)
+}
+
+fn sum_items(items: &[PyObjectRef], start: &PyObjectRef) -> PyResult<PyObjectRef> {
+    // Native i64 accumulation for homogeneous int lists
+    if let PyObjectPayload::Int(PyInt::Small(s)) = &start.payload {
+        let mut total: i64 = *s;
+        let mut all_int = true;
+        for item in items {
+            if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
+                total = total.wrapping_add(*n);
+            } else {
+                all_int = false;
+                break;
+            }
+        }
+        if all_int {
+            return Ok(PyObject::int(total));
+        }
+    }
+
+    // Native f64 accumulation for numeric lists
+    let start_f64 = match &start.payload {
+        PyObjectPayload::Int(PyInt::Small(s)) => Some(*s as f64),
+        PyObjectPayload::Float(f) => Some(*f),
+        _ => None,
+    };
+    if let Some(mut total) = start_f64 {
+        let mut all_numeric = true;
+        for item in items {
+            match &item.payload {
+                PyObjectPayload::Float(f) => total += f,
+                PyObjectPayload::Int(PyInt::Small(n)) => total += *n as f64,
+                _ => { all_numeric = false; break; }
+            }
+        }
+        if all_numeric {
+            return Ok(PyObject::float(total));
+        }
+    }
+
+    // General fallback
+    let mut total = start.clone();
     for item in items {
-        total = total.add(&item)?;
+        total = total.add(item)?;
     }
     Ok(total)
 }
