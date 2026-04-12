@@ -1183,6 +1183,7 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 class: inst.class.clone(),
                 attrs: Rc::new(PyCell::new(inst.attrs.read().clone())),
                 is_special: true, dict_storage: inst.dict_storage.as_ref().map(|ds| Rc::new(PyCell::new(ds.read().clone()))),
+                class_flags: InstanceData::compute_flags(&inst.class),
             }))))
         }
         _ => Ok(obj.clone()),

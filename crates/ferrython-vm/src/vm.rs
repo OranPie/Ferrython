@@ -98,6 +98,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{ new_fx_hashkey_map, PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
     lookup_in_class_mro, SyncI64, FxAttrMap,
+    CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
@@ -3508,9 +3509,7 @@ impl VirtualMachine {
                         let obj = sget!(frame, stack_len - 1);
                         match &obj.payload {
                             PyObjectPayload::Instance(inst) => {
-                                let skip_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                    !cd.has_getattribute
-                                } else { false };
+                                let skip_ga = inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0;
                                 if skip_ga && inst.dict_storage.is_none() && !inst.is_special {
                                     let name = &frame.code.names[name_idx];
                                     if name.as_str() != "__class__" && name.as_str() != "__dict__" {
@@ -4108,22 +4107,22 @@ impl VirtualMachine {
                     };
                     // Inline Instance attr fast path
                     let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
-                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                            if !cd.has_getattribute {
-                                if name.as_str() == "__class__" {
-                                    Some(inst.class.clone())
+                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0 {
+                            if name.as_str() == "__class__" {
+                                Some(inst.class.clone())
+                            } else {
+                                let attrs = unsafe { &*inst.attrs.data_ptr() };
+                                if let Some(v) = attrs.get(name.as_str()) {
+                                    match &v.payload {
+                                        PyObjectPayload::Function(_)
+                                        | PyObjectPayload::Property(_) => None,
+                                        _ => Some(v.clone()),
+                                    }
                                 } else {
-                                    let attrs = unsafe { &*inst.attrs.data_ptr() };
-                                    if let Some(v) = attrs.get(name.as_str()) {
-                                        match &v.payload {
-                                            PyObjectPayload::Function(_)
-                                            | PyObjectPayload::Property(_) => None,
-                                            _ => Some(v.clone()),
-                                        }
-                                    } else {
-                                        drop(attrs);
-                                        // Instance dict miss — check vtable for class-level data attrs
-                                        if !cd.has_descriptors {
+                                    drop(attrs);
+                                    // Instance dict miss — check vtable for class-level data attrs
+                                    if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS == 0 {
+                                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
                                             let vt = unsafe { &*cd.method_vtable.data_ptr() };
                                             if !vt.is_empty() {
                                                 if let Some(class_val) = vt.get(name.as_str()) {
@@ -4137,9 +4136,9 @@ impl VirtualMachine {
                                                 } else { None }
                                             } else { None }
                                         } else { None }
-                                    }
+                                    } else { None }
                                 }
-                            } else { None }
+                            }
                         } else { None }
                     } else { None };
                     if let Some(val) = fast_val {
@@ -4167,8 +4166,8 @@ impl VirtualMachine {
                     };
                     // Inline Instance attr fast path with IC
                     let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
-                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                            if !cd.has_getattribute {
+                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0 {
+                            if let PyObjectPayload::Class(cd) = &inst.class.payload {
                                 // Check inline cache first
                                 let ip = frame.ip as u32;
                                 if let Some(cached) = frame.attr_ic.as_ref().and_then(|ic| ic.lookup(ip, cd.class_version)) {
@@ -4242,9 +4241,7 @@ impl VirtualMachine {
                     let mut fast_val: Option<PyObjectRef> = None;
                     match &obj.payload {
                         PyObjectPayload::Instance(inst) => {
-                            let skip_ga = if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                !cd.has_getattribute
-                            } else { false };
+                            let skip_ga = inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0;
                             if skip_ga && inst.dict_storage.is_none() && !inst.is_special {
                                 let name = &frame.code.names[name_idx];
                                 if name.as_str() != "__class__" && name.as_str() != "__dict__" {
@@ -4337,27 +4334,27 @@ impl VirtualMachine {
                 Opcode::LoadAttr => {
                     let name = &frame.code.names[instr.arg as usize];
                     let obj = sget!(frame, frame.stack.len() - 1);
-                    // Fast path: Instance with no __getattribute__ override
+                    // Fast path: Instance with no __getattribute__ override (cached flag)
                     let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
-                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                            if !cd.has_getattribute {
-                                // Handle __class__ inline (very common)
-                                if name.as_str() == "__class__" {
-                                    Some(inst.class.clone())
+                        if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0 {
+                            // Handle __class__ inline (very common)
+                            if name.as_str() == "__class__" {
+                                Some(inst.class.clone())
+                            } else {
+                                // Check instance dict first
+                                let attrs = unsafe { &*inst.attrs.data_ptr() };
+                                if let Some(v) = attrs.get(name.as_str()) {
+                                    match &v.payload {
+                                        PyObjectPayload::Function(_)
+                                        | PyObjectPayload::Property(_) => None,
+                                        _ => Some(v.clone()),
+                                    }
                                 } else {
-                                    // Check instance dict first
-                                    let attrs = unsafe { &*inst.attrs.data_ptr() };
-                                    if let Some(v) = attrs.get(name.as_str()) {
-                                        match &v.payload {
-                                            PyObjectPayload::Function(_)
-                                            | PyObjectPayload::Property(_) => None,
-                                            _ => Some(v.clone()),
-                                        }
-                                    } else {
-                                        drop(attrs);
-                                        // Instance dict miss — check vtable for class attrs
-                                        // Only non-descriptor, non-function attrs (data attrs, classvars)
-                                        if !cd.has_descriptors {
+                                    drop(attrs);
+                                    // Instance dict miss — check vtable for class attrs
+                                    // Only non-descriptor, non-function attrs (data attrs, classvars)
+                                    if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS == 0 {
+                                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
                                             let vt = unsafe { &*cd.method_vtable.data_ptr() };
                                             if !vt.is_empty() {
                                                 if let Some(class_val) = vt.get(name.as_str()) {
@@ -4372,9 +4369,9 @@ impl VirtualMachine {
                                                 } else { None }
                                             } else { None }
                                         } else { None }
-                                    }
+                                    } else { None }
                                 }
-                            } else { None }
+                            }
                         } else { None }
                     } else { None };
                     if let Some(val) = fast_val {
@@ -4391,12 +4388,10 @@ impl VirtualMachine {
                 Opcode::StoreAttr => {
                     let name = &frame.code.names[instr.arg as usize];
                     let stack_len = frame.stack.len();
-                    // Fast path: Instance with no __setattr__, no descriptors, no __slots__
+                    // Fast path: Instance with no __setattr__, no descriptors, no __slots__ (cached flags)
                     let fast = if stack_len >= 2 {
                         if let PyObjectPayload::Instance(inst) = &sget!(frame, stack_len - 1).payload {
-                            if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                !cd.has_setattr && !cd.has_descriptors && cd.slots.is_none()
-                            } else { false }
+                            inst.class_flags & (CLASS_FLAG_HAS_SETATTR | CLASS_FLAG_HAS_DESCRIPTORS | CLASS_FLAG_HAS_SLOTS) == 0
                         } else { false }
                     } else { false };
                     if fast {

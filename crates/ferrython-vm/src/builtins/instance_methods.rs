@@ -729,10 +729,12 @@ pub(super) fn call_hashlib_method(inst: &ferrython_core::object::InstanceData, m
             // Return a new hash object with same state
             let attrs = inst.attrs.read();
             let cls = inst.class.clone();
+            let class_flags = InstanceData::compute_flags(&cls);
             let new_inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
                 class: cls,
                 attrs: Rc::new(PyCell::new(attrs.clone())),
                 is_special: true, dict_storage: None,
+                class_flags,
             })));
             Ok(new_inst)
         }

@@ -956,6 +956,33 @@ pub struct InstanceData {
     /// Fast-path flag: true if this instance has special markers (__namedtuple__, __deque__, etc.)
     /// When true, LoadMethod uses the full get_attr path.
     pub is_special: bool,
+    /// Cached class flags — avoids dereferencing inst.class on every LoadAttr/StoreAttr.
+    /// Bit layout: see CLASS_FLAG_* constants.
+    pub class_flags: u8,
+}
+
+// Bit flags for InstanceData.class_flags (cached from ClassData at instance creation)
+pub const CLASS_FLAG_HAS_GETATTRIBUTE: u8 = 1 << 0;
+pub const CLASS_FLAG_HAS_DESCRIPTORS: u8 = 1 << 1;
+pub const CLASS_FLAG_HAS_SETATTR: u8 = 1 << 2;
+pub const CLASS_FLAG_HAS_SLOTS: u8 = 1 << 3;
+
+impl InstanceData {
+    /// Compute class_flags from a class PyObjectRef.
+    #[inline]
+    pub fn compute_flags(class: &PyObjectRef) -> u8 {
+        if let PyObjectPayload::Class(cd) = &class.payload {
+            let mut f = 0u8;
+            if cd.has_getattribute { f |= CLASS_FLAG_HAS_GETATTRIBUTE; }
+            if cd.has_descriptors { f |= CLASS_FLAG_HAS_DESCRIPTORS; }
+            if cd.has_setattr { f |= CLASS_FLAG_HAS_SETATTR; }
+            if cd.slots.is_some() { f |= CLASS_FLAG_HAS_SLOTS; }
+            f
+        } else {
+            // Not a class — set all flags to force slow path
+            0xFF
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

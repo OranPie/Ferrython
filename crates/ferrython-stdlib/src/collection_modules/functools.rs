@@ -389,11 +389,13 @@ fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRe
     }
 
     // Build the Instance manually with the shared attrs Arc
+    let class_flags = InstanceData::compute_flags(&cache_class);
     PyObjectRef::new(PyObject {
         payload: PyObjectPayload::Instance(Box::new(InstanceData {
             class: cache_class,
             attrs: attrs_arc,
             is_special: true, dict_storage: None,
+            class_flags,
         })),
     })
 }
@@ -426,10 +428,12 @@ fn functools_singledispatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     ));
 
     let class = PyObject::class(CompactString::from("singledispatch"), vec![], cls_ns);
+    let class_flags = InstanceData::compute_flags(&class);
     let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
         class,
         attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
+        class_flags,
     })));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();

@@ -152,10 +152,12 @@ fn make_hash_object(name: &str, data: Vec<u8>, _digest_hex: String, _digest_byte
         Ok(PyObject::bytes(digest_bytes))
     }));
 
+    let class_flags = InstanceData::compute_flags(&class);
     let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
         class,
         attrs: to_shared_fx(attrs),
         is_special: true, dict_storage: None,
+        class_flags,
     })));
     inst
 }
@@ -542,6 +544,7 @@ pub fn create_hmac_module() -> PyObjectRef {
                     class: inst.class.clone(),
                     attrs: Rc::new(PyCell::new(attrs_copy)),
                     is_special: true, dict_storage: None,
+                    class_flags: InstanceData::compute_flags(&inst.class),
                 })));
                 return Ok(new_inst);
             }
@@ -549,10 +552,12 @@ pub fn create_hmac_module() -> PyObjectRef {
         }));
 
         let class = PyObject::class(CompactString::from("HMAC"), vec![], ns);
+        let class_flags = InstanceData::compute_flags(&class);
         let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
             class,
             attrs: to_shared_fx(attrs),
             is_special: true, dict_storage: None,
+            class_flags,
         })));
         Ok(inst)
     }

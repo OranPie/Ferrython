@@ -388,7 +388,8 @@ impl PyObject {
         } else {
             (Self::detect_dict_subclass(&class), FxAttrMap::default())
         };
-        let obj = Self::wrap(PyObjectPayload::Instance(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(attrs)), dict_storage, is_special: false })));
+        let class_flags = InstanceData::compute_flags(&class);
+        let obj = Self::wrap(PyObjectPayload::Instance(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(attrs)), dict_storage, is_special: false, class_flags })));
         track_object(&obj);
         obj
     }
@@ -401,7 +402,8 @@ impl PyObject {
             Self::detect_dict_subclass(&class)
         };
         let fx_attrs: FxAttrMap = attrs.into_iter().collect();
-        let obj = Self::wrap(PyObjectPayload::Instance(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(fx_attrs)), dict_storage, is_special: false })));
+        let class_flags = InstanceData::compute_flags(&class);
+        let obj = Self::wrap(PyObjectPayload::Instance(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(fx_attrs)), dict_storage, is_special: false, class_flags })));
         track_object(&obj);
         obj
     }

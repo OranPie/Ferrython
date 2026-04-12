@@ -701,9 +701,11 @@ pub fn create_datetime_module() -> PyObjectRef {
         let mut ns = cd.namespace.write();
         let min_date = {
             let class = PyObject::class(CompactString::from("date"), vec![], IndexMap::new());
+            let class_flags = InstanceData::compute_flags(&class);
             let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
                 class, attrs: new_shared_fx(),
                 is_special: true, dict_storage: None,
+                class_flags,
             })));
             if let PyObjectPayload::Instance(ref d) = inst.payload {
                 let mut w = d.attrs.write();
@@ -717,9 +719,11 @@ pub fn create_datetime_module() -> PyObjectRef {
         };
         let max_date = {
             let class = PyObject::class(CompactString::from("date"), vec![], IndexMap::new());
+            let class_flags = InstanceData::compute_flags(&class);
             let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
                 class, attrs: new_shared_fx(),
                 is_special: true, dict_storage: None,
+                class_flags,
             })));
             if let PyObjectPayload::Instance(ref d) = inst.payload {
                 let mut w = d.attrs.write();
@@ -768,10 +772,12 @@ pub fn create_datetime_module() -> PyObjectRef {
 
 fn make_timezone_utc() -> PyObjectRef {
     let class = PyObject::class(CompactString::from("timezone"), vec![], IndexMap::new());
+    let class_flags = InstanceData::compute_flags(&class);
     let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
         class,
         attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
+        class_flags,
     })));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -1137,10 +1143,12 @@ fn make_datetime_instance(year: i64, month: i64, day: i64, hour: i64, minute: i6
     dt_ns.insert(CompactString::from("__gt__"), make_builtin(datetime_gt));
     dt_ns.insert(CompactString::from("__ge__"), make_builtin(datetime_ge));
     let class = PyObject::class(CompactString::from("datetime"), vec![], dt_ns);
+    let class_flags = InstanceData::compute_flags(&class);
     let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
         class,
         attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
+        class_flags,
     })));
     install_datetime_methods(&inst, year, month, day, hour, minute, second, microsecond);
     inst
@@ -1439,10 +1447,12 @@ fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64,
 
 fn make_time_instance(hour: i64, minute: i64, second: i64, microsecond: i64) -> PyResult<PyObjectRef> {
     let class = PyObject::class(CompactString::from("time"), vec![], IndexMap::new());
+    let class_flags = InstanceData::compute_flags(&class);
     let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
         class,
         attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
+        class_flags,
     })));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -1645,10 +1655,12 @@ fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
     date_cls_ns.insert(CompactString::from("__gt__"), make_builtin(date_gt));
     date_cls_ns.insert(CompactString::from("__ge__"), make_builtin(date_ge));
     let class = PyObject::class(CompactString::from("date"), vec![], date_cls_ns);
+    let class_flags = InstanceData::compute_flags(&class);
     let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
         class,
         attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
+        class_flags,
     })));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
@@ -1890,10 +1902,12 @@ fn make_timedelta_with_ops(days: i64, seconds: i64, microseconds: i64, total_sec
         Ok(PyObject::bool_val(a_ts >= b_ts))
     }));
     let class = PyObject::class(CompactString::from("timedelta"), vec![], td_ns);
+    let class_flags = InstanceData::compute_flags(&class);
     let inst = PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
         class,
         attrs: new_shared_fx(),
         is_special: true, dict_storage: None,
+        class_flags,
     })));
     if let PyObjectPayload::Instance(ref d) = inst.payload {
         let mut w = d.attrs.write();
