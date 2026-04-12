@@ -280,6 +280,10 @@ pub enum Opcode {
     /// Zero-Arc for container read; stores value directly.
     /// arg encoding: (val_idx << 24) | (container_idx << 16) | (key_idx << 8)
     LoadFastLoadFastLoadFastStoreSubscr = 241,
+    /// Fused LOAD_FAST + LOAD_FAST + COMPARE_OP(in/not_in) + STORE_FAST.
+    /// Zero-Arc containment check: borrows needle/haystack from locals, stores bool result.
+    /// arg encoding: (needle_idx << 24) | (haystack_idx << 16) | (store_idx << 8) | in_flag
+    LoadFastLoadFastContainsStoreFast = 242,
 }
 
 impl Opcode {
@@ -426,6 +430,7 @@ impl Opcode {
             Self::LoadFastLoadConstSubscrStoreFast => 0, // reads local+const by ref, stores element to local
             Self::LoadFastLoadFastSubscrStoreFast => 0,  // reads 2 locals by ref, stores element to local
             Self::LoadFastLoadFastLoadFastStoreSubscr => -3, // reads 3 locals, stores to container (net: 0 but pops 3 pushes)
+            Self::LoadFastLoadFastContainsStoreFast => 0, // borrows 2 locals, stores bool in local
         }
     }
 

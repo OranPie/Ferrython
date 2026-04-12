@@ -1068,6 +1068,32 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             }
         }
 
+        // LoadFast + LoadFast + CompareOp(in/not_in) + StoreFast → LoadFastLoadFastContainsStoreFast
+        // Zero-Arc: borrows needle/haystack from locals, stores bool in dest local.
+        // Encoding: (needle_idx << 24) | (haystack_idx << 16) | (store_idx << 8) | in_flag
+        if i + 3 < n && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
+            && !jump_targets[i + 2] && !is_nop[i + 2]
+        {
+            let c = &code.instructions[i + 2];
+            if c.op == Opcode::CompareOp && (c.arg == 6 || c.arg == 7)
+                && !jump_targets[i + 3] && !is_nop[i + 3]
+            {
+                let d = &code.instructions[i + 3];
+                if d.op == Opcode::StoreFast
+                    && a.arg < 256 && b.arg < 256 && d.arg < 256
+                {
+                    let in_flag = if c.arg == 7 { 1u32 } else { 0u32 };
+                    let packed = (a.arg << 24) | (b.arg << 16) | (d.arg << 8) | in_flag;
+                    code.instructions[i] = Instruction::new(Opcode::LoadFastLoadFastContainsStoreFast, packed);
+                    is_nop[i + 1] = true;
+                    is_nop[i + 2] = true;
+                    is_nop[i + 3] = true;
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+
         // LoadFast + LoadAttr → LoadFastLoadAttr
         // Encoding: (local_idx << 16) | name_idx
         if a.op == Opcode::LoadFast && b.op == Opcode::LoadAttr

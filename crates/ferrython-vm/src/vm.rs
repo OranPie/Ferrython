@@ -64,6 +64,30 @@ macro_rules! hot_ok {
     }};
 }
 
+/// Instruction chaining: if the next instruction is JumpAbsolute, consume it inline.
+/// Saves one dispatch cycle per for-loop iteration.
+macro_rules! chain_jump {
+    ($frame:expr) => {
+        let next_ip = $frame.ip;
+        if next_ip < $frame.code.instructions.len() {
+            let next = unsafe { *$frame.code.instructions.get_unchecked(next_ip) };
+            if next.op == Opcode::JumpAbsolute {
+                $frame.ip = next.arg as usize;
+            }
+        }
+    };
+}
+
+/// Fast path with instruction chaining: chain JumpAbsolute, end profiling, continue.
+/// Use in superinstructions that commonly appear before JumpAbsolute in for-loops.
+macro_rules! hot_ok_chain {
+    ($profiling:expr, $profiler:expr, $op:expr, $frame:expr) => {{
+        chain_jump!($frame);
+        if $profiling { $profiler.end_instruction($op); }
+        continue;
+    }};
+}
+
 
 use crate::builtins;
 use crate::frame::{AttrInlineCache, BlockKind, Frame, FramePool, SharedBuiltins};
@@ -620,7 +644,7 @@ impl VirtualMachine {
                                         if let Some(ref mut arc) = dest_slot {
                                             if let Some(obj) = Arc::get_mut(arc) {
                                                 obj.payload = PyObjectPayload::Int(PyInt::Small(r));
-                                                hot_ok!(profiling, self.profiler, instr.op)
+                                                hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                             }
                                         }
                                         *dest_slot = Some(PyObject::int(r));
@@ -629,7 +653,7 @@ impl VirtualMachine {
                                         let result = PyObject::big_int(BigInt::from(x) + BigInt::from(y));
                                         sset_local!(frame, dest, result);
                                     }
-                                    hot_ok!(profiling, self.profiler, instr.op)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     let r = *x + *y;
@@ -638,11 +662,11 @@ impl VirtualMachine {
                                     if let Some(ref mut arc) = dest_slot {
                                         if let Some(obj) = Arc::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                         }
                                     }
                                     *dest_slot = Some(PyObject::float(r));
-                                    hot_ok!(profiling, self.profiler, instr.op)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                 }
                                 (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
                                     let mut s = String::with_capacity(x.len() + y.len());
@@ -691,7 +715,7 @@ impl VirtualMachine {
                                         if let Some(ref mut arc) = dest_slot {
                                             if let Some(obj) = Arc::get_mut(arc) {
                                                 obj.payload = PyObjectPayload::Int(PyInt::Small(r));
-                                                hot_ok!(profiling, self.profiler, instr.op)
+                                                hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                             }
                                         }
                                         *dest_slot = Some(PyObject::int(r));
@@ -700,7 +724,7 @@ impl VirtualMachine {
                                         let result = PyObject::big_int(BigInt::from(x) + BigInt::from(y));
                                         sset_local!(frame, dest, result);
                                     }
-                                    hot_ok!(profiling, self.profiler, instr.op)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                                     let r = *x + *y;
@@ -708,11 +732,11 @@ impl VirtualMachine {
                                     if let Some(ref mut arc) = dest_slot {
                                         if let Some(obj) = Arc::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                         }
                                     }
                                     *dest_slot = Some(PyObject::float(r));
-                                    hot_ok!(profiling, self.profiler, instr.op)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                 }
                                 (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Float(y)) => {
                                     let r = *x as f64 + *y;
@@ -720,11 +744,11 @@ impl VirtualMachine {
                                     if let Some(ref mut arc) = dest_slot {
                                         if let Some(obj) = Arc::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                         }
                                     }
                                     *dest_slot = Some(PyObject::float(r));
-                                    hot_ok!(profiling, self.profiler, instr.op)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                 }
                                 (PyObjectPayload::Float(x), PyObjectPayload::Int(PyInt::Small(y))) => {
                                     let r = *x + *y as f64;
@@ -732,11 +756,60 @@ impl VirtualMachine {
                                     if let Some(ref mut arc) = dest_slot {
                                         if let Some(obj) = Arc::get_mut(arc) {
                                             obj.payload = PyObjectPayload::Float(r);
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                         }
                                     }
                                     *dest_slot = Some(PyObject::float(r));
-                                    hot_ok!(profiling, self.profiler, instr.op)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                }
+                                (PyObjectPayload::Str(_), PyObjectPayload::Str(rhs)) => {
+                                    // String concat in-place: s = s + "a" (like CPython)
+                                    let rhs_clone: CompactString = rhs.clone();
+                                    // NLL: a, c borrows are dead after the clone above
+                                    if local_idx == dest {
+                                        let locals_ptr = frame.locals.as_mut_ptr();
+                                        let dest_slot = unsafe { &mut *locals_ptr.add(dest) };
+                                        if let Some(mut arc) = dest_slot.take() {
+                                            if let Some(obj) = Arc::get_mut(&mut arc) {
+                                                if let PyObjectPayload::Str(ref mut s) = obj.payload {
+                                                    s.push_str(&rhs_clone);
+                                                    *dest_slot = Some(arc);
+                                                    hot_ok!(profiling, self.profiler, instr.op)
+                                                }
+                                            }
+                                            // In-place failed (extra refs), allocate new
+                                            let new_s = if let PyObjectPayload::Str(ref x) = arc.payload {
+                                                let mut s = String::with_capacity(x.len() + rhs_clone.len());
+                                                s.push_str(x);
+                                                s.push_str(&rhs_clone);
+                                                CompactString::from(s)
+                                            } else { unreachable!() };
+                                            *dest_slot = Some(PyObject::str_val(new_s));
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                    }
+                                    // local_idx != dest: fall through to generic path
+                                    let a = slocal!(frame, local_idx);
+                                    let c = unsafe { frame.constant_cache.get_unchecked(const_idx) };
+                                    if let Some(a) = a {
+                                        let (ac, cc) = (a.clone(), c.clone());
+                                        spush!(frame, ac);
+                                        spush!(frame, cc);
+                                        let r = self.execute_one(ferrython_bytecode::Instruction::new(
+                                            Opcode::BinaryAdd, 0));
+                                        if r.is_ok() {
+                                            let cs_len2 = self.call_stack.len();
+                                            let frame2 = unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
+                                            if !frame2.stack.is_empty() {
+                                                let val = frame2.stack.pop().unwrap();
+                                                unsafe { frame2.set_local_unchecked(dest, val) };
+                                            }
+                                        }
+                                        r
+                                    } else {
+                                        Err(PyException::name_error(
+                                            String::from("local variable referenced before assignment")))
+                                    }
                                 }
                                 _ => {
                                     let (ac, cc) = (a.clone(), c.clone());
@@ -1397,10 +1470,53 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) => {
-                            let mut s = String::with_capacity(x.len() + y.len());
-                            s.push_str(x);
-                            s.push_str(y);
-                            unsafe { frame.binary_op_result(PyObject::str_val(s.into())) };
+                            // CPython-style in-place string resize: if the LHS string has
+                            // refcount 2 (one on stack, one in a local) and the next
+                            // instruction is STORE_FAST, clear the local to get refcount 1,
+                            // then do push_str in place — avoids allocation per concat.
+                            let rhs: CompactString = y.clone(); // cheap for small strings (inline)
+                            let len = frame.stack.len();
+                            unsafe {
+                                let _b_arc = std::ptr::read(frame.stack.as_ptr().add(len - 1));
+                                let mut a_arc = std::ptr::read(frame.stack.as_ptr().add(len - 2));
+                                frame.stack.set_len(len - 2);
+                                drop(_b_arc);
+                                // If refcount == 2, try to clear the local to get refcount 1
+                                if Arc::strong_count(&a_arc) == 2 && frame.ip < frame.code.instructions.len() {
+                                    let next = *frame.code.instructions.get_unchecked(frame.ip);
+                                    let store_idx_opt = match next.op {
+                                        Opcode::StoreFast => Some(next.arg as usize),
+                                        Opcode::StoreFastLoadFast | Opcode::StoreFastJumpAbsolute
+                                            => Some((next.arg >> 16) as usize),
+                                        Opcode::LoadConstStoreFast => Some((next.arg & 0xFFFF) as usize),
+                                        _ => None,
+                                    };
+                                    if let Some(store_idx) = store_idx_opt {
+                                        let slot = frame.locals.get_unchecked_mut(store_idx);
+                                        if let Some(ref existing) = slot {
+                                            if Arc::ptr_eq(existing, &a_arc) {
+                                                *slot = None; // drop ref → refcount becomes 1
+                                            }
+                                        }
+                                    }
+                                }
+                                // Now try in-place mutation
+                                if let Some(obj) = Arc::get_mut(&mut a_arc) {
+                                    if let PyObjectPayload::Str(ref mut s) = obj.payload {
+                                        s.push_str(&rhs);
+                                        frame.stack.push(a_arc);
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    }
+                                }
+                                // Fallback: allocate new string
+                                let new_s = if let PyObjectPayload::Str(ref x) = a_arc.payload {
+                                    let mut s = String::with_capacity(x.len() + rhs.len());
+                                    s.push_str(x);
+                                    s.push_str(&rhs);
+                                    CompactString::from(s)
+                                } else { unreachable!() };
+                                frame.stack.push(PyObject::str_val(new_s));
+                            }
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::List(x), PyObjectPayload::List(y)) => {
@@ -3575,7 +3691,7 @@ impl VirtualMachine {
                                 let _name = std::ptr::read(frame.stack.as_ptr().add(len - 3));
                                 frame.stack.set_len(len - 3);
                             }
-                            hot_ok!(profiling, self.profiler, instr.op)
+                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                         } else if is_list_pop {
                             let len = frame.stack.len();
                             unsafe {
@@ -3587,7 +3703,7 @@ impl VirtualMachine {
                                             let _receiver = std::ptr::read(frame.stack.as_ptr().add(len - 1));
                                             let _name = std::ptr::read(frame.stack.as_ptr().add(len - 2));
                                             frame.stack.set_len(len - 2);
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                                         }
                                         None => Err(PyException::index_error("pop from empty list")),
                                     }
@@ -4591,7 +4707,7 @@ impl VirtualMachine {
                             // In-place mutation if dest has refcount 1
                             let dest_slot = unsafe { &mut *locals_ptr.add(store_idx) };
                             *dest_slot = Some(val);
-                            hot_ok!(profiling, self.profiler, instr.op)
+                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
                         }
                     }
                     // Fallback: decompose to individual ops
@@ -4670,6 +4786,95 @@ impl VirtualMachine {
                         }
                     }
                     self.execute_one(Instruction::new(Opcode::StoreSubscr, 0))
+                }
+                Opcode::LoadFastLoadFastContainsStoreFast => {
+                    let needle_idx = (instr.arg >> 24) as usize;
+                    let haystack_idx = ((instr.arg >> 16) & 0xFF) as usize;
+                    let store_idx = ((instr.arg >> 8) & 0xFF) as usize;
+                    let negate = (instr.arg & 1) != 0; // 1 = not_in
+                    let locals_ptr = frame.locals.as_ptr();
+                    let needle_opt = unsafe { &*locals_ptr.add(needle_idx) };
+                    let haystack_opt = unsafe { &*locals_ptr.add(haystack_idx) };
+                    if let (Some(needle), Some(haystack)) = (needle_opt, haystack_opt) {
+                        let found = match &haystack.payload {
+                            PyObjectPayload::Dict(map) => {
+                                let r = unsafe { &*map.data_ptr() };
+                                match &needle.payload {
+                                    PyObjectPayload::Int(PyInt::Small(n)) => Some(r.contains_key(&BorrowedIntKey(*n))),
+                                    PyObjectPayload::Str(s) => Some(r.contains_key(&BorrowedStrKey(s.as_str()))),
+                                    PyObjectPayload::Bool(b) => Some(r.contains_key(&BorrowedIntKey(*b as i64))),
+                                    _ => None,
+                                }
+                            }
+                            PyObjectPayload::Set(items) => {
+                                let r = unsafe { &*items.data_ptr() };
+                                match &needle.payload {
+                                    PyObjectPayload::Int(PyInt::Small(n)) => Some(r.contains_key(&BorrowedIntKey(*n))),
+                                    PyObjectPayload::Str(s) => Some(r.contains_key(&BorrowedStrKey(s.as_str()))),
+                                    PyObjectPayload::Bool(b) => Some(r.contains_key(&BorrowedIntKey(*b as i64))),
+                                    _ => None,
+                                }
+                            }
+                            PyObjectPayload::List(items) => {
+                                let items = unsafe { &*items.data_ptr() };
+                                Some(items.iter().any(|x| {
+                                    match (&x.payload, &needle.payload) {
+                                        (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
+                                        (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
+                                        _ => Arc::ptr_eq(x, needle),
+                                    }
+                                }))
+                            }
+                            PyObjectPayload::Tuple(items) => {
+                                Some(items.iter().any(|x| {
+                                    match (&x.payload, &needle.payload) {
+                                        (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
+                                        (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
+                                        _ => Arc::ptr_eq(x, needle),
+                                    }
+                                }))
+                            }
+                            PyObjectPayload::Str(haystack_s) => {
+                                if let PyObjectPayload::Str(needle_s) = &needle.payload {
+                                    Some(haystack_s.contains(needle_s.as_str()))
+                                } else { None }
+                            }
+                            _ => None,
+                        };
+                        if let Some(is_in) = found {
+                            let result = if negate { !is_in } else { is_in };
+                            // In-place mutation: if dest already holds a bool, overwrite payload
+                            let dest_slot = unsafe { &mut *frame.locals.as_mut_ptr().add(store_idx) };
+                            if let Some(ref mut arc) = dest_slot {
+                                if let Some(obj) = Arc::get_mut(arc) {
+                                    obj.payload = PyObjectPayload::Bool(result);
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                                }
+                            }
+                            *dest_slot = Some(PyObject::bool_val(result));
+                            hot_ok_chain!(profiling, self.profiler, instr.op, frame)
+                        }
+                    }
+                    // Fallback: decompose to individual ops
+                    for idx in [needle_idx, haystack_idx] {
+                        if let Some(ref v) = unsafe { &*frame.locals.as_ptr().add(idx) } {
+                            spush!(frame, v.clone());
+                        } else {
+                            Self::err_unbound_local(&frame.code.varnames, idx)?;
+                            unreachable!();
+                        }
+                    }
+                    let cmp_arg = if negate { 7u32 } else { 6u32 };
+                    let r = self.execute_one(Instruction::new(Opcode::CompareOp, cmp_arg));
+                    if r.is_ok() {
+                        let cs_len2 = self.call_stack.len();
+                        let frame2 = unsafe { self.call_stack.get_unchecked_mut(cs_len2 - 1) };
+                        if !frame2.stack.is_empty() {
+                            let val = frame2.stack.pop().unwrap();
+                            unsafe { frame2.set_local_unchecked(store_idx, val) };
+                        }
+                    }
+                    r
                 }
                 _ => self.execute_one(instr),
             };
@@ -5004,6 +5209,7 @@ impl VirtualMachine {
             | Opcode::LoadFastLoadConstSubscrStoreFast
             | Opcode::LoadFastLoadFastSubscrStoreFast
             | Opcode::LoadFastLoadFastLoadFastStoreSubscr
+            | Opcode::LoadFastLoadFastContainsStoreFast
                 => self.exec_name_ops(instr),
 
             Opcode::LoadAttr | Opcode::StoreAttr | Opcode::DeleteAttr
