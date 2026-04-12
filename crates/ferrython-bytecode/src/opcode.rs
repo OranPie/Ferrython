@@ -272,6 +272,14 @@ pub enum Opcode {
     /// Zero-clone for container and index; only clones element (with in-place mutation fallback).
     /// arg encoding: (fast_idx << 20) | (const_idx << 10) | store_idx
     LoadFastLoadConstSubscrStoreFast = 239,
+    /// Fused 4-way: LoadFast + LoadFast + BinarySubscr + StoreFast
+    /// Zero-clone for container and key from locals; only clones element.
+    /// arg encoding: (container_idx << 24) | (key_idx << 16) | (store_idx << 8)
+    LoadFastLoadFastSubscrStoreFast = 240,
+    /// Fused 3-way: LoadFast + LoadFast + LoadFast + StoreSubscr
+    /// Zero-Arc for container read; stores value directly.
+    /// arg encoding: (val_idx << 24) | (container_idx << 16) | (key_idx << 8)
+    LoadFastLoadFastLoadFastStoreSubscr = 241,
 }
 
 impl Opcode {
@@ -416,6 +424,8 @@ impl Opcode {
             Self::PopBlockJump => 0, // pops block, jumps (no stack change)
             Self::LoadConstLoadFastContainsStoreFast => 0, // reads const+local by ref, stores bool to local
             Self::LoadFastLoadConstSubscrStoreFast => 0, // reads local+const by ref, stores element to local
+            Self::LoadFastLoadFastSubscrStoreFast => 0,  // reads 2 locals by ref, stores element to local
+            Self::LoadFastLoadFastLoadFastStoreSubscr => -3, // reads 3 locals, stores to container (net: 0 but pops 3 pushes)
         }
     }
 

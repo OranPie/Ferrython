@@ -1018,6 +1018,56 @@ fn fuse_superinstructions(code: &mut CodeObject) {
             }
         }
 
+        // LoadFast + LoadFast + BinarySubscr + StoreFast → LoadFastLoadFastSubscrStoreFast
+        // Zero-Arc: reads container and key from locals by reference.
+        // Encoding: (container_idx << 24) | (key_idx << 16) | (store_idx << 8)
+        if i + 3 < n && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
+            && !jump_targets[i + 2] && !is_nop[i + 2]
+        {
+            let c = &code.instructions[i + 2];
+            if c.op == Opcode::BinarySubscr
+                && !jump_targets[i + 3] && !is_nop[i + 3]
+            {
+                let d = &code.instructions[i + 3];
+                if d.op == Opcode::StoreFast
+                    && a.arg < 256 && b.arg < 256 && d.arg < 256
+                {
+                    let packed = (a.arg << 24) | (b.arg << 16) | (d.arg << 8);
+                    code.instructions[i] = Instruction::new(Opcode::LoadFastLoadFastSubscrStoreFast, packed);
+                    is_nop[i + 1] = true;
+                    is_nop[i + 2] = true;
+                    is_nop[i + 3] = true;
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+
+        // LoadFast + LoadFast + LoadFast + StoreSubscr → LoadFastLoadFastLoadFastStoreSubscr
+        // Pattern: value = LOAD_FAST val_idx; container = LOAD_FAST cont_idx; key = LOAD_FAST key_idx; STORE_SUBSCR
+        // Encoding: (val_idx << 24) | (container_idx << 16) | (key_idx << 8)
+        if i + 3 < n && a.op == Opcode::LoadFast && b.op == Opcode::LoadFast
+            && !jump_targets[i + 2] && !is_nop[i + 2]
+        {
+            let c = &code.instructions[i + 2];
+            if c.op == Opcode::LoadFast
+                && !jump_targets[i + 3] && !is_nop[i + 3]
+            {
+                let d = &code.instructions[i + 3];
+                if d.op == Opcode::StoreSubscr
+                    && a.arg < 256 && b.arg < 256 && c.arg < 256
+                {
+                    let packed = (a.arg << 24) | (b.arg << 16) | (c.arg << 8);
+                    code.instructions[i] = Instruction::new(Opcode::LoadFastLoadFastLoadFastStoreSubscr, packed);
+                    is_nop[i + 1] = true;
+                    is_nop[i + 2] = true;
+                    is_nop[i + 3] = true;
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+
         // LoadFast + LoadAttr → LoadFastLoadAttr
         // Encoding: (local_idx << 16) | name_idx
         if a.op == Opcode::LoadFast && b.op == Opcode::LoadAttr
