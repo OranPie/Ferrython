@@ -157,8 +157,12 @@ pub struct Frame {
     /// custom dict subclasses (e.g. enum._EnumDict) see every assignment.
     pub prepare_dict: Option<PyObjectRef>,
     /// True when code/globals/builtins/constant_cache were borrowed (not ref-counted)
-    /// from the parent frame via new_recursive(). recycle() must not drop those Arcs.
+    /// from the parent frame or held function. recycle() must not drop those Arcs.
     pub(crate) borrowed_env: bool,
+    /// Keeps the function object alive when borrowed_env is set for non-recursive calls.
+    /// The function's Arc fields (code, globals, constant_cache) are borrowed without
+    /// cloning — this field ensures they remain valid until the frame is recycled.
+    pub(crate) held_func: Option<PyObjectRef>,
     /// Per-frame inline cache for class-level attribute lookups (LoadMethod, LoadAttr).
     /// Direct-mapped by instruction pointer: slot = ip % IC_SLOTS.
     /// Each entry: (ip, class_version, cached_value). On hit, skip vtable/MRO lookup.
@@ -255,6 +259,7 @@ impl Frame {
             global_cache_version: u64::MAX, // force miss on first access
             prepare_dict: None,
             borrowed_env: false,
+            held_func: None,
             attr_ic: None,
         }
     }
@@ -304,6 +309,7 @@ impl Frame {
             global_cache_version: u64::MAX,
             prepare_dict: None,
             borrowed_env: false,
+            held_func: None,
             attr_ic: None,
         }
     }
@@ -366,6 +372,7 @@ impl Frame {
             global_cache_version: u64::MAX,
             prepare_dict: None,
             borrowed_env: false,
+            held_func: None,
             attr_ic: None,
         }
     }
@@ -414,9 +421,60 @@ impl Frame {
             global_cache_version: parent.global_cache_version,
             prepare_dict: None,
             borrowed_env: true,
+            held_func: None,
             attr_ic: None,
         }
     }
+
+    /// Borrowed frame for non-recursive calls. The function object (held in `func_obj`)
+    /// keeps code/globals/constant_cache alive via bitwise-copy without refcount increment.
+    /// Builtins are borrowed from the VM (always outlives frames).
+    /// SAFETY: held_func and vm_builtins must outlive the frame.
+    #[inline(always)]
+    pub unsafe fn new_borrowed(
+        func: &ferrython_core::types::PyFunction,
+        func_obj: PyObjectRef,
+        vm_builtins: &SharedBuiltins,
+        pool: &mut FramePool,
+    ) -> Self {
+        let nl = func.code.varnames.len();
+
+        let mut stack = pool.take_stack();
+        stack.clear();
+        let needed = (func.code.max_stack_size as usize).max(8);
+        if stack.capacity() < needed {
+            stack.reserve(needed - stack.capacity());
+        }
+
+        let mut locals = pool.take_locals();
+        if locals.len() != nl {
+            locals.clear();
+            locals.resize(nl, None);
+        }
+
+        Self {
+            code: std::ptr::read(&func.code),
+            ip: 0,
+            stack,
+            block_stack: BlockStack::new(),
+            locals,
+            local_names: None,
+            globals: std::ptr::read(&func.globals),
+            builtins: std::ptr::read(vm_builtins),
+            cells: Vec::new(),
+            scope_kind: ScopeKind::Function,
+            yielded: false,
+            pending_return: None,
+            constant_cache: std::ptr::read(&func.constant_cache),
+            global_cache: None,
+            global_cache_version: u64::MAX,
+            prepare_dict: None,
+            borrowed_env: true,
+            held_func: Some(func_obj),
+            attr_ic: None,
+        }
+    }
+
     pub fn new(
         code: Arc<CodeObject>,
         globals: SharedGlobals,
@@ -428,25 +486,30 @@ impl Frame {
     }
 
     /// Return the stack and locals vectors to the pool for reuse.
-    /// If borrowed_env is set (created via new_recursive), uses ManuallyDrop
-    /// to skip decrementing the borrowed Arc refcounts.
+    /// If borrowed_env is set (created via new_recursive or new_borrowed),
+    /// uses ManuallyDrop to skip decrementing the borrowed Arc refcounts.
+    /// If held_func is set (new_borrowed), drops it first to release the
+    /// function object that was keeping the borrowed Arcs alive.
     #[inline]
     pub fn recycle(mut self, pool: &mut FramePool) {
         self.stack.clear();
         self.locals.clear();
-        // block_stack is inline — just drop it (no pooling needed)
 
         if self.borrowed_env {
+            // Extract held_func BEFORE ManuallyDrop — must be dropped normally
+            // to decrement the function object's refcount.
+            let held = self.held_func.take();
             let md = std::mem::ManuallyDrop::new(self);
             unsafe {
                 let stack = std::ptr::read(&md.stack);
                 let locals = std::ptr::read(&md.locals);
                 // attr_ic is cloned (not borrowed) — must drop to free cached PyObjectRefs
                 let _attr_ic = std::ptr::read(&md.attr_ic);
-                // block_stack is inline, no need to extract
                 pool.return_stack(stack);
                 pool.return_locals(locals);
             }
+            // held_func drops here (after ManuallyDrop), releasing the function object
+            drop(held);
         } else {
             pool.return_stack(self.stack);
             pool.return_locals(self.locals);

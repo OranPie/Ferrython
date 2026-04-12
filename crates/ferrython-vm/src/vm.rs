@@ -2587,6 +2587,7 @@ impl VirtualMachine {
                             hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                         // Normal path: create frame
+                        let borrowed_func = call_kind == 1;
                         let mut new_frame = if call_kind == 2 {
                             // SAFETY: parent frame outlives child in iterative dispatch
                             unsafe { Frame::new_recursive(frame, &mut self.frame_pool) }
@@ -2603,6 +2604,17 @@ impl VirtualMachine {
                                 closure_ref, &mut self.frame_pool,
                             );
                             f
+                        } else if call_kind == 1 {
+                            // Borrowed path: zero refcount ops for frame creation.
+                            // Take func_obj from stack, borrow its Arc fields via ptr::read.
+                            unsafe {
+                                let func_obj: PyObjectRef = std::ptr::read(frame.stack.as_ptr().add(func_idx));
+                                let pf_ptr = match &func_obj.payload {
+                                    PyObjectPayload::Function(pf) => &**pf as *const ferrython_core::types::PyFunction,
+                                    _ => std::hint::unreachable_unchecked(),
+                                };
+                                Frame::new_borrowed(&*pf_ptr, func_obj, &self.builtins, &mut self.frame_pool)
+                            }
                         } else {
                             // Normal path: clone Arcs from function object
                             let (code, globals, constant_cache) = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
@@ -2624,8 +2636,11 @@ impl VirtualMachine {
                                     std::ptr::read(base.add(args_start + i))
                                 );
                             }
-                            // Take ownership of function object (dropped at scope end)
-                            let _func = std::ptr::read(base.add(func_idx));
+                            if !borrowed_func {
+                                // For non-borrowed paths, take ownership of function object
+                                let _func = std::ptr::read(base.add(func_idx));
+                            }
+                            // For borrowed path (call_kind==1), func was already moved into held_func
                             frame.stack.set_len(func_idx);
                         }
                         // Link cellvars to locals by name (must happen AFTER args are moved)
@@ -3130,6 +3145,16 @@ impl VirtualMachine {
                             let mut new_frame = if call_kind == 2 {
                                 // SAFETY: parent frame outlives child in iterative dispatch
                                 unsafe { Frame::new_recursive(frame, &mut self.frame_pool) }
+                            } else if call_kind == 1 {
+                                // Borrowed path: clone only the Rc<PyObject>, skip Arc clones
+                                let func_clone = func_obj.clone();
+                                unsafe {
+                                    let pf_ptr = match &func_clone.payload {
+                                        PyObjectPayload::Function(pf) => &**pf as *const ferrython_core::types::PyFunction,
+                                        _ => std::hint::unreachable_unchecked(),
+                                    };
+                                    Frame::new_borrowed(&*pf_ptr, func_clone, &self.builtins, &mut self.frame_pool)
+                                }
                             } else {
                                 let (code, globals, constant_cache) = if let PyObjectPayload::Function(pf) = &func_obj.payload {
                                     (Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache))
