@@ -4426,41 +4426,34 @@ impl VirtualMachine {
                     // Fast path: Instance with no __getattribute__ override (cached flag)
                     let fast_val = if let PyObjectPayload::Instance(inst) = &obj.payload {
                         if inst.class_flags & CLASS_FLAG_HAS_GETATTRIBUTE == 0 {
-                            // Handle __class__ inline (very common)
-                            if name.as_str() == "__class__" {
+                            // Check instance dict first (most common case — data attrs like p.x)
+                            let attrs = unsafe { &*inst.attrs.data_ptr() };
+                            if let Some(v) = attrs.get(name.as_str()) {
+                                match &v.payload {
+                                    PyObjectPayload::Function(_)
+                                    | PyObjectPayload::Property(_) => None,
+                                    _ => Some(v.clone()),
+                                }
+                            } else if name.as_str() == "__class__" {
+                                // __class__ is a data descriptor — only checked on dict miss
                                 Some(inst.class.clone())
-                            } else {
-                                // Check instance dict first
-                                let attrs = unsafe { &*inst.attrs.data_ptr() };
-                                if let Some(v) = attrs.get(name.as_str()) {
-                                    match &v.payload {
-                                        PyObjectPayload::Function(_)
-                                        | PyObjectPayload::Property(_) => None,
-                                        _ => Some(v.clone()),
-                                    }
-                                } else {
-                                    drop(attrs);
-                                    // Instance dict miss — check vtable for class attrs
-                                    // Only non-descriptor, non-function attrs (data attrs, classvars)
-                                    if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS == 0 {
-                                        if let PyObjectPayload::Class(cd) = &inst.class.payload {
-                                            let vt = unsafe { &*cd.method_vtable.data_ptr() };
-                                            if !vt.is_empty() {
-                                                if let Some(class_val) = vt.get(name.as_str()) {
-                                                    match &class_val.payload {
-                                                        // Functions need BoundMethod wrapping — cold path
-                                                        PyObjectPayload::Function(_)
-                                                        | PyObjectPayload::Property(_)
-                                                        | PyObjectPayload::ClassMethod(_)
-                                                        | PyObjectPayload::StaticMethod(_) => None,
-                                                        _ => Some(class_val.clone()),
-                                                    }
-                                                } else { None }
-                                            } else { None }
+                            } else if inst.class_flags & CLASS_FLAG_HAS_DESCRIPTORS == 0 {
+                                // Instance dict miss — check vtable for class attrs
+                                if let PyObjectPayload::Class(cd) = &inst.class.payload {
+                                    let vt = unsafe { &*cd.method_vtable.data_ptr() };
+                                    if !vt.is_empty() {
+                                        if let Some(class_val) = vt.get(name.as_str()) {
+                                            match &class_val.payload {
+                                                PyObjectPayload::Function(_)
+                                                | PyObjectPayload::Property(_)
+                                                | PyObjectPayload::ClassMethod(_)
+                                                | PyObjectPayload::StaticMethod(_) => None,
+                                                _ => Some(class_val.clone()),
+                                            }
                                         } else { None }
                                     } else { None }
-                                }
-                            }
+                                } else { None }
+                            } else { None }
                         } else { None }
                     } else { None };
                     if let Some(val) = fast_val {
