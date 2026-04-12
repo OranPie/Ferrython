@@ -5,7 +5,7 @@ use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::{
+use ferrython_core::object::{ PyCell, 
     ClassData, FxAttrMap, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use ferrython_core::types::HashableKey;
@@ -13,6 +13,7 @@ use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 impl VirtualMachine {
     /// Extract inherited metaclass from bases: if any base has a custom metaclass, return it.
@@ -723,8 +724,8 @@ impl VirtualMachine {
                             namespace: cd.namespace.clone(),
                             mro: cd.mro.clone(),
                             metaclass: Some(meta.clone()),
-                            method_cache: Arc::new(RwLock::new(FxHashMap::default())),
-                            subclasses: Arc::new(RwLock::new(Vec::new())),
+                            method_cache: Rc::new(PyCell::new(FxHashMap::default())),
+                            subclasses: Rc::new(PyCell::new(Vec::new())),
                             slots: cd.slots.clone(),
                             has_getattribute: cd.has_getattribute,
                             has_setattr: cd.has_setattr,

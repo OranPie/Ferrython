@@ -12,9 +12,10 @@
 //! PENDING → FINISHED (with exception)
 //! ```
 
+use std::rc::Rc;
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectRef,
 };
 use indexmap::IndexMap;
@@ -38,15 +39,15 @@ pub struct TaskHandle {
     /// The coroutine being driven
     pub coroutine: PyObjectRef,
     /// Current state
-    pub state: Arc<RwLock<TaskState>>,
+    pub state: Rc<PyCell<TaskState>>,
     /// Result once finished
-    pub result: Arc<RwLock<Option<PyObjectRef>>>,
+    pub result: Rc<PyCell<Option<PyObjectRef>>>,
     /// Exception if failed
-    pub exception: Arc<RwLock<Option<PyException>>>,
+    pub exception: Rc<PyCell<Option<PyException>>>,
     /// Name for debugging
     pub name: CompactString,
     /// Callbacks to run when done
-    pub done_callbacks: Arc<RwLock<Vec<PyObjectRef>>>,
+    pub done_callbacks: Rc<PyCell<Vec<PyObjectRef>>>,
 }
 
 impl TaskHandle {
@@ -54,11 +55,11 @@ impl TaskHandle {
     pub fn new(coroutine: PyObjectRef, name: CompactString) -> Self {
         Self {
             coroutine,
-            state: Arc::new(RwLock::new(TaskState::Pending)),
-            result: Arc::new(RwLock::new(None)),
-            exception: Arc::new(RwLock::new(None)),
+            state: Rc::new(PyCell::new(TaskState::Pending)),
+            result: Rc::new(PyCell::new(None)),
+            exception: Rc::new(PyCell::new(None)),
             name,
-            done_callbacks: Arc::new(RwLock::new(Vec::new())),
+            done_callbacks: Rc::new(PyCell::new(Vec::new())),
         }
     }
 
@@ -176,7 +177,7 @@ pub fn create_task_object(coroutine: &PyObjectRef) -> PyObjectRef {
     ));
 
     // get_name() / set_name(name)
-    let name_ref = Arc::new(RwLock::new(CompactString::from("Task")));
+    let name_ref = Rc::new(PyCell::new(CompactString::from("Task")));
     let nr = name_ref.clone();
     attrs.insert(CompactString::from("get_name"), PyObject::native_closure(
         "Task.get_name",
@@ -227,9 +228,9 @@ pub fn create_future_object() -> PyObjectRef {
         IndexMap::new(),
     );
 
-    let state = Arc::new(RwLock::new(TaskState::Pending));
-    let result = Arc::new(RwLock::new(Option::<PyObjectRef>::None));
-    let exception = Arc::new(RwLock::new(Option::<PyException>::None));
+    let state = Rc::new(PyCell::new(TaskState::Pending));
+    let result = Rc::new(PyCell::new(Option::<PyObjectRef>::None));
+    let exception = Rc::new(PyCell::new(Option::<PyException>::None));
 
     let mut attrs = IndexMap::new();
 

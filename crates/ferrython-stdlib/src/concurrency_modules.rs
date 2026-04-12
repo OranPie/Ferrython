@@ -2,15 +2,21 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::PyException;
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, SharedFxAttrMap,
     PyObject, PyObjectPayload, PyObjectRef, PyObjectMethods, PyWeakRef,
     make_module, make_builtin, check_args_min,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use std::cell::RefCell;
 use std::sync::Arc;
+use std::rc::Rc;
+
+/// SAFETY: GIL semantics — only one thread runs Python at a time.
+/// This wrapper lets us move Rc-based values into thread::spawn closures.
+struct UnsafeSend<T>(T);
+unsafe impl<T> Send for UnsafeSend<T> {}
+unsafe impl<T> Sync for UnsafeSend<T> {}
 
 // Deferred call mechanism for NativeClosures that need the VM to call Python functions.
 // Thread.start() pushes (target, args) here; the VM drains and executes them after NativeClosure returns.
@@ -84,11 +90,20 @@ pub fn create_threading_module() -> PyObjectRef {
                     PyObjectPayload::NativeFunction { func, .. } => {
                         let f = *func;
                         let alive_attrs = inst.attrs.clone();
+                        let call_args_owned = call_args;
                         let join_handle = std::sync::Arc::new(std::sync::Mutex::new(None::<std::thread::JoinHandle<()>>));
                         let jh = join_handle.clone();
-                        let handle = std::thread::spawn(move || {
-                            let _ = f(&call_args);
+                        // SAFETY: GIL semantics — the spawned thread won't race
+                        // with the main interpreter thread.
+                        let closure: Box<dyn FnOnce()> = Box::new(move || {
+                            let _ = f(&call_args_owned);
                             alive_attrs.write().insert(CompactString::from("_alive"), PyObject::bool_val(false));
+                        });
+                        let send_closure: Box<dyn FnOnce() + Send> = unsafe {
+                            std::mem::transmute(closure)
+                        };
+                        let handle = std::thread::spawn(move || {
+                            send_closure();
                         });
                         *jh.lock().unwrap() = Some(handle);
                         inst.attrs.write().insert(
@@ -107,9 +122,15 @@ pub fn create_threading_module() -> PyObjectRef {
                         let alive_attrs = inst.attrs.clone();
                         let join_handle = std::sync::Arc::new(std::sync::Mutex::new(None::<std::thread::JoinHandle<()>>));
                         let jh = join_handle.clone();
-                        let handle = std::thread::spawn(move || {
+                        let closure: Box<dyn FnOnce()> = Box::new(move || {
                             let _ = (nc.func)(&call_args);
                             alive_attrs.write().insert(CompactString::from("_alive"), PyObject::bool_val(false));
+                        });
+                        let send_closure: Box<dyn FnOnce() + Send> = unsafe {
+                            std::mem::transmute(closure)
+                        };
+                        let handle = std::thread::spawn(move || {
+                            send_closure();
                         });
                         *jh.lock().unwrap() = Some(handle);
                         inst.attrs.write().insert(
@@ -131,12 +152,16 @@ pub fn create_threading_module() -> PyObjectRef {
                             let jh = join_handle.clone();
                             let alive_flag = alive_attrs.clone();
                             // Monitor thread completion in a background helper
-                            std::thread::spawn(move || {
+                            let closure: Box<dyn FnOnce()> = Box::new(move || {
                                 if let Some(h) = jh.lock().unwrap().take() {
                                     let _ = h.join();
                                 }
                                 alive_flag.write().insert(CompactString::from("_alive"), PyObject::bool_val(false));
                             });
+                            let send_closure: Box<dyn FnOnce() + Send> = unsafe {
+                                std::mem::transmute(closure)
+                            };
+                            std::thread::spawn(move || { send_closure(); });
                             inst.attrs.write().insert(
                                 CompactString::from("_join_handle"),
                                 PyObject::native_closure("_join_handle", move |_| {
@@ -346,7 +371,7 @@ pub fn create_threading_module() -> PyObjectRef {
     let rlock_fn = PyObject::native_closure("RLock", move |_args: &[PyObjectRef]| {
         let inst = PyObject::instance(rlc.clone());
         // (locked, reentrant_count)
-        let state = Arc::new(RwLock::new((false, 0u32)));
+        let state = Rc::new(PyCell::new((false, 0u32)));
         let inst_ref = inst.clone();
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
@@ -421,7 +446,7 @@ pub fn create_threading_module() -> PyObjectRef {
             args[0].as_int().unwrap_or(1)
         } else { 1 };
         let inst = PyObject::instance(sc.clone());
-        let counter = Arc::new(RwLock::new(initial));
+        let counter = Rc::new(PyCell::new(initial));
         let inst_ref = inst.clone();
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
@@ -467,7 +492,7 @@ pub fn create_threading_module() -> PyObjectRef {
             args[0].as_int().unwrap_or(1)
         } else { 1 };
         let inst = PyObject::instance(bsc.clone());
-        let counter = Arc::new(RwLock::new(initial));
+        let counter = Rc::new(PyCell::new(initial));
         let bound = initial;
         let inst_ref = inst.clone();
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
@@ -515,7 +540,7 @@ pub fn create_threading_module() -> PyObjectRef {
     let ec = event_cls.clone();
     let event_fn = PyObject::native_closure("Event", move |_args: &[PyObjectRef]| {
         let inst = PyObject::instance(ec.clone());
-        let flag = Arc::new(RwLock::new(false));
+        let flag = Rc::new(PyCell::new(false));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
             let f1 = flag.clone();
@@ -542,8 +567,8 @@ pub fn create_threading_module() -> PyObjectRef {
             args[0].as_int().unwrap_or(1)
         } else { 1 };
         let inst = PyObject::instance(bc.clone());
-        let waiting = Arc::new(RwLock::new(0i64));
-        let broken = Arc::new(RwLock::new(false));
+        let waiting = Rc::new(PyCell::new(0i64));
+        let broken = Rc::new(PyCell::new(false));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
             attrs.insert(CompactString::from("parties"), PyObject::int(parties));
@@ -678,8 +703,8 @@ pub fn create_threading_module() -> PyObjectRef {
     let tmc = timer_cls.clone();
     let timer_fn = PyObject::native_closure("Timer", move |args: &[PyObjectRef]| {
         let inst = PyObject::instance(tmc.clone());
-        let cancelled = Arc::new(RwLock::new(false));
-        let alive = Arc::new(RwLock::new(false));
+        let cancelled = Rc::new(PyCell::new(false));
+        let alive = Rc::new(PyCell::new(false));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
             // interval
@@ -1013,8 +1038,8 @@ pub fn create_weakref_module() -> PyObjectRef {
         // ── WeakValueDictionary() ──
         // Dict where values are weak references; dead entries are auto-pruned.
         ("WeakValueDictionary", make_builtin(|_| {
-            let storage: Arc<RwLock<IndexMap<CompactString, PyWeakRef>>> =
-                Arc::new(RwLock::new(IndexMap::new()));
+            let storage: Rc<PyCell<IndexMap<CompactString, PyWeakRef>>> =
+                Rc::new(PyCell::new(IndexMap::new()));
 
             let cls = PyObject::class(CompactString::from("WeakValueDictionary"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
@@ -1168,8 +1193,8 @@ pub fn create_weakref_module() -> PyObjectRef {
         // Dict where keys are weak references; dead entries are auto-pruned.
         ("WeakKeyDictionary", make_builtin(|_| {
             // Store (PyWeakRef, value) keyed by raw pointer (usize)
-            let storage: Arc<RwLock<IndexMap<usize, (PyWeakRef, PyObjectRef)>>> =
-                Arc::new(RwLock::new(IndexMap::new()));
+            let storage: Rc<PyCell<IndexMap<usize, (PyWeakRef, PyObjectRef)>>> =
+                Rc::new(PyCell::new(IndexMap::new()));
 
             let cls = PyObject::class(CompactString::from("WeakKeyDictionary"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
@@ -1242,8 +1267,8 @@ pub fn create_weakref_module() -> PyObjectRef {
         // ── WeakSet() ──
         // A set of weak references. Dead entries are auto-pruned.
         ("WeakSet", make_builtin(|_| {
-            let storage: Arc<RwLock<IndexMap<usize, PyWeakRef>>> =
-                Arc::new(RwLock::new(IndexMap::new()));
+            let storage: Rc<PyCell<IndexMap<usize, PyWeakRef>>> =
+                Rc::new(PyCell::new(IndexMap::new()));
 
             let cls = PyObject::class(CompactString::from("WeakSet"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
@@ -1597,13 +1622,17 @@ pub fn create_thread_module() -> PyObjectRef {
                 args[1].to_list().unwrap_or_default()
             } else { vec![] };
             // Spawn a real OS thread for native closures/functions
-            let handle = std::thread::spawn(move || {
+            let closure: Box<dyn FnOnce()> = Box::new(move || {
                 match &func.payload {
                     PyObjectPayload::NativeClosure(nc) => { let _ = (nc.func)(&call_args); }
                     PyObjectPayload::NativeFunction { func: f, .. } => { let _ = f(&call_args); }
                     _ => {} // Python-defined functions need VM — can't call from here
                 }
             });
+            let send_closure: Box<dyn FnOnce() + Send> = unsafe {
+                std::mem::transmute(closure)
+            };
+            let handle = std::thread::spawn(move || { send_closure(); });
             // Return thread ID
             let tid = format!("{:?}", handle.thread().id());
             let id_num: i64 = tid.chars().filter(|c| c.is_ascii_digit()).collect::<String>()
@@ -1841,7 +1870,7 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
             attrs.insert(CompactString::from("pid"), PyObject::int(std::process::id() as i64));
             attrs.insert(CompactString::from("exitcode"), PyObject::none());
 
-            let alive = Arc::new(RwLock::new(false));
+            let alive = Rc::new(PyCell::new(false));
 
             let tgt = target.clone();
             let targs = proc_args.clone();
@@ -1908,8 +1937,8 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
     let pool_fn = PyObject::native_closure("Pool", move |args: &[PyObjectRef]| {
         let processes = if !args.is_empty() { args[0].as_int().unwrap_or(1) } else { 1 };
         let inst = PyObject::instance(plc.clone());
-        let closed = Arc::new(RwLock::new(false));
-        let terminated = Arc::new(RwLock::new(false));
+        let closed = Rc::new(PyCell::new(false));
+        let terminated = Rc::new(PyCell::new(false));
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
             attrs.insert(CompactString::from("_processes"), PyObject::int(processes));
@@ -2323,7 +2352,7 @@ pub fn create_selectors_module() -> PyObjectRef {
         let c = cls.clone();
         PyObject::native_closure(name, move |_args: &[PyObjectRef]| {
             let inst = PyObject::instance(c.clone());
-            let registry: Arc<RwLock<IndexMap<i64, PyObjectRef>>> = Arc::new(RwLock::new(IndexMap::new()));
+            let registry: Rc<PyCell<IndexMap<i64, PyObjectRef>>> = Rc::new(PyCell::new(IndexMap::new()));
             let inst_ref = inst.clone();
 
             if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
@@ -2654,7 +2683,7 @@ pub fn create_select_module() -> PyObjectRef {
         let poll_cls = poll_cls.clone();
         PyObject::native_closure("poll", move |_args: &[PyObjectRef]| {
             // Create a poll instance with shared fd registry
-            let registered_fds: Arc<RwLock<Vec<(i32, i16)>>> = Arc::new(RwLock::new(Vec::new()));
+            let registered_fds: Rc<PyCell<Vec<(i32, i16)>>> = Rc::new(PyCell::new(Vec::new()));
             let inst = PyObject::instance(poll_cls.clone());
             if let PyObjectPayload::Instance(ref data) = inst.payload {
                 let mut attrs = data.attrs.write();

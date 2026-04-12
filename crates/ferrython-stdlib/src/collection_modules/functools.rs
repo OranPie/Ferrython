@@ -1,6 +1,6 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     InstanceData, PartialData,
     make_module, make_builtin,
@@ -10,6 +10,7 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 pub fn create_functools_module() -> PyObjectRef {
     make_module("functools", vec![
@@ -326,7 +327,7 @@ fn create_cached_function(func: PyObjectRef, maxsize: Option<i64>) -> PyObjectRe
         IndexMap::new(),
     );
     let cache_dict: IndexMap<HashableKey, PyObjectRef> = IndexMap::new();
-    let cache_arc = Arc::new(parking_lot::RwLock::new(cache_dict));
+    let cache_arc = Rc::new(PyCell::new(cache_dict));
     let attrs_arc = new_shared_fx();
 
     // Build cache_info closure that reads _hits/_misses from attrs

@@ -1,6 +1,6 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min,
 };
@@ -8,6 +8,7 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 pub fn create_base64_module() -> PyObjectRef {
     make_module("base64", vec![
@@ -1966,7 +1967,7 @@ pub fn create_pickle_module() -> PyObjectRef {
             }
             let file = args[0].clone();
             let protocol = args.get(1).and_then(|a| a.as_int()).unwrap_or(0);
-            let buf: Arc<parking_lot::RwLock<Vec<u8>>> = Arc::new(parking_lot::RwLock::new(Vec::new()));
+            let buf: Rc<PyCell<Vec<u8>>> = Rc::new(PyCell::new(Vec::new()));
 
             let cls_inner = PyObject::class(CompactString::from("Pickler"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls_inner);
@@ -2640,7 +2641,7 @@ pub fn create_codecs_module() -> PyObjectRef {
                     .map_err(|e| PyException::os_error(format!("{}: {}", e, filename)))?;
                 let mut attrs = IndexMap::new();
                 let path = filename.clone();
-                let buf = Arc::new(parking_lot::RwLock::new(String::new()));
+                let buf = Rc::new(PyCell::new(String::new()));
                 let buf_w = buf.clone();
                 let buf_r = buf.clone();
                 let path_w = path.clone();
@@ -3175,7 +3176,7 @@ pub fn create_shelve_module() -> PyObjectRef {
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
-            let data: Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>> = Arc::new(RwLock::new(IndexMap::new()));
+            let data: Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>> = Rc::new(PyCell::new(IndexMap::new()));
             let file_path = Arc::new(filename.clone());
 
             // Load existing data from file if it exists
@@ -3356,7 +3357,7 @@ pub fn create_dbm_module() -> PyObjectRef {
             }
         }
 
-        let data: Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>> = Arc::new(RwLock::new(initial_data));
+        let data: Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>> = Rc::new(PyCell::new(initial_data));
         let path_for_sync = Arc::new(db_path.clone());
 
         let cls = PyObject::class(CompactString::from("_Database"), vec![], IndexMap::new());
@@ -3462,7 +3463,7 @@ pub fn create_dbm_module() -> PyObjectRef {
     ])
 }
 
-fn sync_dbm_to_disk(data: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>, path: &str) {
+fn sync_dbm_to_disk(data: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>, path: &str) {
     let guard = data.read();
     let mut buf = Vec::new();
     for (k, v) in guard.iter() {

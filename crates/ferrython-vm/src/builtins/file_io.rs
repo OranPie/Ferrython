@@ -2,12 +2,13 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{ PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 // ── File I/O ──
 
@@ -18,7 +19,7 @@ pub(super) fn builtin_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let path = args[0].py_to_string();
     let mode = if args.len() > 1 { args[1].py_to_string() } else { "r".to_string() };
     
-    let state: Arc<RwLock<FileState>> = Arc::new(RwLock::new(FileState::new(&path, &mode)?));
+    let state: Arc<parking_lot::RwLock<FileState>> = Arc::new(parking_lot::RwLock::new(FileState::new(&path, &mode)?));
     let ptr = Arc::as_ptr(&state) as usize;
     
     // Register state globally so bound methods can find it via _ptr
@@ -53,7 +54,7 @@ pub(super) fn builtin_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     Ok(PyObject::module_with_attrs(CompactString::from("_file"), all_attrs))
 }
 
-static FILE_STATES: std::sync::LazyLock<Mutex<IndexMap<usize, Arc<RwLock<FileState>>>>> = 
+static FILE_STATES: std::sync::LazyLock<Mutex<IndexMap<usize, Arc<parking_lot::RwLock<FileState>>>>> = 
     std::sync::LazyLock::new(|| Mutex::new(IndexMap::new()));
 
 struct FileState {
@@ -108,7 +109,7 @@ impl FileState {
 }
 
 /// Extract FileState from the bound self argument (args[0]._ptr → FILE_STATES lookup).
-fn get_file_state(args: &[PyObjectRef]) -> PyResult<Arc<RwLock<FileState>>> {
+fn get_file_state(args: &[PyObjectRef]) -> PyResult<Arc<parking_lot::RwLock<FileState>>> {
     let self_obj = args.first().ok_or_else(|| {
         PyException::type_error("file method called without self")
     })?;

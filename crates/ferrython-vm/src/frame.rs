@@ -2,15 +2,16 @@
 
 use compact_str::CompactString;
 use ferrython_bytecode::CodeObject;
-use ferrython_core::object::{FxAttrMap, PyObjectRef};
+use ferrython_core::object::{ PyCell, FxAttrMap, PyObjectRef};
 use ferrython_core::types::{SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::rc::Rc;
 
 /// A shared cell for closure variables.
-pub type CellRef = Arc<RwLock<Option<PyObjectRef>>>;
+pub type CellRef = Rc<PyCell<Option<PyObjectRef>>>;
 
 /// Shared builtins map — built once, shared across all frames.
 pub type SharedBuiltins = Arc<IndexMap<CompactString, PyObjectRef>>;
@@ -236,7 +237,7 @@ impl Frame {
         let nl = code.varnames.len();
         let nc = code.cellvars.len() + code.freevars.len();
         let cells: Vec<CellRef> = if nc > 0 {
-            (0..nc).map(|_| Arc::new(RwLock::new(None))).collect()
+            (0..nc).map(|_| Rc::new(PyCell::new(None))).collect()
         } else { Vec::new() };
         Self {
             code, ip: 0,
@@ -285,7 +286,7 @@ impl Frame {
         locals.resize(nl, None);
 
         let cells: Vec<CellRef> = if nc > 0 {
-            (0..nc).map(|_| Arc::new(RwLock::new(None))).collect()
+            (0..nc).map(|_| Rc::new(PyCell::new(None))).collect()
         } else { Vec::new() };
         Self {
             code, ip: 0,
@@ -339,7 +340,7 @@ impl Frame {
         let cells: Vec<CellRef> = if nc > 0 {
             let mut cells = Vec::with_capacity(nc);
             for _ in 0..n_cellvars {
-                cells.push(Arc::new(RwLock::new(None)));
+                cells.push(Rc::new(PyCell::new(None)));
             }
             for (i, cell) in closure.iter().enumerate() {
                 if i < n_freevars {

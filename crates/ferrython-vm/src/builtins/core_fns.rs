@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{ PyCell, 
     check_args, check_args_min,
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     FxAttrMap,
@@ -12,6 +12,7 @@ use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 use super::iter_advance;
 
@@ -127,8 +128,8 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         namespace: cd.namespace.clone(),
                         mro: cd.mro.clone(),
                         metaclass: Some(mcs.clone()),
-                        method_cache: Arc::new(RwLock::new(FxHashMap::default())),
-                        subclasses: Arc::new(RwLock::new(Vec::new())),
+                        method_cache: Rc::new(PyCell::new(FxHashMap::default())),
+                        subclasses: Rc::new(PyCell::new(Vec::new())),
                         slots: cd.slots.clone(),
                         has_getattribute: cd.has_getattribute,
                         has_setattr: cd.has_setattr,

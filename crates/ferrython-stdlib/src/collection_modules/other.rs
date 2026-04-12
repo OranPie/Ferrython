@@ -1,11 +1,12 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args_min,
 };
 use indexmap::IndexMap;
 use parking_lot::RwLock;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 // ── queue module ──
@@ -56,7 +57,7 @@ fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyOb
     };
     let class = PyObject::class(CompactString::from(kind), vec![], IndexMap::new());
     let inst = PyObject::instance(class);
-    let items: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(Vec::new()));
+    let items: Rc<PyCell<Vec<PyObjectRef>>> = Rc::new(PyCell::new(Vec::new()));
     let unfinished = Arc::new(Mutex::new(0i64));
     let is_lifo = kind == "LifoQueue";
     let is_priority = kind == "PriorityQueue";

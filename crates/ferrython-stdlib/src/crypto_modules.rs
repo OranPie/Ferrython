@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
     make_module, make_builtin, check_args,
     to_shared_fx,
@@ -10,6 +10,7 @@ use ferrython_core::object::{
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 use super::serial_modules::extract_bytes;
 
@@ -89,10 +90,10 @@ fn hash_digest_size(name: &str) -> i64 {
 }
 
 /// Build a hash object with incremental update/digest/hexdigest/copy support.
-/// The accumulated data buffer is stored in a shared Arc<RwLock<Vec<u8>>>.
+/// The accumulated data buffer is stored in a shared Rc<PyCell<Vec<u8>>>.
 fn make_hash_object(name: &str, data: Vec<u8>, _digest_hex: String, _digest_bytes: Vec<u8>, _block_size: i64, _digest_size: i64) -> PyObjectRef {
     let algo = CompactString::from(name);
-    let buf = Arc::new(RwLock::new(data));
+    let buf = Rc::new(PyCell::new(data));
     let class = PyObject::class(CompactString::from("_hashlib.HASH"), vec![], IndexMap::new());
     let mut attrs = IndexMap::new();
 
@@ -541,7 +542,7 @@ pub fn create_hmac_module() -> PyObjectRef {
                 let attrs_copy = inst.attrs.read().clone();
                 let new_inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                     class: inst.class.clone(),
-                    attrs: Arc::new(RwLock::new(attrs_copy)),
+                    attrs: Rc::new(PyCell::new(attrs_copy)),
                     is_special: true, dict_storage: None,
                 }));
                 return Ok(new_inst);

@@ -1,8 +1,9 @@
 //! XML stdlib modules: xml.etree.ElementTree
 
 use compact_str::CompactString;
+use std::rc::Rc;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin,
 };
@@ -272,12 +273,12 @@ fn escape_xml(s: &str) -> String {
 // ── Convert XmlElement ↔ PyObject ──────────────────────────────────────
 //
 // Element objects store ALL mutable state in instance attrs + a shared children
-// list (Arc<RwLock<Vec<PyObjectRef>>>).  This eliminates the dual-state problem
+// list (Rc<PyCell<Vec<PyObjectRef>>>).  This eliminates the dual-state problem
 // where `child.text = "hello"` updated instance attrs but not the inner struct.
 
 use std::sync::RwLock;
 
-type ChildrenList = Arc<RwLock<Vec<PyObjectRef>>>;
+type ChildrenList = Rc<PyCell<Vec<PyObjectRef>>>;
 
 /// Convert a parsed XmlElement tree into a live PyObject Element.
 fn xml_element_to_pyobject(elem: &XmlElement) -> PyObjectRef {
@@ -285,7 +286,7 @@ fn xml_element_to_pyobject(elem: &XmlElement) -> PyObjectRef {
     let child_objs: Vec<PyObjectRef> = elem.children.iter()
         .map(|c| xml_element_to_pyobject(c))
         .collect();
-    let children = Arc::new(RwLock::new(child_objs));
+    let children = Rc::new(PyCell::new(child_objs));
     build_element_object(&elem.tag, &elem.text, &elem.tail, &elem.attrib, children)
 }
 
@@ -400,7 +401,7 @@ fn build_element_object(
                 }
                 None
             }
-            let guard = ch.read().unwrap();
+            let guard = ch.read();
             if let Some(found) = find_desc(&guard, real_tag) { return Ok(found); }
             return Ok(PyObject::none());
         }
@@ -409,7 +410,7 @@ fn build_element_object(
             let parts: Vec<&str> = tag_match.splitn(2, '/').collect();
             let first = parts[0];
             let rest = parts[1];
-            let guard = ch.read().unwrap();
+            let guard = ch.read();
             for child in guard.iter() {
                 if let Some(t) = child.get_attr("tag") {
                     if t.py_to_string() == first {
@@ -427,7 +428,7 @@ fn build_element_object(
             }
             return Ok(PyObject::none());
         }
-        let guard = ch.read().unwrap();
+        let guard = ch.read();
         for child in guard.iter() {
             if let Some(t) = child.get_attr("tag") {
                 if t.py_to_string() == tag_match { return Ok(child.clone()); }
@@ -460,11 +461,11 @@ fn build_element_object(
                 }
             }
             let mut results = Vec::new();
-            let guard = ch.read().unwrap();
+            let guard = ch.read();
             findall_desc(&guard, real_tag, &mut results);
             return Ok(PyObject::list(results));
         }
-        let guard = ch.read().unwrap();
+        let guard = ch.read();
         let results: Vec<PyObjectRef> = guard.iter()
             .filter(|c| {
                 c.get_attr("tag").map(|t| { let s = t.py_to_string(); s == tag_match || tag_match == "*" }).unwrap_or(false)
@@ -479,7 +480,7 @@ fn build_element_object(
         if args.is_empty() { return Err(PyException::type_error("findtext() requires at least 1 argument")); }
         let tag_match = args[0].py_to_string();
         let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
-        let guard = ch.read().unwrap();
+        let guard = ch.read();
         for child in guard.iter() {
             if let Some(t) = child.get_attr("tag") {
                 if t.py_to_string() == tag_match {
@@ -500,7 +501,7 @@ fn build_element_object(
     let ch = children.clone();
     attrs.insert(CompactString::from("append"), PyObject::native_closure("append", move |args| {
         if args.is_empty() { return Err(PyException::type_error("append() requires 1 argument")); }
-        ch.write().unwrap().push(args[0].clone());
+        ch.write().push(args[0].clone());
         Ok(PyObject::none())
     }));
 
@@ -508,7 +509,7 @@ fn build_element_object(
     attrs.insert(CompactString::from("remove"), PyObject::native_closure("remove", move |args| {
         if args.is_empty() { return Err(PyException::type_error("remove() requires 1 argument")); }
         let child_tag = extract_element_tag(&args[0]);
-        let mut guard = ch.write().unwrap();
+        let mut guard = ch.write();
         if let Some(idx) = guard.iter().position(|c| extract_element_tag(c) == child_tag) {
             guard.remove(idx);
         }
@@ -519,7 +520,7 @@ fn build_element_object(
 
     let ch = children.clone();
     attrs.insert(CompactString::from("__len__"), PyObject::native_closure("__len__", move |_args| {
-        Ok(PyObject::int(ch.read().unwrap().len() as i64))
+        Ok(PyObject::int(ch.read().len() as i64))
     }));
 
     attrs.insert(CompactString::from("__repr__"), {
@@ -531,7 +532,7 @@ fn build_element_object(
 
     let ch = children.clone();
     attrs.insert(CompactString::from("__iter__"), PyObject::native_closure("__iter__", move |_args| {
-        let guard = ch.read().unwrap();
+        let guard = ch.read();
         Ok(PyObject::list(guard.clone()))
     }));
 
@@ -539,7 +540,7 @@ fn build_element_object(
     attrs.insert(CompactString::from("__getitem__"), PyObject::native_closure("__getitem__", move |args| {
         if args.is_empty() { return Err(PyException::type_error("__getitem__ requires 1 argument")); }
         let idx = args[0].to_int().map_err(|_| PyException::type_error("index must be an integer"))?;
-        let guard = ch.read().unwrap();
+        let guard = ch.read();
         let len = guard.len() as i64;
         let actual = if idx < 0 { len + idx } else { idx };
         if actual < 0 || actual >= len {
@@ -569,7 +570,7 @@ fn build_element_object(
             };
             if self_matches { results.push(elem_ref.clone()); }
             // Then recurse into children
-            let guard = ch.read().unwrap();
+            let guard = ch.read();
             collect_pyobject_elements(&guard, &tag_filter, &mut results);
             Ok(PyObject::list(results))
         }));

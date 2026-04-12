@@ -1,7 +1,8 @@
 //! Auxiliary Python types: `PyInt`, `PyFunction`, `HashableKey`.
 
+use std::rc::Rc;
 use crate::error::{PyException, PyResult};
-use crate::object::{PyObject, PyObjectMethods, PyObjectRef};
+use crate::object::{PyObject, PyObjectMethods, PyObjectRef, PyCell};
 use compact_str::CompactString;
 use ferrython_bytecode::CodeObject;
 use ferrython_bytecode::code::CodeFlags;
@@ -71,7 +72,7 @@ use crate::object::FxAttrMap;
 
 /// Shared globals dictionary — all functions defined in the same module share
 /// one instance so that `global` mutations are visible across calls.
-pub type SharedGlobals = Arc<RwLock<FxAttrMap>>;
+pub type SharedGlobals = Rc<PyCell<FxAttrMap>>;
 
 // ── PyInt ──
 
@@ -239,10 +240,10 @@ pub struct PyFunction {
     pub kw_defaults: IndexMap<CompactString, PyObjectRef>,
     pub globals: SharedGlobals,
     /// Closure cells: Vec of shared cell references from enclosing scope.
-    pub closure: Vec<Arc<RwLock<Option<PyObjectRef>>>>,
+    pub closure: Vec<Rc<PyCell<Option<PyObjectRef>>>>,
     pub annotations: IndexMap<CompactString, PyObjectRef>,
     /// User-settable attributes (e.g., __name__, __doc__, __wrapped__)
-    pub attrs: Arc<RwLock<FxAttrMap>>,
+    pub attrs: Rc<PyCell<FxAttrMap>>,
     /// Cached: true if function can use the fast inline CallFunction path
     /// (exact positional args, no *args/**kwargs/generators/closures/cells)
     pub is_simple: bool,
@@ -252,7 +253,7 @@ impl PyFunction {
     /// Check if function supports fast inline CallFunction
     /// (exact positional args, no *args/**kwargs/generators/closures/cells).
     #[inline]
-    fn compute_is_simple(code: &CodeObject, closure: &[Arc<RwLock<Option<PyObjectRef>>>]) -> bool {
+    fn compute_is_simple(code: &CodeObject, closure: &[Rc<PyCell<Option<PyObjectRef>>>]) -> bool {
         code.kwonlyarg_count == 0
             && !code.flags.contains(CodeFlags::VARARGS)
             && !code.flags.contains(CodeFlags::VARKEYWORDS)
@@ -265,7 +266,7 @@ impl PyFunction {
 
     /// Public static version for external construction sites.
     #[inline]
-    pub fn compute_is_simple_static(code: &CodeObject, closure: &[Arc<RwLock<Option<PyObjectRef>>>]) -> bool {
+    pub fn compute_is_simple_static(code: &CodeObject, closure: &[Rc<PyCell<Option<PyObjectRef>>>]) -> bool {
         Self::compute_is_simple(code, closure)
     }
 
@@ -276,9 +277,9 @@ impl PyFunction {
         Self {
             qualname: name.clone(), name, code, constant_cache,
             defaults: Vec::new(), kw_defaults: IndexMap::new(),
-            globals: Arc::new(RwLock::new(FxAttrMap::default())),
+            globals: Rc::new(PyCell::new(FxAttrMap::default())),
             closure: Vec::new(), annotations: IndexMap::new(),
-            attrs: Arc::new(RwLock::new(FxAttrMap::default())),
+            attrs: Rc::new(PyCell::new(FxAttrMap::default())),
             is_simple,
         }
     }
@@ -290,9 +291,9 @@ impl PyFunction {
         Self {
             qualname: name.clone(), name, code, constant_cache,
             defaults: Vec::new(), kw_defaults: IndexMap::new(),
-            globals: Arc::new(RwLock::new(FxAttrMap::default())),
+            globals: Rc::new(PyCell::new(FxAttrMap::default())),
             closure: Vec::new(), annotations: IndexMap::new(),
-            attrs: Arc::new(RwLock::new(FxAttrMap::default())),
+            attrs: Rc::new(PyCell::new(FxAttrMap::default())),
             is_simple,
         }
     }

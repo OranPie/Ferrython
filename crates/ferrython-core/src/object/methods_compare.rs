@@ -1,5 +1,6 @@
 //! Comparison methods.
 
+use std::rc::Rc;
 use crate::error::PyResult;
 
 use super::payload::*;

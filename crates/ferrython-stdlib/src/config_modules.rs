@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args_min,
 };
@@ -10,6 +10,7 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 // ── argparse module (basic) ──
 
@@ -18,8 +19,8 @@ use std::sync::Arc;
 /// `args` are passed through for prog/description extraction.
 fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let inst = PyObject::instance(ap_cls.clone());
-    let arg_defs: Arc<RwLock<Vec<(Vec<String>, IndexMap<CompactString, PyObjectRef>)>>> =
-        Arc::new(RwLock::new(Vec::new()));
+    let arg_defs: Rc<PyCell<Vec<(Vec<String>, IndexMap<CompactString, PyObjectRef>)>>> =
+        Rc::new(PyCell::new(Vec::new()));
 
     if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
         let mut attrs = inst_data.attrs.write();
@@ -138,8 +139,8 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                         }
                     }
                     // Store subparser registry on the parent instance
-                    let registry: Arc<RwLock<IndexMap<CompactString, PyObjectRef>>> =
-                        Arc::new(RwLock::new(IndexMap::new()));
+                    let registry: Rc<PyCell<IndexMap<CompactString, PyObjectRef>>> =
+                        Rc::new(PyCell::new(IndexMap::new()));
                     if let PyObjectPayload::Instance(ref id) = inst_ref.payload {
                         let mut wa = id.attrs.write();
                         wa.insert(CompactString::from("__subparsers_dest__"), PyObject::str_val(dest));
@@ -191,7 +192,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                             }
                         }
                     }
-                    let group_dests: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(Vec::new()));
+                    let group_dests: Rc<PyCell<Vec<PyObjectRef>>> = Rc::new(PyCell::new(Vec::new()));
                     let meg_cls = PyObject::class(CompactString::from("_MutuallyExclusiveGroup"), vec![], IndexMap::new());
                     let meg_inst = PyObject::instance(meg_cls);
                     if let PyObjectPayload::Instance(ref gd) = meg_inst.payload {
@@ -303,7 +304,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
 /// Core argument parsing logic — shared by parse_args and parse_known_args.
 /// `parser_inst` is the ArgumentParser instance (needed for subparser delegation).
 fn argparse_parse_args(
-    arg_defs: &Arc<RwLock<Vec<(Vec<String>, IndexMap<CompactString, PyObjectRef>)>>>,
+    arg_defs: &Rc<PyCell<Vec<(Vec<String>, IndexMap<CompactString, PyObjectRef>)>>>,
     call_args: &[PyObjectRef],
     allow_unknown: bool,
     parser_inst: Option<&PyObjectRef>,
@@ -777,7 +778,7 @@ pub fn create_configparser_module() -> PyObjectRef {
 
     let configparser_class = PyObject::class(CompactString::from("ConfigParser"), vec![], ns);
 
-    fn get_sections(obj: &PyObjectRef) -> Option<Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>> {
+    fn get_sections(obj: &PyObjectRef) -> Option<Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>> {
         if let PyObjectPayload::Instance(inst) = &obj.payload {
             if let Some(sec) = inst.attrs.read().get("_sections") {
                 if let PyObjectPayload::Dict(d) = &sec.payload {

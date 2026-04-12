@@ -1,5 +1,6 @@
 //! Container operation methods (len, getitem, contains, iter).
 
+use std::rc::Rc;
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::types::HashableKey;

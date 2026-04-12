@@ -1,6 +1,6 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin,
     CompareOp, SharedFxAttrMap,
@@ -9,6 +9,7 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 pub fn create_collections_module() -> PyObjectRef {
     let abc_module = crate::type_modules::create_collections_abc_module();
@@ -525,7 +526,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         items
     };
     
-    let data = Arc::new(RwLock::new(items));
+    let data = Rc::new(PyCell::new(items));
     
     // Build instance methods that share the data list
     let mut cls_ns = IndexMap::new();
@@ -1053,7 +1054,7 @@ fn make_user_dict_class() -> PyObjectRef {
         let inst = &args[0];
         let data = if args.len() > 1 {
             if let PyObjectPayload::Dict(d) = &args[1].payload {
-                PyObject::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(d.read().clone()))))
+                PyObject::wrap(PyObjectPayload::Dict(Rc::new(PyCell::new(d.read().clone()))))
             } else {
                 PyObject::dict_from_pairs(vec![])
             }

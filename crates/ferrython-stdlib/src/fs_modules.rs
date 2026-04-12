@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     ExceptionInstanceData, SharedFxAttrMap,
     make_module, make_builtin, check_args,
@@ -11,6 +11,7 @@ use ferrython_core::object::{
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Global Path class reference so helper functions can create proper Path instances.
@@ -1152,7 +1153,7 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         use std::os::unix::io::IntoRawFd;
         use std::sync::{Arc, RwLock};
         let fd = file.into_raw_fd();
-        let state = Arc::new(RwLock::new((fd, false))); // (fd, closed)
+        let state = Rc::new(PyCell::new((fd, false))); // (fd, closed)
         let mut attrs = IndexMap::new();
         attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&path_str)));
         attrs.insert(CompactString::from("mode"), PyObject::str_val(CompactString::from(&mode)));
@@ -1162,7 +1163,7 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // write(data)
         let s1 = state.clone();
         attrs.insert(CompactString::from("write"), PyObject::native_closure("write", move |a| {
-            let g = s1.read().unwrap();
+            let g = s1.read();
             if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
             let fd = g.0;
             drop(g);
@@ -1183,7 +1184,7 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let s2 = state.clone();
         let is_bin_r = is_binary;
         attrs.insert(CompactString::from("read"), PyObject::native_closure("read", move |a| {
-            let g = s2.read().unwrap();
+            let g = s2.read();
             if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
             let fd = g.0;
             drop(g);
@@ -1216,7 +1217,7 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // seek(offset, whence=0)
         let s3 = state.clone();
         attrs.insert(CompactString::from("seek"), PyObject::native_closure("seek", move |a| {
-            let g = s3.read().unwrap();
+            let g = s3.read();
             if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
             let fd = g.0;
             drop(g);
@@ -1232,7 +1233,7 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // tell()
         let s4 = state.clone();
         attrs.insert(CompactString::from("tell"), PyObject::native_closure("tell", move |_a| {
-            let g = s4.read().unwrap();
+            let g = s4.read();
             if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
             let pos = unsafe { libc::lseek(g.0, 0, libc::SEEK_CUR) };
             Ok(PyObject::int(pos as i64))
@@ -1241,7 +1242,7 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // flush()
         let s5 = state.clone();
         attrs.insert(CompactString::from("flush"), PyObject::native_closure("flush", move |_a| {
-            let g = s5.read().unwrap();
+            let g = s5.read();
             if !g.1 { unsafe { libc::fsync(g.0); } }
             Ok(PyObject::none())
         }));
@@ -1251,7 +1252,7 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let ps_c = path_str.clone();
         let del_c = delete;
         attrs.insert(CompactString::from("close"), PyObject::native_closure("close", move |_| {
-            let mut g = s6.write().unwrap();
+            let mut g = s6.write();
             if !g.1 {
                 g.1 = true;
                 unsafe { libc::close(g.0); }
@@ -1270,7 +1271,7 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let ps_e = path_str.clone();
         let del_e = delete;
         attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("__exit__", move |_| {
-            let mut g = s7.write().unwrap();
+            let mut g = s7.write();
             if !g.1 {
                 g.1 = true;
                 unsafe { libc::close(g.0); }
@@ -1496,7 +1497,7 @@ pub fn create_io_module() -> PyObjectRef {
                 std::fs::read_to_string(&path).map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?
             };
 
-            let data: Arc<RwLock<(String, usize, bool)>> = Arc::new(RwLock::new((content, 0, false)));
+            let data: Rc<PyCell<(String, usize, bool)>> = Rc::new(PyCell::new((content, 0, false)));
             let cls = PyObject::class(CompactString::from("_io_file"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
             if let PyObjectPayload::Instance(ref d) = inst.payload {
@@ -1628,7 +1629,7 @@ pub fn create_io_module() -> PyObjectRef {
             } else {
                 std::fs::File::open(&name).map_err(|e| PyException::os_error(format!("{}: '{}'", e, name)))?
             };
-            let buf: Arc<RwLock<Option<std::fs::File>>> = Arc::new(RwLock::new(Some(file)));
+            let buf: Rc<PyCell<Option<std::fs::File>>> = Rc::new(PyCell::new(Some(file)));
             let cls = PyObject::class(CompactString::from("FileIO"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
             if let PyObjectPayload::Instance(d) = &inst.payload {
@@ -1690,8 +1691,8 @@ fn io_string_io_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         attrs.insert(CompactString::from("__stringio__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
 
-        let buf: Arc<RwLock<String>> = Arc::new(RwLock::new(initial));
-        let pos: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
+        let buf: Rc<PyCell<String>> = Rc::new(PyCell::new(initial));
+        let pos: Rc<PyCell<usize>> = Rc::new(PyCell::new(0));
 
         // write(s) → int
         let b = buf.clone(); let p = pos.clone();
@@ -1877,9 +1878,9 @@ fn io_bytes_io_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         attrs.insert(CompactString::from("__bytesio__"), PyObject::bool_val(true));
         attrs.insert(CompactString::from("_closed"), PyObject::bool_val(false));
 
-        let buf: Arc<RwLock<Vec<u8>>> = Arc::new(RwLock::new(initial));
-        let pos: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
-        let closed_flag: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
+        let buf: Rc<PyCell<Vec<u8>>> = Rc::new(PyCell::new(initial));
+        let pos: Rc<PyCell<usize>> = Rc::new(PyCell::new(0));
+        let closed_flag: Rc<PyCell<bool>> = Rc::new(PyCell::new(false));
 
         // write(b) → int
         let b = buf.clone(); let p = pos.clone();

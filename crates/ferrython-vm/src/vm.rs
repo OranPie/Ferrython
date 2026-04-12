@@ -95,7 +95,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeObject, CodeFlags};
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{ PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
     lookup_in_class_mro, SyncI64, FxAttrMap, new_shared_fx, to_shared_fx,
 };
@@ -104,6 +104,7 @@ use ferrython_debug::{ExecutionProfiler, BreakpointManager};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
+use std::rc::Rc;
 
 /// Shared builtins for spawning thread VMs without re-initializing.
 static SHARED_BUILTINS: OnceLock<SharedBuiltins> = OnceLock::new();
@@ -251,13 +252,13 @@ impl VirtualMachine {
 
     /// Create a new empty shared globals map.
     pub fn new_globals() -> SharedGlobals {
-        Arc::new(RwLock::new(FxAttrMap::default()))
+        Rc::new(PyCell::new(FxAttrMap::default()))
     }
 
     /// Execute a code object (module-level).
     pub fn execute(&mut self, code: CodeObject) -> PyResult<PyObjectRef> {
         self.install_hash_eq_dispatch();
-        let globals = Arc::new(RwLock::new(FxAttrMap::default()));
+        let globals = Rc::new(PyCell::new(FxAttrMap::default()));
         // Set __name__ = "__main__" for top-level scripts
         {
             let mut g = globals.write();

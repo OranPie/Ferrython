@@ -5,7 +5,7 @@ use crate::frame::Frame;
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{ PyCell, 
     AsyncGenAction, GeneratorState, IteratorData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, FxAttrMap,
 };
@@ -14,6 +14,7 @@ use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Mutex;
 use std::sync::Arc;
+use std::rc::Rc;
 
 impl VirtualMachine {
     /// Install thread-local __hash__ and __eq__ dispatch callbacks for HashableKey.
@@ -1016,7 +1017,7 @@ impl VirtualMachine {
     /// Returns `Ok(value)` for yielded values, or `Err(StopIteration)` when done.
     pub(crate) fn resume_generator(
         &mut self,
-        gen_arc: &Arc<RwLock<GeneratorState>>,
+        gen_arc: &Rc<PyCell<GeneratorState>>,
         send_value: PyObjectRef,
     ) -> PyResult<PyObjectRef> {
         let mut gen = gen_arc.write();
@@ -1068,7 +1069,7 @@ impl VirtualMachine {
     /// Resumes the generator with an exception injected at the yield point.
     pub(crate) fn gen_throw(
         &mut self,
-        gen_arc: &Arc<RwLock<GeneratorState>>,
+        gen_arc: &Rc<PyCell<GeneratorState>>,
         kind: ExceptionKind,
         msg: String,
     ) -> PyResult<PyObjectRef> {
@@ -1080,7 +1081,7 @@ impl VirtualMachine {
     /// which does `exc is not value`).
     pub(crate) fn gen_throw_with_value(
         &mut self,
-        gen_arc: &Arc<RwLock<GeneratorState>>,
+        gen_arc: &Rc<PyCell<GeneratorState>>,
         kind: ExceptionKind,
         msg: String,
         original_value: Option<PyObjectRef>,
@@ -1184,7 +1185,7 @@ impl VirtualMachine {
     ///   - Close:     throws GeneratorExit; expects generator to finish.
     pub(crate) fn drive_async_gen_awaitable(
         &mut self,
-        gen: &Arc<RwLock<GeneratorState>>,
+        gen: &Rc<PyCell<GeneratorState>>,
         action: &AsyncGenAction,
         send_val: PyObjectRef,
     ) -> PyResult<PyObjectRef> {
@@ -1781,7 +1782,7 @@ impl VirtualMachine {
                         drop(lm);
                     }
                 }
-                let shared = Arc::new(RwLock::new(new_globals));
+                let shared = Rc::new(PyCell::new(new_globals));
                 self.execute_with_globals(code, shared.clone())?;
                 let results = shared.read();
                 if args.len() >= 3 {
@@ -1876,7 +1877,7 @@ impl VirtualMachine {
                     }
                 }
 
-                let shared = Arc::new(RwLock::new(new_globals));
+                let shared = Rc::new(PyCell::new(new_globals));
                 let exec_result = self.execute_with_globals(code, shared.clone())?;
 
                 // Check for __eval_result__ (compile(mode='eval') wrapping)

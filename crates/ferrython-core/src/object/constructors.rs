@@ -1,5 +1,6 @@
 //! Singleton values and PyObject factory/constructor methods.
 
+use std::rc::Rc;
 use crate::error::{ExceptionKind, PyResult};
 use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
@@ -285,7 +286,7 @@ impl PyObject {
     }
     pub fn bytearray(v: Vec<u8>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::ByteArray(v)) }
     pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef {
-        let obj = Self::wrap(PyObjectPayload::List(Arc::new(RwLock::new(items))));
+        let obj = Self::wrap(PyObjectPayload::List(Rc::new(PyCell::new(items))));
         track_object(&obj);
         obj
     }
@@ -293,9 +294,9 @@ impl PyObject {
         if items.is_empty() { return EMPTY_TUPLE.clone(); }
         Self::wrap_leaf(PyObjectPayload::Tuple(items))
     }
-    pub fn set(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(items)))) }
+    pub fn set(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef { Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(items)))) }
     pub fn dict(items: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
-        let obj = Self::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(items))));
+        let obj = Self::wrap(PyObjectPayload::Dict(Rc::new(PyCell::new(items))));
         track_object(&obj);
         obj
     }
@@ -311,7 +312,7 @@ impl PyObject {
         // Use cached flags from ClassData to avoid hierarchy traversal
         let (dict_storage, attrs) = if let PyObjectPayload::Class(cd) = &class.payload {
             let ds = if cd.is_dict_subclass {
-                Some(Arc::new(RwLock::new(IndexMap::new())))
+                Some(Rc::new(PyCell::new(IndexMap::new())))
             } else { None };
             let a: FxAttrMap = if cd.expected_attrs > 0 {
                 FxAttrMap::with_capacity_and_hasher(cd.expected_attrs, Default::default())
@@ -322,26 +323,26 @@ impl PyObject {
         } else {
             (Self::detect_dict_subclass(&class), FxAttrMap::default())
         };
-        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(attrs)), dict_storage, is_special: false }));
+        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Rc::new(PyCell::new(attrs)), dict_storage, is_special: false }));
         track_object(&obj);
         obj
     }
     pub fn instance_with_attrs(class: PyObjectRef, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
         let dict_storage = if let PyObjectPayload::Class(cd) = &class.payload {
             if cd.is_dict_subclass {
-                Some(Arc::new(RwLock::new(IndexMap::new())))
+                Some(Rc::new(PyCell::new(IndexMap::new())))
             } else { None }
         } else {
             Self::detect_dict_subclass(&class)
         };
         let fx_attrs: FxAttrMap = attrs.into_iter().collect();
-        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Arc::new(RwLock::new(fx_attrs)), dict_storage, is_special: false }));
+        let obj = Self::wrap(PyObjectPayload::Instance(InstanceData { class, attrs: Rc::new(PyCell::new(fx_attrs)), dict_storage, is_special: false }));
         track_object(&obj);
         obj
     }
 
     /// Check if a class inherits from dict and return dict storage if so
-    fn detect_dict_subclass(class: &PyObjectRef) -> Option<Arc<RwLock<IndexMap<crate::types::HashableKey, PyObjectRef>>>> {
+    fn detect_dict_subclass(class: &PyObjectRef) -> Option<Rc<PyCell<IndexMap<crate::types::HashableKey, PyObjectRef>>>> {
         if let PyObjectPayload::Class(cd) = &class.payload {
             for base in &cd.bases {
                 let is_dict = match &base.payload {
@@ -350,12 +351,12 @@ impl PyObject {
                     _ => false,
                 };
                 if is_dict {
-                    return Some(Arc::new(RwLock::new(IndexMap::new())));
+                    return Some(Rc::new(PyCell::new(IndexMap::new())));
                 }
                 // Recurse into base classes
                 if let Some(storage) = Self::detect_dict_subclass(base) {
                     drop(storage); // We create fresh storage for each instance
-                    return Some(Arc::new(RwLock::new(IndexMap::new())));
+                    return Some(Rc::new(PyCell::new(IndexMap::new())));
                 }
             }
         }
@@ -367,7 +368,7 @@ impl PyObject {
         attrs.insert(CompactString::from("__loader__"), PyObject::none());
         attrs.insert(CompactString::from("__spec__"), PyObject::none());
         attrs.insert(CompactString::from("__package__"), PyObject::none());
-        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(attrs)) }))
+        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Rc::new(PyCell::new(attrs)) }))
     }
     pub fn module_with_attrs(name: CompactString, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
         let mut fx_attrs: FxAttrMap = attrs.into_iter().collect();
@@ -383,10 +384,10 @@ impl PyObject {
         if !fx_attrs.contains_key("__package__") {
             fx_attrs.insert(CompactString::from("__package__"), PyObject::none());
         }
-        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Arc::new(parking_lot::RwLock::new(fx_attrs)) }))
+        Self::wrap(PyObjectPayload::Module(ModuleData { name, attrs: Rc::new(PyCell::new(fx_attrs)) }))
     }
     /// Create a module that shares an existing globals Arc (for circular import support).
-    pub fn module_with_shared_globals(name: CompactString, globals: Arc<parking_lot::RwLock<FxAttrMap>>) -> PyObjectRef {
+    pub fn module_with_shared_globals(name: CompactString, globals: Rc<PyCell<FxAttrMap>>) -> PyObjectRef {
         {
             let mut g = globals.write();
             if !g.contains_key("__name__") {
@@ -417,7 +418,7 @@ impl PyObject {
                 map.insert(hk, v);
             }
         }
-        let obj = Self::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(map))));
+        let obj = Self::wrap(PyObjectPayload::Dict(Rc::new(PyCell::new(map))));
         track_object(&obj);
         obj
     }
@@ -430,7 +431,7 @@ impl PyObject {
     pub fn range(start: i64, stop: i64, step: i64) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Range { start, stop, step })
     }
-    pub fn cell(cell: Arc<RwLock<Option<PyObjectRef>>>) -> PyObjectRef {
+    pub fn cell(cell: Rc<PyCell<Option<PyObjectRef>>>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Cell(cell))
     }
     pub fn exception_type(kind: ExceptionKind) -> PyObjectRef {
@@ -443,7 +444,7 @@ impl PyObject {
             kind,
             message: CompactString::from(msg),
             args,
-            attrs: Arc::new(RwLock::new(FxAttrMap::default())),
+            attrs: Rc::new(PyCell::new(FxAttrMap::default())),
         })))
     }
     pub fn exception_instance_with_args(kind: ExceptionKind, message: impl Into<String>, args: Vec<PyObjectRef>) -> PyObjectRef {
@@ -451,11 +452,11 @@ impl PyObject {
             kind,
             message: CompactString::from(message.into()),
             args,
-            attrs: Arc::new(RwLock::new(FxAttrMap::default())),
+            attrs: Rc::new(PyCell::new(FxAttrMap::default())),
         })))
     }
     pub fn generator(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Generator(Arc::new(RwLock::new(GeneratorState {
+        Self::wrap(PyObjectPayload::Generator(Rc::new(PyCell::new(GeneratorState {
             name,
             frame: Some(frame),
             started: false,
@@ -464,7 +465,7 @@ impl PyObject {
     }
 
     pub fn coroutine(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Coroutine(Arc::new(RwLock::new(GeneratorState {
+        Self::wrap(PyObjectPayload::Coroutine(Rc::new(PyCell::new(GeneratorState {
             name,
             frame: Some(frame),
             started: false,
@@ -473,7 +474,7 @@ impl PyObject {
     }
 
     pub fn async_generator(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::AsyncGenerator(Arc::new(RwLock::new(GeneratorState {
+        Self::wrap(PyObjectPayload::AsyncGenerator(Rc::new(PyCell::new(GeneratorState {
             name,
             frame: Some(frame),
             started: false,

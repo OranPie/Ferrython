@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, CompareOp,
 };
@@ -10,6 +10,7 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 // ── logging module ──
 
@@ -209,8 +210,8 @@ pub fn create_logging_module() -> PyObjectRef {
         let inst = PyObject::instance(sh_cls.clone());
         let stream = if args.is_empty() { PyObject::none() } else { args[0].clone() };
         // Shared state for formatter and level
-        let formatter_ref: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
-        let level_ref: Arc<RwLock<i64>> = Arc::new(RwLock::new(0));
+        let formatter_ref: Rc<PyCell<PyObjectRef>> = Rc::new(PyCell::new(PyObject::none()));
+        let level_ref: Rc<PyCell<i64>> = Rc::new(PyCell::new(0));
 
         if let PyObjectPayload::Instance(ref inst_data) = inst.payload {
             let mut attrs = inst_data.attrs.write();
@@ -343,8 +344,8 @@ pub fn create_logging_module() -> PyObjectRef {
             attrs.insert(CompactString::from("formatter"), PyObject::none());
 
             // Shared formatter/level refs for closures
-            let fmt_ref: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
-            let level_ref: Arc<RwLock<i64>> = Arc::new(RwLock::new(0));
+            let fmt_ref: Rc<PyCell<PyObjectRef>> = Rc::new(PyCell::new(PyObject::none()));
+            let level_ref: Rc<PyCell<i64>> = Rc::new(PyCell::new(0));
 
             let lr = level_ref.clone();
             attrs.insert(CompactString::from("setLevel"), PyObject::native_closure(
@@ -444,7 +445,7 @@ pub fn create_logging_module() -> PyObjectRef {
             attrs.insert(CompactString::from("level"), PyObject::int(0));
             attrs.insert(CompactString::from("formatter"), PyObject::none());
 
-            let fmt_ref: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
+            let fmt_ref: Rc<PyCell<PyObjectRef>> = Rc::new(PyCell::new(PyObject::none()));
             let fr = fmt_ref.clone();
             attrs.insert(CompactString::from("setLevel"), make_builtin(|_| Ok(PyObject::none())));
             attrs.insert(CompactString::from("setFormatter"), PyObject::native_closure(
@@ -688,7 +689,7 @@ pub fn create_logging_module() -> PyObjectRef {
                         .map(|v| v.py_to_string())
                         .unwrap_or_else(|| "a".to_string());
                     // Create a FileHandler and add it to the root logger
-                    let fmt_ref: Arc<RwLock<PyObjectRef>> = Arc::new(RwLock::new(PyObject::none()));
+                    let fmt_ref: Rc<PyCell<PyObjectRef>> = Rc::new(PyCell::new(PyObject::none()));
                     // If format= was provided, build a Formatter and attach it
                     if let Some(format_val) = r.get(&HashableKey::Str(CompactString::from("format"))) {
                         let fs = format_val.py_to_string();
@@ -1065,13 +1066,13 @@ fn logging_get_logger(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let initial_level: i64 = if is_root { if root_level > 0 { root_level } else { 30 } } else { 0 };
     // Effective level: non-root loggers use 0 (NOTSET) to trigger parent chain walk at log time
     let effective = initial_level;
-    let effective_level: Arc<RwLock<i64>> = Arc::new(RwLock::new(effective));
+    let effective_level: Rc<PyCell<i64>> = Rc::new(PyCell::new(effective));
     ns.insert(CompactString::from("level"), PyObject::int(initial_level));
     let handlers_list = PyObject::list(vec![]);
     ns.insert(CompactString::from("handlers"), handlers_list.clone());
 
     // Create log methods that capture the shared handlers list and effective level
-    let make_log_method = |level: i64, level_name: &'static str, handlers: PyObjectRef, name: CompactString, eff_level: Arc<RwLock<i64>>| -> PyObjectRef {
+    let make_log_method = |level: i64, level_name: &'static str, handlers: PyObjectRef, name: CompactString, eff_level: Rc<PyCell<i64>>| -> PyObjectRef {
         PyObject::native_closure(level_name, move |args: &[PyObjectRef]| {
             if args.is_empty() { return Ok(PyObject::none()); }
             // Check global disable threshold first
@@ -2153,8 +2154,8 @@ pub fn create_unittest_module() -> PyObjectRef {
             };
 
             // Shared state: captured records and output lines
-            let records: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(vec![]));
-            let output: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(vec![]));
+            let records: Rc<PyCell<Vec<PyObjectRef>>> = Rc::new(PyCell::new(vec![]));
+            let output: Rc<PyCell<Vec<PyObjectRef>>> = Rc::new(PyCell::new(vec![]));
 
             let cls = PyObject::class(CompactString::from("_AssertLogsContext"), vec![], IndexMap::new());
             let inst = PyObject::instance(cls);
@@ -2328,7 +2329,7 @@ pub fn create_unittest_module() -> PyObjectRef {
             } else {
                 vec![]
             };
-            let test_list = Arc::new(RwLock::new(tests));
+            let test_list = Rc::new(PyCell::new(tests));
             let mut attrs = IndexMap::new();
             let tl = test_list.clone();
             attrs.insert(CompactString::from("_tests"), PyObject::list(tl.read().clone()));
@@ -2380,8 +2381,8 @@ pub fn create_unittest_module() -> PyObjectRef {
                 "run", |_args| {
                     // Build a TestResult object
                     let mut res_attrs = IndexMap::new();
-                    let failures = Arc::new(RwLock::new(Vec::<PyObjectRef>::new()));
-                    let errors = Arc::new(RwLock::new(Vec::<PyObjectRef>::new()));
+                    let failures = Rc::new(PyCell::new(Vec::<PyObjectRef>::new()));
+                    let errors = Rc::new(PyCell::new(Vec::<PyObjectRef>::new()));
                     let _tests_run = Arc::new(std::sync::atomic::AtomicI64::new(0));
 
                     let f = failures.clone();
@@ -2451,7 +2452,7 @@ pub fn create_unittest_module() -> PyObjectRef {
 /// Design: return_value is stored directly in the instance dict so that
 /// `mock.return_value = X` (a normal STORE_ATTR) updates it in-place.
 /// The __call__ closure reads from the instance's attrs dict at call time
-/// via a shared Arc<RwLock<IndexMap>> reference to the instance data.
+/// via a shared Rc<PyCell<IndexMap>> reference to the instance data.
 fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
     let cls = PyObject::class(CompactString::from(name), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
@@ -2460,9 +2461,9 @@ fn build_mock_instance(name: &str, kwargs: &IndexMap<HashableKey, PyObjectRef>) 
         let attrs_ref = d.attrs.clone(); // shared ref for closures to read live attrs
 
         // Shared mutable state via Arc
-        let call_count: Arc<RwLock<i64>> = Arc::new(RwLock::new(0));
-        let call_args_list: Arc<RwLock<Vec<PyObjectRef>>> = Arc::new(RwLock::new(vec![]));
-        let children: Arc<RwLock<IndexMap<String, PyObjectRef>>> = Arc::new(RwLock::new(IndexMap::new()));
+        let call_count: Rc<PyCell<i64>> = Rc::new(PyCell::new(0));
+        let call_args_list: Rc<PyCell<Vec<PyObjectRef>>> = Rc::new(PyCell::new(vec![]));
+        let children: Rc<PyCell<IndexMap<String, PyObjectRef>>> = Rc::new(PyCell::new(IndexMap::new()));
         let mock_name = CompactString::from(name);
 
         // Store return_value directly as a plain value (not a closure) so STORE_ATTR overwrites it
@@ -2710,7 +2711,7 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
     let sentinel_cls = PyObject::class(CompactString::from("_Sentinel"), vec![], IndexMap::new());
     let sentinel = PyObject::instance(sentinel_cls);
     if let PyObjectPayload::Instance(ref d) = sentinel.payload {
-        let sentinel_cache: Arc<RwLock<IndexMap<String, PyObjectRef>>> = Arc::new(RwLock::new(IndexMap::new()));
+        let sentinel_cache: Rc<PyCell<IndexMap<String, PyObjectRef>>> = Rc::new(PyCell::new(IndexMap::new()));
         let sc = sentinel_cache;
         d.attrs.write().insert(CompactString::from("__getattr__"), PyObject::native_closure(
             "_Sentinel.__getattr__", move |args: &[PyObjectRef]| {
@@ -2779,7 +2780,7 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
             let target_enter = target.clone();
             let attr_enter = attr_name.clone();
             let repl_enter = replacement.clone();
-            let saved: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(None));
+            let saved: Rc<PyCell<Option<PyObjectRef>>> = Rc::new(PyCell::new(None));
             let saved_for_exit = saved.clone();
             let target_exit = target.clone();
             let attr_exit = attr_name.clone();
@@ -3021,9 +3022,9 @@ pub fn create_profile_module() -> PyObjectRef {
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
             // Track timing state
-            let stats: Arc<RwLock<Vec<(String, f64)>>> = Arc::new(RwLock::new(Vec::new()));
-            let enabled: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
-            let start_time: Arc<RwLock<Option<std::time::Instant>>> = Arc::new(RwLock::new(None));
+            let stats: Rc<PyCell<Vec<(String, f64)>>> = Rc::new(PyCell::new(Vec::new()));
+            let enabled: Rc<PyCell<bool>> = Rc::new(PyCell::new(false));
+            let start_time: Rc<PyCell<Option<std::time::Instant>>> = Rc::new(PyCell::new(None));
 
             let e = enabled.clone();
             let st = start_time.clone();
@@ -3112,9 +3113,9 @@ pub fn create_cprofile_module() -> PyObjectRef {
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {
             let mut w = d.attrs.write();
-            let stats: Arc<RwLock<Vec<(String, i64, f64)>>> = Arc::new(RwLock::new(Vec::new()));
-            let enabled: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
-            let start_time: Arc<RwLock<Option<std::time::Instant>>> = Arc::new(RwLock::new(None));
+            let stats: Rc<PyCell<Vec<(String, i64, f64)>>> = Rc::new(PyCell::new(Vec::new()));
+            let enabled: Rc<PyCell<bool>> = Rc::new(PyCell::new(false));
+            let start_time: Rc<PyCell<Option<std::time::Instant>>> = Rc::new(PyCell::new(None));
 
             let e = enabled.clone();
             let st = start_time.clone();

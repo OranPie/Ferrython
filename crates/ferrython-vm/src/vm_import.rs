@@ -13,13 +13,14 @@ use crate::frame::Frame;
 use crate::VirtualMachine;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{ PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, FxAttrMap,
 };
 use ferrython_core::types::{HashableKey, SharedGlobals};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 impl VirtualMachine {
     // ── Public import entry points ──────────────────────────────────────
@@ -302,7 +303,7 @@ impl VirtualMachine {
         file_path: Option<CompactString>,
     ) -> PyResult<PyObjectRef> {
         // Build shared globals with metadata
-        let globals: SharedGlobals = Arc::new(RwLock::new(FxAttrMap::default()));
+        let globals: SharedGlobals = Rc::new(PyCell::new(FxAttrMap::default()));
         {
             let mut g = globals.write();
             g.insert(CompactString::from("__name__"), PyObject::str_val(mod_name.clone()));
@@ -585,7 +586,7 @@ class _MutableMappingMixin(_MappingMixin):
             Err(_) => return,
         };
 
-        let globals = Arc::new(RwLock::new(FxAttrMap::default()));
+        let globals = Rc::new(PyCell::new(FxAttrMap::default()));
         {
             let mut g = globals.write();
             if let Some(builtins_mod) = ferrython_stdlib::load_module("builtins") {

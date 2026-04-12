@@ -6,13 +6,12 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectRef,
     make_builtin,
 };
 use indexmap::IndexMap;
-use parking_lot::RwLock;
-use std::sync::Arc;
+use std::rc::Rc;
 
 // ── asyncio.Queue ───────────────────────────────────────────────────────
 
@@ -26,7 +25,7 @@ pub fn make_queue_class() -> PyObjectRef {
         };
 
         let cls = PyObject::class(CompactString::from("Queue"), vec![], IndexMap::new());
-        let items = Arc::new(RwLock::new(Vec::<PyObjectRef>::new()));
+        let items = Rc::new(PyCell::new(Vec::<PyObjectRef>::new()));
 
         let mut attrs = IndexMap::new();
         attrs.insert(CompactString::from("maxsize"), PyObject::int(maxsize));
@@ -125,7 +124,7 @@ pub fn make_queue_class() -> PyObjectRef {
 pub fn make_event_class() -> PyObjectRef {
     make_builtin(|_args: &[PyObjectRef]| {
         let cls = PyObject::class(CompactString::from("Event"), vec![], IndexMap::new());
-        let flag = Arc::new(RwLock::new(false));
+        let flag = Rc::new(PyCell::new(false));
 
         let mut attrs = IndexMap::new();
 
@@ -175,7 +174,7 @@ pub fn make_event_class() -> PyObjectRef {
 pub fn make_lock_class() -> PyObjectRef {
     make_builtin(|_args: &[PyObjectRef]| {
         let cls = PyObject::class(CompactString::from("Lock"), vec![], IndexMap::new());
-        let locked = Arc::new(RwLock::new(false));
+        let locked = Rc::new(PyCell::new(false));
 
         let mut attrs = IndexMap::new();
 
@@ -244,7 +243,7 @@ pub fn make_semaphore_class() -> PyObjectRef {
         };
 
         let cls = PyObject::class(CompactString::from("Semaphore"), vec![], IndexMap::new());
-        let value = Arc::new(RwLock::new(initial_value));
+        let value = Rc::new(PyCell::new(initial_value));
         let bound = initial_value;
 
         let mut attrs = IndexMap::new();
@@ -312,7 +311,7 @@ pub fn make_bounded_semaphore_class() -> PyObjectRef {
         };
 
         let cls = PyObject::class(CompactString::from("BoundedSemaphore"), vec![], IndexMap::new());
-        let value = Arc::new(RwLock::new(initial_value));
+        let value = Rc::new(PyCell::new(initial_value));
         let bound = initial_value;
 
         let mut attrs = IndexMap::new();
@@ -356,7 +355,7 @@ pub fn make_bounded_semaphore_class() -> PyObjectRef {
 pub fn make_condition_class() -> PyObjectRef {
     make_builtin(|_args: &[PyObjectRef]| {
         let cls = PyObject::class(CompactString::from("Condition"), vec![], IndexMap::new());
-        let locked = Arc::new(RwLock::new(false));
+        let locked = Rc::new(PyCell::new(false));
 
         let mut attrs = IndexMap::new();
 

@@ -7,7 +7,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::code::{CodeFlags, CodeObject};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::{
+use ferrython_core::object::{ PyCell, 
     AsyncGenAction, CompareOp, IteratorData, PartialData, PyObject, PyObjectMethods,
     PyObjectPayload, PyObjectRef, is_data_descriptor, has_descriptor_get, lookup_in_class_mro,
     get_builtin_base_type_name,
@@ -16,6 +16,7 @@ use ferrython_core::types::{HashableKey, SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 /// Attach `split` and `subgroup` methods to an ExceptionGroup instance.
 /// Reads `message` and `exceptions` from the instance attrs.
@@ -144,7 +145,7 @@ impl VirtualMachine {
         &mut self,
         template: &str,
         mapping: &PyObjectRef,
-        dict_storage: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>,
+        dict_storage: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>,
         mapping_class: &PyObjectRef,
     ) -> PyResult<PyObjectRef> {
         let mut result = String::new();
@@ -187,7 +188,7 @@ impl VirtualMachine {
         &mut self,
         template: &str,
         _mapping: &PyObjectRef,
-        dict: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>,
+        dict: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>,
     ) -> PyResult<PyObjectRef> {
         let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
         let mut result = String::new();
@@ -269,7 +270,7 @@ impl VirtualMachine {
         defaults: &[PyObjectRef],
         kw_defaults: &IndexMap<CompactString, PyObjectRef>,
         globals: SharedGlobals,
-        closure: &[Arc<RwLock<Option<PyObjectRef>>>],
+        closure: &[Rc<PyCell<Option<PyObjectRef>>>],
         constant_cache: &SharedConstantCache,
     ) -> PyResult<PyObjectRef> {
         let mut frame = Frame::new_from_pool(Arc::clone(code), globals, Arc::clone(&self.builtins), Arc::clone(constant_cache), &mut self.frame_pool);
@@ -363,7 +364,7 @@ impl VirtualMachine {
         defaults: &[PyObjectRef],
         kw_defaults: &IndexMap<CompactString, PyObjectRef>,
         globals: SharedGlobals,
-        closure: &[Arc<RwLock<Option<PyObjectRef>>>],
+        closure: &[Rc<PyCell<Option<PyObjectRef>>>],
         constant_cache: &SharedConstantCache,
     ) -> PyResult<PyObjectRef> {
         let mut frame = Frame::new_from_pool(Arc::clone(code), globals, Arc::clone(&self.builtins), Arc::clone(constant_cache), &mut self.frame_pool);
@@ -2389,7 +2390,7 @@ impl VirtualMachine {
                                 }
                             };
                             return Ok(PyObject::wrap(PyObjectPayload::MappingProxy(
-                                Arc::new(RwLock::new(map)),
+                                Rc::new(PyCell::new(map)),
                             )));
                         }
                         if args.is_empty() {
@@ -3467,7 +3468,7 @@ impl VirtualMachine {
         &mut self,
         mut frame: Frame,
         code: &CodeObject,
-        closure: &[Arc<RwLock<Option<PyObjectRef>>>],
+        closure: &[Rc<PyCell<Option<PyObjectRef>>>],
     ) -> PyResult<PyObjectRef> {
         let n_cell = code.cellvars.len();
         for (i, cell) in closure.iter().enumerate() {

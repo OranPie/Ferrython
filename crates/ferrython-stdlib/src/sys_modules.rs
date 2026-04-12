@@ -3,9 +3,10 @@
 use compact_str::CompactString;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
+use std::rc::Rc;
 use parking_lot::RwLock;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min,
 };
@@ -1204,7 +1205,7 @@ pub fn create_os_module() -> PyObjectRef {
                 use std::sync::{Arc, RwLock};
                 let is_binary = mode.contains('b');
                 // State: (fd, closed, name)
-                let state = Arc::new(RwLock::new((fd, false)));
+                let state = Rc::new(PyCell::new((fd, false)));
                 let mode_str = mode.clone();
                 let name_str = format!("<fdopen fd={}>", fd);
                 let mut attrs = IndexMap::new();
@@ -1215,7 +1216,7 @@ pub fn create_os_module() -> PyObjectRef {
                 let s1 = state.clone();
                 let is_bin_r = is_binary;
                 attrs.insert(CompactString::from("read"), PyObject::native_closure("fdopen.read", move |a| {
-                    let g = s1.read().unwrap();
+                    let g = s1.read();
                     if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
                     let fd = g.0;
                     drop(g);
@@ -1252,7 +1253,7 @@ pub fn create_os_module() -> PyObjectRef {
                 // write(data)
                 let s2 = state.clone();
                 attrs.insert(CompactString::from("write"), PyObject::native_closure("fdopen.write", move |a| {
-                    let g = s2.read().unwrap();
+                    let g = s2.read();
                     if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
                     let fd = g.0;
                     drop(g);
@@ -1272,7 +1273,7 @@ pub fn create_os_module() -> PyObjectRef {
                 // seek(offset, whence=0)
                 let s3 = state.clone();
                 attrs.insert(CompactString::from("seek"), PyObject::native_closure("fdopen.seek", move |a| {
-                    let g = s3.read().unwrap();
+                    let g = s3.read();
                     if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
                     let fd = g.0;
                     drop(g);
@@ -1291,7 +1292,7 @@ pub fn create_os_module() -> PyObjectRef {
                 // tell()
                 let s4 = state.clone();
                 attrs.insert(CompactString::from("tell"), PyObject::native_closure("fdopen.tell", move |_a| {
-                    let g = s4.read().unwrap();
+                    let g = s4.read();
                     if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
                     let fd = g.0;
                     drop(g);
@@ -1301,7 +1302,7 @@ pub fn create_os_module() -> PyObjectRef {
                 // flush()
                 let s5 = state.clone();
                 attrs.insert(CompactString::from("flush"), PyObject::native_closure("fdopen.flush", move |_a| {
-                    let g = s5.read().unwrap();
+                    let g = s5.read();
                     if g.1 { return Err(PyException::value_error("I/O operation on closed file")); }
                     let fd = g.0;
                     drop(g);
@@ -1311,7 +1312,7 @@ pub fn create_os_module() -> PyObjectRef {
                 // close()
                 let s6 = state.clone();
                 attrs.insert(CompactString::from("close"), PyObject::native_closure("fdopen.close", move |_| {
-                    let mut g = s6.write().unwrap();
+                    let mut g = s6.write();
                     if !g.1 {
                         g.1 = true;
                         unsafe { libc::close(g.0); }
@@ -1326,7 +1327,7 @@ pub fn create_os_module() -> PyObjectRef {
                 // __exit__ -> close
                 let s7 = state.clone();
                 attrs.insert(CompactString::from("__exit__"), PyObject::native_closure("fdopen.__exit__", move |_| {
-                    let mut g = s7.write().unwrap();
+                    let mut g = s7.write();
                     if !g.1 {
                         g.1 = true;
                         unsafe { libc::close(g.0); }
@@ -1908,7 +1909,7 @@ fn os_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .output()
         .map_err(|e| PyException::os_error(format!("{}", e)))?;
     let data = String::from_utf8_lossy(&output.stdout).to_string();
-    let data_arc = std::sync::Arc::new(parking_lot::RwLock::new(data));
+    let data_arc = Rc::new(PyCell::new(data));
 
     let cls = PyObject::class(CompactString::from("_POpenFile"), vec![], IndexMap::new());
     let inst = PyObject::instance(cls);
@@ -2512,7 +2513,7 @@ pub fn create_locale_module() -> PyObjectRef {
         }
     }
 
-    let current_locale: Arc<RwLock<(String, String)>> = Arc::new(RwLock::new(get_system_locale()));
+    let current_locale: Rc<PyCell<(String, String)>> = Rc::new(PyCell::new(get_system_locale()));
 
     let cl1 = current_locale.clone();
     let getlocale_fn = PyObject::native_closure("getlocale", move |_: &[PyObjectRef]| {
@@ -2815,8 +2816,8 @@ pub fn create_sched_module() -> PyObjectRef {
         let _delayfunc = args.get(1).cloned();
 
         // Internal priority queue: Vec of (time_f64, priority, sequence, action, args, kwargs)
-        let queue: Arc<RwLock<Vec<(f64, i64, i64, PyObjectRef, PyObjectRef, PyObjectRef)>>> =
-            Arc::new(RwLock::new(Vec::new()));
+        let queue: Rc<PyCell<Vec<(f64, i64, i64, PyObjectRef, PyObjectRef, PyObjectRef)>>> =
+            Rc::new(PyCell::new(Vec::new()));
         let seq_counter: Arc<std::sync::atomic::AtomicI64> =
             Arc::new(std::sync::atomic::AtomicI64::new(0));
 
@@ -3068,9 +3069,9 @@ pub fn create_mmap_module() -> PyObjectRef {
             vec![0u8; length]
         };
 
-        let data: Arc<RwLock<Vec<u8>>> = Arc::new(RwLock::new(initial_data));
-        let pos: Arc<RwLock<usize>> = Arc::new(RwLock::new(0));
-        let closed: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
+        let data: Rc<PyCell<Vec<u8>>> = Rc::new(PyCell::new(initial_data));
+        let pos: Rc<PyCell<usize>> = Rc::new(PyCell::new(0));
+        let closed: Rc<PyCell<bool>> = Rc::new(PyCell::new(false));
         let cls = PyObject::class(CompactString::from("mmap"), vec![], IndexMap::new());
         let inst = PyObject::instance(cls);
         if let PyObjectPayload::Instance(ref d) = inst.payload {

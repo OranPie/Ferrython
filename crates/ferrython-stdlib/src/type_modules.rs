@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     make_module, make_builtin, check_args, check_args_min, CompareOp,
 };
@@ -10,6 +10,7 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 pub fn create_typing_module() -> PyObjectRef {
     // TypeVar class — shared so isinstance(T, TypeVar) works
@@ -1511,7 +1512,7 @@ pub fn create_abc_module() -> PyObjectRef {
         let mut ns = cd.namespace.write();
         ns.insert(
             CompactString::from("__abstractmethods__"),
-            PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(IndexMap::new())))),
+            PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(IndexMap::new())))),
         );
         // ABC.register(subclass) — registers subclass as a virtual subclass
         let abc_ref = abc_class.clone();
@@ -1618,7 +1619,7 @@ pub fn create_abc_module() -> PyObjectRef {
         }
     });
 
-    let cache_token: Arc<RwLock<i64>> = Arc::new(RwLock::new(0));
+    let cache_token: Rc<PyCell<i64>> = Rc::new(PyCell::new(0));
     let get_cache_token_fn = PyObject::native_closure(
         "abc.get_cache_token", move |_args: &[PyObjectRef]| {
             Ok(PyObject::int(*cache_token.read()))

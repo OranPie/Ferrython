@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
     make_module, make_builtin, check_args, check_args_min,
     FxAttrMap,
@@ -11,6 +11,7 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 // ── contextlib module ──
 
@@ -1181,8 +1182,8 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             // Create new instance with same class, shallow copy of attrs
             Ok(PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: inst.class.clone(),
-                attrs: Arc::new(RwLock::new(inst.attrs.read().clone())),
-                is_special: true, dict_storage: inst.dict_storage.as_ref().map(|ds| Arc::new(RwLock::new(ds.read().clone()))),
+                attrs: Rc::new(PyCell::new(inst.attrs.read().clone())),
+                is_special: true, dict_storage: inst.dict_storage.as_ref().map(|ds| Rc::new(PyCell::new(ds.read().clone()))),
             })))
         }
         _ => Ok(obj.clone()),
@@ -1405,7 +1406,7 @@ pub fn create_contextvars_module() -> PyObjectRef {
         if let PyObjectPayload::Instance(ref data) = inst.payload {
             let mut attrs = data.attrs.write();
             attrs.insert(CompactString::from("name"), PyObject::str_val(CompactString::from(&name)));
-            let value: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(default_val.clone()));
+            let value: Rc<PyCell<Option<PyObjectRef>>> = Rc::new(PyCell::new(default_val.clone()));
 
             let v = value.clone();
             attrs.insert(CompactString::from("get"), PyObject::native_closure("ContextVar.get", move |a: &[PyObjectRef]| {
@@ -1689,14 +1690,14 @@ pub fn create_mimetypes_module() -> PyObjectRef {
 
 pub fn create_readline_module() -> PyObjectRef {
     // Shared readline state
-    let history: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
-    let history_max_len: Arc<RwLock<i64>> = Arc::new(RwLock::new(-1)); // -1 = unlimited
-    let completer: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(None));
-    let completer_delims: Arc<RwLock<String>> = Arc::new(RwLock::new(
+    let history: Rc<PyCell<Vec<String>>> = Rc::new(PyCell::new(Vec::new()));
+    let history_max_len: Rc<PyCell<i64>> = Rc::new(PyCell::new(-1)); // -1 = unlimited
+    let completer: Rc<PyCell<Option<PyObjectRef>>> = Rc::new(PyCell::new(None));
+    let completer_delims: Rc<PyCell<String>> = Rc::new(PyCell::new(
         " \t\n`~!@#$%^&*()-=+[{]}\\|;:'\",<>/?".to_string()
     ));
-    let startup_hook: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(None));
-    let pre_input_hook: Arc<RwLock<Option<PyObjectRef>>> = Arc::new(RwLock::new(None));
+    let startup_hook: Rc<PyCell<Option<PyObjectRef>>> = Rc::new(PyCell::new(None));
+    let pre_input_hook: Rc<PyCell<Option<PyObjectRef>>> = Rc::new(PyCell::new(None));
 
     let h = history.clone();
     let add_history_fn = PyObject::native_closure("add_history", move |args: &[PyObjectRef]| {

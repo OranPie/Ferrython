@@ -1,5 +1,6 @@
 //! Attribute lookup methods and descriptor protocol helpers.
 
+use std::rc::Rc;
 use crate::error::{PyException, ExceptionKind};
 use crate::intern::{self, intern_or_new};
 use crate::types::{HashableKey, PyInt};
@@ -449,7 +450,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }
                     }
                     return Some(PyObject::wrap(PyObjectPayload::MappingProxy(
-                        Arc::new(RwLock::new(map)),
+                        Rc::new(PyCell::new(map)),
                     )));
                 }
                 if name == "__module__" {
@@ -759,7 +760,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 PyObject::builtin_type(CompactString::from("method_descriptor")));
                         }
                         Some(PyObject::wrap(PyObjectPayload::MappingProxy(
-                            Arc::new(RwLock::new(map)),
+                            Rc::new(PyCell::new(map)),
                         )))
                     }
                     "__bases__" => {

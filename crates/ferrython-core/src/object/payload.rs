@@ -5,14 +5,80 @@ use crate::object::methods::PyObjectMethods;
 use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use rustc_hash::{FxHashMap, FxHasher};
 use std::any::Any;
+use std::cell::UnsafeCell;
 use std::hash::BuildHasherDefault;
 use std::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+
+// ── PyCell: zero-overhead interior mutability (replaces parking_lot::RwLock) ──
+
+/// Zero-overhead interior mutability cell for GIL-semantics interpreter.
+/// Provides the same `.read()` / `.write()` / `.data_ptr()` API as parking_lot::RwLock
+/// but with zero locking overhead — just returns references through UnsafeCell.
+///
+/// SAFETY: Ferrython uses GIL semantics (single-threaded Python execution).
+/// No concurrent access to PyCell contents occurs.
+pub struct PyCell<T>(UnsafeCell<T>);
+
+unsafe impl<T> Send for PyCell<T> {}
+unsafe impl<T> Sync for PyCell<T> {}
+
+impl<T> PyCell<T> {
+    #[inline(always)]
+    pub fn new(val: T) -> Self { Self(UnsafeCell::new(val)) }
+
+    #[inline(always)]
+    pub fn read(&self) -> PyCellRef<'_, T> {
+        PyCellRef(unsafe { &*self.0.get() })
+    }
+
+    #[inline(always)]
+    pub fn write(&self) -> PyCellMut<'_, T> {
+        PyCellMut(unsafe { &mut *self.0.get() })
+    }
+
+    #[inline(always)]
+    pub fn data_ptr(&self) -> *mut T { self.0.get() }
+}
+
+impl<T: Clone> Clone for PyCell<T> {
+    fn clone(&self) -> Self {
+        Self::new(unsafe { &*self.0.get() }.clone())
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for PyCell<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        unsafe { &*self.0.get() }.fmt(f)
+    }
+}
+
+/// Read guard for PyCell — Deref to &T (zero-cost wrapper).
+pub struct PyCellRef<'a, T>(&'a T);
+
+impl<'a, T> std::ops::Deref for PyCellRef<'a, T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T { self.0 }
+}
+
+/// Write guard for PyCell — DerefMut to &mut T (zero-cost wrapper).
+pub struct PyCellMut<'a, T>(&'a mut T);
+
+impl<'a, T> std::ops::Deref for PyCellMut<'a, T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T { self.0 }
+}
+
+impl<'a, T> std::ops::DerefMut for PyCellMut<'a, T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T { self.0 }
+}
 
 /// FxHash build hasher — ~3-4x faster than SipHash for short strings.
 pub type FxBuildHasher = BuildHasherDefault<FxHasher>;
@@ -21,19 +87,19 @@ pub type FxBuildHasher = BuildHasherDefault<FxHasher>;
 /// Used for instance attrs, class namespaces, and module attrs (hot path).
 pub type FxAttrMap = IndexMap<CompactString, PyObjectRef, FxBuildHasher>;
 
-/// Shared attribute map behind Arc<RwLock> — used by InstanceData and InstanceDict.
-pub type SharedFxAttrMap = Arc<RwLock<FxAttrMap>>;
+/// Shared attribute map behind Rc<PyCell> — used by InstanceData and InstanceDict.
+pub type SharedFxAttrMap = Rc<PyCell<FxAttrMap>>;
 
 /// Convert a SipHash IndexMap to SharedFxAttrMap (for callers that build with IndexMap::new()).
 #[inline]
 pub fn to_shared_fx(attrs: IndexMap<CompactString, PyObjectRef>) -> SharedFxAttrMap {
-    Arc::new(RwLock::new(attrs.into_iter().collect()))
+    Rc::new(PyCell::new(attrs.into_iter().collect()))
 }
 
 /// Create a new empty SharedFxAttrMap.
 #[inline]
 pub fn new_shared_fx() -> SharedFxAttrMap {
-    Arc::new(RwLock::new(FxAttrMap::default()))
+    Rc::new(PyCell::new(FxAttrMap::default()))
 }
 
 /// Global monotonic counter for class versioning. Incremented each time a
@@ -212,15 +278,15 @@ pub enum PyObjectPayload {
     Str(CompactString),
     Bytes(Vec<u8>),
     ByteArray(Vec<u8>),
-    List(Arc<RwLock<Vec<PyObjectRef>>>),
+    List(Rc<PyCell<Vec<PyObjectRef>>>),
     Tuple(Vec<PyObjectRef>),
-    Set(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
+    Set(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
     FrozenSet(Box<IndexMap<HashableKey, PyObjectRef>>),
-    Dict(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
+    Dict(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
     /// A dict that is a live view of an instance's __dict__ (shares backing store)
     InstanceDict(SharedFxAttrMap),
     /// Read-only view of a class namespace (types.MappingProxyType)
-    MappingProxy(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
+    MappingProxy(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
     Function(Box<PyFunction>),
     BuiltinFunction(CompactString),
     /// Built-in type object (int, str, float, etc.) — callable as constructor
@@ -236,21 +302,21 @@ pub enum PyObjectPayload {
     RangeIter { current: SyncI64, stop: i64, step: i64 },
     Slice { start: Option<PyObjectRef>, stop: Option<PyObjectRef>, step: Option<PyObjectRef> },
     /// A cell object wrapping a shared mutable reference (for closures).
-    Cell(Arc<RwLock<Option<PyObjectRef>>>),
+    Cell(Rc<PyCell<Option<PyObjectRef>>>),
     /// Exception type object (e.g. ValueError, TypeError)
     ExceptionType(ExceptionKind),
     /// Exception instance (raised exception with kind, message, and optional args)
     ExceptionInstance(Box<ExceptionInstanceData>),
     /// Generator object (suspended coroutine with opaque frame storage)
-    Generator(Arc<RwLock<GeneratorState>>),
+    Generator(Rc<PyCell<GeneratorState>>),
     /// Coroutine object (from async def — uses same frame machinery as Generator)
-    Coroutine(Arc<RwLock<GeneratorState>>),
+    Coroutine(Rc<PyCell<GeneratorState>>),
     /// Async generator object (from async def with yield)
-    AsyncGenerator(Arc<RwLock<GeneratorState>>),
+    AsyncGenerator(Rc<PyCell<GeneratorState>>),
     /// Awaitable returned by async generator protocol methods (__anext__, asend, athrow, aclose).
     /// When driven via send(None), resumes the underlying async generator with the specified action.
     AsyncGenAwaitable {
-        gen: Arc<RwLock<GeneratorState>>,
+        gen: Rc<PyCell<GeneratorState>>,
         action: AsyncGenAction,
     },
     /// Native Rust function callable from Python (for module functions)
@@ -281,9 +347,9 @@ pub enum PyObjectPayload {
     /// allowing asyncio.wait_for to enforce timeouts via a deadline.
     DeferredSleep { secs: f64, result: PyObjectRef },
     /// Dict view objects — live views backed by the underlying dict's Arc
-    DictKeys(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
-    DictValues(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
-    DictItems(Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>),
+    DictKeys(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
+    DictValues(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
+    DictItems(Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>),
 }
 
 impl fmt::Debug for PyObjectPayload {
@@ -385,19 +451,19 @@ pub enum AsyncGenAction {
 pub struct ClassData {
     pub name: CompactString,
     pub bases: Vec<PyObjectRef>,
-    pub namespace: Arc<RwLock<FxAttrMap>>,
+    pub namespace: Rc<PyCell<FxAttrMap>>,
     pub mro: Vec<PyObjectRef>,
     /// Custom metaclass, if any (e.g., SingletonMeta). None = default `type`.
     pub metaclass: Option<PyObjectRef>,
     /// Per-class method resolution cache: avoids repeated MRO scans for the same attr name.
     /// Cleared on any namespace mutation (class attr assignment).
     /// Uses FxHashMap for faster hashing (no insertion-order needed).
-    pub method_cache: Arc<RwLock<FxHashMap<CompactString, Option<PyObjectRef>>>>,
+    pub method_cache: Rc<PyCell<FxHashMap<CompactString, Option<PyObjectRef>>>>,
     /// Fast-path flag: true if this class or any base defines Property, __set__, or __delete__.
     /// When false, instance attr lookup can skip the descriptor protocol entirely.
     pub has_descriptors: bool,
     /// Weak references to direct subclasses (for type.__subclasses__()).
-    pub subclasses: Arc<RwLock<Vec<PyWeakRef>>>,
+    pub subclasses: Rc<PyCell<Vec<PyWeakRef>>>,
     /// `__slots__` declared on *this* class (None means no __slots__ declared).
     pub slots: Option<Vec<CompactString>>,
     /// Fast-path flag: true if this class (or any base) defines a custom __getattribute__.
@@ -409,7 +475,7 @@ pub struct ClassData {
     /// Pre-computed method vtable: flattened MRO methods for O(1) lookup.
     /// Built at class creation time from own namespace + all bases in MRO order.
     /// Cleared on namespace mutation alongside method_cache.
-    pub method_vtable: Arc<RwLock<FxHashMap<CompactString, PyObjectRef>>>,
+    pub method_vtable: Rc<PyCell<FxHashMap<CompactString, PyObjectRef>>>,
     /// Instance attribute shape: maps attr name → dense index for O(1) attr access.
     /// Built from __init__ analysis or __slots__. Instances store values in a Vec
     /// indexed by these offsets. Attrs not in the shape fall back to overflow dict.
@@ -533,16 +599,16 @@ impl ClassData {
         Self {
             name,
             bases,
-            namespace: Arc::new(RwLock::new(namespace)),
+            namespace: Rc::new(PyCell::new(namespace)),
             mro,
             metaclass,
-            method_cache: Arc::new(RwLock::new(FxHashMap::default())),
-            subclasses: Arc::new(RwLock::new(Vec::new())),
+            method_cache: Rc::new(PyCell::new(FxHashMap::default())),
+            subclasses: Rc::new(PyCell::new(Vec::new())),
             slots,
             has_getattribute,
             has_setattr,
             has_descriptors,
-            method_vtable: Arc::new(RwLock::new(vtable)),
+            method_vtable: Rc::new(PyCell::new(vtable)),
             attr_shape: Arc::new(attr_shape),
             class_version: next_class_version(),
             is_dict_subclass,
@@ -563,7 +629,7 @@ impl ClassData {
         for (k, v) in self.namespace.read().iter() {
             vtable.insert(k.clone(), v.clone());
         }
-        self.method_vtable = Arc::new(RwLock::new(vtable));
+        self.method_vtable = Rc::new(PyCell::new(vtable));
         self.class_version = next_class_version();
     }
 
@@ -683,7 +749,7 @@ pub struct InstanceData {
     pub class: PyObjectRef,
     pub attrs: SharedFxAttrMap,
     /// Internal dict storage for dict subclasses
-    pub dict_storage: Option<Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>>,
+    pub dict_storage: Option<Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>>,
     /// Fast-path flag: true if this instance has special markers (__namedtuple__, __deque__, etc.)
     /// When true, LoadMethod uses the full get_attr path.
     pub is_special: bool,
@@ -692,7 +758,7 @@ pub struct InstanceData {
 #[derive(Debug, Clone)]
 pub struct ModuleData {
     pub name: CompactString,
-    pub attrs: Arc<parking_lot::RwLock<FxAttrMap>>,
+    pub attrs: Rc<PyCell<FxAttrMap>>,
 }
 
 #[derive(Debug, Clone)]

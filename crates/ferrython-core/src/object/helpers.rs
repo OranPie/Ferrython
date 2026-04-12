@@ -1,5 +1,6 @@
 //! Formatting helpers, slice resolution, coercion, and module-building utilities.
 
+use std::rc::Rc;
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::types::{HashableKey, PyInt};

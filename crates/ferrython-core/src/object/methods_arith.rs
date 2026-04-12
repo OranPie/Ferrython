@@ -1,5 +1,6 @@
 //! Arithmetic operation methods.
 
+use std::rc::Rc;
 use crate::error::{PyException, PyResult};
 use crate::intern::intern_or_new;
 use crate::types::{PyInt, HashableKey};
@@ -35,7 +36,7 @@ fn extract_view_keys(obj: &PyObjectRef) -> Option<IndexMap<HashableKey, PyObject
 
 /// Build a set result from an IndexMap of HashableKey.
 fn keys_to_set(keys: IndexMap<HashableKey, PyObjectRef>) -> PyObjectRef {
-    PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(keys))))
+    PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(keys))))
 }
 
 pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> {
@@ -114,7 +115,7 @@ pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                         result.insert(HashableKey::Str(intern_or_new("__defaultdict_factory__")), factory.clone());
                     }
                 }
-                Ok(PyObject::wrap(PyObjectPayload::Dict(Arc::new(RwLock::new(result)))))
+                Ok(PyObject::wrap(PyObjectPayload::Dict(Rc::new(PyCell::new(result)))))
             }
             // IntEnum: Instance + Instance → extract .value and add
             (PyObjectPayload::Instance(a_inst), PyObjectPayload::Instance(b_inst)) => {
@@ -164,7 +165,7 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 let ra = a.read(); let rb = b.read();
                 let mut result = IndexMap::new();
                 for (k, v) in ra.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+                Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
             (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
                 let mut result = IndexMap::new();
@@ -181,7 +182,7 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 let ra = a.read();
                 let mut result = IndexMap::new();
                 for (k, v) in ra.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+                Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
             // DictKeys/DictItems set-like difference
             (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)
@@ -638,7 +639,7 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                 let ra = a.read(); let rb = b.read();
                 let mut result = IndexMap::new();
                 for (k, v) in ra.iter() { if rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+                Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
             (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
                 let mut result = IndexMap::new();
@@ -655,7 +656,7 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                 let ra = a.read();
                 let mut result = IndexMap::new();
                 for (k, v) in ra.iter() { if b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+                Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
             // Counter & Counter: minimum of counts (intersection)
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
@@ -710,7 +711,7 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                 let ra = a.read(); let rb = b.read();
                 let mut result = ra.clone();
                 for (k, v) in rb.iter() { result.insert(k.clone(), v.clone()); }
-                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+                Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
             (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
                 let mut result = a.clone();
@@ -727,7 +728,7 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                 let ra = a.read();
                 let mut result = ra.clone();
                 for (k, v) in b.iter() { result.insert(k.clone(), v.clone()); }
-                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+                Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
             // PEP 584: dict | dict (also Counter | Counter with max semantics)
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
@@ -792,7 +793,7 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                 let mut result = IndexMap::new();
                 for (k, v) in ra.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 for (k, v) in rb.iter() { if !ra.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+                Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
             (PyObjectPayload::FrozenSet(a), PyObjectPayload::FrozenSet(b)) => {
                 let mut result = IndexMap::new();
@@ -812,7 +813,7 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
                 let mut result = IndexMap::new();
                 for (k, v) in ra.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 for (k, v) in b.iter() { if !ra.contains_key(k) { result.insert(k.clone(), v.clone()); } }
-                Ok(PyObject::wrap(PyObjectPayload::Set(Arc::new(RwLock::new(result)))))
+                Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
             // DictKeys/DictItems set-like symmetric difference
             (PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_), _)

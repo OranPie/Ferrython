@@ -7,7 +7,7 @@ use compact_str::CompactString;
 use ferrython_bytecode::opcode::Opcode;
 use ferrython_bytecode::{CodeObject, Instruction};
 use ferrython_core::error::{ExceptionKind, PyException};
-use ferrython_core::object::{
+use ferrython_core::object::{ PyCell, 
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
     has_descriptor_get, lookup_in_class_mro, FxAttrMap,
 };
@@ -15,6 +15,7 @@ use ferrython_core::types::{HashableKey, PyFunction};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 impl VirtualMachine {
     pub(crate) fn exec_jump_ops(&mut self, instr: Instruction) -> Result<Option<PyObjectRef>, PyException> {
@@ -899,7 +900,7 @@ impl VirtualMachine {
                             items.iter().map(|item| {
                                 match &item.payload {
                                     PyObjectPayload::Cell(cell) => cell.clone(),
-                                    _ => Arc::new(RwLock::new(Some(item.clone()))),
+                                    _ => Rc::new(PyCell::new(Some(item.clone()))),
                                 }
                             }).collect()
                         }
@@ -956,7 +957,7 @@ impl VirtualMachine {
                     globals: frame.globals.clone(),
                     closure: closure_cells,
                     annotations,
-                    attrs: Arc::new(RwLock::new(FxAttrMap::default())),
+                    attrs: Rc::new(PyCell::new(FxAttrMap::default())),
                     is_simple,
                 };
                 frame.push(PyObject::function(func));

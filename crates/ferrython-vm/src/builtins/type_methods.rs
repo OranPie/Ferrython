@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{
+use ferrython_core::object::{ PyCell, 
     check_args_min,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -11,6 +11,7 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::rc::Rc;
 
 // ── UTF-16/32 decode helpers ──────────────────────────────────────
 
@@ -70,7 +71,7 @@ fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
     None
 }
 
-pub(super) fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_list_method(items: Rc<PyCell<Vec<PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::list(items.read().to_vec())),
         "count" => {
@@ -386,7 +387,7 @@ pub(super) fn call_list_method(items: Arc<RwLock<Vec<PyObjectRef>>>, method: &st
     }
 }
 
-pub(super) fn call_dict_method(map: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_dict_method(map: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "keys" => {
             Ok(PyObject::wrap(PyObjectPayload::DictKeys(map.clone())))
@@ -792,7 +793,7 @@ pub(super) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyO
     }
 }
 
-pub(super) fn call_set_method(m: &Arc<RwLock<IndexMap<HashableKey, PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_set_method(m: &Rc<PyCell<IndexMap<HashableKey, PyObjectRef>>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
         "copy" => Ok(PyObject::set(m.read().clone())),
         "union" | "__or__" => {

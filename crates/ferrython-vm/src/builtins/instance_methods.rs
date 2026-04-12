@@ -6,13 +6,14 @@
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::intern::intern_or_new;
-use ferrython_core::object::{
+use ferrython_core::object::{ PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
     CompareOp, check_args_min, SharedFxAttrMap,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use std::sync::Arc;
+use std::rc::Rc;
 use parking_lot::RwLock;
 
 use super::core_fns::{builtin_dict_fromkeys, builtin_type};
@@ -201,7 +202,7 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
         inst.attrs.read().get("__maxlen__").and_then(|v| v.as_int()).map(|n| n as usize)
     };
     // Helper: enforce maxlen by trimming from the appropriate end
-    let enforce_maxlen_right = |list: &parking_lot::RwLock<Vec<PyObjectRef>>| {
+    let enforce_maxlen_right = |list: &Rc<PyCell<Vec<PyObjectRef>>>| {
         if let Some(ml) = get_maxlen() {
             let mut v = list.write();
             while v.len() > ml {
@@ -209,7 +210,7 @@ pub(super) fn call_deque_method(inst: &ferrython_core::object::InstanceData, met
             }
         }
     };
-    let enforce_maxlen_left = |list: &parking_lot::RwLock<Vec<PyObjectRef>>| {
+    let enforce_maxlen_left = |list: &Rc<PyCell<Vec<PyObjectRef>>>| {
         if let Some(ml) = get_maxlen() {
             let mut v = list.write();
             while v.len() > ml {
@@ -731,7 +732,7 @@ pub(super) fn call_hashlib_method(inst: &ferrython_core::object::InstanceData, m
             let cls = inst.class.clone();
             let new_inst = PyObject::wrap(PyObjectPayload::Instance(InstanceData {
                 class: cls,
-                attrs: Arc::new(RwLock::new(attrs.clone())),
+                attrs: Rc::new(PyCell::new(attrs.clone())),
                 is_special: true, dict_storage: None,
             }));
             Ok(new_inst)
