@@ -2806,7 +2806,7 @@ impl VirtualMachine {
                             return Ok(PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::AsyncGenAwaitable {
                                     gen: gen_arc.clone(),
-                                    action: AsyncGenAction::Next,
+                                    action: Box::new(AsyncGenAction::Next),
                                 }
                             }));
                         }
@@ -2815,7 +2815,7 @@ impl VirtualMachine {
                             return Ok(PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::AsyncGenAwaitable {
                                     gen: gen_arc.clone(),
-                                    action: AsyncGenAction::Send(val),
+                                    action: Box::new(AsyncGenAction::Send(val)),
                                 }
                             }));
                         }
@@ -2824,7 +2824,7 @@ impl VirtualMachine {
                             return Ok(PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::AsyncGenAwaitable {
                                     gen: gen_arc.clone(),
-                                    action: AsyncGenAction::Throw(exc_kind, CompactString::from(msg)),
+                                    action: Box::new(AsyncGenAction::Throw(exc_kind, CompactString::from(msg))),
                                 }
                             }));
                         }
@@ -2832,7 +2832,7 @@ impl VirtualMachine {
                             return Ok(PyObjectRef::new(PyObject {
                                 payload: PyObjectPayload::AsyncGenAwaitable {
                                     gen: gen_arc.clone(),
-                                    action: AsyncGenAction::Close,
+                                    action: Box::new(AsyncGenAction::Close),
                                 }
                             }));
                         }

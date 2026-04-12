@@ -650,7 +650,7 @@ pub enum PyObjectPayload {
     /// When driven via send(None), resumes the underlying async generator with the specified action.
     AsyncGenAwaitable {
         gen: Rc<PyCell<GeneratorState>>,
-        action: AsyncGenAction,
+        action: Box<AsyncGenAction>,
     },
     /// Native Rust function callable from Python (for module functions)
     NativeFunction(Box<NativeFunctionData>),
