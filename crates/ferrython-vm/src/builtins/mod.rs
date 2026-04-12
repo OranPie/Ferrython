@@ -280,7 +280,8 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 | IteratorData::Repeat { .. }
                 | IteratorData::Chain { .. }
                 | IteratorData::Starmap { .. }
-                | IteratorData::DictEntries { .. } => {
+                | IteratorData::DictEntries { .. }
+                | IteratorData::DictKeys { .. } => {
                     Err(PyException::type_error("lazy iterator requires VM-level iteration"))
                 }
             }
@@ -362,6 +363,18 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                             t
                         };
                         Ok(Some(tuple))
+                    } else { Ok(None) }
+                }
+                IteratorData::DictKeys { map, index, len } => {
+                    if *index < *len {
+                        let r = unsafe { &*map.data_ptr() };
+                        if let Some((k, _)) = r.get_index(*index) {
+                            let obj = k.to_object();
+                            *index += 1;
+                            Ok(Some(obj))
+                        } else {
+                            Ok(None)
+                        }
                     } else { Ok(None) }
                 }
                 _ => Err(PyException::type_error("lazy iterator requires VM-level iteration")),

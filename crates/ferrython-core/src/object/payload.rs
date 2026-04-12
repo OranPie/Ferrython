@@ -1194,5 +1194,8 @@ pub enum IteratorData {
     Starmap { func: PyObjectRef, source: PyObjectRef },
     /// Lazy dict items iteration with cached tuple reuse (CPython-style)
     DictEntries { keys: Vec<PyObjectRef>, values: Vec<PyObjectRef>, index: usize, cached_tuple: Option<PyObjectRef> },
+    /// Lazy dict keys iteration — stores Rc to dict map, converts keys on-the-fly.
+    /// Avoids upfront Vec<PyObjectRef> allocation for all keys.
+    DictKeys { map: Rc<PyCell<FxHashKeyMap>>, index: usize, len: usize },
 }
 

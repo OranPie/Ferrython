@@ -1468,6 +1468,26 @@ impl VirtualMachine {
                                 }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
+                            IteratorData::DictKeys { map, index, len } => {
+                                if *index < *len {
+                                    let r = unsafe { &*map.data_ptr() };
+                                    if let Some((k, _)) = r.get_index(*index) {
+                                        let obj = k.to_object();
+                                        *index += 1;
+                                        drop(data);
+                                        spush!(frame, obj);
+                                    } else {
+                                        drop(data);
+                                        drop(spop!(frame));
+                                        frame.ip = instr.arg as usize;
+                                    }
+                                } else {
+                                    drop(data);
+                                    drop(spop!(frame));
+                                    frame.ip = instr.arg as usize;
+                                }
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
                             _ => {
                                 drop(data);
                                 self.execute_one(instr)
@@ -1539,6 +1559,26 @@ impl VirtualMachine {
                                     *index += 1;
                                     drop(data);
                                     sset_local!(frame, store_idx, v);
+                                } else {
+                                    drop(data);
+                                    drop(spop!(frame));
+                                    frame.ip = jump_target;
+                                }
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
+                            IteratorData::DictKeys { map, index, len } => {
+                                if *index < *len {
+                                    let r = unsafe { &*map.data_ptr() };
+                                    if let Some((k, _)) = r.get_index(*index) {
+                                        let obj = k.to_object();
+                                        *index += 1;
+                                        drop(data);
+                                        sset_local!(frame, store_idx, obj);
+                                    } else {
+                                        drop(data);
+                                        drop(spop!(frame));
+                                        frame.ip = jump_target;
+                                    }
                                 } else {
                                     drop(data);
                                     drop(spop!(frame));
@@ -4059,20 +4099,49 @@ impl VirtualMachine {
                                         hot_ok!(profiling, self.profiler, instr.op)
                                     }
                                 } else {
-                                    // General builtin method dispatch
-                                    let mut args = Vec::with_capacity(arg_count);
-                                    for _ in 0..arg_count {
-                                        args.push(spop!(frame));
-                                    }
-                                    args.reverse();
-                                    let receiver = spop!(frame);
-                                    let name_obj = spop!(frame);
-                                    if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                        let result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
-                                        spush!(frame, result);
-                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    // General builtin method dispatch — avoid Vec for 1-2 args
+                                    if arg_count == 1 {
+                                        let a0 = spop!(frame);
+                                        let receiver = spop!(frame);
+                                        let name_obj = spop!(frame);
+                                        if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                            let result = crate::builtins::call_method(&receiver, name.as_str(), &[a0])?;
+                                            spush!(frame, result);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        } else { unreachable!() }
+                                    } else if arg_count == 2 {
+                                        let a1 = spop!(frame);
+                                        let a0 = spop!(frame);
+                                        let receiver = spop!(frame);
+                                        let name_obj = spop!(frame);
+                                        if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                            let result = crate::builtins::call_method(&receiver, name.as_str(), &[a0, a1])?;
+                                            spush!(frame, result);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        } else { unreachable!() }
+                                    } else if arg_count == 0 {
+                                        let receiver = spop!(frame);
+                                        let name_obj = spop!(frame);
+                                        if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                            let result = crate::builtins::call_method(&receiver, name.as_str(), &[])?;
+                                            spush!(frame, result);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        } else { unreachable!() }
                                     } else {
-                                        unreachable!()
+                                        let mut args = Vec::with_capacity(arg_count);
+                                        for _ in 0..arg_count {
+                                            args.push(spop!(frame));
+                                        }
+                                        args.reverse();
+                                        let receiver = spop!(frame);
+                                        let name_obj = spop!(frame);
+                                        if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                            let result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
+                                            spush!(frame, result);
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        } else {
+                                            unreachable!()
+                                        }
                                     }
                                 }
                             }
@@ -4160,13 +4229,28 @@ impl VirtualMachine {
                             }
                         } else {
                             // General builtin method — execute, then discard result
-                            let mut args = Vec::with_capacity(arg_count);
-                            for _ in 0..arg_count { args.push(spop!(frame)); }
-                            args.reverse();
-                            let receiver = spop!(frame);
-                            let name_obj = spop!(frame);
-                            if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                let _result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
+                            if arg_count == 1 {
+                                let a0 = spop!(frame);
+                                let receiver = spop!(frame);
+                                let name_obj = spop!(frame);
+                                if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                    let _result = crate::builtins::call_method(&receiver, name.as_str(), &[a0])?;
+                                }
+                            } else if arg_count == 0 {
+                                let receiver = spop!(frame);
+                                let name_obj = spop!(frame);
+                                if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                    let _result = crate::builtins::call_method(&receiver, name.as_str(), &[])?;
+                                }
+                            } else {
+                                let mut args = Vec::with_capacity(arg_count);
+                                for _ in 0..arg_count { args.push(spop!(frame)); }
+                                args.reverse();
+                                let receiver = spop!(frame);
+                                let name_obj = spop!(frame);
+                                if let PyObjectPayload::Str(ref name) = name_obj.payload {
+                                    let _result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
+                                }
                             }
                             hot_ok!(profiling, self.profiler, instr.op)
                         }

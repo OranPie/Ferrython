@@ -186,24 +186,39 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                 extract_kwarg(args, "maxsplit").and_then(|v| v.as_int().map(|n| n as usize))
             };
             let sep_arg = pos.first();
-            let parts: Vec<&str> = match sep_arg {
+            // Build result Vec<PyObjectRef> directly — no intermediate Vec<&str>
+            let parts: Vec<PyObjectRef> = match sep_arg {
                 None => match maxsplit {
-                    Some(n) => s.splitn(n + 1, char::is_whitespace).filter(|p| !p.is_empty()).collect(),
-                    None => s.split_whitespace().collect(),
+                    Some(n) => s.splitn(n + 1, char::is_whitespace)
+                        .filter(|p| !p.is_empty())
+                        .map(|p| PyObject::str_val(CompactString::from(p)))
+                        .collect(),
+                    None => s.split_whitespace()
+                        .map(|p| PyObject::str_val(CompactString::from(p)))
+                        .collect(),
                 },
                 Some(a) if matches!(&a.payload, PyObjectPayload::None) => match maxsplit {
-                    Some(n) => s.splitn(n + 1, char::is_whitespace).filter(|p| !p.is_empty()).collect(),
-                    None => s.split_whitespace().collect(),
+                    Some(n) => s.splitn(n + 1, char::is_whitespace)
+                        .filter(|p| !p.is_empty())
+                        .map(|p| PyObject::str_val(CompactString::from(p)))
+                        .collect(),
+                    None => s.split_whitespace()
+                        .map(|p| PyObject::str_val(CompactString::from(p)))
+                        .collect(),
                 },
                 Some(a) => {
                     let sep = a.as_str().ok_or_else(|| PyException::type_error("split() argument must be str or None"))?;
                     match maxsplit {
-                        Some(n) => s.splitn(n + 1, sep).collect(),
-                        None => s.split(sep).collect(),
+                        Some(n) => s.splitn(n + 1, sep)
+                            .map(|p| PyObject::str_val(CompactString::from(p)))
+                            .collect(),
+                        None => s.split(sep)
+                            .map(|p| PyObject::str_val(CompactString::from(p)))
+                            .collect(),
                     }
                 }
             };
-            Ok(PyObject::list(parts.iter().map(|p| PyObject::str_val(CompactString::from(*p))).collect()))
+            Ok(PyObject::list(parts))
         }
         "rsplit" => {
             let pos = positional_args(args);
@@ -240,35 +255,49 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
         }
         "join" => {
             check_args_min("join", args, 1)?;
-            let items = args[0].to_list()?;
-            // Compute total length and validate all items are str upfront
-            let mut total_len = if items.is_empty() { 0 } else { s.len() * (items.len() - 1) };
-            for item in &items {
-                match item.as_str() {
-                    Some(part) => total_len += part.len(),
-                    None => return Err(PyException::type_error("sequence item: expected str")),
+            // Fast path: borrow List/Tuple inner data directly without cloning
+            match &args[0].payload {
+                PyObjectPayload::List(v) => {
+                    let items = v.read();
+                    join_str_slice(s, &items)
+                }
+                PyObjectPayload::Tuple(items) => join_str_slice(s, items),
+                _ => {
+                    let items = args[0].to_list()?;
+                    join_str_slice(s, &items)
                 }
             }
-            let mut result = String::with_capacity(total_len);
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 { result.push_str(s); }
-                if let Some(part) = item.as_str() {
-                    result.push_str(part);
-                }
-            }
-            Ok(PyObject::str_val(CompactString::from(result)))
         }
         "replace" => {
             check_args_min("replace", args, 2)?;
-            let old = extract_str_value(&args[0])
-                .ok_or_else(|| PyException::type_error("replace() argument 1 must be str"))?;
-            let new = extract_str_value(&args[1])
-                .ok_or_else(|| PyException::type_error("replace() argument 2 must be str"))?;
-            if args.len() >= 3 {
-                let count = args[2].to_int()? as usize;
-                Ok(PyObject::str_val(CompactString::from(s.replacen(&old, &new, count))))
-            } else {
-                Ok(PyObject::str_val(CompactString::from(s.replace(&old[..], &new[..]))))
+            // Fast path: borrow &str directly when args are Str payloads (avoids String alloc)
+            let old_ref = args[0].as_str();
+            let new_ref = args[1].as_str();
+            match (old_ref, new_ref) {
+                (Some(old), Some(new)) => {
+                    if args.len() >= 3 {
+                        let count = args[2].to_int()? as usize;
+                        // Build directly into CompactString — avoid intermediate String
+                        let result = replace_into_compact(s, old, new, Some(count));
+                        Ok(PyObject::str_val(result))
+                    } else {
+                        let result = replace_into_compact(s, old, new, None);
+                        Ok(PyObject::str_val(result))
+                    }
+                }
+                _ => {
+                    // Fallback: extract via to_string() for subclasses
+                    let old = extract_str_value(&args[0])
+                        .ok_or_else(|| PyException::type_error("replace() argument 1 must be str"))?;
+                    let new = extract_str_value(&args[1])
+                        .ok_or_else(|| PyException::type_error("replace() argument 2 must be str"))?;
+                    if args.len() >= 3 {
+                        let count = args[2].to_int()? as usize;
+                        Ok(PyObject::str_val(CompactString::from(s.replacen(&old, &new, count))))
+                    } else {
+                        Ok(PyObject::str_val(CompactString::from(s.replace(&old[..], &new[..]))))
+                    }
+                }
             }
         }
         "find" => {
@@ -1142,5 +1171,70 @@ pub fn punycode_decode_bytes(bytes: &[u8]) -> PyResult<PyObjectRef> {
         i += 1;
     }
     let result: String = output.iter().filter_map(|&cp| char::from_u32(cp)).collect();
+    Ok(PyObject::str_val(CompactString::from(result)))
+}
+
+/// Replace occurrences of `old` with `new` in `s`, writing directly into a CompactString.
+/// Avoids the intermediate String allocation that `str::replace()` creates.
+fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>) -> CompactString {
+    if old.is_empty() {
+        // Empty pattern: insert `new` between each character (CPython behavior)
+        let char_count = s.chars().count();
+        let limit = max_count.unwrap_or(char_count + 1);
+        let mut result = CompactString::with_capacity(s.len() + new.len() * limit.min(char_count + 1));
+        let mut count = 0;
+        for ch in s.chars() {
+            if count < limit {
+                result.push_str(new);
+                count += 1;
+            }
+            result.push(ch);
+        }
+        if count < limit {
+            result.push_str(new);
+        }
+        return result;
+    }
+    // Estimate capacity
+    let mut result = CompactString::with_capacity(s.len());
+    let mut remaining = s;
+    let mut count = 0;
+    let limit = max_count.unwrap_or(usize::MAX);
+    while count < limit {
+        match remaining.find(old) {
+            Some(pos) => {
+                result.push_str(&remaining[..pos]);
+                result.push_str(new);
+                remaining = &remaining[pos + old.len()..];
+                count += 1;
+            }
+            None => break,
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+/// Avoids cloning the list/tuple just to iterate.
+fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+    if items.is_empty() {
+        return Ok(PyObject::str_val(CompactString::new("")));
+    }
+    let mut total_len = sep.len() * (items.len() - 1);
+    for (i, item) in items.iter().enumerate() {
+        match item.as_str() {
+            Some(part) => total_len += part.len(),
+            None => return Err(PyException::type_error(
+                format!("sequence item {}: expected str instance, {} found", i, item.type_name())
+            )),
+        }
+    }
+    let mut result = String::with_capacity(total_len);
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 { result.push_str(sep); }
+        // SAFETY: validated all items are str in the loop above
+        if let Some(part) = item.as_str() {
+            result.push_str(part);
+        }
+    }
     Ok(PyObject::str_val(CompactString::from(result)))
 }

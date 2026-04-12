@@ -352,10 +352,10 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Tuple { items: items.clone(), index: 0 }))))),
             PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
             PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
-                let keys: Vec<PyObjectRef> = m.read().keys()
-                    .filter(|k| !is_hidden_dict_key(k))
-                    .map(|k| k.to_object()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::List { items: keys, index: 0 })))))
+                let len = m.read().len();
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                    IteratorData::DictKeys { map: Rc::clone(m), index: 0, len }
+                )))))
             }
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
                 if let Some(storage) = inst.dict_storage.as_ref() {
@@ -397,10 +397,10 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 py_get_iter(&bv)
             }
             PyObjectPayload::DictKeys(m) => {
-                let keys: Vec<PyObjectRef> = m.read().keys()
-                    .filter(|k| !is_hidden_dict_key(k))
-                    .map(|k| k.to_object()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::List { items: keys, index: 0 })))))
+                let len = m.read().len();
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
+                    IteratorData::DictKeys { map: Rc::clone(m), index: 0, len }
+                )))))
             }
             PyObjectPayload::DictValues(m) => {
                 let vals: Vec<PyObjectRef> = m.read().iter()
