@@ -2728,11 +2728,11 @@ fn subprocess_check_call(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             (CompactString::from("output"), PyObject::none()),
             (CompactString::from("stderr"), PyObject::none()),
         ]);
-        ex.original = Some(PyObject::wrap(PyObjectPayload::ExceptionInstance(Box::new(ExceptionInstanceData {
+        ex.original = Some(PyObject::wrap(PyObjectPayload::ExceptionInstance(std::mem::ManuallyDrop::new(Box::new(ExceptionInstanceData {
             kind: ExceptionKind::CalledProcessError,
             message: msg.into(),            args: vec![PyObject::int(rc)],
             attrs: Some(to_shared_fx(exc_attrs)),
-        }))));
+        })))));
         return Err(ex);
     }
     Ok(PyObject::int(rc))

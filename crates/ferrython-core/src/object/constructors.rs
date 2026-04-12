@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::mem::ManuallyDrop;
 use crate::error::{ExceptionKind, PyResult};
 use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
@@ -20,6 +21,61 @@ const MAP_FREELIST_MAX: usize = 80; // CPython uses 80 for dicts
 thread_local! {
     static MAP_FREELIST: RefCell<Vec<Rc<PyCell<FxHashKeyMap>>>> =
         RefCell::new(Vec::with_capacity(MAP_FREELIST_MAX));
+}
+
+// ── Exception instance freelist ──
+// Recycle Box<ExceptionInstanceData> to avoid malloc/free per raise/catch cycle.
+// CPython has a per-type freelist for exception objects.
+const EXCEPTION_FREELIST_MAX: usize = 16;
+thread_local! {
+    static EXCEPTION_FREELIST: RefCell<Vec<Box<ExceptionInstanceData>>> =
+        RefCell::new(Vec::with_capacity(EXCEPTION_FREELIST_MAX));
+}
+
+/// Allocate an ExceptionInstanceData box, reusing from freelist if possible.
+#[inline]
+pub fn alloc_exception_box(
+    kind: ExceptionKind,
+    message: CompactString,
+    args: Vec<PyObjectRef>,
+) -> Box<ExceptionInstanceData> {
+    EXCEPTION_FREELIST.with(|fl| {
+        let mut list = fl.borrow_mut();
+        if let Some(mut data) = list.pop() {
+            data.kind = kind;
+            data.message = message;
+            data.args = args;
+            data.attrs = None;
+            data
+        } else {
+            Box::new(ExceptionInstanceData {
+                kind,
+                message,
+                args,
+                attrs: None,
+            })
+        }
+    })
+}
+
+/// Return an ExceptionInstanceData box to the freelist.
+/// Clears inner references to avoid holding PyObjectRef alive.
+#[inline]
+pub(crate) fn recycle_exception_box(mut data: Box<ExceptionInstanceData>) {
+    // CRITICAL: Clear inner references BEFORE borrowing the freelist.
+    // Dropping PyObjectRefs can cascade into more exception drops,
+    // which would re-enter this function. We must not hold the borrow.
+    data.args.clear();
+    data.attrs = None;
+    data.message = CompactString::default();
+    // Now safe to borrow — no nested drops can occur from an empty struct
+    EXCEPTION_FREELIST.with(|fl| {
+        let mut list = fl.borrow_mut();
+        if list.len() < EXCEPTION_FREELIST_MAX {
+            list.push(data);
+        }
+        // else: data drops here (harmless — already cleared)
+    })
 }
 
 /// Allocate an inner Rc<PyCell<FxHashKeyMap>>, reusing from freelist if possible.
@@ -508,20 +564,14 @@ impl PyObject {
     pub fn exception_instance(kind: ExceptionKind, message: impl Into<CompactString>) -> PyObjectRef {
         let msg: CompactString = message.into();
         let args = if msg.is_empty() { vec![] } else { vec![PyObject::str_val(msg.clone())] };
-        Self::wrap(PyObjectPayload::ExceptionInstance(Box::new(ExceptionInstanceData {
-            kind,
-            message: msg,
-            args,
-            attrs: None,
-        })))
+        Self::wrap(PyObjectPayload::ExceptionInstance(ManuallyDrop::new(
+            alloc_exception_box(kind, msg, args),
+        )))
     }
     pub fn exception_instance_with_args(kind: ExceptionKind, message: impl Into<CompactString>, args: Vec<PyObjectRef>) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::ExceptionInstance(Box::new(ExceptionInstanceData {
-            kind,
-            message: message.into(),
-            args,
-            attrs: None,
-        })))
+        Self::wrap(PyObjectPayload::ExceptionInstance(ManuallyDrop::new(
+            alloc_exception_box(kind, message.into(), args),
+        )))
     }
     pub fn generator(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Generator(Rc::new(PyCell::new(GeneratorState {

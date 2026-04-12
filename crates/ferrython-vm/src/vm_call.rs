@@ -3151,46 +3151,56 @@ impl VirtualMachine {
                 } else {
                     CompactString::from(args[0].py_to_string())
                 };
-                let inst = PyObject::exception_instance_with_args(kind.clone(), msg, args.clone());
-                // ExceptionGroup/BaseExceptionGroup: store .message and .exceptions attrs
-                if matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup) {
-                    if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
-                        let mut a = ei.ensure_attrs().write();
-                        if !args.is_empty() {
-                            a.insert(CompactString::from("message"), args[0].clone());
-                        }
-                        if args.len() >= 2 {
-                            let exc_list = match &args[1].payload {
-                                PyObjectPayload::List(_) => args[1].clone(),
-                                PyObjectPayload::Tuple(items) => PyObject::list(items.clone()),
-                                _ => PyObject::list(vec![args[1].clone()]),
-                            };
-                            a.insert(CompactString::from("exceptions"), exc_list);
-                            drop(a);
-                            attach_eg_methods(&inst);
-                        }
-                    }
-                }
-                // OSError and subclasses: OSError(errno, strerror[, filename])
-                if kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2 {
-                    if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
-                        let mut a = ei.ensure_attrs().write();
-                        a.insert(CompactString::from("errno"), args[0].clone());
-                        a.insert(CompactString::from("strerror"), args[1].clone());
-                        if args.len() >= 3 {
-                            a.insert(CompactString::from("filename"), args[2].clone());
-                        } else {
-                            a.insert(CompactString::from("filename"), PyObject::none());
+                // Only clone args for exception types that need post-processing;
+                // common types (ValueError, TypeError, etc.) just move args in.
+                let needs_post = matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup)
+                    || (kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2)
+                    || (*kind == ExceptionKind::SystemExit && !args.is_empty());
+                if needs_post {
+                    let inst = PyObject::exception_instance_with_args(*kind, msg, args.clone());
+                    // ExceptionGroup/BaseExceptionGroup: store .message and .exceptions attrs
+                    if matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup) {
+                        if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                            let mut a = ei.ensure_attrs().write();
+                            if !args.is_empty() {
+                                a.insert(CompactString::from("message"), args[0].clone());
+                            }
+                            if args.len() >= 2 {
+                                let exc_list = match &args[1].payload {
+                                    PyObjectPayload::List(_) => args[1].clone(),
+                                    PyObjectPayload::Tuple(items) => PyObject::list(items.clone()),
+                                    _ => PyObject::list(vec![args[1].clone()]),
+                                };
+                                a.insert(CompactString::from("exceptions"), exc_list);
+                                drop(a);
+                                attach_eg_methods(&inst);
+                            }
                         }
                     }
-                }
-                // SystemExit: store .code attribute
-                if *kind == ExceptionKind::SystemExit && !args.is_empty() {
-                    if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
-                        ei.ensure_attrs().write().insert(CompactString::from("code"), args[0].clone());
+                    // OSError and subclasses: OSError(errno, strerror[, filename])
+                    if kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2 {
+                        if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                            let mut a = ei.ensure_attrs().write();
+                            a.insert(CompactString::from("errno"), args[0].clone());
+                            a.insert(CompactString::from("strerror"), args[1].clone());
+                            if args.len() >= 3 {
+                                a.insert(CompactString::from("filename"), args[2].clone());
+                            } else {
+                                a.insert(CompactString::from("filename"), PyObject::none());
+                            }
+                        }
                     }
+                    // SystemExit: store .code attribute
+                    if *kind == ExceptionKind::SystemExit && !args.is_empty() {
+                        if let PyObjectPayload::ExceptionInstance(ei) = &inst.payload {
+                            ei.ensure_attrs().write().insert(CompactString::from("code"), args[0].clone());
+                        }
+                    }
+                    Ok(inst)
+                } else {
+                    // Common case: no post-processing, move args directly (zero-clone)
+                    Ok(PyObject::exception_instance_with_args(*kind, msg, args))
                 }
-                Ok(inst)
             }
             PyObjectPayload::NativeFunction(nf_data) => {
                 // Intercept functions that need VM access to call Python callables

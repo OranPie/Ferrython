@@ -10,7 +10,7 @@ use std::any::Any;
 use std::cell::{Cell, UnsafeCell};
 use std::hash::BuildHasherDefault;
 use std::fmt;
-use std::mem::MaybeUninit;
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -628,8 +628,10 @@ pub enum PyObjectPayload {
     Cell(Rc<PyCell<Option<PyObjectRef>>>),
     /// Exception type object (e.g. ValueError, TypeError)
     ExceptionType(ExceptionKind),
-    /// Exception instance (raised exception with kind, message, and optional args)
-    ExceptionInstance(Box<ExceptionInstanceData>),
+    /// Exception instance (raised exception with kind, message, and optional args).
+    /// ManuallyDrop enables recycling the Box through the exception freelist
+    /// without the compiler-generated drop trying to free the allocation.
+    ExceptionInstance(ManuallyDrop<Box<ExceptionInstanceData>>),
     /// Generator object (suspended coroutine with opaque frame storage)
     Generator(Rc<PyCell<GeneratorState>>),
     /// Coroutine object (from async def — uses same frame machinery as Generator)
@@ -682,6 +684,13 @@ impl Drop for PyObjectPayload {
                 // freelist) or not. Either way, normal drop of `self` will decrement the
                 // Rc — if recycled, it goes from 2→1 (freelist holds it); if not, it
                 // goes from N→N-1 (normal behavior).
+            }
+            PyObjectPayload::ExceptionInstance(data) => {
+                // SAFETY: We're in Drop, so data won't be accessed after this.
+                // ManuallyDrop::take() moves the Box out; ManuallyDrop's destructor
+                // is a no-op, so no double-free occurs.
+                let taken = unsafe { ManuallyDrop::take(data) };
+                super::constructors::recycle_exception_box(taken);
             }
             _ => {}
         }

@@ -563,9 +563,10 @@ impl VirtualMachine {
             Opcode::CallFunction => {
                 let frame = self.vm_frame();
                 let arg_count = instr.arg as usize;
-                let mut args = Vec::with_capacity(arg_count);
-                for _ in 0..arg_count { args.push(frame.pop()); }
-                args.reverse();
+                // Drain args directly in forward order (avoids pop+reverse)
+                let stack_len = frame.stack.len();
+                let args_start = stack_len - arg_count;
+                let args: Vec<PyObjectRef> = frame.stack.drain(args_start..).collect();
                 let func = frame.pop();
                 let mut result = self.call_object(func, args)?;
                 // Post-call intercepts for VM-aware builtins
@@ -576,9 +577,10 @@ impl VirtualMachine {
                 let frame = self.vm_frame();
                 let kw_names_obj = frame.pop();
                 let arg_count = instr.arg as usize;
-                let mut args = Vec::with_capacity(arg_count);
-                for _ in 0..arg_count { args.push(frame.pop()); }
-                args.reverse();
+                // Drain args directly in forward order (avoids pop+reverse)
+                let stack_len = frame.stack.len();
+                let args_start = stack_len - arg_count;
+                let args: Vec<PyObjectRef> = frame.stack.drain(args_start..).collect();
                 let func = frame.pop();
                 let kw_names: Vec<CompactString> = match &kw_names_obj.payload {
                     PyObjectPayload::Tuple(items) => {
@@ -654,9 +656,10 @@ impl VirtualMachine {
                 } else {
                     // General path: pop all items from two-item protocol
                     let frame = self.vm_frame();
-                    let mut args = Vec::with_capacity(arg_count);
-                    for _ in 0..arg_count { args.push(frame.pop()); }
-                    args.reverse();
+                    // Drain args directly in forward order (avoids pop+reverse)
+                    let stack_len = frame.stack.len();
+                    let args_start = stack_len - arg_count;
+                    let args: Vec<PyObjectRef> = frame.stack.drain(args_start..).collect();
                     let slot_1 = frame.pop(); // receiver or callable
                     let slot_0 = frame.pop(); // method or None sentinel
 
