@@ -45,6 +45,29 @@ pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRe
     None
 }
 
+/// Check if a class (or its MRO) has an attribute, without cloning the value.
+fn has_in_class_mro(class: &PyObjectRef, name: &str) -> bool {
+    if let PyObjectPayload::Class(cd) = &class.payload {
+        // Check vtable first
+        {
+            let vt = cd.method_vtable.read();
+            if !vt.is_empty() {
+                return vt.contains_key(name);
+            }
+        }
+        // Check cache
+        {
+            let cache = cd.method_cache.read();
+            if let Some(cached) = cache.get(name) {
+                return cached.is_some();
+            }
+        }
+        // Slow path
+        return lookup_in_class_mro_uncached(cd, name).is_some();
+    }
+    false
+}
+
 /// Uncached MRO lookup — scans own namespace then bases.
 fn lookup_in_class_mro_uncached(cd: &ClassData, name: &str) -> Option<PyObjectRef> {
     // Check own namespace first
@@ -305,6 +328,50 @@ fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -
     }
 
     None
+}
+
+/// Check if an attribute exists without cloning its value.
+/// Used by hasattr() to avoid unnecessary Rc clone+drop cycles.
+pub fn py_has_attr(obj: &PyObjectRef, name: &str) -> bool {
+    match &obj.payload {
+        PyObjectPayload::Instance(inst) => {
+            let is_dunder = name.as_bytes().first() == Some(&b'_')
+                && name.as_bytes().get(1) == Some(&b'_');
+            if !is_dunder
+                && inst.class_flags & (CLASS_FLAG_HAS_DESCRIPTORS | CLASS_FLAG_HAS_GETATTRIBUTE) == 0
+                && inst.dict_storage.is_none()
+            {
+                // 1. Instance dict
+                if inst.attrs.read().contains_key(name) {
+                    return true;
+                }
+                // 2. Class MRO (no clone needed)
+                if has_in_class_mro(&inst.class, name) {
+                    return true;
+                }
+                // 3. Builtin instance methods
+                if inst.is_special {
+                    if instance_builtin_method(obj, inst, name).is_some() {
+                        return true;
+                    }
+                }
+                // 4. __getattr__ fallback
+                if inst.class_flags & CLASS_FLAG_HAS_GETATTR != 0 {
+                    if let Some(getattr_fn) = lookup_in_class_mro(&inst.class, "__getattr__") {
+                        let name_obj = PyObject::str_val(CompactString::from(name));
+                        if call_callable(&getattr_fn, &[obj.clone(), name_obj]).is_ok() {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+            // Standard path: fall through to get_attr
+            py_get_attr(obj, name).is_some()
+        }
+        // For non-Instance types, delegate to get_attr (less hot path)
+        _ => py_get_attr(obj, name).is_some(),
+    }
 }
 
 pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> {

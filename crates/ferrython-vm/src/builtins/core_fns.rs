@@ -1331,7 +1331,7 @@ pub(super) fn builtin_hasattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args("hasattr", args, 2)?;
     let name = args[1].as_str().ok_or_else(||
         PyException::type_error("hasattr(): attribute name must be string"))?;
-    Ok(PyObject::bool_val(args[0].get_attr(name).is_some()))
+    Ok(PyObject::bool_val(ferrython_core::object::py_has_attr(&args[0], name)))
 }
 
 pub(super) fn builtin_getattr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

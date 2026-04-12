@@ -4463,6 +4463,77 @@ impl VirtualMachine {
                     }
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
+                // Inline MapAdd (hot in dict comprehensions) — avoids clone of dict_obj
+                Opcode::MapAdd => {
+                    let len = frame.stack.len();
+                    let key_ref = sget!(frame, len - 2);
+                    let idx = instr.arg as usize;
+                    let stack_pos = len - 2 - idx;
+                    // Fast path: int key (most common in dict comprehensions)
+                    let hk = match &key_ref.payload {
+                        PyObjectPayload::Int(PyInt::Small(n)) => {
+                            Some(HashableKey::Int(PyInt::Small(*n)))
+                        }
+                        PyObjectPayload::Str(s) => {
+                            Some(HashableKey::str_key(s.clone()))
+                        }
+                        PyObjectPayload::Bool(b) => {
+                            Some(HashableKey::Int(PyInt::Small(*b as i64)))
+                        }
+                        _ => None,
+                    };
+                    if let Some(hk) = hk {
+                        // Get raw pointer to dict map BEFORE popping (avoids borrow conflict)
+                        let map_ptr = if let PyObjectPayload::Dict(m) = &sget!(frame, stack_pos).payload {
+                            Some(m.data_ptr())
+                        } else { None };
+                        if let Some(map_ptr) = map_ptr {
+                            let value = spop!(frame);
+                            let _key = spop!(frame);
+                            unsafe { &mut *map_ptr }.insert(hk, value);
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        } else {
+                            self.execute_one(instr)
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                // Inline SetAdd (hot in set comprehensions) — avoids clone of set_obj
+                Opcode::SetAdd => {
+                    let len = frame.stack.len();
+                    let item_ref = sget!(frame, len - 1);
+                    let idx = instr.arg as usize;
+                    let stack_pos = len - 1 - idx;
+                    // Fast path: int/str/bool key
+                    let hk = match &item_ref.payload {
+                        PyObjectPayload::Int(PyInt::Small(n)) => {
+                            Some(HashableKey::Int(PyInt::Small(*n)))
+                        }
+                        PyObjectPayload::Str(s) => {
+                            Some(HashableKey::str_key(s.clone()))
+                        }
+                        PyObjectPayload::Bool(b) => {
+                            Some(HashableKey::Int(PyInt::Small(*b as i64)))
+                        }
+                        _ => None,
+                    };
+                    if let Some(hk) = hk {
+                        // Get raw pointer to set map BEFORE popping
+                        let set_ptr = if let PyObjectPayload::Set(s) = &sget!(frame, stack_pos).payload {
+                            Some(s.data_ptr())
+                        } else { None };
+                        if let Some(set_ptr) = set_ptr {
+                            let item = spop!(frame);
+                            unsafe { &mut *set_ptr }.insert(hk, item);
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        } else {
+                            self.execute_one(instr)
+                        }
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
                 // Inline LoadAttr fast path for simple instance attribute reads
                 // Fused LoadFast + LoadAttr — common in `x = obj.attr` patterns
                 Opcode::LoadFastLoadAttr => {
