@@ -2350,33 +2350,77 @@ impl VirtualMachine {
                             _ => None,
                         };
                         if let Some(s) = fast_str {
-                            // Look-ahead: fuse with LOAD_CONST + BUILD_STRING 3
-                            // Pattern: f"prefix{val}suffix" → single String allocation
                             let next_ip = frame.ip;
-                            if next_ip + 1 < frame.code.instructions.len() {
+                            let instr_len = frame.code.instructions.len();
+                            // Look-ahead fusion: avoid intermediate PyObject + dispatch cycles
+                            if next_ip < instr_len {
                                 let next = unsafe { *frame.code.instructions.get_unchecked(next_ip) };
-                                let next2 = unsafe { *frame.code.instructions.get_unchecked(next_ip + 1) };
-                                if next.op == Opcode::LoadConst && next2.op == Opcode::BuildString && next2.arg == 3 {
+                                // Pattern 1: FORMAT_VALUE + BUILD_STRING 1 → skip BUILD_STRING
+                                // f"{val}" — BUILD_STRING 1 is a no-op
+                                if next.op == Opcode::BuildString && next.arg == 1 {
+                                    let len = frame.stack.len();
+                                    unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::str_val(s) };
+                                    frame.ip = next_ip + 1; // skip BUILD_STRING
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                                // Pattern 2: FORMAT_VALUE + BUILD_STRING 2 → fuse prefix + val
+                                // f"prefix{val}" — stack has [prefix, val], concat directly
+                                if next.op == Opcode::BuildString && next.arg == 2 {
                                     let stack_len = frame.stack.len();
                                     let prefix_obj = sget!(frame, stack_len - 2);
-                                    let suffix_const = &frame.code.constants[next.arg as usize];
-                                    if let (PyObjectPayload::Str(prefix), ConstantValue::Str(suffix)) =
-                                        (&prefix_obj.payload, suffix_const)
-                                    {
-                                        let total = prefix.len() + s.len() + suffix.len();
+                                    if let PyObjectPayload::Str(prefix) = &prefix_obj.payload {
+                                        let total = prefix.len() + s.len();
                                         let mut result = String::with_capacity(total);
                                         result.push_str(prefix.as_str());
                                         result.push_str(s.as_str());
-                                        result.push_str(suffix.as_str());
-                                        // Drop prefix and value, replace with concatenated result
                                         unsafe {
                                             std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(stack_len - 2));
                                             std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(stack_len - 1));
                                             frame.stack.set_len(stack_len - 2);
                                         }
                                         spush!(frame, PyObject::str_val(CompactString::from(result)));
-                                        frame.ip = next_ip + 2; // skip LOAD_CONST + BUILD_STRING
+                                        frame.ip = next_ip + 1; // skip BUILD_STRING
                                         hot_ok!(profiling, self.profiler, instr.op)
+                                    }
+                                }
+                                // Pattern 3 & 4: LOAD_CONST + BUILD_STRING 2 or 3
+                                if next_ip + 1 < instr_len && next.op == Opcode::LoadConst {
+                                    let next2 = unsafe { *frame.code.instructions.get_unchecked(next_ip + 1) };
+                                    let suffix_const = &frame.code.constants[next.arg as usize];
+                                    if let ConstantValue::Str(suffix) = suffix_const {
+                                        // Pattern 3: FORMAT_VALUE + LOAD_CONST + BUILD_STRING 2
+                                        // f"{val}suffix" — fuse val + suffix
+                                        if next2.op == Opcode::BuildString && next2.arg == 2 {
+                                            let total = s.len() + suffix.len();
+                                            let mut result = String::with_capacity(total);
+                                            result.push_str(s.as_str());
+                                            result.push_str(suffix.as_str());
+                                            let len = frame.stack.len();
+                                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = PyObject::str_val(CompactString::from(result)) };
+                                            frame.ip = next_ip + 2; // skip LOAD_CONST + BUILD_STRING
+                                            hot_ok!(profiling, self.profiler, instr.op)
+                                        }
+                                        // Pattern 4: FORMAT_VALUE + LOAD_CONST + BUILD_STRING 3
+                                        // f"prefix{val}suffix" — fuse prefix + val + suffix
+                                        if next2.op == Opcode::BuildString && next2.arg == 3 {
+                                            let stack_len = frame.stack.len();
+                                            let prefix_obj = sget!(frame, stack_len - 2);
+                                            if let PyObjectPayload::Str(prefix) = &prefix_obj.payload {
+                                                let total = prefix.len() + s.len() + suffix.len();
+                                                let mut result = String::with_capacity(total);
+                                                result.push_str(prefix.as_str());
+                                                result.push_str(s.as_str());
+                                                result.push_str(suffix.as_str());
+                                                unsafe {
+                                                    std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(stack_len - 2));
+                                                    std::ptr::drop_in_place(frame.stack.as_mut_ptr().add(stack_len - 1));
+                                                    frame.stack.set_len(stack_len - 2);
+                                                }
+                                                spush!(frame, PyObject::str_val(CompactString::from(result)));
+                                                frame.ip = next_ip + 2; // skip LOAD_CONST + BUILD_STRING
+                                                hot_ok!(profiling, self.profiler, instr.op)
+                                            }
+                                        }
                                     }
                                 }
                             }
