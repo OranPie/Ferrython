@@ -22,7 +22,7 @@ fn extract_view_keys(obj: &PyObjectRef) -> Option<FxHashKeyMap> {
             let r = m.read();
             Some(r.iter().map(|(k, v)| {
                 let tuple_obj = PyObject::tuple(vec![k.to_object(), v.clone()]);
-                let tuple_key = HashableKey::Tuple(vec![k.clone(), HashableKey::from_object(v).unwrap_or(HashableKey::None)]);
+                let tuple_key = HashableKey::Tuple(Box::new(vec![k.clone(), HashableKey::from_object(v).unwrap_or(HashableKey::None)]));
                 (tuple_key, tuple_obj)
             }).collect())
         }
@@ -105,12 +105,12 @@ pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                     result.insert(k.clone(), PyObject::int(new_val));
                 }
                 // Preserve __counter__ and __defaultdict_factory__ markers if both inputs are counters
-                let a_is_counter = ra.contains_key(&HashableKey::Str(intern_or_new("__counter__")));
-                let b_is_counter = rb.contains_key(&HashableKey::Str(intern_or_new("__counter__")));
+                let a_is_counter = ra.contains_key(&HashableKey::str_key(intern_or_new("__counter__")));
+                let b_is_counter = rb.contains_key(&HashableKey::str_key(intern_or_new("__counter__")));
                 if a_is_counter && b_is_counter {
-                    result.insert(HashableKey::Str(intern_or_new("__counter__")), PyObject::bool_val(true));
-                    if let Some(factory) = ra.get(&HashableKey::Str(intern_or_new("__defaultdict_factory__"))) {
-                        result.insert(HashableKey::Str(intern_or_new("__defaultdict_factory__")), factory.clone());
+                    result.insert(HashableKey::str_key(intern_or_new("__counter__")), PyObject::bool_val(true));
+                    if let Some(factory) = ra.get(&HashableKey::str_key(intern_or_new("__defaultdict_factory__"))) {
+                        result.insert(HashableKey::str_key(intern_or_new("__defaultdict_factory__")), factory.clone());
                     }
                 }
                 Ok(PyObject::wrap(PyObjectPayload::Dict(Rc::new(PyCell::new(result)))))
@@ -197,10 +197,10 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             // Counter - Counter: subtract counts, keep positive
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
                 let ra = a_map.read(); let rb = b_map.read();
-                let counter_key = HashableKey::Str(intern_or_new("__counter__"));
+                let counter_key = HashableKey::str_key(intern_or_new("__counter__"));
                 if ra.contains_key(&counter_key) && rb.contains_key(&counter_key) {
                     let mut result = new_fx_hashkey_map();
-                    result.insert(HashableKey::Str(intern_or_new("__defaultdict_factory__")),
+                    result.insert(HashableKey::str_key(intern_or_new("__defaultdict_factory__")),
                         PyObject::builtin_type(CompactString::from("int")));
                     result.insert(counter_key, PyObject::bool_val(true));
                     for (k, v) in ra.iter() {
@@ -659,12 +659,12 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             // Counter & Counter: minimum of counts (intersection)
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
                 let ra = a_map.read(); let rb = b_map.read();
-                let counter_key = HashableKey::Str(intern_or_new("__counter__"));
+                let counter_key = HashableKey::str_key(intern_or_new("__counter__"));
                 let a_counter = ra.contains_key(&counter_key);
                 let b_counter = rb.contains_key(&counter_key);
                 if a_counter && b_counter {
                     let mut result = new_fx_hashkey_map();
-                    result.insert(HashableKey::Str(intern_or_new("__defaultdict_factory__")),
+                    result.insert(HashableKey::str_key(intern_or_new("__defaultdict_factory__")),
                         PyObject::builtin_type(CompactString::from("int")));
                     result.insert(counter_key, PyObject::bool_val(true));
                     for (k, v) in ra.iter() {
@@ -731,13 +731,13 @@ pub(super) fn py_bit_or(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
             // PEP 584: dict | dict (also Counter | Counter with max semantics)
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
                 let ra = a_map.read(); let rb = b_map.read();
-                let counter_key = HashableKey::Str(intern_or_new("__counter__"));
+                let counter_key = HashableKey::str_key(intern_or_new("__counter__"));
                 let a_counter = ra.contains_key(&counter_key);
                 let b_counter = rb.contains_key(&counter_key);
                 if a_counter && b_counter {
                     // Counter | Counter: maximum of counts (union)
                     let mut result = new_fx_hashkey_map();
-                    result.insert(HashableKey::Str(intern_or_new("__defaultdict_factory__")),
+                    result.insert(HashableKey::str_key(intern_or_new("__defaultdict_factory__")),
                         PyObject::builtin_type(CompactString::from("int")));
                     result.insert(counter_key, PyObject::bool_val(true));
                     let mut all_keys: IndexMap<HashableKey, i64> = IndexMap::new();

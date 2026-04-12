@@ -45,7 +45,7 @@ fn create_queue_instance_full(kind: &str, args: &[PyObjectRef]) -> PyResult<PyOb
             n
         } else if let PyObjectPayload::Dict(d) = &args[0].payload {
             let d = d.read();
-            d.get(&ferrython_core::types::HashableKey::Str(CompactString::from("maxsize")))
+            d.get(&ferrython_core::types::HashableKey::str_key(CompactString::from("maxsize")))
                 .and_then(|v| v.as_int())
                 .unwrap_or(0)
         } else {

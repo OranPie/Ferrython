@@ -132,7 +132,7 @@ fn itertools_zip_longest(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let iter_args = if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(map) = &last.payload {
             let map_r = map.read();
-            if let Some(fv) = map_r.get(&HashableKey::Str(CompactString::from("fillvalue"))) {
+            if let Some(fv) = map_r.get(&HashableKey::str_key(CompactString::from("fillvalue"))) {
                 fillvalue = fv.clone();
             }
             &args[..args.len() - 1]
@@ -168,7 +168,7 @@ fn itertools_product(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let (pos_args, repeat) = if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(map) = &last.payload {
             let map = map.read();
-            let r = map.get(&HashableKey::Str(CompactString::from("repeat")))
+            let r = map.get(&HashableKey::str_key(CompactString::from("repeat")))
                 .and_then(|v| v.as_int().map(|n| n as usize))
                 .unwrap_or(1);
             (&args[..args.len() - 1], r)

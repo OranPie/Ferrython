@@ -183,10 +183,10 @@ fn create_importlib_util_module() -> PyObjectRef {
         if args.len() > 2 {
             if let PyObjectPayload::Dict(kw) = &args[args.len() - 1].payload {
                 let kw_r = kw.read();
-                if let Some(v) = kw_r.get(&HashableKey::Str(CompactString::from("origin"))) {
+                if let Some(v) = kw_r.get(&HashableKey::str_key(CompactString::from("origin"))) {
                     origin = CompactString::from(v.py_to_string());
                 }
-                if let Some(v) = kw_r.get(&HashableKey::Str(CompactString::from("is_package"))) {
+                if let Some(v) = kw_r.get(&HashableKey::str_key(CompactString::from("is_package"))) {
                     is_package = v.is_truthy();
                 }
             } else {
@@ -446,7 +446,7 @@ fn metadata_metadata(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut dict_map = IndexMap::new();
         for (k, v) in &meta {
             dict_map.insert(
-                HashableKey::Str(k.clone()),
+                HashableKey::str_key(k.clone()),
                 PyObject::str_val(v.clone()),
             );
             // Also store lowercase key for case-insensitive access
@@ -454,7 +454,7 @@ fn metadata_metadata(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let lower = CompactString::from(k.to_lowercase());
             if lower != *k {
                 dict_map.insert(
-                    HashableKey::Str(lower),
+                    HashableKey::str_key(lower),
                     PyObject::str_val(v.clone()),
                 );
             }

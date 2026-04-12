@@ -66,19 +66,19 @@ fn csv_register_dialect(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     for arg in args.iter().skip(1) {
         if let PyObjectPayload::Dict(kw) = &arg.payload {
             let r = kw.read();
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("delimiter"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("delimiter"))) {
                 if let Some(c) = v.py_to_string().chars().next() { entry.delimiter = c; }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("quotechar"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quotechar"))) {
                 if let Some(c) = v.py_to_string().chars().next() { entry.quotechar = c; }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("escapechar"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("escapechar"))) {
                 entry.escapechar = v.py_to_string().chars().next();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("doublequote"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("doublequote"))) {
                 entry.doublequote = v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("lineterminator"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("lineterminator"))) {
                 entry.lineterminator = v.py_to_string();
             }
         } else if let PyObjectPayload::Instance(inst) = &arg.payload {
@@ -224,7 +224,7 @@ fn extract_csv_dialect(args: &[PyObjectRef], skip: usize) -> CsvDialect {
         // Check for kwargs dict
         if let PyObjectPayload::Dict(kw) = &arg.payload {
             let r = kw.read();
-            if let Some(dialect_name) = r.get(&HashableKey::Str(CompactString::from("dialect"))) {
+            if let Some(dialect_name) = r.get(&HashableKey::str_key(CompactString::from("dialect"))) {
                 let name = dialect_name.py_to_string();
                 if let Ok(reg) = DIALECT_REGISTRY.lock() {
                     if let Some(entry) = reg.get(&name) {
@@ -235,19 +235,19 @@ fn extract_csv_dialect(args: &[PyObjectRef], skip: usize) -> CsvDialect {
                     }
                 }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("delimiter"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("delimiter"))) {
                 let s = v.py_to_string();
                 if let Some(c) = s.chars().next() { d.delimiter = c; }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("quotechar"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quotechar"))) {
                 let s = v.py_to_string();
                 if let Some(c) = s.chars().next() { d.quotechar = c; }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("escapechar"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("escapechar"))) {
                 let s = v.py_to_string();
                 d.escapechar = s.chars().next();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("doublequote"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("doublequote"))) {
                 d.doublequote = v.is_truthy();
             }
             break;
@@ -457,7 +457,7 @@ fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if let PyObjectPayload::Dict(kw) = &args[args.len()-1].payload {
             let r = kw.read();
             // Check for dialect name first
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("dialect"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("dialect"))) {
                 let name = v.py_to_string();
                 if let Ok(reg) = DIALECT_REGISTRY.lock() {
                     if let Some(entry) = reg.get(&name) {
@@ -467,15 +467,15 @@ fn csv_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 }
             }
             // Individual overrides take precedence
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("delimiter"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("delimiter"))) {
                 delimiter = v.py_to_string();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("quoting"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quoting"))) {
                 if let PyObjectPayload::Int(n) = &v.payload {
                     quoting = n.to_i64().unwrap_or(0);
                 }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("quotechar"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quotechar"))) {
                 let s = v.py_to_string();
                 quotechar = s.chars().next().unwrap_or('"');
             }
@@ -591,7 +591,7 @@ fn csv_dict_reader(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         for (i, name) in fieldnames.iter().enumerate() {
             let val = values.get(i).map(|v| v.trim().to_string()).unwrap_or_default();
             map.insert(
-                HashableKey::Str(CompactString::from(name.as_str())),
+                HashableKey::str_key(CompactString::from(name.as_str())),
                 PyObject::str_val(CompactString::from(&val)),
             );
         }
@@ -609,7 +609,7 @@ fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // Check if args[1] is a kwargs dict containing "fieldnames"
         if let PyObjectPayload::Dict(map) = &args[1].payload {
             let r = map.read();
-            if let Some(fnames) = r.get(&HashableKey::Str(CompactString::from("fieldnames"))) {
+            if let Some(fnames) = r.get(&HashableKey::str_key(CompactString::from("fieldnames"))) {
                 fnames.to_list()?.iter().map(|f| f.py_to_string()).collect()
             } else {
                 // It's a plain list
@@ -628,7 +628,7 @@ fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(kw) = &last.payload {
             let r = kw.read();
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("dialect"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("dialect"))) {
                 let name = v.py_to_string();
                 if let Ok(reg) = DIALECT_REGISTRY.lock() {
                     if let Some(entry) = reg.get(&name) {
@@ -637,13 +637,13 @@ fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     }
                 }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("delimiter"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("delimiter"))) {
                 delimiter = v.py_to_string();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("quoting"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quoting"))) {
                 if let Some(n) = v.as_int() { quoting = n; }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("quotechar"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("quotechar"))) {
                 let s = v.py_to_string();
                 quotechar = s.chars().next().unwrap_or('"');
             }
@@ -675,7 +675,7 @@ fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     let row = &args[0];
                     let mut fields = Vec::new();
                     for fname in &fnames_for_row {
-                        let key = HashableKey::Str(CompactString::from(fname.as_str()));
+                        let key = HashableKey::str_key(CompactString::from(fname.as_str()));
                         let val = if let PyObjectPayload::Dict(map) = &row.payload {
                             map.read().get(&key).cloned()
                                 .unwrap_or_else(PyObject::none)
@@ -707,7 +707,7 @@ fn csv_dict_writer(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     for row in &rows {
                         let mut fields = Vec::new();
                         for fname in &fnames_for_rows {
-                            let key = HashableKey::Str(CompactString::from(fname.as_str()));
+                            let key = HashableKey::str_key(CompactString::from(fname.as_str()));
                             let val = if let PyObjectPayload::Dict(map) = &row.payload {
                                 map.read().get(&key).cloned()
                                     .unwrap_or_else(PyObject::none)

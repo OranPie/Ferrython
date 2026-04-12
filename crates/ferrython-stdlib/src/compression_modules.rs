@@ -323,13 +323,13 @@ fn gzip_file_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     for (i, arg) in args.iter().enumerate() {
         if let PyObjectPayload::Dict(kw_map) = &arg.payload {
             let r = kw_map.read();
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("filename"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("filename"))) {
                 if !matches!(&v.payload, PyObjectPayload::None) { filepath = v.py_to_string(); }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("mode"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("mode"))) {
                 mode = v.py_to_string();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("fileobj"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("fileobj"))) {
                 if !matches!(&v.payload, PyObjectPayload::None) { fileobj = Some(v.clone()); }
             }
         } else {
@@ -1588,7 +1588,7 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                     if let PyObjectPayload::Dict(kw) = &args[args.len() - 1].payload {
                         // Last arg is kwargs dict
                         let r = kw.read();
-                        r.get(&HashableKey::Str(CompactString::from("arcname")))
+                        r.get(&HashableKey::str_key(CompactString::from("arcname")))
                             .map(|v| v.py_to_string())
                             .unwrap_or_else(|| filepath.clone())
                     } else if !matches!(&args[1].payload, PyObjectPayload::None) {
@@ -1789,11 +1789,11 @@ fn tarfile_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     });
     let fileobj = kwargs.as_ref().and_then(|kw| {
         let r = kw.read();
-        r.get(&HashableKey::Str(CompactString::from("fileobj"))).cloned()
+        r.get(&HashableKey::str_key(CompactString::from("fileobj"))).cloned()
     });
     let mode_kwarg = kwargs.as_ref().and_then(|kw| {
         let r = kw.read();
-        r.get(&HashableKey::Str(CompactString::from("mode"))).map(|v| v.py_to_string())
+        r.get(&HashableKey::str_key(CompactString::from("mode"))).map(|v| v.py_to_string())
     });
 
     // Determine mode: positional arg[1] > kwarg > default "r"
@@ -1937,10 +1937,10 @@ fn tarinfo_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let (name, size) = if !args.is_empty() {
         if let PyObjectPayload::Dict(kw) = &args[0].payload {
             let r = kw.read();
-            let n = r.get(&HashableKey::Str(CompactString::from("name")))
+            let n = r.get(&HashableKey::str_key(CompactString::from("name")))
                 .map(|v| v.py_to_string())
                 .unwrap_or_default();
-            let s = r.get(&HashableKey::Str(CompactString::from("size")))
+            let s = r.get(&HashableKey::str_key(CompactString::from("size")))
                 .and_then(|v| v.as_int())
                 .unwrap_or(0) as u64;
             (n, s)
@@ -1949,7 +1949,7 @@ fn tarinfo_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let s = if args.len() > 1 {
                 if let PyObjectPayload::Dict(kw) = &args[1].payload {
                     let r = kw.read();
-                    r.get(&HashableKey::Str(CompactString::from("size")))
+                    r.get(&HashableKey::str_key(CompactString::from("size")))
                         .and_then(|v| v.as_int())
                         .unwrap_or(0) as u64
                 } else {

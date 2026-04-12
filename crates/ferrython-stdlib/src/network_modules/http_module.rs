@@ -175,7 +175,7 @@ pub fn create_urllib_module() -> PyObjectRef {
                 ] {
                     if let Ok(val) = std::env::var(env_var) {
                         proxies.insert(
-                            HashableKey::Str(CompactString::from(*scheme)),
+                            HashableKey::str_key(CompactString::from(*scheme)),
                             PyObject::str_val(CompactString::from(val)),
                         );
                     }
@@ -255,12 +255,12 @@ pub fn create_urllib_module() -> PyObjectRef {
                             val = val[1..val.len()-1].to_string();
                         }
                         dict.insert(
-                            HashableKey::Str(CompactString::from(key)),
+                            HashableKey::str_key(CompactString::from(key)),
                             PyObject::str_val(CompactString::from(val)),
                         );
                     } else {
                         dict.insert(
-                            HashableKey::Str(CompactString::from(s.trim())),
+                            HashableKey::str_key(CompactString::from(s.trim())),
                             PyObject::none(),
                         );
                     }
@@ -477,7 +477,7 @@ fn make_http_response_class() -> PyObjectRef {
                 let map = d.read();
                 for (k, v) in map.iter() {
                     let ks = match k {
-                        HashableKey::Str(s) => PyObject::str_val(s.clone()),
+                        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
                         _ => continue,
                     };
                     result.push(PyObject::tuple(vec![ks, v.clone()]));
@@ -543,7 +543,7 @@ fn build_response_object(
     let mut hdr_map = IndexMap::new();
     for (k, v) in &headers {
         hdr_map.insert(
-            HashableKey::Str(CompactString::from(k.as_str())),
+            HashableKey::str_key(CompactString::from(k.as_str())),
             PyObject::str_val(CompactString::from(v.as_str())),
         );
     }
@@ -634,15 +634,15 @@ fn urllib_request_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(kw) = &last.payload {
             let r = kw.read();
-            if let Some(m) = r.get(&HashableKey::Str(CompactString::from("method"))) {
+            if let Some(m) = r.get(&HashableKey::str_key(CompactString::from("method"))) {
                 method = m.py_to_string();
             }
-            if let Some(h) = r.get(&HashableKey::Str(CompactString::from("headers"))) {
+            if let Some(h) = r.get(&HashableKey::str_key(CompactString::from("headers"))) {
                 if let PyObjectPayload::Dict(hm) = &h.payload {
                     for (k, v) in hm.read().iter() {
                         if let HashableKey::Str(key) = k {
                             extra_headers.insert(
-                                HashableKey::Str(key.clone()),
+                                HashableKey::str_key(key.as_ref().clone()),
                                 v.clone(),
                             );
                         }
@@ -673,7 +673,7 @@ fn urllib_request_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         let mut locked = ra.lock().unwrap();
         if let Some(hdr) = locked.get_mut("headers") {
             if let PyObjectPayload::Dict(map) = &hdr.payload {
-                map.write().insert(HashableKey::Str(CompactString::from(key)), PyObject::str_val(CompactString::from(val)));
+                map.write().insert(HashableKey::str_key(CompactString::from(key)), PyObject::str_val(CompactString::from(val)));
             }
         }
         Ok(PyObject::none())
@@ -1265,7 +1265,7 @@ fn urllib_parse_parse_qs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         } else {
             String::new()
         };
-        let hk = HashableKey::Str(CompactString::from(key.as_str()));
+        let hk = HashableKey::str_key(CompactString::from(key.as_str()));
         let entry = result
             .entry(hk.clone())
             .or_insert_with(|| PyObject::list(vec![]));
@@ -1924,7 +1924,7 @@ fn build_handler_instance(
         let mut hdr_map = IndexMap::new();
         for (k, v) in &req.headers {
             hdr_map.insert(
-                HashableKey::Str(CompactString::from(k.as_str())),
+                HashableKey::str_key(CompactString::from(k.as_str())),
                 PyObject::str_val(CompactString::from(v.as_str())),
             );
         }
@@ -2828,7 +2828,7 @@ pub fn create_http_cookiejar_module() -> PyObjectRef {
                     let val = if idx < positional_end {
                         args[idx].clone()
                     } else if let Some(ref kw) = kwargs {
-                        kw.get(&HashableKey::Str(CompactString::from(*name)))
+                        kw.get(&HashableKey::str_key(CompactString::from(*name)))
                             .cloned()
                             .unwrap_or_else(|| if *name == "rfc2109" { PyObject::bool_val(false) } else { PyObject::none() })
                     } else if *name == "rfc2109" {
@@ -3690,7 +3690,7 @@ fn build_ssl_context_instance(protocol: i64) -> PyObjectRef {
                 args.last().and_then(|last| {
                     if let PyObjectPayload::Dict(d) = &last.payload {
                         let map = d.read();
-                        map.get(&HashableKey::Str(CompactString::from("server_hostname")))
+                        map.get(&HashableKey::str_key(CompactString::from("server_hostname")))
                             .map(|v| v.py_to_string())
                     } else {
                         None
@@ -3759,7 +3759,7 @@ pub fn create_ssl_module() -> PyObjectRef {
             args.last().and_then(|last| {
                 if let PyObjectPayload::Dict(d) = &last.payload {
                     let map = d.read();
-                    map.get(&HashableKey::Str(CompactString::from("server_hostname")))
+                    map.get(&HashableKey::str_key(CompactString::from("server_hostname")))
                         .map(|v| v.py_to_string())
                 } else {
                     None
@@ -4180,7 +4180,7 @@ pub fn create_cgi_module() -> PyObjectRef {
                         let k = kv[0].trim().to_string();
                         let v = kv[1].trim().trim_matches('"').to_string();
                         params.insert(
-                            HashableKey::Str(CompactString::from(&k)),
+                            HashableKey::str_key(CompactString::from(&k)),
                             PyObject::str_val(CompactString::from(v)),
                         );
                     }

@@ -601,7 +601,7 @@ impl VirtualMachine {
                     if let Some(val) = existing {
                         self.vm_push(val);
                     } else {
-                        let factory_key = HashableKey::Str(intern_or_new("__defaultdict_factory__"));
+                        let factory_key = HashableKey::str_key(intern_or_new("__defaultdict_factory__"));
                         let factory = map.read().get(&factory_key).cloned();
                         if let Some(factory) = factory {
                             let default = self.call_object(factory, vec![])?;

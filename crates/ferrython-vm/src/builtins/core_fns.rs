@@ -178,7 +178,7 @@ fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj
             let mut ns = FxAttrMap::default();
             for (k, v) in r.iter() {
                 let key_str = match k {
-                    HashableKey::Str(s) => s.clone(),
+                    HashableKey::Str(s) => CompactString::clone(s),
                     _ => CompactString::from(k.to_object().py_to_string()),
                 };
                 ns.insert(key_str, v.clone());
@@ -494,7 +494,7 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             // CPython tuple hash: xxHash-based mixing
             let mut h: u64 = 0x345678;
             let mult: u64 = 1000003;
-            for item in items {
+            for item in items.iter() {
                 let item_hash = builtin_hash(&[item.to_object()])
                     .map(|v| v.as_int().unwrap_or(0) as u64)
                     .unwrap_or(0);
@@ -507,7 +507,7 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let mask: u64 = u64::MAX;
             let n = items.len() as u64;
             let mut h: u64 = 1927868237u64.wrapping_mul(n.wrapping_add(1)) & mask;
-            for item in items {
+            for item in items.iter() {
                 let hx = builtin_hash(&[item.to_object()])
                     .map(|v| v.as_int().unwrap_or(0) as u64)
                     .unwrap_or(0);
@@ -517,7 +517,7 @@ pub(super) fn builtin_hash(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let result = h as i64;
             if result == -1 { 590923713 } else { result }
         }
-        HashableKey::Bytes(b) => { let mut h: u64 = 5381; for x in b { h = h.wrapping_mul(33).wrapping_add(x as u64); } h as i64 }
+        HashableKey::Bytes(b) => { let mut h: u64 = 5381; for x in b.iter() { h = h.wrapping_mul(33).wrapping_add(*x as u64); } h as i64 }
         HashableKey::Identity(ptr, _) => ptr as i64,
         HashableKey::Custom { hash_value, .. } => hash_value,
     };
@@ -601,7 +601,7 @@ pub(crate) fn is_instance_of(obj: &PyObjectRef, cls: &PyObjectRef) -> bool {
             let obj_type = obj.type_name();
             if let Some(registry) = target_cd.namespace.read().get("_abc_builtin_types") {
                 if let PyObjectPayload::Set(set) = &registry.payload {
-                    let key = HashableKey::Str(CompactString::from(obj_type));
+                    let key = HashableKey::str_key(CompactString::from(obj_type));
                     if set.read().contains_key(&key) {
                         return true;
                     }
@@ -1003,7 +1003,7 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let iter_args = if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(kw) = &last.payload {
             let r = kw.read();
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("strict"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("strict"))) {
                 strict = v.is_truthy();
                 &args[..args.len() - 1]
             } else {
@@ -1194,8 +1194,8 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match &args[0].payload {
         PyObjectPayload::Dict(m) => {
             let mut new_map = m.read().clone();
-            new_map.shift_remove(&HashableKey::Str(CompactString::from("__defaultdict_factory__")));
-            new_map.shift_remove(&HashableKey::Str(CompactString::from("__counter__")));
+            new_map.shift_remove(&HashableKey::str_key(CompactString::from("__defaultdict_factory__")));
+            new_map.shift_remove(&HashableKey::str_key(CompactString::from("__counter__")));
             Ok(PyObject::dict(new_map))
         },
         PyObjectPayload::MappingProxy(m) => {
@@ -1760,7 +1760,7 @@ pub(crate) fn check_subclass(sub: &PyObjectRef, sup: &PyObjectRef) -> bool {
         (PyObjectPayload::BuiltinType(type_name), PyObjectPayload::Class(sup_cd)) => {
             if let Some(registry) = sup_cd.namespace.read().get("_abc_builtin_types") {
                 if let PyObjectPayload::Set(set) = &registry.payload {
-                    let key = HashableKey::Str(CompactString::from(type_name.as_str()));
+                    let key = HashableKey::str_key(CompactString::from(type_name.as_str()));
                     return set.read().contains_key(&key);
                 }
             }
@@ -1810,7 +1810,7 @@ pub(super) fn builtin_dict_fromkeys(args: &[PyObjectRef]) -> PyResult<PyObjectRe
         }
         PyObjectPayload::Str(s) => {
             for ch in s.chars() {
-                let hk = HashableKey::Str(CompactString::from(ch.to_string()));
+                let hk = HashableKey::str_key(CompactString::from(ch.to_string()));
                 map.insert(hk, value.clone());
             }
         }

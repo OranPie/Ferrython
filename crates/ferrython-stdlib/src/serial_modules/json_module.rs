@@ -119,20 +119,20 @@ pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() > 1 {
         if let PyObjectPayload::Dict(kw_map) = &args[args.len() - 1].payload {
             let r = kw_map.read();
-            if let Some(ind) = r.get(&HashableKey::Str(CompactString::from("indent"))) {
+            if let Some(ind) = r.get(&HashableKey::str_key(CompactString::from("indent"))) {
                 indent = match &ind.payload {
                     PyObjectPayload::Int(n) => Some(n.to_i64().unwrap_or(2) as usize),
                     PyObjectPayload::None => None,
                     _ => None,
                 };
             }
-            if let Some(sk) = r.get(&HashableKey::Str(CompactString::from("sort_keys"))) {
+            if let Some(sk) = r.get(&HashableKey::str_key(CompactString::from("sort_keys"))) {
                 sort_keys = sk.is_truthy();
             }
-            if let Some(ea) = r.get(&HashableKey::Str(CompactString::from("ensure_ascii"))) {
+            if let Some(ea) = r.get(&HashableKey::str_key(CompactString::from("ensure_ascii"))) {
                 ensure_ascii = ea.is_truthy();
             }
-            if let Some(seps) = r.get(&HashableKey::Str(CompactString::from("separators"))) {
+            if let Some(seps) = r.get(&HashableKey::str_key(CompactString::from("separators"))) {
                 if let PyObjectPayload::Tuple(parts) = &seps.payload {
                     if parts.len() == 2 {
                         item_sep = parts[0].py_to_string();
@@ -140,12 +140,12 @@ pub fn json_dumps(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     }
                 }
             }
-            if let Some(def) = r.get(&HashableKey::Str(CompactString::from("default"))) {
+            if let Some(def) = r.get(&HashableKey::str_key(CompactString::from("default"))) {
                 default_fn = Some(def.clone());
             }
             // cls=CustomEncoder: create an instance and bind its `default` method
             if default_fn.is_none() {
-                if let Some(cls) = r.get(&HashableKey::Str(CompactString::from("cls"))) {
+                if let Some(cls) = r.get(&HashableKey::str_key(CompactString::from("cls"))) {
                     let encoder_inst = PyObject::instance(cls.clone());
                     if let Some(default_method) = cls.get_attr("default") {
                         match &default_method.payload {
@@ -256,7 +256,7 @@ fn pre_convert_for_json(obj: &PyObjectRef) -> PyObjectRef {
                     let mut w = new_map.write();
                     for (k, v) in attrs.iter() {
                         w.insert(
-                            HashableKey::Str(k.clone()),
+                            HashableKey::str_key(k.clone()),
                             pre_convert_for_json(v),
                         );
                     }
@@ -466,7 +466,7 @@ fn instance_to_dict(obj: &PyObjectRef) -> Option<PyObjectRef> {
             // Skip dunder attrs and callables
             let ks: &str = k.as_str();
             if ks.starts_with("__") && ks.ends_with("__") { continue; }
-            map.insert(HashableKey::Str(CompactString::from(ks)), v.clone());
+            map.insert(HashableKey::str_key(CompactString::from(ks)), v.clone());
         }
         Some(PyObject::dict(map))
     } else {
@@ -516,13 +516,13 @@ fn json_loads(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if let PyObjectPayload::Dict(d) = &a.payload { Some(d.read().clone()) } else { None }
     });
     let object_hook = kwargs.as_ref().and_then(|kw| {
-        kw.get(&HashableKey::Str(CompactString::from("object_hook"))).cloned()
+        kw.get(&HashableKey::str_key(CompactString::from("object_hook"))).cloned()
     }).filter(|v| !matches!(&v.payload, PyObjectPayload::None));
     let parse_float = kwargs.as_ref().and_then(|kw| {
-        kw.get(&HashableKey::Str(CompactString::from("parse_float"))).cloned()
+        kw.get(&HashableKey::str_key(CompactString::from("parse_float"))).cloned()
     }).filter(|v| !matches!(&v.payload, PyObjectPayload::None));
     let parse_int = kwargs.as_ref().and_then(|kw| {
-        kw.get(&HashableKey::Str(CompactString::from("parse_int"))).cloned()
+        kw.get(&HashableKey::str_key(CompactString::from("parse_int"))).cloned()
     }).filter(|v| !matches!(&v.payload, PyObjectPayload::None));
     
     let result = parse_json_value(&s, &mut 0)?;
@@ -779,7 +779,7 @@ fn parse_json_object(s: &str, pos: &mut usize) -> PyResult<PyObjectRef> {
         if *pos >= s.len() || s.as_bytes()[*pos] != b':' { return Err(PyException::json_decode_error("Expected ':'")); }
         *pos += 1;
         let value = parse_json_value(s, pos)?;
-        let hk = HashableKey::Str(CompactString::from(key.py_to_string()));
+        let hk = HashableKey::str_key(CompactString::from(key.py_to_string()));
         match &dict.payload {
             PyObjectPayload::Dict(map) => { map.write().insert(hk, value); }
             _ => unreachable!(),
@@ -833,12 +833,12 @@ pub fn create_json_encoder_module() -> PyObjectRef {
     // ESCAPE_DCT — mapping of control characters to escape sequences
     let mut escape_dct = IndexMap::new();
     for i in 0u8..0x20 {
-        let key = HashableKey::Str(CompactString::from(String::from(i as char)));
+        let key = HashableKey::str_key(CompactString::from(String::from(i as char)));
         let val = PyObject::str_val(CompactString::from(format!("\\u{:04x}", i)));
         escape_dct.insert(key, val);
     }
-    escape_dct.insert(HashableKey::Str(CompactString::from("\\")), PyObject::str_val(CompactString::from("\\\\")));
-    escape_dct.insert(HashableKey::Str(CompactString::from("\"")), PyObject::str_val(CompactString::from("\\\"")));
+    escape_dct.insert(HashableKey::str_key(CompactString::from("\\")), PyObject::str_val(CompactString::from("\\\\")));
+    escape_dct.insert(HashableKey::str_key(CompactString::from("\"")), PyObject::str_val(CompactString::from("\\\"")));
 
     make_module("json.encoder", vec![
         ("JSONEncoder", json_encoder_cls),

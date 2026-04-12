@@ -574,7 +574,7 @@ pub fn create_datetime_module() -> PyObjectRef {
                     if matches!(&last.payload, PyObjectPayload::Dict(_)) {
                         if let PyObjectPayload::Dict(ref map) = last.payload {
                             let map_r = map.read();
-                            if let Some(v) = map_r.get(&HashableKey::Str(CompactString::from("tzinfo"))) {
+                            if let Some(v) = map_r.get(&HashableKey::str_key(CompactString::from("tzinfo"))) {
                                 tzinfo_val = Some(v.clone());
                             }
                         }
@@ -810,7 +810,7 @@ fn datetime_now(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         match &arg.payload {
             PyObjectPayload::Dict(ref map) => {
                 let map_r = map.read();
-                if let Some(v) = map_r.get(&HashableKey::Str(CompactString::from("tz"))) {
+                if let Some(v) = map_r.get(&HashableKey::str_key(CompactString::from("tz"))) {
                     if !matches!(v.payload, PyObjectPayload::None) {
                         tz_val = Some(v.clone());
                     }
@@ -1343,13 +1343,13 @@ fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64,
                 if let Some(last) = args.last() {
                     if let PyObjectPayload::Dict(kw) = &last.payload {
                         let r = kw.read();
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("year"))) { ny = v.as_int().unwrap_or(ny); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("month"))) { nmo = v.as_int().unwrap_or(nmo); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("day"))) { nda = v.as_int().unwrap_or(nda); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("hour"))) { nh = v.as_int().unwrap_or(nh); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("minute"))) { nmi = v.as_int().unwrap_or(nmi); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("second"))) { ns = v.as_int().unwrap_or(ns); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("microsecond"))) { nus = v.as_int().unwrap_or(nus); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("year"))) { ny = v.as_int().unwrap_or(ny); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("month"))) { nmo = v.as_int().unwrap_or(nmo); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("day"))) { nda = v.as_int().unwrap_or(nda); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("hour"))) { nh = v.as_int().unwrap_or(nh); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("minute"))) { nmi = v.as_int().unwrap_or(nmi); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("second"))) { ns = v.as_int().unwrap_or(ns); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("microsecond"))) { nus = v.as_int().unwrap_or(nus); }
                     }
                 }
                 // Also accept positional args: year, month, day, hour, minute, second, microsecond
@@ -1495,10 +1495,10 @@ fn make_time_instance(hour: i64, minute: i64, second: i64, microsecond: i64) -> 
                 if let Some(last) = args.last() {
                     if let PyObjectPayload::Dict(kw) = &last.payload {
                         let r = kw.read();
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("hour"))) { nh = v.as_int().unwrap_or(nh); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("minute"))) { nmi = v.as_int().unwrap_or(nmi); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("second"))) { ns = v.as_int().unwrap_or(ns); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("microsecond"))) { nus = v.as_int().unwrap_or(nus); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("hour"))) { nh = v.as_int().unwrap_or(nh); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("minute"))) { nmi = v.as_int().unwrap_or(nmi); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("second"))) { ns = v.as_int().unwrap_or(ns); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("microsecond"))) { nus = v.as_int().unwrap_or(nus); }
                     }
                 }
                 if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::Dict(_)) {
@@ -1576,13 +1576,13 @@ fn datetime_timedelta(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(kw) = &last.payload {
             let r = kw.read();
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("days"))) { days = v.as_int().unwrap_or(0); }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("seconds"))) { seconds = v.as_int().unwrap_or(0); }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("microseconds"))) { microseconds = v.as_int().unwrap_or(0); }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("milliseconds"))) { microseconds += v.as_int().unwrap_or(0) * 1000; }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("minutes"))) { seconds += v.as_int().unwrap_or(0) * 60; }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("hours"))) { seconds += v.as_int().unwrap_or(0) * 3600; }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("weeks"))) { days += v.as_int().unwrap_or(0) * 7; }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("days"))) { days = v.as_int().unwrap_or(0); }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("seconds"))) { seconds = v.as_int().unwrap_or(0); }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("microseconds"))) { microseconds = v.as_int().unwrap_or(0); }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("milliseconds"))) { microseconds += v.as_int().unwrap_or(0) * 1000; }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("minutes"))) { seconds += v.as_int().unwrap_or(0) * 60; }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("hours"))) { seconds += v.as_int().unwrap_or(0) * 3600; }
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("weeks"))) { days += v.as_int().unwrap_or(0) * 7; }
         }
     }
     // Normalize: carry microseconds → seconds → days
@@ -1735,9 +1735,9 @@ fn make_date_instance(year: i64, month: i64, day: i64) -> PyObjectRef {
                 if let Some(last) = args.last() {
                     if let PyObjectPayload::Dict(kw) = &last.payload {
                         let r = kw.read();
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("year"))) { ny = v.as_int().unwrap_or(ny); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("month"))) { nmo = v.as_int().unwrap_or(nmo); }
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("day"))) { nda = v.as_int().unwrap_or(nda); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("year"))) { ny = v.as_int().unwrap_or(ny); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("month"))) { nmo = v.as_int().unwrap_or(nmo); }
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("day"))) { nda = v.as_int().unwrap_or(nda); }
                     }
                 }
                 if !args.is_empty() && !matches!(&args[0].payload, PyObjectPayload::Dict(_)) {
@@ -2631,7 +2631,7 @@ pub fn create_zoneinfo_module() -> PyObjectRef {
         ];
         let mut items = IndexMap::new();
         for tz in tzs {
-            let key = HashableKey::Str(CompactString::from(tz));
+            let key = HashableKey::str_key(CompactString::from(tz));
             items.insert(key, PyObject::str_val(CompactString::from(tz)));
         }
         Ok(PyObject::frozenset(items))

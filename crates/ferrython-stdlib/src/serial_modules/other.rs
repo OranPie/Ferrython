@@ -791,7 +791,7 @@ fn unpack_one_format(c: char, count: usize, data: &[u8], offset: &mut usize, res
 
 fn hashable_key_to_pyobj(k: &HashableKey) -> PyObjectRef {
     match k {
-        HashableKey::Str(s) => PyObject::str_val(s.clone()),
+        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
         HashableKey::Int(n) => PyObject::int(n.to_i64().unwrap_or(0)),
         HashableKey::Float(f) => PyObject::float(f.0),
         HashableKey::Bool(b) => PyObject::bool_val(*b),
@@ -982,7 +982,7 @@ fn pickle_extract_instance(
         if let PyObjectPayload::Dict(map) = &state.payload {
             for (k, v) in map.read().iter() {
                 if let HashableKey::Str(name) = k {
-                    data_pairs.push((name.clone(), v.clone()));
+                    data_pairs.push((name.as_ref().clone(), v.clone()));
                 }
             }
         }
@@ -1326,7 +1326,7 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         let mut attrs = IndexMap::new();
                         for (k, v) in map_r.iter() {
                             if let HashableKey::Str(s) = k {
-                                attrs.insert(s.clone(), v.clone());
+                                attrs.insert(s.as_ref().clone(), v.clone());
                             }
                         }
                         let cls = PyObject::class(CompactString::from(name.as_str()), vec![], IndexMap::new());
@@ -3195,7 +3195,7 @@ pub fn create_shelve_module() -> PyObjectRef {
             w.insert(CompactString::from("__getitem__"), PyObject::native_closure(
                 "Shelf.__getitem__", move |args: &[PyObjectRef]| {
                     check_args_min("Shelf.__getitem__", args, 1)?;
-                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    let key = HashableKey::str_key(CompactString::from(args[0].py_to_string().as_str()));
                     d1.read().get(&key).cloned().ok_or_else(|| PyException::key_error(args[0].py_to_string()))
                 }
             ));
@@ -3204,7 +3204,7 @@ pub fn create_shelve_module() -> PyObjectRef {
             w.insert(CompactString::from("__setitem__"), PyObject::native_closure(
                 "Shelf.__setitem__", move |args: &[PyObjectRef]| {
                     check_args_min("Shelf.__setitem__", args, 2)?;
-                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    let key = HashableKey::str_key(CompactString::from(args[0].py_to_string().as_str()));
                     d2.write().insert(key, args[1].clone());
                     Ok(PyObject::none())
                 }
@@ -3214,7 +3214,7 @@ pub fn create_shelve_module() -> PyObjectRef {
             w.insert(CompactString::from("__delitem__"), PyObject::native_closure(
                 "Shelf.__delitem__", move |args: &[PyObjectRef]| {
                     check_args_min("Shelf.__delitem__", args, 1)?;
-                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    let key = HashableKey::str_key(CompactString::from(args[0].py_to_string().as_str()));
                     match d2b.write().swap_remove(&key) {
                         Some(_) => Ok(PyObject::none()),
                         None => Err(PyException::key_error(args[0].py_to_string())),
@@ -3226,7 +3226,7 @@ pub fn create_shelve_module() -> PyObjectRef {
             w.insert(CompactString::from("__contains__"), PyObject::native_closure(
                 "Shelf.__contains__", move |args: &[PyObjectRef]| {
                     check_args_min("Shelf.__contains__", args, 1)?;
-                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    let key = HashableKey::str_key(CompactString::from(args[0].py_to_string().as_str()));
                     Ok(PyObject::bool_val(d3.read().contains_key(&key)))
                 }
             ));
@@ -3235,7 +3235,7 @@ pub fn create_shelve_module() -> PyObjectRef {
             w.insert(CompactString::from("keys"), PyObject::native_closure(
                 "Shelf.keys", move |_: &[PyObjectRef]| {
                     let keys: Vec<PyObjectRef> = d4.read().keys().map(|k| match k {
-                        HashableKey::Str(s) => PyObject::str_val(s.clone()),
+                        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
                         _ => PyObject::none(),
                     }).collect();
                     Ok(PyObject::list(keys))
@@ -3255,7 +3255,7 @@ pub fn create_shelve_module() -> PyObjectRef {
                 "Shelf.items", move |_: &[PyObjectRef]| {
                     let items: Vec<PyObjectRef> = d4c.read().iter().map(|(k, v)| {
                         let key = match k {
-                            HashableKey::Str(s) => PyObject::str_val(s.clone()),
+                            HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
                             _ => PyObject::none(),
                         };
                         PyObject::tuple(vec![key, v.clone()])
@@ -3275,7 +3275,7 @@ pub fn create_shelve_module() -> PyObjectRef {
             w.insert(CompactString::from("get"), PyObject::native_closure(
                 "Shelf.get", move |args: &[PyObjectRef]| {
                     check_args_min("Shelf.get", args, 1)?;
-                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    let key = HashableKey::str_key(CompactString::from(args[0].py_to_string().as_str()));
                     let default = args.get(1).cloned().unwrap_or_else(PyObject::none);
                     Ok(d6.read().get(&key).cloned().unwrap_or(default))
                 }
@@ -3348,7 +3348,7 @@ pub fn create_dbm_module() -> PyObjectRef {
                     let val = content[pos..pos+vl].to_vec();
                     pos += vl;
                     initial_data.insert(
-                        HashableKey::Str(CompactString::from(key.as_str())),
+                        HashableKey::str_key(CompactString::from(key.as_str())),
                         PyObject::bytes(val),
                     );
                 }
@@ -3370,7 +3370,7 @@ pub fn create_dbm_module() -> PyObjectRef {
             w.insert(CompactString::from("__getitem__"), PyObject::native_closure(
                 "dbm.__getitem__", move |args: &[PyObjectRef]| {
                     check_args_min("dbm.__getitem__", args, 1)?;
-                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    let key = HashableKey::str_key(CompactString::from(args[0].py_to_string().as_str()));
                     d1.read().get(&key).cloned().ok_or_else(|| PyException::key_error(args[0].py_to_string()))
                 }));
             let d2 = data.clone();
@@ -3379,7 +3379,7 @@ pub fn create_dbm_module() -> PyObjectRef {
                 "dbm.__setitem__", move |args: &[PyObjectRef]| {
                     check_args_min("dbm.__setitem__", args, 2)?;
                     let key_str = args[0].py_to_string();
-                    let key = HashableKey::Str(CompactString::from(key_str.as_str()));
+                    let key = HashableKey::str_key(CompactString::from(key_str.as_str()));
                     // Convert value to bytes if it's a string
                     let val = match &args[1].payload {
                         PyObjectPayload::Bytes(b) => PyObject::bytes(b.clone()),
@@ -3394,14 +3394,14 @@ pub fn create_dbm_module() -> PyObjectRef {
             w.insert(CompactString::from("__contains__"), PyObject::native_closure(
                 "dbm.__contains__", move |args: &[PyObjectRef]| {
                     check_args_min("dbm.__contains__", args, 1)?;
-                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    let key = HashableKey::str_key(CompactString::from(args[0].py_to_string().as_str()));
                     Ok(PyObject::bool_val(d3.read().contains_key(&key)))
                 }));
             let d4 = data.clone();
             w.insert(CompactString::from("keys"), PyObject::native_closure(
                 "dbm.keys", move |_args: &[PyObjectRef]| {
                     let keys: Vec<PyObjectRef> = d4.read().keys().map(|k| match k {
-                        HashableKey::Str(s) => PyObject::str_val(s.clone()),
+                        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
                         _ => PyObject::str_val(CompactString::from(format!("{:?}", k))),
                     }).collect();
                     Ok(PyObject::list(keys))
@@ -3422,7 +3422,7 @@ pub fn create_dbm_module() -> PyObjectRef {
             w.insert(CompactString::from("__delitem__"), PyObject::native_closure(
                 "dbm.__delitem__", move |args: &[PyObjectRef]| {
                     check_args_min("dbm.__delitem__", args, 1)?;
-                    let key = HashableKey::Str(CompactString::from(args[0].py_to_string().as_str()));
+                    let key = HashableKey::str_key(CompactString::from(args[0].py_to_string().as_str()));
                     if d7.write().shift_remove(&key).is_none() {
                         return Err(PyException::key_error(args[0].py_to_string()));
                     }
@@ -3535,7 +3535,7 @@ pub fn create_marshal_module() -> PyObjectRef {
                     buf.extend_from_slice(&(map.len() as u32).to_le_bytes());
                     for (k, v) in map.iter() {
                         let key_obj = match k {
-                            HashableKey::Str(s) => PyObject::str_val(s.clone()),
+                            HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
                             HashableKey::Int(n) => PyObject::int(n.to_i64().unwrap_or(0)),
                             HashableKey::Bool(b) => PyObject::bool_val(*b),
                             _ => PyObject::none(),
@@ -3599,10 +3599,10 @@ pub fn create_marshal_module() -> PyObjectRef {
                         let k = marshal_decode(data, pos)?;
                         let v = marshal_decode(data, pos)?;
                         let key = match &k.payload {
-                            PyObjectPayload::Str(s) => HashableKey::Str(s.clone()),
+                            PyObjectPayload::Str(s) => HashableKey::str_key(s.clone()),
                             PyObjectPayload::Int(n) => HashableKey::Int(n.clone()),
                             PyObjectPayload::Bool(b) => HashableKey::Bool(*b),
-                            _ => HashableKey::Str(CompactString::from(k.py_to_string())),
+                            _ => HashableKey::str_key(CompactString::from(k.py_to_string())),
                         };
                         map.insert(key, v);
                     }

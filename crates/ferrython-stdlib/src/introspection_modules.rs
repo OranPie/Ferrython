@@ -46,7 +46,7 @@ pub fn create_warnings_module() -> PyObjectRef {
         for arg in args {
             if let PyObjectPayload::Dict(kw_map) = &arg.payload {
                 let r = kw_map.read();
-                if let Some(v) = r.get(&HashableKey::Str(CompactString::from(key))) {
+                if let Some(v) = r.get(&HashableKey::str_key(CompactString::from(key))) {
                     return Some(v.clone());
                 }
             }
@@ -515,7 +515,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                 };
                 let ann = f.annotations.get(name).cloned();
                 let p = make_param(param_cls, empty, name, 1, default, ann);
-                params_map.insert(HashableKey::Str(name.clone()), p);
+                params_map.insert(HashableKey::str_key(name.clone()), p);
                 keys.push(name.to_string());
             }
 
@@ -525,7 +525,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                     let name = &f.code.varnames[idx];
                     let ann = f.annotations.get(name).cloned();
                     let p = make_param(param_cls, empty, name, 2, empty.clone(), ann);
-                    params_map.insert(HashableKey::Str(name.clone()), p);
+                    params_map.insert(HashableKey::str_key(name.clone()), p);
                     keys.push(name.to_string());
                 }
             }
@@ -538,7 +538,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                 let default = f.kw_defaults.get(name).cloned().unwrap_or_else(|| empty.clone());
                 let ann = f.annotations.get(name).cloned();
                 let p = make_param(param_cls, empty, name, 3, default, ann);
-                params_map.insert(HashableKey::Str(name.clone()), p);
+                params_map.insert(HashableKey::str_key(name.clone()), p);
                 keys.push(name.to_string());
             }
 
@@ -548,7 +548,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                     let name = &f.code.varnames[idx];
                     let ann = f.annotations.get(name).cloned();
                     let p = make_param(param_cls, empty, name, 4, empty.clone(), ann);
-                    params_map.insert(HashableKey::Str(name.clone()), p);
+                    params_map.insert(HashableKey::str_key(name.clone()), p);
                     keys.push(name.to_string());
                 }
             }
@@ -566,7 +566,7 @@ pub fn create_inspect_module() -> PyObjectRef {
         let mut has_varargs = false;
         let mut has_kwonly = false;
         for k in keys {
-            if let Some(p) = params_map.get(&HashableKey::Str(CompactString::from(k.as_str()))) {
+            if let Some(p) = params_map.get(&HashableKey::str_key(CompactString::from(k.as_str()))) {
                 if let PyObjectPayload::Instance(ref pinst) = p.payload {
                     let kind = pinst.attrs.read().get("kind").and_then(|v| v.as_int()).unwrap_or(1);
                     if kind == 2 { has_varargs = true; }
@@ -577,7 +577,7 @@ pub fn create_inspect_module() -> PyObjectRef {
         let needs_bare_star = has_kwonly && !has_varargs;
         let mut bare_star_inserted = false;
         for k in keys {
-            if let Some(p) = params_map.get(&HashableKey::Str(CompactString::from(k.as_str()))) {
+            if let Some(p) = params_map.get(&HashableKey::str_key(CompactString::from(k.as_str()))) {
                 if let PyObjectPayload::Instance(ref pinst) = p.payload {
                     let attrs = pinst.attrs.read();
                     let kind = attrs.get("kind").and_then(|v| v.as_int()).unwrap_or(1);
@@ -706,7 +706,7 @@ pub fn create_inspect_module() -> PyObjectRef {
         let mut pos_idx = 0;
 
         for key_name in keys {
-            let p = match params_map.get(&HashableKey::Str(CompactString::from(key_name.as_str()))) {
+            let p = match params_map.get(&HashableKey::str_key(CompactString::from(key_name.as_str()))) {
                 Some(p) => p,
                 None => continue,
             };
@@ -719,7 +719,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                     // VAR_POSITIONAL: consume remaining positional args
                     let rest: Vec<PyObjectRef> = positional_args[pos_idx..].to_vec();
                     pos_idx = positional_args.len();
-                    arguments.insert(HashableKey::Str(CompactString::from(key_name.as_str())), PyObject::tuple(rest));
+                    arguments.insert(HashableKey::str_key(CompactString::from(key_name.as_str())), PyObject::tuple(rest));
                 }
                 4 => {
                     // VAR_KEYWORD: consume remaining keyword args
@@ -730,17 +730,17 @@ pub fn create_inspect_module() -> PyObjectRef {
                         .collect();
                     for (kn, kv) in &kw_args {
                         if !bound_keys.contains(kn) && !keys.contains(kn) {
-                            d.insert(HashableKey::Str(CompactString::from(kn.as_str())), kv.clone());
+                            d.insert(HashableKey::str_key(CompactString::from(kn.as_str())), kv.clone());
                         }
                     }
-                    arguments.insert(HashableKey::Str(CompactString::from(key_name.as_str())), PyObject::dict(d));
+                    arguments.insert(HashableKey::str_key(CompactString::from(key_name.as_str())), PyObject::dict(d));
                 }
                 _ => {
                     // POSITIONAL_ONLY, POSITIONAL_OR_KEYWORD, KEYWORD_ONLY
                     if let Some(kv) = kw_args.get(key_name) {
-                        arguments.insert(HashableKey::Str(CompactString::from(key_name.as_str())), kv.clone());
+                        arguments.insert(HashableKey::str_key(CompactString::from(key_name.as_str())), kv.clone());
                     } else if pos_idx < positional_args.len() && kind != 3 {
-                        arguments.insert(HashableKey::Str(CompactString::from(key_name.as_str())), positional_args[pos_idx].clone());
+                        arguments.insert(HashableKey::str_key(CompactString::from(key_name.as_str())), positional_args[pos_idx].clone());
                         pos_idx += 1;
                     } else {
                         // Check for default
@@ -752,7 +752,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                             if let PyObjectPayload::Instance(ref inst) = p.payload {
                                 let attrs = inst.attrs.read();
                                 if let Some(d) = attrs.get("default") {
-                                    arguments.insert(HashableKey::Str(CompactString::from(key_name.as_str())), d.clone());
+                                    arguments.insert(HashableKey::str_key(CompactString::from(key_name.as_str())), d.clone());
                                 }
                             }
                         } else if !partial {
@@ -813,7 +813,7 @@ pub fn create_inspect_module() -> PyObjectRef {
         let mut pos_idx = 0;
 
         for key_name in &keys {
-            let p = match params_map.get(&HashableKey::Str(CompactString::from(key_name.as_str()))) {
+            let p = match params_map.get(&HashableKey::str_key(CompactString::from(key_name.as_str()))) {
                 Some(p) => p, None => continue,
             };
             let kind = if let PyObjectPayload::Instance(ref inst) = p.payload {
@@ -824,7 +824,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                 2 => {
                     let rest: Vec<PyObjectRef> = positional[pos_idx..].to_vec();
                     pos_idx = positional.len();
-                    result.insert(HashableKey::Str(CompactString::from(key_name.as_str())), PyObject::tuple(rest));
+                    result.insert(HashableKey::str_key(CompactString::from(key_name.as_str())), PyObject::tuple(rest));
                 }
                 4 => {
                     let mut d: FxHashKeyMap = new_fx_hashkey_map();
@@ -833,16 +833,16 @@ pub fn create_inspect_module() -> PyObjectRef {
                         .collect();
                     for (kn, kv) in &kwargs {
                         if !bound.contains(kn) && !keys.contains(kn) {
-                            d.insert(HashableKey::Str(CompactString::from(kn.as_str())), kv.clone());
+                            d.insert(HashableKey::str_key(CompactString::from(kn.as_str())), kv.clone());
                         }
                     }
-                    result.insert(HashableKey::Str(CompactString::from(key_name.as_str())), PyObject::dict(d));
+                    result.insert(HashableKey::str_key(CompactString::from(key_name.as_str())), PyObject::dict(d));
                 }
                 _ => {
                     if let Some(kv) = kwargs.get(key_name) {
-                        result.insert(HashableKey::Str(CompactString::from(key_name.as_str())), kv.clone());
+                        result.insert(HashableKey::str_key(CompactString::from(key_name.as_str())), kv.clone());
                     } else if pos_idx < positional.len() && kind != 3 {
-                        result.insert(HashableKey::Str(CompactString::from(key_name.as_str())), positional[pos_idx].clone());
+                        result.insert(HashableKey::str_key(CompactString::from(key_name.as_str())), positional[pos_idx].clone());
                         pos_idx += 1;
                     } else {
                         let default_val = if let PyObjectPayload::Instance(ref inst) = p.payload {
@@ -850,7 +850,7 @@ pub fn create_inspect_module() -> PyObjectRef {
                             attrs.get("default").filter(|d| !is_empty(d)).cloned()
                         } else { None };
                         if let Some(d) = default_val {
-                            result.insert(HashableKey::Str(CompactString::from(key_name.as_str())), d);
+                            result.insert(HashableKey::str_key(CompactString::from(key_name.as_str())), d);
                         } else {
                             return Err(PyException::type_error(
                                 format!("missing a required argument: '{}'", key_name)
@@ -926,13 +926,13 @@ pub fn create_inspect_module() -> PyObjectRef {
                 } else {
                     let mut kw_dict: FxHashKeyMap = new_fx_hashkey_map();
                     for (k, v) in &pf.kw_defaults {
-                        kw_dict.insert(HashableKey::Str(k.clone()), v.clone());
+                        kw_dict.insert(HashableKey::str_key(k.clone()), v.clone());
                     }
                     PyObject::dict(kw_dict)
                 });
                 let mut ann_map: FxHashKeyMap = new_fx_hashkey_map();
                 for (k, v) in &pf.annotations {
-                    ann_map.insert(HashableKey::Str(k.clone()), v.clone());
+                    ann_map.insert(HashableKey::str_key(k.clone()), v.clone());
                 }
                 a.insert(CompactString::from("annotations"), PyObject::dict(ann_map));
             }
@@ -1314,7 +1314,7 @@ pub fn create_dis_module() -> PyObjectRef {
             // kwargs packed as trailing dict by VM
             if let PyObjectPayload::Dict(map) = &last.payload {
                 let r = map.read();
-                if let Some(f) = r.get(&HashableKey::Str(CompactString::from("file"))) {
+                if let Some(f) = r.get(&HashableKey::str_key(CompactString::from("file"))) {
                     file_obj = Some(f.clone());
                 }
             }

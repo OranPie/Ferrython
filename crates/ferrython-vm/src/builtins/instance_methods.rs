@@ -27,7 +27,7 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
                     for field in field_names {
                         let name = field.py_to_string();
                         let val = attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
-                        map.insert(HashableKey::Str(CompactString::from(name.as_str())), val);
+                        map.insert(HashableKey::str_key(CompactString::from(name.as_str())), val);
                     }
                     return Ok(PyObject::dict(map));
                 }
@@ -52,7 +52,7 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
                     let mut new_values: Vec<PyObjectRef> = Vec::new();
                     for field in field_names {
                         let name = field.py_to_string();
-                        let hk = HashableKey::Str(CompactString::from(name.as_str()));
+                        let hk = HashableKey::str_key(CompactString::from(name.as_str()));
                         let val = if let Some(ref kw) = kwargs_dict {
                             kw.get(&hk).cloned().unwrap_or_else(|| {
                                 attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none)
@@ -495,7 +495,7 @@ pub(super) fn call_instance_dict_method(
         "copy" => {
             let guard = attrs.read();
             let copy: FxHashKeyMap = guard.iter()
-                .map(|(k, v)| (HashableKey::Str(k.clone()), v.clone()))
+                .map(|(k, v)| (HashableKey::str_key(k.clone()), v.clone()))
                 .collect();
             Ok(PyObject::dict(copy))
         }
@@ -600,7 +600,7 @@ pub(super) fn call_csv_dictwriter_method(inst: &ferrython_core::object::Instance
             for name in &names {
                 // Dict key lookup first (avoids clashing with dict method names like "pop")
                 let val = if let PyObjectPayload::Dict(map) = &row_dict.payload {
-                    map.read().get(&HashableKey::Str(CompactString::from(name.as_str())))
+                    map.read().get(&HashableKey::str_key(CompactString::from(name.as_str())))
                         .cloned().unwrap_or_else(PyObject::none)
                 } else if let Some(v) = row_dict.get_attr(name) {
                     v
@@ -870,10 +870,10 @@ pub(super) fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectR
         if args.len() >= 2 {
             if let PyObjectPayload::Dict(map) = &last.payload {
                 let map_r = map.read();
-                if let Some(bo) = map_r.get(&HashableKey::Str(CompactString::from("byteorder"))) {
+                if let Some(bo) = map_r.get(&HashableKey::str_key(CompactString::from("byteorder"))) {
                     byteorder = bo.py_to_string();
                 }
-                if let Some(s) = map_r.get(&HashableKey::Str(CompactString::from("signed"))) {
+                if let Some(s) = map_r.get(&HashableKey::str_key(CompactString::from("signed"))) {
                     signed = s.is_truthy();
                 }
             } else {
@@ -1414,13 +1414,13 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             // Check for parents=True, exist_ok=True kwargs
             let parents = args.iter().any(|a| {
                 if let PyObjectPayload::Dict(m) = &a.payload {
-                    m.read().get(&HashableKey::Str(CompactString::from("parents")))
+                    m.read().get(&HashableKey::str_key(CompactString::from("parents")))
                         .map(|v| v.is_truthy()).unwrap_or(false)
                 } else { false }
             });
             let exist_ok = args.iter().any(|a| {
                 if let PyObjectPayload::Dict(m) = &a.payload {
-                    m.read().get(&HashableKey::Str(CompactString::from("exist_ok")))
+                    m.read().get(&HashableKey::str_key(CompactString::from("exist_ok")))
                         .map(|v| v.is_truthy()).unwrap_or(false)
                 } else { false }
             });
@@ -1622,7 +1622,7 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             // touch(mode=0o666, exist_ok=True) — create file if doesn't exist
             let exist_ok = args.iter().any(|a| {
                 if let PyObjectPayload::Dict(m) = &a.payload {
-                    m.read().get(&HashableKey::Str(CompactString::from("exist_ok")))
+                    m.read().get(&HashableKey::str_key(CompactString::from("exist_ok")))
                         .map(|v| v.is_truthy()).unwrap_or(true)
                 } else { true }
             });
@@ -1838,13 +1838,13 @@ pub(super) fn call_datetime_method(inst: &ferrython_core::object::InstanceData, 
             if let Some(kw) = args.last() {
                 if let PyObjectPayload::Dict(map) = &kw.payload {
                     let r = map.read();
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("year"))) { ny = v.as_int().unwrap_or(ny); }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("month"))) { nm = v.as_int().unwrap_or(nm); }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("day"))) { nd = v.as_int().unwrap_or(nd); }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("hour"))) { nh = v.as_int().unwrap_or(nh); }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("minute"))) { nmi = v.as_int().unwrap_or(nmi); }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("second"))) { ns = v.as_int().unwrap_or(ns); }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("microsecond"))) { nus = v.as_int().unwrap_or(nus); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("year"))) { ny = v.as_int().unwrap_or(ny); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("month"))) { nm = v.as_int().unwrap_or(nm); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("day"))) { nd = v.as_int().unwrap_or(nd); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("hour"))) { nh = v.as_int().unwrap_or(nh); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("minute"))) { nmi = v.as_int().unwrap_or(nmi); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("second"))) { ns = v.as_int().unwrap_or(ns); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("microsecond"))) { nus = v.as_int().unwrap_or(nus); }
                 }
             }
             let cls = PyObject::class(CompactString::from("datetime"), vec![], IndexMap::new());

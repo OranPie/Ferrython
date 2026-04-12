@@ -54,10 +54,10 @@ pub fn create_threading_module() -> PyObjectRef {
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(kw_map) = &last.payload {
                     let r = kw_map.read();
-                    if let Some(t) = r.get(&HashableKey::Str(CompactString::from("target"))) { target = t.clone(); }
-                    if let Some(a) = r.get(&HashableKey::Str(CompactString::from("args"))) { thread_args = a.clone(); }
-                    if let Some(d) = r.get(&HashableKey::Str(CompactString::from("daemon"))) { daemon = d.clone(); }
-                    if let Some(n) = r.get(&HashableKey::Str(CompactString::from("name"))) { name = n.clone(); }
+                    if let Some(t) = r.get(&HashableKey::str_key(CompactString::from("target"))) { target = t.clone(); }
+                    if let Some(a) = r.get(&HashableKey::str_key(CompactString::from("args"))) { thread_args = a.clone(); }
+                    if let Some(d) = r.get(&HashableKey::str_key(CompactString::from("daemon"))) { daemon = d.clone(); }
+                    if let Some(n) = r.get(&HashableKey::str_key(CompactString::from("name"))) { name = n.clone(); }
                 }
             }
             attrs.insert(CompactString::from("_target"), target);
@@ -307,7 +307,7 @@ pub fn create_threading_module() -> PyObjectRef {
                             PyObjectPayload::Bool(b) => { blocking = *b; }
                             PyObjectPayload::Dict(map) => {
                                 let r = map.read();
-                                if let Some(v) = r.get(&HashableKey::Str(CompactString::from("blocking"))) {
+                                if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("blocking"))) {
                                     blocking = v.is_truthy();
                                 }
                             }
@@ -385,7 +385,7 @@ pub fn create_threading_module() -> PyObjectRef {
                             PyObjectPayload::Bool(b) => { blocking = *b; }
                             PyObjectPayload::Dict(map) => {
                                 let r = map.read();
-                                if let Some(v) = r.get(&HashableKey::Str(CompactString::from("blocking"))) {
+                                if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("blocking"))) {
                                     blocking = v.is_truthy();
                                 }
                             }
@@ -719,10 +719,10 @@ pub fn create_threading_module() -> PyObjectRef {
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(kw_map) = &last.payload {
                     let r = kw_map.read();
-                    if let Some(t) = r.get(&HashableKey::Str(CompactString::from("target"))) {
+                    if let Some(t) = r.get(&HashableKey::str_key(CompactString::from("target"))) {
                         target = t.clone();
                     }
-                    if let Some(a) = r.get(&HashableKey::Str(CompactString::from("args"))) {
+                    if let Some(a) = r.get(&HashableKey::str_key(CompactString::from("args"))) {
                         fn_args = a.clone();
                     }
                 }
@@ -1511,15 +1511,15 @@ pub fn create_gc_module() -> PyObjectRef {
             let entry = PyObject::dict({
                 let mut m = IndexMap::new();
                 m.insert(
-                    HashableKey::Str(CompactString::from("collections")),
+                    HashableKey::str_key(CompactString::from("collections")),
                     PyObject::int(stats.collections as i64),
                 );
                 m.insert(
-                    HashableKey::Str(CompactString::from("collected")),
+                    HashableKey::str_key(CompactString::from("collected")),
                     PyObject::int(0),
                 );
                 m.insert(
-                    HashableKey::Str(CompactString::from("uncollectable")),
+                    HashableKey::str_key(CompactString::from("uncollectable")),
                     PyObject::int(0),
                 );
                 m
@@ -1852,16 +1852,16 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(kw_map) = &last.payload {
                     let r = kw_map.read();
-                    if let Some(t) = r.get(&HashableKey::Str(CompactString::from("target"))) {
+                    if let Some(t) = r.get(&HashableKey::str_key(CompactString::from("target"))) {
                         target = t.clone();
                     }
-                    if let Some(a) = r.get(&HashableKey::Str(CompactString::from("args"))) {
+                    if let Some(a) = r.get(&HashableKey::str_key(CompactString::from("args"))) {
                         proc_args = a.clone();
                     }
-                    if let Some(n) = r.get(&HashableKey::Str(CompactString::from("name"))) {
+                    if let Some(n) = r.get(&HashableKey::str_key(CompactString::from("name"))) {
                         name = n.clone();
                     }
-                    if let Some(d) = r.get(&HashableKey::Str(CompactString::from("daemon"))) {
+                    if let Some(d) = r.get(&HashableKey::str_key(CompactString::from("daemon"))) {
                         daemon = d.clone();
                     }
                 }

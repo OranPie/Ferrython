@@ -312,7 +312,7 @@ fn build_element_object(
     let mut attrib_map = IndexMap::new();
     for (k, v) in attrib {
         attrib_map.insert(
-            HashableKey::Str(CompactString::from(k.as_str())),
+            HashableKey::str_key(CompactString::from(k.as_str())),
             PyObject::str_val(CompactString::from(v.as_str())),
         );
     }
@@ -710,7 +710,7 @@ fn etree_element(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if let PyObjectPayload::Dict(kw) = &args[last].payload {
             let r = kw.read();
             // attrib={...} kwarg
-            if let Some(att) = r.get(&HashableKey::Str(CompactString::from("attrib"))) {
+            if let Some(att) = r.get(&HashableKey::str_key(CompactString::from("attrib"))) {
                 if let PyObjectPayload::Dict(am) = &att.payload {
                     let ar = am.read();
                     for (k, v) in ar.iter() {
@@ -759,7 +759,7 @@ fn etree_subelement(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if has_kwargs {
         if let PyObjectPayload::Dict(kw) = &args[last].payload {
             let r = kw.read();
-            if let Some(att) = r.get(&HashableKey::Str(CompactString::from("attrib"))) {
+            if let Some(att) = r.get(&HashableKey::str_key(CompactString::from("attrib"))) {
                 if let PyObjectPayload::Dict(am) = &att.payload {
                     let ar = am.read();
                     for (k, v) in ar.iter() {
@@ -829,7 +829,7 @@ fn etree_tostring(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if let Some(last) = args.last() {
             if let PyObjectPayload::Dict(d) = &last.payload {
                 let r = d.read();
-                if let Some(enc) = r.get(&HashableKey::Str(CompactString::from("encoding"))) {
+                if let Some(enc) = r.get(&HashableKey::str_key(CompactString::from("encoding"))) {
                     encoding_str = enc.py_to_string();
                 }
             }
@@ -995,7 +995,7 @@ pub fn create_xml_etree_elementtree_module() -> PyObjectRef {
             let mut set = IndexMap::new();
             for s in elems {
                 let val = PyObject::str_val(CompactString::from(s));
-                set.insert(HashableKey::Str(CompactString::from(s)), val);
+                set.insert(HashableKey::str_key(CompactString::from(s)), val);
             }
             PyObject::set(set)
         }),

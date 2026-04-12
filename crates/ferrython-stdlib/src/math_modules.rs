@@ -273,10 +273,10 @@ fn math_isclose(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     for arg in remaining {
         if let PyObjectPayload::Dict(d) = &arg.payload {
             let map = d.read();
-            if let Some(v) = map.get(&HashableKey::Str(CompactString::from("rel_tol"))) {
+            if let Some(v) = map.get(&HashableKey::str_key(CompactString::from("rel_tol"))) {
                 rel_tol = v.to_float()?;
             }
-            if let Some(v) = map.get(&HashableKey::Str(CompactString::from("abs_tol"))) {
+            if let Some(v) = map.get(&HashableKey::str_key(CompactString::from("abs_tol"))) {
                 abs_tol = v.to_float()?;
             }
         } else if rel_tol == 1e-9 && abs_tol == 0.0 {
@@ -1573,7 +1573,7 @@ pub fn create_decimal_module() -> PyObjectRef {
         let rounding = if args.len() > 2 {
             if let Some(s) = args[2].as_str() { s.to_string() }
             else if let PyObjectPayload::Dict(d) = &args[args.len() - 1].payload {
-                d.read().get(&HashableKey::Str(CompactString::from("rounding")))
+                d.read().get(&HashableKey::str_key(CompactString::from("rounding")))
                     .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .unwrap_or_default()
             } else { String::new() }
@@ -1796,7 +1796,7 @@ pub fn create_decimal_module() -> PyObjectRef {
             let prec = args.first()
                 .and_then(|a| if matches!(a.payload, PyObjectPayload::Dict(_)) {
                     if let PyObjectPayload::Dict(ref m) = a.payload {
-                        m.read().get(&HashableKey::Str(CompactString::from("prec"))).and_then(|v| v.as_int())
+                        m.read().get(&HashableKey::str_key(CompactString::from("prec"))).and_then(|v| v.as_int())
                     } else { None }
                 } else { a.as_int() })
                 .unwrap_or(28) as i64;
@@ -1858,14 +1858,14 @@ pub fn create_random_module() -> PyObjectRef {
             for arg in args.iter().skip(1) {
                 if let PyObjectPayload::Dict(d) = &arg.payload {
                     let d = d.read();
-                    if let Some(kv) = d.get(&HashableKey::Str(CompactString::from("k"))) {
+                    if let Some(kv) = d.get(&HashableKey::str_key(CompactString::from("k"))) {
                         k = kv.to_int()? as usize;
                     }
-                    if let Some(wv) = d.get(&HashableKey::Str(CompactString::from("weights"))) {
+                    if let Some(wv) = d.get(&HashableKey::str_key(CompactString::from("weights"))) {
                         let wl = wv.to_list()?;
                         weights = Some(wl.iter().map(|w| w.to_float().unwrap_or(1.0)).collect());
                     }
-                    if let Some(cwv) = d.get(&HashableKey::Str(CompactString::from("cum_weights"))) {
+                    if let Some(cwv) = d.get(&HashableKey::str_key(CompactString::from("cum_weights"))) {
                         let cwl = cwv.to_list()?;
                         let cw: Vec<f64> = cwl.iter().map(|w| w.to_float().unwrap_or(0.0)).collect();
                         // Convert cumulative weights back to regular weights

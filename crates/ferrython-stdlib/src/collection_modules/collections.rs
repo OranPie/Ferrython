@@ -67,7 +67,7 @@ pub fn create_collections_module() -> PyObjectRef {
 
 fn collections_ordered_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // OrderedDict — same as dict but __eq__ compares order when both are OrderedDict
-    let marker_key = HashableKey::Str(CompactString::from("__ordered_dict__"));
+    let marker_key = HashableKey::str_key(CompactString::from("__ordered_dict__"));
     let mut pairs = Vec::new();
     if !args.is_empty() {
         let items = args[0].to_list()?;
@@ -111,7 +111,7 @@ fn collections_ordered_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         });
         // Store move_to_end as a hidden dict key since dicts don't have instance attrs
         dict_arc.write().insert(
-            HashableKey::Str(CompactString::from("__move_to_end_fn__")),
+            HashableKey::str_key(CompactString::from("__move_to_end_fn__")),
             move_fn,
         );
     }
@@ -130,7 +130,7 @@ fn collections_defaultdict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Store factory as a special key
     if let Some(f) = factory {
         map.insert(
-            HashableKey::Str(CompactString::from("__defaultdict_factory__")),
+            HashableKey::str_key(CompactString::from("__defaultdict_factory__")),
             f,
         );
     }
@@ -149,8 +149,8 @@ fn collections_defaultdict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn collections_counter(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let int_factory = PyObject::builtin_type(CompactString::from("int"));
-    let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
-    let counter_marker = HashableKey::Str(CompactString::from("__counter__"));
+    let factory_key = HashableKey::str_key(CompactString::from("__defaultdict_factory__"));
+    let counter_marker = HashableKey::str_key(CompactString::from("__counter__"));
     
     if args.is_empty() {
         let mut map = IndexMap::new();
@@ -314,11 +314,11 @@ fn counter_clear(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("counter_clear requires a Counter")); }
     if let PyObjectPayload::Dict(map) = &args[0].payload {
         let mut w = map.write();
-        let factory = w.get(&HashableKey::Str(CompactString::from("__defaultdict_factory__"))).cloned();
-        let marker = w.get(&HashableKey::Str(CompactString::from("__counter__"))).cloned();
+        let factory = w.get(&HashableKey::str_key(CompactString::from("__defaultdict_factory__"))).cloned();
+        let marker = w.get(&HashableKey::str_key(CompactString::from("__counter__"))).cloned();
         w.clear();
-        if let Some(f) = factory { w.insert(HashableKey::Str(CompactString::from("__defaultdict_factory__")), f); }
-        if let Some(m) = marker { w.insert(HashableKey::Str(CompactString::from("__counter__")), m); }
+        if let Some(f) = factory { w.insert(HashableKey::str_key(CompactString::from("__defaultdict_factory__")), f); }
+        if let Some(m) = marker { w.insert(HashableKey::str_key(CompactString::from("__counter__")), m); }
     }
     Ok(PyObject::none())
 }
@@ -360,7 +360,7 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     
     // Parse defaults from kwargs
     let defaults: Vec<PyObjectRef> = kwargs_dict.as_ref()
-        .and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("defaults"))))
+        .and_then(|kw| kw.get(&HashableKey::str_key(CompactString::from("defaults"))))
         .and_then(|d| d.to_list().ok())
         .unwrap_or_default();
     
@@ -379,7 +379,7 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         for (i, val) in defaults.iter().enumerate() {
             if let Some(name) = field_names.get(offset + i) {
                 defaults_map.insert(
-                    HashableKey::Str(name.clone()),
+                    HashableKey::str_key(name.clone()),
                     val.clone(),
                 );
             }
@@ -440,7 +440,7 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             let mut dict = IndexMap::new();
             for name in &field_names_ad {
                 let val = self_obj.get_attr(name.as_str()).unwrap_or_else(PyObject::none);
-                dict.insert(HashableKey::Str(name.clone()), val);
+                dict.insert(HashableKey::str_key(name.clone()), val);
             }
             Ok(PyObject::dict(dict))
         }
@@ -468,7 +468,7 @@ fn collections_namedtuple(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 let mut tuple_items = Vec::new();
                 for name in &field_names_rep {
                     let val = if let Some(ref kw) = kwargs {
-                        kw.get(&HashableKey::Str(name.clone()))
+                        kw.get(&HashableKey::str_key(name.clone()))
                             .cloned()
                             .unwrap_or_else(|| self_obj.get_attr(name.as_str()).unwrap_or_else(PyObject::none))
                     } else {
@@ -504,7 +504,7 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let maxlen = if has_trailing_kwargs {
         if let PyObjectPayload::Dict(map) = &args[args.len() - 1].payload {
             let map = map.read();
-            map.get(&HashableKey::Str(CompactString::from("maxlen")))
+            map.get(&HashableKey::str_key(CompactString::from("maxlen")))
                 .and_then(|v| if matches!(&v.payload, PyObjectPayload::None) { None } else { Some(v.to_int().unwrap_or(0) as usize) })
         } else {
             None

@@ -48,7 +48,7 @@ pub fn create_typing_module() -> PyObjectRef {
 
             let get_kwarg = |key: &str| -> Option<PyObjectRef> {
                 kwargs_dict.as_ref().and_then(|kw| {
-                    kw.get(&HashableKey::Str(CompactString::from(key))).cloned()
+                    kw.get(&HashableKey::str_key(CompactString::from(key))).cloned()
                 })
             };
             let bound = get_kwarg("bound").unwrap_or_else(PyObject::none);
@@ -614,7 +614,7 @@ pub fn create_enum_module() -> PyObjectRef {
                 // Check __members__ dict
                 if let Some(members) = ns.get("__members__") {
                     if let PyObjectPayload::Dict(map) = &members.payload {
-                        let key = HashableKey::Str(CompactString::from(name.as_str()));
+                        let key = HashableKey::str_key(CompactString::from(name.as_str()));
                         if let Some(member) = map.read().get(&key) {
                             return Ok(member.clone());
                         }
@@ -665,7 +665,7 @@ pub fn create_enum_module() -> PyObjectRef {
                         let member = PyObject::instance_with_attrs(new_cls.clone(), member_attrs);
                         ns.insert(cs_name.clone(), member.clone());
                         members_map.insert(
-                            HashableKey::Str(cs_name),
+                            HashableKey::str_key(cs_name),
                             member,
                         );
                     }
@@ -1348,7 +1348,7 @@ pub fn create_types_module() -> PyObjectRef {
                         let mut attrs = d.attrs.write();
                         for (k, v) in kw.read().iter() {
                             if let HashableKey::Str(s) = k {
-                                attrs.insert(s.clone(), v.clone());
+                                attrs.insert(s.as_ref().clone(), v.clone());
                             }
                         }
                     }
@@ -1420,7 +1420,7 @@ pub fn create_collections_abc_module() -> PyObjectRef {
         if !builtin_types.is_empty() {
             let mut type_set = IndexMap::new();
             for t in builtin_types {
-                let key = ferrython_core::types::HashableKey::Str(CompactString::from(*t));
+                let key = ferrython_core::types::HashableKey::str_key(CompactString::from(*t));
                 type_set.insert(key, PyObject::str_val(CompactString::from(*t)));
             }
             ns.insert(CompactString::from("_abc_builtin_types"), PyObject::set(type_set));

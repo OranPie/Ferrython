@@ -21,7 +21,7 @@ pub fn create_hashlib_module() -> PyObjectRef {
         "blake2b", "blake2s",
     ];
     let algo_set: IndexMap<ferrython_core::types::HashableKey, PyObjectRef> = algos.iter()
-        .map(|&a| (ferrython_core::types::HashableKey::Str(CompactString::from(a)), PyObject::none()))
+        .map(|&a| (ferrython_core::types::HashableKey::str_key(CompactString::from(a)), PyObject::none()))
         .collect();
     make_module("hashlib", vec![
         ("md5", make_builtin(hashlib_md5)),

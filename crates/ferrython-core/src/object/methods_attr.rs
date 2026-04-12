@@ -635,7 +635,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     let attrs = m.attrs.read();
                     let mut map = new_fx_hashkey_map();
                     for (k, v) in attrs.iter() {
-                        map.insert(HashableKey::Str(k.clone()), v.clone());
+                        map.insert(HashableKey::str_key(k.clone()), v.clone());
                     }
                     Some(PyObject::dict(map))
                 } else {
@@ -744,11 +744,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     }),
                                 );
                             }
-                            map.insert(HashableKey::Str(CompactString::from("__dict__")), desc);
-                            map.insert(HashableKey::Str(CompactString::from("__doc__")), PyObject::none());
-                            map.insert(HashableKey::Str(CompactString::from("__repr__")), 
+                            map.insert(HashableKey::str_key(CompactString::from("__dict__")), desc);
+                            map.insert(HashableKey::str_key(CompactString::from("__doc__")), PyObject::none());
+                            map.insert(HashableKey::str_key(CompactString::from("__repr__")), 
                                 PyObject::builtin_type(CompactString::from("wrapper_descriptor")));
-                            map.insert(HashableKey::Str(CompactString::from("__subclasshook__")),
+                            map.insert(HashableKey::str_key(CompactString::from("__subclasshook__")),
                                 PyObject::builtin_type(CompactString::from("method_descriptor")));
                         }
                         Some(PyObject::wrap(PyObjectPayload::MappingProxy(
@@ -1050,7 +1050,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "keywords" => {
                         let mut map = new_fx_hashkey_map();
                         for (k, v) in &pd.kwargs {
-                            map.insert(crate::types::HashableKey::Str(k.clone()), v.clone());
+                            map.insert(crate::types::HashableKey::str_key(k.clone()), v.clone());
                         }
                         Some(PyObject::dict(map))
                     }

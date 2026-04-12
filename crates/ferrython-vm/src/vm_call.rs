@@ -159,7 +159,7 @@ impl VirtualMachine {
                         if c == '}' { break; }
                         field.push(c);
                     }
-                    let key = HashableKey::Str(CompactString::from(&field));
+                    let key = HashableKey::str_key(CompactString::from(&field));
                     if let Some(val) = dict_storage.read().get(&key) {
                         result.push_str(&val.py_to_string());
                     } else if let Some(missing_fn) = lookup_in_class_mro(mapping_class, "__missing__") {
@@ -188,7 +188,7 @@ impl VirtualMachine {
         _mapping: &PyObjectRef,
         dict: &Rc<PyCell<FxHashKeyMap>>,
     ) -> PyResult<PyObjectRef> {
-        let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+        let factory_key = HashableKey::str_key(CompactString::from("__defaultdict_factory__"));
         let mut result = String::new();
         let mut chars = template.chars().peekable();
         while let Some(c) = chars.next() {
@@ -202,7 +202,7 @@ impl VirtualMachine {
                         if c == '}' { break; }
                         field.push(c);
                     }
-                    let key = HashableKey::Str(CompactString::from(&field));
+                    let key = HashableKey::str_key(CompactString::from(&field));
                     let guard = dict.read();
                     if let Some(val) = guard.get(&key) {
                         result.push_str(&val.py_to_string());
@@ -430,7 +430,7 @@ impl VirtualMachine {
             }
             // Not a known parameter — goes into **kwargs
             extra_kwargs.insert(
-                HashableKey::Str(name),
+                HashableKey::str_key(name),
                 val,
             );
         }
@@ -923,7 +923,7 @@ impl VirtualMachine {
                             } else if i < pos_args.len() {
                                 pos_args[i].clone()
                             } else if let Some(ref dmap) = defaults_map {
-                                let key = HashableKey::Str(CompactString::from(name.as_str()));
+                                let key = HashableKey::str_key(CompactString::from(name.as_str()));
                                 dmap.get(&key).cloned().unwrap_or_else(PyObject::none)
                             } else {
                                 PyObject::none()
@@ -974,7 +974,7 @@ impl VirtualMachine {
                     }
                     // Populate kwargs into dict_storage
                     for (k, v) in &kwargs {
-                        storage.insert(HashableKey::Str(k.clone()), v.clone());
+                        storage.insert(HashableKey::str_key(k.clone()), v.clone());
                     }
                 }
             }
@@ -1216,7 +1216,7 @@ impl VirtualMachine {
                             // Then add kwargs
                             let mut w = map.write();
                             for (k, v) in &kwargs {
-                                w.insert(HashableKey::Str(k.clone()), v.clone());
+                                w.insert(HashableKey::str_key(k.clone()), v.clone());
                             }
                             return Ok(PyObject::none());
                         }
@@ -1254,7 +1254,7 @@ impl VirtualMachine {
                                 let mut all_args = pos_args;
                                 let mut kw_map = IndexMap::new();
                                 for (k, v) in kwargs {
-                                    kw_map.insert(HashableKey::Str(k), v);
+                                    kw_map.insert(HashableKey::str_key(k), v);
                                 }
                                 all_args.push(PyObject::dict(kw_map));
                                 return self.call_object(func, all_args);
@@ -1296,11 +1296,11 @@ impl VirtualMachine {
                                 let mut map = IndexMap::new();
                                 let g = frame.globals.read();
                                 for (k, v) in g.iter() {
-                                    map.insert(HashableKey::Str(k.clone()), v.clone());
+                                    map.insert(HashableKey::str_key(k.clone()), v.clone());
                                 }
                                 drop(g);
                                 for (k, v) in frame.local_names_iter() {
-                                    map.insert(HashableKey::Str(k.clone()), v.clone());
+                                    map.insert(HashableKey::str_key(k.clone()), v.clone());
                                 }
                                 return Ok(PyObject::dict(map));
                             }
@@ -1375,7 +1375,7 @@ impl VirtualMachine {
                                     if let PyObjectPayload::InstanceDict(src) = &pos_args[0].payload {
                                         let read = src.read();
                                         for (k, v) in read.iter() {
-                                            map.insert(HashableKey::Str(k.clone()), v.clone());
+                                            map.insert(HashableKey::str_key(k.clone()), v.clone());
                                         }
                                         handled = true;
                                     }
@@ -1404,7 +1404,7 @@ impl VirtualMachine {
                                 }
                             }
                             for (k, v) in &kwargs {
-                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                                map.insert(HashableKey::str_key(k.clone()), v.clone());
                             }
                             return Ok(PyObject::dict(map));
                         }
@@ -1450,7 +1450,7 @@ impl VirtualMachine {
                             let mut all_args = pos_args;
                             let mut kw_map = IndexMap::new();
                             for (k, v) in kwargs {
-                                kw_map.insert(HashableKey::Str(k), v);
+                                kw_map.insert(HashableKey::str_key(k), v);
                             }
                             if !kw_map.is_empty() {
                                 all_args.push(PyObject::dict(kw_map));
@@ -1463,7 +1463,7 @@ impl VirtualMachine {
                                 let mut all_args = pos_args;
                                 let mut kw_map = IndexMap::new();
                                 for (k, v) in kwargs {
-                                    kw_map.insert(HashableKey::Str(k), v);
+                                    kw_map.insert(HashableKey::str_key(k), v);
                                 }
                                 all_args.push(PyObject::dict(kw_map));
                                 return self.call_object(func, all_args);
@@ -1510,7 +1510,7 @@ impl VirtualMachine {
                                 }
                             }
                             for (k, v) in &kwargs {
-                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                                map.insert(HashableKey::str_key(k.clone()), v.clone());
                             }
                             if nf_data.name.as_str() == "collections.Counter" {
                                 return (nf_data.func)(&[PyObject::dict(map)]);
@@ -1529,7 +1529,7 @@ impl VirtualMachine {
                                     }
                                 }
                                 for (k, v) in &kwargs {
-                                    map.insert(HashableKey::Str(k.clone()), v.clone());
+                                    map.insert(HashableKey::str_key(k.clone()), v.clone());
                                 }
                                 if all.len() >= 2 { all[1] = PyObject::dict(map); } else {
                                     while all.len() < 1 { all.push(PyObject::none()); }
@@ -1571,7 +1571,7 @@ impl VirtualMachine {
                                 if !kwargs.is_empty() {
                                     let mut kw_map = IndexMap::new();
                                     for (k, v) in &kwargs {
-                                        kw_map.insert(HashableKey::Str(k.clone()), v.clone());
+                                        kw_map.insert(HashableKey::str_key(k.clone()), v.clone());
                                     }
                                     merged.push(PyObject::dict(kw_map));
                                 }
@@ -1658,7 +1658,7 @@ impl VirtualMachine {
                                 if !filtered_kwargs.is_empty() {
                                     let mut kw_map = IndexMap::new();
                                     for (k, v) in filtered_kwargs {
-                                        kw_map.insert(HashableKey::Str(k), v);
+                                        kw_map.insert(HashableKey::str_key(k), v);
                                     }
                                     load_args.push(PyObject::dict(kw_map));
                                 }
@@ -1717,7 +1717,7 @@ impl VirtualMachine {
                                         if !filtered_kwargs.is_empty() {
                                             let mut kw_map = IndexMap::new();
                                             for (k, v) in filtered_kwargs {
-                                                kw_map.insert(HashableKey::Str(k), v);
+                                                kw_map.insert(HashableKey::str_key(k), v);
                                             }
                                             dump_args.push(PyObject::dict(kw_map));
                                         }
@@ -1728,7 +1728,7 @@ impl VirtualMachine {
                                     if !filtered_kwargs.is_empty() {
                                         let mut kw_map = IndexMap::new();
                                         for (k, v) in filtered_kwargs {
-                                            kw_map.insert(HashableKey::Str(k), v);
+                                            kw_map.insert(HashableKey::str_key(k), v);
                                         }
                                         dump_args.push(PyObject::dict(kw_map));
                                     }
@@ -1741,7 +1741,7 @@ impl VirtualMachine {
                             let mut all_args = pos_args;
                             let mut kw_map = IndexMap::new();
                             for (k, v) in kwargs {
-                                kw_map.insert(HashableKey::Str(k), v);
+                                kw_map.insert(HashableKey::str_key(k), v);
                             }
                             all_args.push(PyObject::dict(kw_map));
                             return (nf_data.func)(&all_args);
@@ -1753,7 +1753,7 @@ impl VirtualMachine {
                             let mut all_args = pos_args;
                             let mut kw_map = IndexMap::new();
                             for (k, v) in kwargs {
-                                kw_map.insert(HashableKey::Str(k), v);
+                                kw_map.insert(HashableKey::str_key(k), v);
                             }
                             all_args.push(PyObject::dict(kw_map));
                             (nc.func)(&all_args)?
@@ -1842,7 +1842,7 @@ impl VirtualMachine {
                     let mut all_args = pos_args;
                     let mut kw_map = IndexMap::new();
                     for (k, v) in kwargs {
-                        kw_map.insert(HashableKey::Str(k), v);
+                        kw_map.insert(HashableKey::str_key(k), v);
                     }
                     all_args.push(PyObject::dict(kw_map));
                     self.call_object(func, all_args)
@@ -1885,11 +1885,11 @@ impl VirtualMachine {
                             let mut map = IndexMap::new();
                             let g = frame.globals.read();
                             for (k, v) in g.iter() {
-                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                                map.insert(HashableKey::str_key(k.clone()), v.clone());
                             }
                             drop(g);
                             for (k, v) in frame.local_names_iter() {
-                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                                map.insert(HashableKey::str_key(k.clone()), v.clone());
                             }
                             return Ok(PyObject::dict(map));
                         }
@@ -2077,7 +2077,7 @@ impl VirtualMachine {
                             let read = src.read();
                             let mut map = IndexMap::new();
                             for (k, v) in read.iter() {
-                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                                map.insert(HashableKey::str_key(k.clone()), v.clone());
                             }
                             return Ok(PyObject::dict(map));
                         }
@@ -2220,7 +2220,7 @@ impl VirtualMachine {
                         let iter_end = if let Some(last) = args.last() {
                             if let PyObjectPayload::Dict(kw) = &last.payload {
                                 let r = kw.read();
-                                if let Some(v) = r.get(&HashableKey::Str(CompactString::from("strict"))) {
+                                if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("strict"))) {
                                     strict = v.is_truthy();
                                 }
                                 drop(r);
@@ -2232,7 +2232,7 @@ impl VirtualMachine {
                         if strict {
                             // Re-add kwargs dict so builtin_zip can pick it up
                             let kw = PyObject::dict(indexmap::IndexMap::from([(
-                                HashableKey::Str(CompactString::from("strict")),
+                                HashableKey::str_key(CompactString::from("strict")),
                                 PyObject::bool_val(true),
                             )]));
                             full_args.push(kw);
@@ -2389,7 +2389,7 @@ impl VirtualMachine {
                                     let rd = attrs.read();
                                     let mut m = new_fx_hashkey_map();
                                     for (k, v) in rd.iter() {
-                                        m.insert(HashableKey::Str(k.clone()), v.clone());
+                                        m.insert(HashableKey::str_key(k.clone()), v.clone());
                                     }
                                     m
                                 }
@@ -2615,9 +2615,9 @@ impl VirtualMachine {
                             if let Some(ref kw) = kwargs_dict {
                                 for (k, _v) in kw {
                                     if let HashableKey::Str(fname) = k {
-                                        if fname != "defaults" && fname != "module" && fname != "rename" {
-                                            if !field_names.contains(fname) {
-                                                field_names.push(fname.clone());
+                                        if fname.as_str() != "defaults" && fname.as_str() != "module" && fname.as_str() != "rename" {
+                                            if !field_names.contains(&fname.as_ref().clone()) {
+                                                field_names.push(fname.as_ref().clone());
                                             }
                                         }
                                     }
@@ -3017,7 +3017,7 @@ impl VirtualMachine {
                                         if all_str && !rd.is_empty() {
                                             for (k, v) in rd.iter() {
                                                 if let HashableKey::Str(s) = k {
-                                                    extracted.push((s.clone(), v.clone()));
+                                                    extracted.push((s.as_ref().clone(), v.clone()));
                                                 }
                                             }
                                             true
@@ -3067,10 +3067,10 @@ impl VirtualMachine {
                         for arg in &args {
                             if let PyObjectPayload::Dict(d) = &arg.payload {
                                 let rd = d.read();
-                                if let Some(v) = rd.get(&HashableKey::Str(CompactString::from("reverse"))) {
+                                if let Some(v) = rd.get(&HashableKey::str_key(CompactString::from("reverse"))) {
                                     reverse = v.is_truthy();
                                 }
-                                if let Some(v) = rd.get(&HashableKey::Str(CompactString::from("key"))) {
+                                if let Some(v) = rd.get(&HashableKey::str_key(CompactString::from("key"))) {
                                     if !matches!(v.payload, PyObjectPayload::None) {
                                         key_fn = Some(v.clone());
                                     }
@@ -3133,7 +3133,7 @@ impl VirtualMachine {
                         }
                         // Handle defaultdict (Dict payload with __defaultdict_factory__)
                         if let PyObjectPayload::Dict(m) = &args[0].payload {
-                            let factory_key = ferrython_core::types::HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+                            let factory_key = ferrython_core::types::HashableKey::str_key(CompactString::from("__defaultdict_factory__"));
                             if m.read().contains_key(&factory_key) {
                                 return self.vm_format_map_dict(s, &args[0], m);
                             }
@@ -3274,7 +3274,7 @@ impl VirtualMachine {
                     if let Some(last) = args.last() {
                         if let PyObjectPayload::Dict(map) = &last.payload {
                             let map_r = map.read();
-                            key_fn = map_r.get(&HashableKey::Str(CompactString::from("key"))).cloned();
+                            key_fn = map_r.get(&HashableKey::str_key(CompactString::from("key"))).cloned();
                             if key_fn.is_some() {
                                 iterable_end = args.len() - 1;
                             }
@@ -3418,7 +3418,7 @@ impl VirtualMachine {
                         if let PyObjectPayload::Dict(cache_map) = &cache_obj.payload {
                             // Build cache key from stringified args
                             let key_str = args.iter().map(|a| a.repr()).collect::<Vec<_>>().join(",");
-                            let cache_key = HashableKey::Str(CompactString::from(&key_str));
+                            let cache_key = HashableKey::str_key(CompactString::from(&key_str));
                             // Check cache
                             let cached_val = cache_map.read().get(&cache_key).cloned();
                             if let Some(cached) = cached_val {
@@ -3727,7 +3727,7 @@ impl VirtualMachine {
                 let mut new_map = IndexMap::new();
                 for (k, v) in entries {
                     let prepared = self.json_prepare_with_default(&v, default_fn)?;
-                    new_map.insert(HashableKey::Str(k), prepared);
+                    new_map.insert(HashableKey::str_key(k), prepared);
                 }
                 Ok(PyObject::dict(new_map))
             }

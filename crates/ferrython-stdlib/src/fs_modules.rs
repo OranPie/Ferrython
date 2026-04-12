@@ -59,10 +59,10 @@ pub fn create_pathlib_module() -> PyObjectRef {
         for a in &args[1..] {
             if let PyObjectPayload::Dict(m) = &a.payload {
                 let m = m.read();
-                if let Some(v) = m.get(&HashableKey::Str(CompactString::from("parents"))) {
+                if let Some(v) = m.get(&HashableKey::str_key(CompactString::from("parents"))) {
                     parents = v.is_truthy();
                 }
-                if let Some(v) = m.get(&HashableKey::Str(CompactString::from("exist_ok"))) {
+                if let Some(v) = m.get(&HashableKey::str_key(CompactString::from("exist_ok"))) {
                     exist_ok = v.is_truthy();
                 }
             }
@@ -821,7 +821,7 @@ pub fn create_shutil_module() -> PyObjectRef {
                     for name in &names {
                         if glob_match(pattern, name) {
                             ignored.insert(
-                                HashableKey::Str(CompactString::from(name.as_str())),
+                                HashableKey::str_key(CompactString::from(name.as_str())),
                                 PyObject::str_val(CompactString::from(name.as_str())),
                             );
                         }
@@ -1328,8 +1328,8 @@ pub fn create_tempfile_module() -> PyObjectRef {
             for arg in args {
                 if let PyObjectPayload::Dict(kw_map) = &arg.payload {
                     let r = kw_map.read();
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("suffix"))) { suffix = v.py_to_string(); }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("suffix"))) { suffix = v.py_to_string(); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
                 }
             }
             let dir = temp_name(&prefix, &suffix);
@@ -1343,8 +1343,8 @@ pub fn create_tempfile_module() -> PyObjectRef {
             for arg in args {
                 if let PyObjectPayload::Dict(kw_map) = &arg.payload {
                     let r = kw_map.read();
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("suffix"))) { suffix = v.py_to_string(); }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("suffix"))) { suffix = v.py_to_string(); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
                 }
             }
             let path = temp_name(&prefix, &suffix);
@@ -1371,8 +1371,8 @@ pub fn create_tempfile_module() -> PyObjectRef {
             for arg in args {
                 if let PyObjectPayload::Dict(kw_map) = &arg.payload {
                     let r = kw_map.read();
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("suffix"))) { suffix = v.py_to_string(); }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("suffix"))) { suffix = v.py_to_string(); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
                 }
             }
             Ok(PyObject::str_val(CompactString::from(temp_name(&prefix, &suffix))))
@@ -1390,7 +1390,7 @@ pub fn create_tempfile_module() -> PyObjectRef {
             for arg in args {
                 if let PyObjectPayload::Dict(kw_map) = &arg.payload {
                     let r = kw_map.read();
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("prefix"))) { prefix = v.py_to_string(); }
                 }
             }
             let dir = temp_name(&prefix, "");
@@ -2065,9 +2065,9 @@ fn io_text_io_wrapper_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let (enc, _errors) = if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(kw) = &last.payload {
             let r = kw.read();
-            let e = r.get(&HashableKey::Str(CompactString::from("encoding")))
+            let e = r.get(&HashableKey::str_key(CompactString::from("encoding")))
                 .map(|v| v.py_to_string()).unwrap_or(encoding);
-            let er = r.get(&HashableKey::Str(CompactString::from("errors")))
+            let er = r.get(&HashableKey::str_key(CompactString::from("errors")))
                 .map(|v| v.py_to_string()).unwrap_or_else(|| "strict".to_string());
             (e, er)
         } else {
@@ -2476,25 +2476,25 @@ fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     for arg in &args[1..] {
         if let PyObjectPayload::Dict(kw_map) = &arg.payload {
             let r = kw_map.read();
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("text"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("text"))) {
                 text_mode = v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("universal_newlines"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("universal_newlines"))) {
                 text_mode = text_mode || v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("capture_output"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("capture_output"))) {
                 capture = v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("cwd"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("cwd"))) {
                 cwd = Some(v.py_to_string());
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("shell"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("shell"))) {
                 shell = v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("check"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("check"))) {
                 check = v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("input"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("input"))) {
                 match &v.payload {
                     PyObjectPayload::Bytes(b) => input_data = Some(b.clone()),
                     PyObjectPayload::Str(s) => input_data = Some(s.as_bytes().to_vec()),
@@ -2502,10 +2502,10 @@ fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     _ => {}
                 }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("timeout"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("timeout"))) {
                 if let Ok(t) = v.to_float() { timeout_secs = Some(t); }
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("env"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("env"))) {
                 if let PyObjectPayload::Dict(env_map) = &v.payload {
                     let er = env_map.read();
                     let mut pairs = Vec::new();
@@ -2772,28 +2772,28 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     for arg in &args[1..] {
         if let PyObjectPayload::Dict(kw_map) = &arg.payload {
             let r = kw_map.read();
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("stdout"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("stdout"))) {
                 capture_stdout = v.as_int().unwrap_or(0) == -1; // PIPE
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("stderr"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("stderr"))) {
                 capture_stderr = v.as_int().unwrap_or(0) == -1;
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("stdin"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("stdin"))) {
                 pipe_stdin = v.as_int().unwrap_or(0) == -1;
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("cwd"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("cwd"))) {
                 cwd = Some(v.py_to_string());
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("shell"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("shell"))) {
                 shell = v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("text"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("text"))) {
                 text_mode = v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("universal_newlines"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("universal_newlines"))) {
                 text_mode = text_mode || v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("env"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("env"))) {
                 if let PyObjectPayload::Dict(env_map) = &v.payload {
                     let er = env_map.read();
                     let mut pairs = Vec::new();
@@ -2869,7 +2869,7 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 for arg in args.iter() {
                     if let PyObjectPayload::Dict(kw_map) = &arg.payload {
                         let r = kw_map.read();
-                        if let Some(v) = r.get(&HashableKey::Str(CompactString::from("input"))) {
+                        if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("input"))) {
                             if !matches!(v.payload, PyObjectPayload::None) {
                                 input_data = Some(match &v.payload {
                                     PyObjectPayload::Bytes(b) => b.clone(),

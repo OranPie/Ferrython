@@ -28,10 +28,10 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
         if let Some(last) = args.last() {
             if let PyObjectPayload::Dict(kw_map) = &last.payload {
                 let r = kw_map.read();
-                if let Some(d) = r.get(&HashableKey::Str(CompactString::from("description"))) {
+                if let Some(d) = r.get(&HashableKey::str_key(CompactString::from("description"))) {
                     description = CompactString::from(d.py_to_string());
                 }
-                if let Some(p) = r.get(&HashableKey::Str(CompactString::from("prog"))) {
+                if let Some(p) = r.get(&HashableKey::str_key(CompactString::from("prog"))) {
                     prog = CompactString::from(p.py_to_string());
                 }
             }
@@ -59,7 +59,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                                 let r = kw_map.read();
                                 for (k, v) in r.iter() {
                                     if let HashableKey::Str(ks) = k {
-                                        kwargs.insert(ks.clone(), v.clone());
+                                        kwargs.insert(ks.as_ref().clone(), v.clone());
                                     }
                                 }
                             }
@@ -132,7 +132,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                     if let Some(last) = sp_args.last() {
                         if let PyObjectPayload::Dict(kw) = &last.payload {
                             let r = kw.read();
-                            if let Some(d) = r.get(&HashableKey::Str(CompactString::from("dest"))) {
+                            if let Some(d) = r.get(&HashableKey::str_key(CompactString::from("dest"))) {
                                 dest = CompactString::from(d.py_to_string());
                             }
                         }
@@ -186,7 +186,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                     if let Some(last) = meg_args.last() {
                         if let PyObjectPayload::Dict(kw) = &last.payload {
                             let r = kw.read();
-                            if let Some(req) = r.get(&HashableKey::Str(CompactString::from("required"))) {
+                            if let Some(req) = r.get(&HashableKey::str_key(CompactString::from("required"))) {
                                 required = req.is_truthy();
                             }
                         }
@@ -214,7 +214,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                                             let r = kw_map.read();
                                             for (k, v) in r.iter() {
                                                 if let HashableKey::Str(ks) = k {
-                                                    kwargs.insert(ks.clone(), v.clone());
+                                                    kwargs.insert(ks.as_ref().clone(), v.clone());
                                                 }
                                             }
                                         }
@@ -271,7 +271,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                     let r = kw_map.read();
                     for (k, v) in r.iter() {
                         if let HashableKey::Str(ks) = k {
-                            attrs.insert(ks.clone(), v.clone());
+                            attrs.insert(ks.as_ref().clone(), v.clone());
                         }
                     }
                 }
@@ -318,7 +318,7 @@ fn argparse_parse_args(
             PyObjectPayload::Tuple(items) => items.iter().map(|a| a.py_to_string()).collect(),
             PyObjectPayload::Dict(d) => {
                 let dr = d.read();
-                if let Some(v) = dr.get(&HashableKey::Str(CompactString::from("args"))) {
+                if let Some(v) = dr.get(&HashableKey::str_key(CompactString::from("args"))) {
                     if let PyObjectPayload::List(items) = &v.payload {
                         items.read().iter().map(|a| a.py_to_string()).collect()
                     } else { vec![] }
@@ -804,7 +804,7 @@ pub fn create_configparser_module() -> PyObjectRef {
             // Section header
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 if !current_items.is_empty() {
-                    sections.insert(HashableKey::Str(current_section.clone()), PyObject::dict(current_items.clone()));
+                    sections.insert(HashableKey::str_key(current_section.clone()), PyObject::dict(current_items.clone()));
                     current_items.clear();
                 }
                 current_section = CompactString::from(&trimmed[1..trimmed.len()-1]);
@@ -812,7 +812,7 @@ pub fn create_configparser_module() -> PyObjectRef {
             } else if line.starts_with(' ') || line.starts_with('\t') {
                 // Continuation line (multiline value): append to last key's value
                 if let Some(ref key) = last_key {
-                    let key_h = HashableKey::Str(key.clone());
+                    let key_h = HashableKey::str_key(key.clone());
                     if let Some(existing) = current_items.get(&key_h) {
                         let prev = existing.py_to_string();
                         let combined = format!("{}\n{}", prev, trimmed);
@@ -822,17 +822,17 @@ pub fn create_configparser_module() -> PyObjectRef {
             } else if let Some(eq_pos) = trimmed.find('=') {
                 let key = CompactString::from(trimmed[..eq_pos].trim());
                 let val = trimmed[eq_pos+1..].trim();
-                current_items.insert(HashableKey::Str(key.clone()), PyObject::str_val(CompactString::from(val)));
+                current_items.insert(HashableKey::str_key(key.clone()), PyObject::str_val(CompactString::from(val)));
                 last_key = Some(key);
             } else if let Some(col_pos) = trimmed.find(':') {
                 let key = CompactString::from(trimmed[..col_pos].trim());
                 let val = trimmed[col_pos+1..].trim();
-                current_items.insert(HashableKey::Str(key.clone()), PyObject::str_val(CompactString::from(val)));
+                current_items.insert(HashableKey::str_key(key.clone()), PyObject::str_val(CompactString::from(val)));
                 last_key = Some(key);
             }
         }
         if !current_items.is_empty() {
-            sections.insert(HashableKey::Str(current_section), PyObject::dict(current_items));
+            sections.insert(HashableKey::str_key(current_section), PyObject::dict(current_items));
         }
         sections
     }
@@ -861,7 +861,7 @@ pub fn create_configparser_module() -> PyObjectRef {
                 // Skip the format char (usually 's')
                 if chars.peek() == Some(&'s') { chars.next(); }
                 // Look up the variable
-                let var_key = HashableKey::Str(CompactString::from(var_name.to_lowercase().as_str()));
+                let var_key = HashableKey::str_key(CompactString::from(var_name.to_lowercase().as_str()));
                 let resolved = section_items
                     .and_then(|s| s.get(&var_key))
                     .or_else(|| defaults.and_then(|d| d.get(&var_key)));
@@ -882,13 +882,13 @@ pub fn create_configparser_module() -> PyObjectRef {
         if let Some(secs) = get_sections(obj) {
             let mut w = secs.write();
             for (k, v) in &parsed {
-                if k != &HashableKey::Str(CompactString::from("DEFAULT")) {
+                if k != &HashableKey::str_key(CompactString::from("DEFAULT")) {
                     w.insert(k.clone(), v.clone());
                 }
             }
         }
         // Copy DEFAULT section items to _defaults for fallback inheritance
-        if let Some(default_dict) = parsed.get(&HashableKey::Str(CompactString::from("DEFAULT"))) {
+        if let Some(default_dict) = parsed.get(&HashableKey::str_key(CompactString::from("DEFAULT"))) {
             if let PyObjectPayload::Instance(inst) = &obj.payload {
                 if let PyObjectPayload::Dict(src) = &default_dict.payload {
                     let mut attrs_w = inst.attrs.write();
@@ -916,7 +916,7 @@ pub fn create_configparser_module() -> PyObjectRef {
             return Err(PyException::value_error("Invalid section name: 'DEFAULT'"));
         }
         if let Some(secs) = get_sections(&args[0]) {
-            let sec_key = HashableKey::Str(section.clone());
+            let sec_key = HashableKey::str_key(section.clone());
             let mut w = secs.write();
             if w.contains_key(&sec_key) {
                 return Err(PyException::runtime_error(format!("Section '{}' already exists", section)));
@@ -948,12 +948,12 @@ pub fn create_configparser_module() -> PyObjectRef {
         if args.len() < 3 { return Err(PyException::type_error("get requires section and option")); }
         let section = CompactString::from(args[1].py_to_string());
         let option = args[2].py_to_string().to_lowercase();
-        let option_key = HashableKey::Str(CompactString::from(&option));
+        let option_key = HashableKey::str_key(CompactString::from(&option));
 
         // Check for raw=True kwarg (skip interpolation)
         let raw = if args.len() > 3 {
             if let PyObjectPayload::Dict(kw) = &args[args.len()-1].payload {
-                kw.read().get(&HashableKey::Str(CompactString::from("raw")))
+                kw.read().get(&HashableKey::str_key(CompactString::from("raw")))
                     .map(|v| v.is_truthy()).unwrap_or(false)
             } else { false }
         } else { false };
@@ -966,7 +966,7 @@ pub fn create_configparser_module() -> PyObjectRef {
         // Check section first
         if let Some(secs) = get_sections(&args[0]) {
             let r = secs.read();
-            if let Some(sec_dict) = r.get(&HashableKey::Str(section.clone())) {
+            if let Some(sec_dict) = r.get(&HashableKey::str_key(section.clone())) {
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
                     let dr = d.read();
                     if let Some(val) = dr.get(&option_key) {
@@ -1053,7 +1053,7 @@ pub fn create_configparser_module() -> PyObjectRef {
         if args.is_empty() { return Ok(PyObject::list(vec![])); }
         if let Some(secs) = get_sections(&args[0]) {
             let keys: Vec<PyObjectRef> = secs.read().keys()
-                .filter_map(|k| if let HashableKey::Str(s) = k { Some(PyObject::str_val(s.clone())) } else { None })
+                .filter_map(|k| if let HashableKey::Str(s) = k { Some(PyObject::str_val(CompactString::clone(s))) } else { None })
                 .collect();
             return Ok(PyObject::list(keys));
         }
@@ -1064,7 +1064,7 @@ pub fn create_configparser_module() -> PyObjectRef {
         if args.len() < 2 { return Ok(PyObject::bool_val(false)); }
         let section = CompactString::from(args[1].py_to_string());
         if let Some(secs) = get_sections(&args[0]) {
-            return Ok(PyObject::bool_val(secs.read().contains_key(&HashableKey::Str(section))));
+            return Ok(PyObject::bool_val(secs.read().contains_key(&HashableKey::str_key(section))));
         }
         Ok(PyObject::bool_val(false))
     }
@@ -1075,9 +1075,9 @@ pub fn create_configparser_module() -> PyObjectRef {
         let option = CompactString::from(args[2].py_to_string());
         if let Some(secs) = get_sections(&args[0]) {
             let r = secs.read();
-            if let Some(sec_dict) = r.get(&HashableKey::Str(section)) {
+            if let Some(sec_dict) = r.get(&HashableKey::str_key(section)) {
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
-                    return Ok(PyObject::bool_val(d.read().contains_key(&HashableKey::Str(option))));
+                    return Ok(PyObject::bool_val(d.read().contains_key(&HashableKey::str_key(option))));
                 }
             }
         }
@@ -1089,10 +1089,10 @@ pub fn create_configparser_module() -> PyObjectRef {
         let section = CompactString::from(args[1].py_to_string());
         if let Some(secs) = get_sections(&args[0]) {
             let r = secs.read();
-            if let Some(sec_dict) = r.get(&HashableKey::Str(section)) {
+            if let Some(sec_dict) = r.get(&HashableKey::str_key(section)) {
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
                     let keys: Vec<PyObjectRef> = d.read().keys()
-                        .filter_map(|k| if let HashableKey::Str(s) = k { Some(PyObject::str_val(s.clone())) } else { None })
+                        .filter_map(|k| if let HashableKey::Str(s) = k { Some(PyObject::str_val(CompactString::clone(s))) } else { None })
                         .collect();
                     return Ok(PyObject::list(keys));
                 }
@@ -1106,11 +1106,11 @@ pub fn create_configparser_module() -> PyObjectRef {
         let section = CompactString::from(args[1].py_to_string());
         if let Some(secs) = get_sections(&args[0]) {
             let r = secs.read();
-            if let Some(sec_dict) = r.get(&HashableKey::Str(section)) {
+            if let Some(sec_dict) = r.get(&HashableKey::str_key(section)) {
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
                     let items: Vec<PyObjectRef> = d.read().iter()
                         .map(|(k, v)| {
-                            let key = if let HashableKey::Str(s) = k { PyObject::str_val(s.clone()) } else { PyObject::none() };
+                            let key = if let HashableKey::Str(s) = k { PyObject::str_val(CompactString::clone(s)) } else { PyObject::none() };
                             PyObject::tuple(vec![key, v.clone()])
                         }).collect();
                     return Ok(PyObject::list(items));
@@ -1127,13 +1127,13 @@ pub fn create_configparser_module() -> PyObjectRef {
         let value = args[3].clone();
         if let Some(secs) = get_sections(&args[0]) {
             let mut w = secs.write();
-            let sec_key = HashableKey::Str(section.clone());
+            let sec_key = HashableKey::str_key(section.clone());
             if !w.contains_key(&sec_key) {
                 w.insert(sec_key.clone(), PyObject::dict(IndexMap::new()));
             }
             if let Some(sec_dict) = w.get(&sec_key) {
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
-                    d.write().insert(HashableKey::Str(option), value);
+                    d.write().insert(HashableKey::str_key(option), value);
                 }
             }
         }
@@ -1177,7 +1177,7 @@ pub fn create_configparser_module() -> PyObjectRef {
         }
         if let Some(secs) = get_sections(&args[0]) {
             let r = secs.read();
-            let key = HashableKey::Str(CompactString::from(&section));
+            let key = HashableKey::str_key(CompactString::from(&section));
             if let Some(sec_dict) = r.get(&key) {
                 // Apply interpolation: merge section items + defaults, interpolate all values
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
@@ -1233,7 +1233,7 @@ pub fn create_configparser_module() -> PyObjectRef {
                         let src = d.read();
                         let mut dst = dd.write();
                         for (k, v) in src.iter() {
-                            let lk = HashableKey::Str(CompactString::from(k.to_object().py_to_string().to_lowercase()));
+                            let lk = HashableKey::str_key(CompactString::from(k.to_object().py_to_string().to_lowercase()));
                             dst.insert(lk, PyObject::str_val(CompactString::from(v.py_to_string())));
                         }
                     }
@@ -1243,7 +1243,7 @@ pub fn create_configparser_module() -> PyObjectRef {
             return Ok(PyObject::none());
         }
         if let Some(secs) = get_sections(&args[0]) {
-            let sec_key = HashableKey::Str(CompactString::from(&section));
+            let sec_key = HashableKey::str_key(CompactString::from(&section));
             let sec_dict = PyObject::dict(IndexMap::new());
             // Copy keys from value dict
             if let PyObjectPayload::Dict(src_map) = &value.payload {
@@ -1251,7 +1251,7 @@ pub fn create_configparser_module() -> PyObjectRef {
                     let src = src_map.read();
                     let mut dst = dst_map.write();
                     for (k, v) in src.iter() {
-                        let lk = HashableKey::Str(CompactString::from(k.to_object().py_to_string().to_lowercase()));
+                        let lk = HashableKey::str_key(CompactString::from(k.to_object().py_to_string().to_lowercase()));
                         dst.insert(lk, PyObject::str_val(CompactString::from(v.py_to_string())));
                     }
                 }
@@ -1270,7 +1270,7 @@ pub fn create_configparser_module() -> PyObjectRef {
         }
         if let Some(secs) = get_sections(&args[0]) {
             let r = secs.read();
-            let key = HashableKey::Str(CompactString::from(&section));
+            let key = HashableKey::str_key(CompactString::from(&section));
             return Ok(PyObject::bool_val(r.contains_key(&key)));
         }
         Ok(PyObject::bool_val(false))
@@ -1281,7 +1281,7 @@ pub fn create_configparser_module() -> PyObjectRef {
         check_args_min("remove_section", args, 2)?;
         let section = args[1].py_to_string();
         if let Some(secs) = get_sections(&args[0]) {
-            let key = HashableKey::Str(CompactString::from(&section));
+            let key = HashableKey::str_key(CompactString::from(&section));
             let existed = secs.write().swap_remove(&key).is_some();
             return Ok(PyObject::bool_val(existed));
         }
@@ -1295,10 +1295,10 @@ pub fn create_configparser_module() -> PyObjectRef {
         let option = args[2].py_to_string();
         if let Some(secs) = get_sections(&args[0]) {
             let r = secs.read();
-            let key = HashableKey::Str(CompactString::from(&section));
+            let key = HashableKey::str_key(CompactString::from(&section));
             if let Some(sec_dict) = r.get(&key) {
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
-                    let opt_key = HashableKey::Str(CompactString::from(&option));
+                    let opt_key = HashableKey::str_key(CompactString::from(&option));
                     let existed = d.write().swap_remove(&opt_key).is_some();
                     return Ok(PyObject::bool_val(existed));
                 }

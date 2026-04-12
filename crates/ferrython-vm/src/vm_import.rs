@@ -251,7 +251,7 @@ impl VirtualMachine {
         // (which CPython treats as "module was deleted / import failed").
         if let Some(ref sys_mod_dict) = self.sys_modules_dict {
             if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
-                let key = HashableKey::Str(CompactString::from(name));
+                let key = HashableKey::str_key(CompactString::from(name));
                 if let Some(module) = d.read().get(&key).cloned() {
                     if !matches!(&module.payload, PyObjectPayload::None) {
                         self.modules.insert(CompactString::from(name), module.clone());
@@ -423,7 +423,7 @@ impl VirtualMachine {
         if let Some(ref sys_mod_dict) = self.sys_modules_dict {
             if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
                 d.write().insert(
-                    HashableKey::Str(CompactString::from(name)),
+                    HashableKey::str_key(CompactString::from(name)),
                     module.clone(),
                 );
             }
@@ -472,7 +472,7 @@ impl VirtualMachine {
                 if let PyObjectPayload::Dict(ref d) = modules_dict.payload {
                     for (name, module) in &self.modules {
                         d.write().insert(
-                            HashableKey::Str(name.clone()),
+                            HashableKey::str_key(name.clone()),
                             module.clone(),
                         );
                     }

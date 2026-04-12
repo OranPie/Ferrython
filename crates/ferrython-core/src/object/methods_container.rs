@@ -141,7 +141,7 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                     return Ok(val.clone());
                 }
                 // Check for __defaultdict_factory__ (Counter / defaultdict)
-                let factory_key = HashableKey::Str(intern_or_new("__defaultdict_factory__"));
+                let factory_key = HashableKey::str_key(intern_or_new("__defaultdict_factory__"));
                 if let Some(factory) = map_r.get(&factory_key) {
                     let factory = factory.clone();
                     drop(map_r);

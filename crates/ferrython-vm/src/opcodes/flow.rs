@@ -419,7 +419,7 @@ impl VirtualMachine {
                             let src = source.read();
                             let mut tgt = target.write();
                             for (k, v) in src.iter() {
-                                tgt.insert(HashableKey::Str(k.clone()), v.clone());
+                                tgt.insert(HashableKey::str_key(k.clone()), v.clone());
                             }
                         }
                         _ => {}
@@ -707,7 +707,7 @@ impl VirtualMachine {
                         PyObjectPayload::Dict(map) => {
                             for (k, v) in map.read().iter() {
                                 let name = match k {
-                                    HashableKey::Str(s) => s.clone(),
+                                    HashableKey::Str(s) => CompactString::clone(s),
                                     _ => CompactString::from(format!("{:?}", k)),
                                 };
                                 kw_vec.push((name, v.clone()));
@@ -914,7 +914,7 @@ impl VirtualMachine {
                     if let PyObjectPayload::Dict(m) = &ann_obj.payload {
                         for (k, v) in m.read().iter() {
                             if let HashableKey::Str(name) = k {
-                                annotations.insert(name.clone(), v.clone());
+                                annotations.insert(name.as_ref().clone(), v.clone());
                             }
                         }
                     }
@@ -925,7 +925,7 @@ impl VirtualMachine {
                         let mut result = IndexMap::new();
                         for (k, v) in m.read().iter() {
                             if let HashableKey::Str(name) = k {
-                                result.insert(name.clone(), v.clone());
+                                result.insert(name.as_ref().clone(), v.clone());
                             }
                         }
                         result

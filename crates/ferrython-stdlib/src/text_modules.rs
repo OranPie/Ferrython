@@ -116,7 +116,7 @@ fn format_string_impl(
                 if idx < pos_args.len() { pos_args[idx].clone() }
                 else { return Err(PyException::index_error("Replacement index out of range")); }
             } else if let Some(ref kw) = kwargs {
-                kw.get(&HashableKey::Str(CompactString::from(field_name)))
+                kw.get(&HashableKey::str_key(CompactString::from(field_name)))
                     .cloned()
                     .ok_or_else(|| PyException::key_error(format!("'{}'", field_name)))?
             } else {
@@ -155,7 +155,7 @@ fn template_substitute(template: &str, kwargs: &FxHashKeyMap, safe: bool) -> PyR
                 let start = i + 2;
                 if let Some(end_pos) = chars[start..].iter().position(|&c| c == '}') {
                     let name: String = chars[start..start + end_pos].iter().collect();
-                    let key = HashableKey::Str(CompactString::from(&name));
+                    let key = HashableKey::str_key(CompactString::from(&name));
                     if let Some(val) = kwargs.get(&key) {
                         result.push_str(&val.py_to_string());
                     } else if safe {
@@ -176,7 +176,7 @@ fn template_substitute(template: &str, kwargs: &FxHashKeyMap, safe: bool) -> PyR
                     end += 1;
                 }
                 let name: String = chars[start..end].iter().collect();
-                let key = HashableKey::Str(CompactString::from(&name));
+                let key = HashableKey::str_key(CompactString::from(&name));
                 if let Some(val) = kwargs.get(&key) {
                     result.push_str(&val.py_to_string());
                 } else if safe {
@@ -580,7 +580,7 @@ fn extract_fancy_group_names(re: &fancy_regex::Regex) -> FxHashKeyMap {
     for (idx, name_opt) in re.capture_names().enumerate() {
         if let Some(name) = name_opt {
             map.insert(
-                HashableKey::Str(CompactString::from(name)),
+                HashableKey::str_key(CompactString::from(name)),
                 PyObject::int(idx as i64),
             );
         }
@@ -628,7 +628,7 @@ fn make_match_object_from_captures(caps: &regex::Captures, text: &str, re_obj: &
     for (i, name_opt) in re_obj.capture_names().enumerate() {
         if let Some(name) = name_opt {
             groupindex_map.insert(
-                HashableKey::Str(CompactString::from(name)),
+                HashableKey::str_key(CompactString::from(name)),
                 PyObject::int(i as i64),
             );
         }
@@ -675,7 +675,7 @@ fn make_match_object(m: regex::Match, text: &str, re_obj: &regex::Regex) -> PyOb
     for (i, name_opt) in re_obj.capture_names().enumerate() {
         if let Some(name) = name_opt {
             groupindex_map.insert(
-                HashableKey::Str(CompactString::from(name)),
+                HashableKey::str_key(CompactString::from(name)),
                 PyObject::int(i as i64),
             );
         }
@@ -715,7 +715,7 @@ fn match_group(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if let PyObjectPayload::Str(name) = &args[1].payload {
             if let Some(groupindex) = self_obj.get_attr("_groupindex") {
                 if let PyObjectPayload::Dict(d) = &groupindex.payload {
-                    let key = HashableKey::Str(name.clone());
+                    let key = HashableKey::str_key(name.clone());
                     if let Some(idx_obj) = d.read().get(&key).cloned() {
                         let idx = idx_obj.to_int().unwrap_or(0);
                         if idx == 0 {
@@ -1318,7 +1318,7 @@ fn re_compile(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     .find(|(_, n)| n.as_deref() == Some(name))
                     .map(|(i, _)| i) {
                     groupindex_map.insert(
-                        HashableKey::Str(CompactString::from(name)),
+                        HashableKey::str_key(CompactString::from(name)),
                         PyObject::int(idx as i64),
                     );
                 }
@@ -1460,7 +1460,7 @@ fn extract_textwrap_width(args: &[PyObjectRef], default: usize) -> usize {
     // Check trailing kwargs dict for "width"
     for arg in args.iter().rev() {
         if let PyObjectPayload::Dict(d) = &arg.payload {
-            if let Some(v) = d.read().get(&HashableKey::Str(CompactString::from("width"))) {
+            if let Some(v) = d.read().get(&HashableKey::str_key(CompactString::from("width"))) {
                 if let Ok(w) = v.to_int() {
                     return w as usize;
                 }
@@ -1479,16 +1479,16 @@ fn extract_textwrap_kwargs(args: &[PyObjectRef]) -> (bool, bool, String, String)
     for arg in args.iter().rev() {
         if let PyObjectPayload::Dict(d) = &arg.payload {
             let r = d.read();
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("break_long_words"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("break_long_words"))) {
                 break_long_words = v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("break_on_hyphens"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("break_on_hyphens"))) {
                 break_on_hyphens = v.is_truthy();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("initial_indent"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("initial_indent"))) {
                 initial_indent = v.py_to_string();
             }
-            if let Some(v) = r.get(&HashableKey::Str(CompactString::from("subsequent_indent"))) {
+            if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("subsequent_indent"))) {
                 subsequent_indent = v.py_to_string();
             }
             break;
@@ -1631,7 +1631,7 @@ pub fn create_textwrap_module() -> PyObjectRef {
             // Check kwargs first
             for arg in args.iter().rev() {
                 if let PyObjectPayload::Dict(d) = &arg.payload {
-                    if let Some(v) = d.read().get(&HashableKey::Str(CompactString::from("placeholder"))) {
+                    if let Some(v) = d.read().get(&HashableKey::str_key(CompactString::from("placeholder"))) {
                         placeholder = v.py_to_string();
                     }
                     break;
@@ -1686,19 +1686,19 @@ pub fn create_textwrap_module() -> PyObjectRef {
             for arg in args.iter().rev() {
                 if let PyObjectPayload::Dict(d) = &arg.payload {
                     let r = d.read();
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("width"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("width"))) {
                         tw_width = v.as_int().unwrap_or(70) as usize;
                     }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("initial_indent"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("initial_indent"))) {
                         tw_initial_indent = v.py_to_string();
                     }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("subsequent_indent"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("subsequent_indent"))) {
                         tw_subsequent_indent = v.py_to_string();
                     }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("break_long_words"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("break_long_words"))) {
                         tw_break_long_words = v.is_truthy();
                     }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("break_on_hyphens"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("break_on_hyphens"))) {
                         tw_break_on_hyphens = v.is_truthy();
                     }
                     break;
@@ -2105,22 +2105,22 @@ pub fn create_difflib_module() -> PyObjectRef {
         if let Some(last) = args.last() {
             if let PyObjectPayload::Dict(kw) = &last.payload {
                 let kw = kw.read();
-                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("fromfile"))) {
+                if let Some(v) = kw.get(&HashableKey::str_key(CompactString::from("fromfile"))) {
                     fromfile = v.py_to_string();
                 }
-                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("tofile"))) {
+                if let Some(v) = kw.get(&HashableKey::str_key(CompactString::from("tofile"))) {
                     tofile = v.py_to_string();
                 }
-                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("fromfiledate"))) {
+                if let Some(v) = kw.get(&HashableKey::str_key(CompactString::from("fromfiledate"))) {
                     fromfiledate = v.py_to_string();
                 }
-                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("tofiledate"))) {
+                if let Some(v) = kw.get(&HashableKey::str_key(CompactString::from("tofiledate"))) {
                     tofiledate = v.py_to_string();
                 }
-                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("n"))) {
+                if let Some(v) = kw.get(&HashableKey::str_key(CompactString::from("n"))) {
                     n = v.to_int().unwrap_or(3) as usize;
                 }
-                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("lineterm"))) {
+                if let Some(v) = kw.get(&HashableKey::str_key(CompactString::from("lineterm"))) {
                     lineterm = v.py_to_string();
                 }
             }
@@ -2387,10 +2387,10 @@ pub fn create_difflib_module() -> PyObjectRef {
         if let Some(last) = args.last() {
             if let PyObjectPayload::Dict(kw) = &last.payload {
                 let kw = kw.read();
-                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("a"))) {
+                if let Some(v) = kw.get(&HashableKey::str_key(CompactString::from("a"))) {
                     a_seq = seq_from_obj(v);
                 }
-                if let Some(v) = kw.get(&HashableKey::Str(CompactString::from("b"))) {
+                if let Some(v) = kw.get(&HashableKey::str_key(CompactString::from("b"))) {
                     b_seq = seq_from_obj(v);
                 }
             }
@@ -2456,10 +2456,10 @@ pub fn create_difflib_module() -> PyObjectRef {
         if let Some(last) = args.last() {
             if let PyObjectPayload::Dict(kw) = &last.payload {
                 let r = kw.read();
-                if let Some(v) = r.get(&HashableKey::Str(CompactString::from("tabsize"))) {
+                if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("tabsize"))) {
                     tabsize = v.as_int().unwrap_or(8) as usize;
                 }
-                if let Some(v) = r.get(&HashableKey::Str(CompactString::from("wrapcolumn"))) {
+                if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("wrapcolumn"))) {
                     if let Some(w) = v.as_int() { wrapcolumn = Some(w as usize); }
                 }
             }
@@ -3918,18 +3918,18 @@ pub fn create_pprint_module() -> PyObjectRef {
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(kw) = &last.payload {
                     let r = kw.read();
-                    if let Some(s) = r.get(&HashableKey::Str(CompactString::from("stream"))) {
+                    if let Some(s) = r.get(&HashableKey::str_key(CompactString::from("stream"))) {
                         if !matches!(s.payload, PyObjectPayload::None) {
                             stream_obj = Some(s.clone());
                         }
                     }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("indent"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("indent"))) {
                         indent = v.as_int().unwrap_or(1) as usize;
                     }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("width"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("width"))) {
                         width = v.as_int().unwrap_or(80) as usize;
                     }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("depth"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("depth"))) {
                         depth = v.as_int().map(|d| d as usize);
                     }
                 }
@@ -3971,13 +3971,13 @@ pub fn create_pprint_module() -> PyObjectRef {
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(kw) = &last.payload {
                     let r = kw.read();
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("indent"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("indent"))) {
                         indent = v.as_int().unwrap_or(1) as usize;
                     }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("width"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("width"))) {
                         width = v.as_int().unwrap_or(80) as usize;
                     }
-                    if let Some(v) = r.get(&HashableKey::Str(CompactString::from("depth"))) {
+                    if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("depth"))) {
                         depth = v.as_int().map(|d| d as usize);
                     }
                 }
@@ -4104,7 +4104,7 @@ pub fn create_encodings_aliases_module() -> PyObjectRef {
     ];
     for (alias, codec) in &alias_pairs {
         aliases.insert(
-            HashableKey::Str(CompactString::from(*alias)),
+            HashableKey::str_key(CompactString::from(*alias)),
             PyObject::str_val(CompactString::from(*codec)),
         );
     }

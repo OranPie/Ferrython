@@ -792,7 +792,7 @@ pub fn create_os_module() -> PyObjectRef {
                     unsafe { std::env::set_var(&key_str, &val_str); }
                     if let PyObjectPayload::Dict(dd) = &d2.payload {
                         dd.write().insert(
-                            HashableKey::Str(CompactString::from(&key_str)),
+                            HashableKey::str_key(CompactString::from(&key_str)),
                             PyObject::str_val(CompactString::from(&val_str)),
                         );
                     }
@@ -805,7 +805,7 @@ pub fn create_os_module() -> PyObjectRef {
                     let key_str = args.last().ok_or_else(|| PyException::key_error("key required"))?.py_to_string();
                     unsafe { std::env::remove_var(&key_str); }
                     if let PyObjectPayload::Dict(dd) = &d3.payload {
-                        dd.write().swap_remove(&HashableKey::Str(CompactString::from(&key_str)));
+                        dd.write().swap_remove(&HashableKey::str_key(CompactString::from(&key_str)));
                     }
                     Ok(PyObject::none())
                 }
@@ -1566,7 +1566,7 @@ fn os_mkdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let path = args[0].py_to_string();
     let exist_ok = args.iter().skip(1).any(|a| {
         if let PyObjectPayload::Dict(kw) = &a.payload {
-            kw.read().get(&HashableKey::Str(CompactString::from("exist_ok")))
+            kw.read().get(&HashableKey::str_key(CompactString::from("exist_ok")))
                 .map(|v| matches!(&v.payload, PyObjectPayload::Bool(true)))
                 .unwrap_or(false)
         } else { false }
@@ -1583,7 +1583,7 @@ fn os_makedirs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Check for exist_ok kwarg (may be in trailing dict)
     let exist_ok = args.iter().skip(1).any(|a| {
         if let PyObjectPayload::Dict(kw) = &a.payload {
-            kw.read().get(&HashableKey::Str(CompactString::from("exist_ok")))
+            kw.read().get(&HashableKey::str_key(CompactString::from("exist_ok")))
                 .map(|v| matches!(&v.payload, PyObjectPayload::Bool(true)))
                 .unwrap_or(false)
         } else {

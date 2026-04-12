@@ -63,7 +63,7 @@ fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
     if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(map) = &last.payload {
             let r = map.read();
-            return r.get(&HashableKey::Str(CompactString::from(name))).cloned();
+            return r.get(&HashableKey::str_key(CompactString::from(name))).cloned();
         }
     }
     None
@@ -408,14 +408,14 @@ pub(super) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
         "update" => {
             check_args_min("update", args, 1)?;
             // Check if this is a Counter (has __counter__ key)
-            let is_counter = map.read().contains_key(&HashableKey::Str(CompactString::from("__counter__")));
+            let is_counter = map.read().contains_key(&HashableKey::str_key(CompactString::from("__counter__")));
             if is_counter {
                 // Counter.update: add counts from iterable or mapping
                 match &args[0].payload {
                     PyObjectPayload::Str(s) => {
                         let mut w = map.write();
                         for ch in s.chars() {
-                            let key = HashableKey::Str(CompactString::from(ch.to_string()));
+                            let key = HashableKey::str_key(CompactString::from(ch.to_string()));
                             let count = w.get(&key).and_then(|v| v.as_int()).unwrap_or(0);
                             w.insert(key, PyObject::int(count + 1));
                         }
@@ -498,7 +498,7 @@ pub(super) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
                 PyObjectPayload::Str(s) => {
                     let mut w = map.write();
                     for ch in s.chars() {
-                        let key = HashableKey::Str(CompactString::from(ch.to_string()));
+                        let key = HashableKey::str_key(CompactString::from(ch.to_string()));
                         let count = w.get(&key).and_then(|v| v.as_int()).unwrap_or(0);
                         w.insert(key, PyObject::int(count - 1));
                     }
@@ -614,7 +614,7 @@ pub(super) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
         }
         "__contains__" => {
             check_args_min("dict.__contains__", args, 1)?;
-            let key = args[0].to_hashable_key().unwrap_or(HashableKey::Str(CompactString::from(args[0].py_to_string())));
+            let key = args[0].to_hashable_key().unwrap_or(HashableKey::str_key(CompactString::from(args[0].py_to_string())));
             Ok(PyObject::bool_val(map.read().contains_key(&key)))
         }
         "__len__" => Ok(PyObject::int(map.read().len() as i64)),
@@ -624,7 +624,7 @@ pub(super) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
         }
         "__getitem__" => {
             check_args_min("dict.__getitem__", args, 1)?;
-            let key = args[0].to_hashable_key().unwrap_or(HashableKey::Str(CompactString::from(args[0].py_to_string())));
+            let key = args[0].to_hashable_key().unwrap_or(HashableKey::str_key(CompactString::from(args[0].py_to_string())));
             match map.read().get(&key) {
                 Some(v) => Ok(v.clone()),
                 None => Err(PyException::key_error(args[0].repr())),
@@ -975,7 +975,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
         }
         "__contains__" => {
             check_args_min("set.__contains__", args, 1)?;
-            let key = args[0].to_hashable_key().unwrap_or(HashableKey::Str(CompactString::from(args[0].py_to_string())));
+            let key = args[0].to_hashable_key().unwrap_or(HashableKey::str_key(CompactString::from(args[0].py_to_string())));
             Ok(PyObject::bool_val(m.read().contains_key(&key)))
         }
         "__len__" => Ok(PyObject::int(m.read().len() as i64)),
@@ -1134,10 +1134,10 @@ pub(super) fn call_int_method(_receiver: &PyObjectRef, method: &str, args: &[PyO
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(map) = &last.payload {
                     let map_r = map.read();
-                    if let Some(bo) = map_r.get(&HashableKey::Str(CompactString::from("byteorder"))) {
+                    if let Some(bo) = map_r.get(&HashableKey::str_key(CompactString::from("byteorder"))) {
                         byteorder = bo.py_to_string();
                     }
-                    if let Some(s) = map_r.get(&HashableKey::Str(CompactString::from("signed"))) {
+                    if let Some(s) = map_r.get(&HashableKey::str_key(CompactString::from("signed"))) {
                         signed = s.is_truthy();
                     }
                     _kwarg_start = args.len(); // skip kwargs dict for positional scan

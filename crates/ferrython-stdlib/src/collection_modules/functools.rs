@@ -23,7 +23,7 @@ pub fn create_functools_module() -> PyObjectRef {
             if let Some(last) = args.last() {
                 if let PyObjectPayload::Dict(d) = &last.payload {
                     let r = d.read();
-                    if let Some(ms) = r.get(&HashableKey::Str(CompactString::from("maxsize"))) {
+                    if let Some(ms) = r.get(&HashableKey::str_key(CompactString::from("maxsize"))) {
                         extracted_maxsize = Some(if matches!(ms.payload, PyObjectPayload::None) {
                             None
                         } else {
@@ -442,7 +442,7 @@ fn functools_singledispatch(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // __registry__ as a Dict
         let registry = PyObject::dict(IndexMap::new());
         if let PyObjectPayload::Dict(ref map) = registry.payload {
-            map.write().insert(HashableKey::Str(CompactString::from("object")), default_func.clone());
+            map.write().insert(HashableKey::str_key(CompactString::from("object")), default_func.clone());
         }
         w.insert(CompactString::from("__registry__"), registry);
         if let Some(name) = default_func.get_attr("__name__") {

@@ -383,7 +383,7 @@ impl VirtualMachine {
         if let Some(ref sys_mod_dict) = self.sys_modules_dict {
             if let PyObjectPayload::Dict(ref d) = sys_mod_dict.payload {
                 d.write().insert(
-                    HashableKey::Str(CompactString::from("__main__")),
+                    HashableKey::str_key(CompactString::from("__main__")),
                     main_mod,
                 );
             }
@@ -3990,7 +3990,7 @@ impl VirtualMachine {
                                     { let _ = spop!(frame); } // name
                                     if let PyObjectPayload::Set(set) = &receiver.payload {
                                         let hk = match &item.payload {
-                                            PyObjectPayload::Str(s) => Some(HashableKey::Str(s.clone())),
+                                            PyObjectPayload::Str(s) => Some(HashableKey::str_key(s.clone())),
                                             PyObjectPayload::Int(i) => Some(HashableKey::Int(i.clone())),
                                             PyObjectPayload::Bool(b) => Some(HashableKey::Bool(*b)),
                                             _ => None,
@@ -4292,7 +4292,7 @@ impl VirtualMachine {
                             }
                             // dict[str] = val — lock-free, zero-clone value
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                let hk = HashableKey::Str(s.clone());
+                                let hk = HashableKey::str_key(s.clone());
                                 let map_ptr = map.data_ptr();
                                 unsafe {
                                     let v = std::ptr::read(frame.stack.as_ptr().add(len - 3));
@@ -5175,7 +5175,7 @@ impl VirtualMachine {
                             }
                             // dict[str] = val
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                let hk = HashableKey::Str(s.clone());
+                                let hk = HashableKey::str_key(s.clone());
                                 unsafe { &mut *map.data_ptr() }.insert(hk, val.clone());
                                 true
                             }

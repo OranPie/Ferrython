@@ -265,7 +265,7 @@ pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<st
         (PyObjectPayload::Dict(a), PyObjectPayload::Dict(b)) => {
             let a = a.read(); let b = b.read();
             // OrderedDict-vs-OrderedDict: compare key order too
-            let od_key = crate::types::HashableKey::Str(CompactString::from("__ordered_dict__"));
+            let od_key = crate::types::HashableKey::str_key(CompactString::from("__ordered_dict__"));
             let a_is_od = a.contains_key(&od_key);
             let b_is_od = b.contains_key(&od_key);
             if a_is_od && b_is_od {
@@ -1075,7 +1075,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                         let mut ns = FxAttrMap::default();
                         for (k, v) in r.iter() {
                             let key_str = match k {
-                                HashableKey::Str(s) => s.clone(),
+                                HashableKey::Str(s) => CompactString::clone(s),
                                 _ => CompactString::from(k.to_object().py_to_string()),
                             };
                             ns.insert(key_str, v.clone());
@@ -1113,7 +1113,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                         let mut ns = FxAttrMap::default();
                         for (k, v) in r.iter() {
                             let key_str = match k {
-                                HashableKey::Str(s) => s.clone(),
+                                HashableKey::Str(s) => CompactString::clone(s),
                                 _ => CompactString::from(k.to_object().py_to_string()),
                             };
                             ns.insert(key_str, v.clone());

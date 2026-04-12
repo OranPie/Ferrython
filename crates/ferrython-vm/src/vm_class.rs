@@ -223,7 +223,7 @@ impl VirtualMachine {
                     let d = d.read();
                     d.keys().map(|k| {
                         if let HashableKey::Str(s) = k {
-                            s.clone()
+                            s.as_ref().clone()
                         } else {
                             CompactString::from(k.to_object().py_to_string())
                         }
@@ -247,7 +247,7 @@ impl VirtualMachine {
         let mut defaults_map = IndexMap::new();
         for (name, val) in &defaults {
             defaults_map.insert(
-                HashableKey::Str(name.clone()),
+                HashableKey::str_key(name.clone()),
                 val.clone(),
             );
         }
@@ -448,7 +448,7 @@ impl VirtualMachine {
                                 .filter_map(|(k, v)| {
                                     if let HashableKey::Str(name) = k {
                                         v.get_attr("value").and_then(|v| v.as_int())
-                                            .map(|val| (name.clone(), val))
+                                            .map(|val| (name.as_ref().clone(), val))
                                     } else { None }
                                 })
                                 .collect();
@@ -605,7 +605,7 @@ impl VirtualMachine {
                             let mut ns = FxAttrMap::default();
                             for (k, v) in d.iter() {
                                 if let HashableKey::Str(s) = k {
-                                    ns.insert(s.clone(), v.clone());
+                                    ns.insert(s.as_ref().clone(), v.clone());
                                 }
                             }
                             ns
@@ -666,7 +666,7 @@ impl VirtualMachine {
                     PyObjectPayload::Dict(d) => {
                         let mut map = d.write();
                         for (k, v) in &namespace {
-                            map.insert(HashableKey::Str(k.clone()), v.clone());
+                            map.insert(HashableKey::str_key(k.clone()), v.clone());
                         }
                     }
                     PyObjectPayload::Instance(inst) => {
@@ -674,7 +674,7 @@ impl VirtualMachine {
                         if let Some(ref ds) = inst.dict_storage {
                             let mut map = ds.write();
                             for (k, v) in &namespace {
-                                map.insert(HashableKey::Str(k.clone()), v.clone());
+                                map.insert(HashableKey::str_key(k.clone()), v.clone());
                             }
                         }
                         // Also call Python-level __setitem__ so overrides are triggered
@@ -693,7 +693,7 @@ impl VirtualMachine {
             } else {
                 let mut map = IndexMap::new();
                 for (k, v) in &namespace {
-                    map.insert(HashableKey::Str(k.clone()), v.clone());
+                    map.insert(HashableKey::str_key(k.clone()), v.clone());
                 }
                 PyObject::dict(map)
             };

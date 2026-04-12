@@ -31,7 +31,7 @@ fn extract_kwarg(args: &[PyObjectRef], name: &str) -> Option<PyObjectRef> {
     if let Some(last) = args.last() {
         if let PyObjectPayload::Dict(d) = &last.payload {
             let d = d.read();
-            let key = HashableKey::Str(CompactString::from(name));
+            let key = HashableKey::str_key(CompactString::from(name));
             return d.get(&key).cloned();
         }
     }
@@ -895,13 +895,13 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                         }
                         // Look up field in mapping (dict subscript, not attribute)
                         if let PyObjectPayload::Dict(m) = &mapping.payload {
-                            let key = HashableKey::Str(CompactString::from(&field));
+                            let key = HashableKey::str_key(CompactString::from(&field));
                             let guard = m.read();
                             if let Some(val) = guard.get(&key) {
                                 result.push_str(&val.py_to_string());
                             } else {
                                 // Support defaultdict: check for __defaultdict_factory__
-                                let factory_key = HashableKey::Str(CompactString::from("__defaultdict_factory__"));
+                                let factory_key = HashableKey::str_key(CompactString::from("__defaultdict_factory__"));
                                 if let Some(factory) = guard.get(&factory_key).cloned() {
                                     drop(guard);
                                     let val = match &factory.payload {

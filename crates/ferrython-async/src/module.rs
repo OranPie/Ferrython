@@ -281,7 +281,7 @@ fn asyncio_wait_for(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             // kwargs dict: extract "timeout" key
             PyObjectPayload::Dict(d) => {
                 let map = d.read();
-                if let Some(val) = map.get(&ferrython_core::types::HashableKey::Str(CompactString::from("timeout"))) {
+                if let Some(val) = map.get(&ferrython_core::types::HashableKey::str_key(CompactString::from("timeout"))) {
                     match &val.payload {
                         PyObjectPayload::Int(n) => Some(n.to_f64()),
                         PyObjectPayload::Float(f) => Some(*f),

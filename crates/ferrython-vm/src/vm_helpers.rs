@@ -641,7 +641,7 @@ impl VirtualMachine {
         let handler = if let Some(ref reg) = registry {
             if let PyObjectPayload::Dict(ref map) = reg.payload {
                 let m = map.read();
-                m.get(&HashableKey::Str(CompactString::from(&*type_name_str)))
+                m.get(&HashableKey::str_key(CompactString::from(&*type_name_str)))
                     .cloned()
                     .unwrap_or_else(|| default.clone())
             } else {
@@ -681,7 +681,7 @@ impl VirtualMachine {
             let func = args[2].clone();
             if let Some(reg) = dispatcher.get_attr("__registry__") {
                 if let PyObjectPayload::Dict(ref map) = reg.payload {
-                    map.write().insert(HashableKey::Str(CompactString::from(&*type_name)), func.clone());
+                    map.write().insert(HashableKey::str_key(CompactString::from(&*type_name)), func.clone());
                 }
             }
             return Ok(func);
@@ -698,7 +698,7 @@ impl VirtualMachine {
                 let func = deco_args[0].clone();
                 if let Some(reg) = dispatcher.get_attr("__registry__") {
                     if let PyObjectPayload::Dict(ref map) = reg.payload {
-                        map.write().insert(HashableKey::Str(CompactString::from(&tn)), func.clone());
+                        map.write().insert(HashableKey::str_key(CompactString::from(&tn)), func.clone());
                     }
                 }
                 Ok(func)
@@ -1757,7 +1757,7 @@ impl VirtualMachine {
                 let m = map.read();
                 for (k, v) in m.iter() {
                     let key_str = match k {
-                        HashableKey::Str(s) => s.clone(),
+                        HashableKey::Str(s) => CompactString::clone(s),
                         _ => CompactString::from(format!("{:?}", k)),
                     };
                     new_globals.insert(key_str, v.clone());
@@ -1771,7 +1771,7 @@ impl VirtualMachine {
                         let lm = lmap.read();
                         for (k, v) in lm.iter() {
                             let key_str = match k {
-                                HashableKey::Str(s) => s.clone(),
+                                HashableKey::Str(s) => CompactString::clone(s),
                                 _ => CompactString::from(format!("{:?}", k)),
                             };
                             new_globals.insert(key_str, v.clone());
@@ -1788,15 +1788,15 @@ impl VirtualMachine {
                     let mut gm = map.write();
                     for (k, v) in results.iter() {
                         if original_global_keys.contains(k) {
-                            gm.insert(HashableKey::Str(k.clone()), v.clone());
+                            gm.insert(HashableKey::str_key(k.clone()), v.clone());
                         }
                     }
                     drop(gm);
                     if let PyObjectPayload::Dict(ref lmap) = args[2].payload {
                         let mut lm = lmap.write();
                         for (k, v) in results.iter() {
-                            if !original_global_keys.contains(k) || lm.contains_key(&HashableKey::Str(k.clone())) {
-                                lm.insert(HashableKey::Str(k.clone()), v.clone());
+                            if !original_global_keys.contains(k) || lm.contains_key(&HashableKey::str_key(k.clone())) {
+                                lm.insert(HashableKey::str_key(k.clone()), v.clone());
                             }
                         }
                     }
@@ -1804,7 +1804,7 @@ impl VirtualMachine {
                     // No separate locals — write everything back to globals
                     let mut m = map.write();
                     for (k, v) in results.iter() {
-                        m.insert(HashableKey::Str(k.clone()), v.clone());
+                        m.insert(HashableKey::str_key(k.clone()), v.clone());
                     }
                 }
             } else {
@@ -1841,7 +1841,7 @@ impl VirtualMachine {
                 let gm = globs_map.read();
                 for (k, v) in gm.iter() {
                     let key_str = match k {
-                        HashableKey::Str(s) => s.clone(),
+                        HashableKey::Str(s) => CompactString::clone(s),
                         _ => CompactString::from(format!("{:?}", k)),
                     };
                     new_globals.insert(key_str, v.clone());
@@ -1867,7 +1867,7 @@ impl VirtualMachine {
                     let lm = locals_arc.read();
                     for (k, v) in lm.iter() {
                         let key_str = match k {
-                            HashableKey::Str(s) => s.clone(),
+                            HashableKey::Str(s) => CompactString::clone(s),
                             _ => CompactString::from(format!("{:?}", k)),
                         };
                         new_globals.insert(key_str, v.clone());
@@ -1887,7 +1887,7 @@ impl VirtualMachine {
                     let mut gm = globs_map.write();
                     let mut lm = locals_arc.write();
                     for (k, v) in results.iter() {
-                        let hk = HashableKey::Str(k.clone());
+                        let hk = HashableKey::str_key(k.clone());
                         if original_global_keys.contains(k) {
                             // Update existing global entry
                             gm.insert(hk, v.clone());
@@ -1900,7 +1900,7 @@ impl VirtualMachine {
                     // No separate locals: write everything back to globals
                     let mut gm = globs_map.write();
                     for (k, v) in results.iter() {
-                        gm.insert(HashableKey::Str(k.clone()), v.clone());
+                        gm.insert(HashableKey::str_key(k.clone()), v.clone());
                     }
                 }
                 drop(results);
@@ -2072,7 +2072,7 @@ impl VirtualMachine {
             for (i, name_opt) in re.capture_names().enumerate() {
                 if let Some(name) = name_opt {
                     groupindex_map.insert(
-                        HashableKey::Str(CompactString::from(name)),
+                        HashableKey::str_key(CompactString::from(name)),
                         PyObject::int(i as i64),
                     );
                 }

@@ -532,10 +532,10 @@ pub fn create_logging_module() -> PyObjectRef {
                 if let PyObjectPayload::Dict(kw_map) = &args[0].payload {
                     // kwargs passed as dict
                     let r = kw_map.read();
-                    let f = r.get(&HashableKey::Str(CompactString::from("fmt")))
+                    let f = r.get(&HashableKey::str_key(CompactString::from("fmt")))
                         .map(|v| CompactString::from(v.py_to_string()))
                         .unwrap_or_else(|| CompactString::from("%(levelname)s:%(name)s:%(message)s"));
-                    let d = r.get(&HashableKey::Str(CompactString::from("datefmt")))
+                    let d = r.get(&HashableKey::str_key(CompactString::from("datefmt")))
                         .and_then(|v| if matches!(v.payload, PyObjectPayload::None) { None } else { Some(v.py_to_string()) });
                     (f, d)
                 } else {
@@ -544,7 +544,7 @@ pub fn create_logging_module() -> PyObjectRef {
                         // Second positional could also be a kwargs dict
                         if let PyObjectPayload::Dict(kw_map) = &args[1].payload {
                             let r = kw_map.read();
-                            r.get(&HashableKey::Str(CompactString::from("datefmt")))
+                            r.get(&HashableKey::str_key(CompactString::from("datefmt")))
                                 .and_then(|v| if matches!(v.payload, PyObjectPayload::None) { None } else { Some(v.py_to_string()) })
                         } else {
                             Some(args[1].py_to_string())
@@ -674,24 +674,24 @@ pub fn create_logging_module() -> PyObjectRef {
         if let Some(last) = args.last() {
             if let PyObjectPayload::Dict(kw_map) = &last.payload {
                 let r = kw_map.read();
-                if let Some(level) = r.get(&HashableKey::Str(CompactString::from("level"))) {
+                if let Some(level) = r.get(&HashableKey::str_key(CompactString::from("level"))) {
                     if let Some(n) = level.as_int() {
                         ROOT_LEVEL.store(n, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
-                if let Some(format) = r.get(&HashableKey::Str(CompactString::from("format"))) {
+                if let Some(format) = r.get(&HashableKey::str_key(CompactString::from("format"))) {
                     let _ = ROOT_FORMAT.set(format.py_to_string().to_string());
                 }
                 // filename= creates a FileHandler on the root logger
-                if let Some(filename) = r.get(&HashableKey::Str(CompactString::from("filename"))) {
+                if let Some(filename) = r.get(&HashableKey::str_key(CompactString::from("filename"))) {
                     let fname = filename.py_to_string();
-                    let filemode = r.get(&HashableKey::Str(CompactString::from("filemode")))
+                    let filemode = r.get(&HashableKey::str_key(CompactString::from("filemode")))
                         .map(|v| v.py_to_string())
                         .unwrap_or_else(|| "a".to_string());
                     // Create a FileHandler and add it to the root logger
                     let fmt_ref: Rc<PyCell<PyObjectRef>> = Rc::new(PyCell::new(PyObject::none()));
                     // If format= was provided, build a Formatter and attach it
-                    if let Some(format_val) = r.get(&HashableKey::Str(CompactString::from("format"))) {
+                    if let Some(format_val) = r.get(&HashableKey::str_key(CompactString::from("format"))) {
                         let fs = format_val.py_to_string();
                         let fmt_cls = PyObject::class(CompactString::from("Formatter"), vec![], IndexMap::new());
                         let fmt_inst = PyObject::instance(fmt_cls);
@@ -770,7 +770,7 @@ pub fn create_logging_module() -> PyObjectRef {
                     });
                 }
                 // handlers= kwarg: add each handler to the root logger
-                if let Some(handlers_val) = r.get(&HashableKey::Str(CompactString::from("handlers"))) {
+                if let Some(handlers_val) = r.get(&HashableKey::str_key(CompactString::from("handlers"))) {
                     if let Ok(handler_list) = handlers_val.to_list() {
                         let root_exists = LOGGER_REGISTRY.with(|reg| {
                             reg.borrow().contains_key("root")
@@ -2467,12 +2467,12 @@ fn build_mock_instance(name: &str, kwargs: &FxHashKeyMap) -> PyObjectRef {
         let mock_name = CompactString::from(name);
 
         // Store return_value directly as a plain value (not a closure) so STORE_ATTR overwrites it
-        let init_rv = kwargs.get(&HashableKey::Str(CompactString::from("return_value")))
+        let init_rv = kwargs.get(&HashableKey::str_key(CompactString::from("return_value")))
             .cloned().unwrap_or_else(PyObject::none);
         w.insert(CompactString::from("return_value"), init_rv);
 
         // Store side_effect if provided
-        let init_se = kwargs.get(&HashableKey::Str(CompactString::from("side_effect")))
+        let init_se = kwargs.get(&HashableKey::str_key(CompactString::from("side_effect")))
             .cloned().unwrap_or_else(PyObject::none);
         w.insert(CompactString::from("side_effect"), init_se);
 
@@ -2763,7 +2763,7 @@ pub fn create_unittest_mock_module() -> PyObjectRef {
         let target = args[0].clone();
         let attr_name = args[1].py_to_string();
         let kwargs = extract_mock_kwargs(&args[2..]);
-        let rv_key = HashableKey::Str(CompactString::from("return_value"));
+        let rv_key = HashableKey::str_key(CompactString::from("return_value"));
         // Build replacement value
         let replacement = if let Some(_rv) = kwargs.get(&rv_key) {
             build_mock_instance("MagicMock", &kwargs)
@@ -3287,13 +3287,13 @@ pub fn create_timeit_module() -> PyObjectRef {
 
         // stmt from positional[0] or kwargs['stmt']
         let stmt = positional.first().cloned()
-            .or_else(|| kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("stmt"))).cloned()));
+            .or_else(|| kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::str_key(CompactString::from("stmt"))).cloned()));
         // setup from positional[1] or kwargs['setup']
         let setup = if positional.len() > 1 { Some(positional[1].clone()) }
-            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("setup"))).cloned()) };
+            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::str_key(CompactString::from("setup"))).cloned()) };
         // number from positional[2] or kwargs['number']
         let number: i64 = if positional.len() > 2 { positional[2].as_int().unwrap_or(1_000_000) }
-            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("number"))).and_then(|v| v.as_int())).unwrap_or(1_000_000) };
+            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::str_key(CompactString::from("number"))).and_then(|v| v.as_int())).unwrap_or(1_000_000) };
 
         // Run setup if callable
         if let Some(ref s) = setup {
@@ -3329,13 +3329,13 @@ pub fn create_timeit_module() -> PyObjectRef {
         } else { (args, None) };
 
         let stmt = positional.first().cloned()
-            .or_else(|| kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("stmt"))).cloned()));
+            .or_else(|| kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::str_key(CompactString::from("stmt"))).cloned()));
         let setup = if positional.len() > 1 { Some(positional[1].clone()) }
-            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("setup"))).cloned()) };
+            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::str_key(CompactString::from("setup"))).cloned()) };
         let repeat_count: i64 = if positional.len() > 2 { positional[2].as_int().unwrap_or(5) }
-            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("repeat"))).and_then(|v| v.as_int())).unwrap_or(5) };
+            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::str_key(CompactString::from("repeat"))).and_then(|v| v.as_int())).unwrap_or(5) };
         let number: i64 = if positional.len() > 3 { positional[3].as_int().unwrap_or(1_000_000) }
-            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::Str(CompactString::from("number"))).and_then(|v| v.as_int())).unwrap_or(1_000_000) };
+            else { kwargs.as_ref().and_then(|kw| kw.get(&HashableKey::str_key(CompactString::from("number"))).and_then(|v| v.as_int())).unwrap_or(1_000_000) };
 
         if let Some(ref s) = setup {
             if is_callable(s) { let _ = call_callable(s); }

@@ -374,10 +374,12 @@ pub enum HashableKey {
     Bool(bool),
     Int(PyInt),
     Float(OrderedFloat),
-    Str(CompactString),
-    Bytes(Vec<u8>),
-    Tuple(Vec<HashableKey>),
-    FrozenSet(Vec<HashableKey>),
+    /// String key — boxed to shrink HashableKey from 32 to 24 bytes.
+    /// Saves 8 bytes per dict/set entry (48→40 bytes).
+    Str(Box<CompactString>),
+    Bytes(Box<Vec<u8>>),
+    Tuple(Box<Vec<HashableKey>>),
+    FrozenSet(Box<Vec<HashableKey>>),
     /// Identity-based key using the Arc pointer address, preserving the original object.
     Identity(usize, PyObjectRef),
     /// Custom hashable key for objects with __hash__/__eq__.
@@ -389,7 +391,15 @@ pub enum HashableKey {
 
 impl Eq for HashableKey {}
 
+const _HASHABLE_KEY_SIZE_CHECK: () = assert!(std::mem::size_of::<HashableKey>() <= 24);
+
 impl HashableKey {
+    /// Convenience constructor: wraps a CompactString in Box for the Str variant.
+    #[inline]
+    pub fn str_key(s: CompactString) -> Self {
+        HashableKey::Str(Box::new(s))
+    }
+
     pub fn from_object(obj: &PyObjectRef) -> PyResult<Self> {
         use crate::object::PyObjectPayload;
         match &obj.payload {
@@ -397,20 +407,20 @@ impl HashableKey {
             PyObjectPayload::Bool(b) => Ok(HashableKey::Int(PyInt::Small(*b as i64))),
             PyObjectPayload::Int(n) => Ok(HashableKey::Int(n.clone())),
             PyObjectPayload::Float(f) => Ok(HashableKey::Float(OrderedFloat(*f))),
-            PyObjectPayload::Str(s) => Ok(HashableKey::Str(s.clone())),
-            PyObjectPayload::Bytes(b) => Ok(HashableKey::Bytes(b.clone())),
+            PyObjectPayload::Str(s) => Ok(HashableKey::str_key(s.clone())),
+            PyObjectPayload::Bytes(b) => Ok(HashableKey::Bytes(Box::new(b.clone()))),
             PyObjectPayload::Tuple(items) => {
                 let mut keys = Vec::with_capacity(items.len());
                 for item in items { keys.push(HashableKey::from_object(item)?); }
-                Ok(HashableKey::Tuple(keys))
+                Ok(HashableKey::Tuple(Box::new(keys)))
             }
             PyObjectPayload::FrozenSet(m) => {
                 let mut keys: Vec<HashableKey> = Vec::with_capacity(m.len());
                 for (k, _) in m.iter() { keys.push(k.clone()); }
                 keys.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
-                Ok(HashableKey::FrozenSet(keys))
+                Ok(HashableKey::FrozenSet(Box::new(keys)))
             }
-            PyObjectPayload::Ellipsis => Ok(HashableKey::Str(CompactString::from("Ellipsis"))),
+            PyObjectPayload::Ellipsis => Ok(HashableKey::str_key(CompactString::from("Ellipsis"))),
             // Instance objects: use __hash__ if available via dispatch, else identity
             PyObjectPayload::Instance(_) => {
                 if let Some(hash_val) = call_hash_dispatch(obj) {
@@ -437,7 +447,7 @@ impl HashableKey {
             }
             // BuiltinType: hash by type name so type(42) matches int as dict key
             PyObjectPayload::BuiltinType(name) => {
-                Ok(HashableKey::Str(CompactString::from(format!("<type:{}>", name))))
+                Ok(HashableKey::str_key(CompactString::from(format!("<type:{}>", name))))
             }
             // Module objects: hashable if they have __hash__ (e.g. re.Pattern objects),
             // otherwise use identity (CPython modules are hashable by identity)
@@ -461,12 +471,12 @@ impl HashableKey {
             HashableKey::Bool(b) => PyObject::bool_val(*b),
             HashableKey::Int(n) => n.to_object(),
             HashableKey::Float(f) => PyObject::float(f.0),
-            HashableKey::Str(s) => PyObject::str_val(s.clone()),
-            HashableKey::Bytes(b) => PyObject::bytes(b.clone()),
+            HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+            HashableKey::Bytes(b) => PyObject::bytes(Vec::clone(b)),
             HashableKey::Tuple(keys) => PyObject::tuple(keys.iter().map(|k| k.to_object()).collect()),
             HashableKey::FrozenSet(keys) => {
                 let mut map = new_fx_hashkey_map();
-                for k in keys { map.insert(k.clone(), k.to_object()); }
+                for k in keys.iter() { map.insert(k.clone(), k.to_object()); }
                 PyObject::frozenset(map)
             },
             HashableKey::Identity(_ptr, obj) => {
@@ -485,7 +495,7 @@ impl PartialEq for HashableKey {
             // Int/Int (hot path — most dict keys are ints)
             (HashableKey::Int(PyInt::Small(a)), HashableKey::Int(PyInt::Small(b))) => a == b,
             (HashableKey::Int(a), HashableKey::Int(b)) => a == b,
-            // Str/Str
+            // Str/Str (Box auto-derefs for comparison)
             (HashableKey::Str(a), HashableKey::Str(b)) => a == b,
             // Bool/Bool
             (HashableKey::Bool(a), HashableKey::Bool(b)) => a == b,
