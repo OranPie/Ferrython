@@ -14,7 +14,6 @@ use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell,
 };
 use ferrython_core::types::{HashableKey, SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
-use std::sync::Arc;
 use std::rc::Rc;
 
 /// Attach `split` and `subgroup` methods to an ExceptionGroup instance.

@@ -8,7 +8,6 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use std::sync::Arc;
 use std::rc::Rc;
 
 pub fn create_collections_module() -> PyObjectRef {

@@ -11,7 +11,6 @@ use ferrython_core::object::{ PyCell,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use std::sync::Arc;
 use std::rc::Rc;
 
 impl VirtualMachine {

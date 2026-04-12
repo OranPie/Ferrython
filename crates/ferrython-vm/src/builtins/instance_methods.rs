@@ -12,7 +12,6 @@ use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
-use std::sync::Arc;
 use std::rc::Rc;
 
 use super::core_fns::{builtin_dict_fromkeys, builtin_type};

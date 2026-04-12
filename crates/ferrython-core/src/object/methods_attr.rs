@@ -6,7 +6,6 @@ use crate::intern::{self, intern_or_new};
 use crate::types::{HashableKey, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
-use std::sync::Arc;
 
 use super::payload::*;
 use super::helpers::*;

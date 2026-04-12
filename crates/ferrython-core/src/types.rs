@@ -10,7 +10,6 @@ use indexmap::IndexMap;
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::cell::RefCell;
 
 /// Thread-local dispatch for calling Python __eq__ from PartialEq on HashableKey.

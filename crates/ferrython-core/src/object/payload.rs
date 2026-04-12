@@ -13,7 +13,6 @@ use std::fmt;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::Arc;
 
 // ── PyCell: zero-overhead interior mutability (replaces parking_lot::RwLock) ──
 

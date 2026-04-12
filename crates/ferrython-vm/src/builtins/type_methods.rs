@@ -9,7 +9,6 @@ use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell,
 use ferrython_core::object::IteratorData;
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
-use std::sync::Arc;
 use std::rc::Rc;
 
 // ── UTF-16/32 decode helpers ──────────────────────────────────────

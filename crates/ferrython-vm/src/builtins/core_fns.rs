@@ -10,7 +10,6 @@ use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell,
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
-use std::sync::Arc;
 use std::rc::Rc;
 
 use super::iter_advance;

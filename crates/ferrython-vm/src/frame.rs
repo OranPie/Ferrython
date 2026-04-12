@@ -6,7 +6,6 @@ use ferrython_core::object::{ PyCell, FxAttrMap, PyObjectRef};
 use ferrython_core::types::{SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use std::cell::Cell;
-use std::sync::Arc;
 use std::rc::Rc;
 
 /// A shared cell for closure variables.
