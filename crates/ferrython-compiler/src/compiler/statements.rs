@@ -549,7 +549,7 @@ impl Compiler {
         }
 
         // Load the code object as a constant
-        let code_idx = self.add_const(ConstantValue::Code(std::sync::Arc::new(func_code)));
+        let code_idx = self.add_const(ConstantValue::Code(std::rc::Rc::new(func_code)));
         self.emit_arg(Opcode::LoadConst, code_idx);
 
         // Load the qualified name
@@ -691,7 +691,7 @@ impl Compiler {
         }
 
         // Load the class body code object
-        let code_idx = self.add_const(ConstantValue::Code(std::sync::Arc::new(class_code)));
+        let code_idx = self.add_const(ConstantValue::Code(std::rc::Rc::new(class_code)));
         self.emit_arg(Opcode::LoadConst, code_idx);
 
         // Load qualname for MAKE_FUNCTION

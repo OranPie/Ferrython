@@ -103,7 +103,7 @@ use ferrython_core::object::{ new_fx_hashkey_map, PyCell,
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt, SharedGlobals};
 use ferrython_debug::{ExecutionProfiler, BreakpointManager};
 use indexmap::IndexMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::rc::Rc;
 
 /// Shared builtins for spawning thread VMs without re-initializing.
@@ -197,12 +197,11 @@ pub struct VirtualMachine {
 
 impl VirtualMachine {
     pub fn new() -> Self {
-        let builtins = Arc::new(builtins::init_builtins());
+        let builtins = SharedBuiltins(Rc::new(builtins::init_builtins()));
         // Register the thread spawn callback so the stdlib can spawn real OS
-        // threads for Python function targets.  Uses the shared builtins Arc.
+        // threads for Python function targets.  Uses the shared builtins.
         {
-            let shared_bi = Arc::clone(&builtins);
-            SHARED_BUILTINS.get_or_init(|| shared_bi);
+            SHARED_BUILTINS.get_or_init(|| builtins.clone());
             ferrython_core::error::register_thread_spawn(spawn_python_thread_impl);
         }
         Self {
@@ -236,7 +235,7 @@ impl VirtualMachine {
 
     /// Get a clone of the builtins Arc for passing to thread VMs.
     pub fn shared_builtins(&self) -> SharedBuiltins {
-        Arc::clone(&self.builtins)
+        self.builtins.clone()
     }
 
     /// Execute a Python function object with arguments on this VM.
@@ -299,14 +298,14 @@ impl VirtualMachine {
                 );
             }
         }
-        self.execute_with_globals(Arc::new(code), globals)
+        self.execute_with_globals(Rc::new(code), globals)
     }
 
     /// Execute a code object with shared globals (for REPL).
-    pub fn execute_with_globals(&mut self, code: Arc<CodeObject>, globals: SharedGlobals) -> PyResult<PyObjectRef> {
+    pub fn execute_with_globals(&mut self, code: Rc<CodeObject>, globals: SharedGlobals) -> PyResult<PyObjectRef> {
         self.install_hash_eq_dispatch();
         let stack_depth = self.call_stack.len();
-        let frame = Frame::new(code, globals.clone(), Arc::clone(&self.builtins));
+        let frame = Frame::new(code, globals.clone(), self.builtins.clone());
         self.call_stack.push(frame);
         let result = self.run_frame();
         // Clean up call stack: pop back to the expected depth.
@@ -2348,7 +2347,7 @@ impl VirtualMachine {
                                 || (pf.code.instructions.len() == 1
                                     && pf.code.instructions[0].op == Opcode::LoadConstReturnValue)
                             { 3u8 }
-                            else if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
+                            else if Rc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
                         } else if pf.code.arg_count as usize == arg_count
                             && pf.code.kwonlyarg_count == 0
                             && !pf.code.flags.contains(CodeFlags::VARARGS)
@@ -2595,13 +2594,13 @@ impl VirtualMachine {
                         } else if call_kind == 4 {
                             // Closure call: use optimized constructor that takes cells directly
                             let (code, globals, constant_cache, closure_ptr, closure_len) = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
-                                (Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache),
+                                (Rc::clone(&pf.code), pf.globals.clone(), Rc::clone(&pf.constant_cache),
                                  pf.closure.as_ptr(), pf.closure.len())
                             } else { unreachable!() };
                             // SAFETY: closure ref valid while stack reference held
                             let closure_ref = unsafe { std::slice::from_raw_parts(closure_ptr, closure_len) };
                             let f = Frame::new_closure_from_pool(
-                                code, globals, Arc::clone(&self.builtins), constant_cache,
+                                code, globals, self.builtins.clone(), constant_cache,
                                 closure_ref, &mut self.frame_pool,
                             );
                             f
@@ -2619,10 +2618,10 @@ impl VirtualMachine {
                         } else {
                             // Normal path: clone Arcs from function object
                             let (code, globals, constant_cache) = if let PyObjectPayload::Function(pf) = &sget!(frame, func_idx).payload {
-                                (Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache))
+                                (Rc::clone(&pf.code), pf.globals.clone(), Rc::clone(&pf.constant_cache))
                             } else { unreachable!() };
                             let mut f = Frame::new_from_pool(
-                                code, globals, Arc::clone(&self.builtins), constant_cache,
+                                code, globals, self.builtins.clone(), constant_cache,
                                 &mut self.frame_pool,
                             );
                             f.scope_kind = crate::frame::ScopeKind::Function;
@@ -2946,7 +2945,7 @@ impl VirtualMachine {
                                     || (pf.code.instructions.len() == 1
                                         && pf.code.instructions[0].op == Opcode::LoadConstReturnValue)
                                 { 3u8 }
-                                else if Arc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
+                                else if Rc::ptr_eq(&pf.code, &frame.code) { 2u8 } else { 1 }
                             } else { 0 }
                         } else { 0 };
                         if call_kind == 3 {
@@ -3158,10 +3157,10 @@ impl VirtualMachine {
                                 }
                             } else {
                                 let (code, globals, constant_cache) = if let PyObjectPayload::Function(pf) = &func_obj.payload {
-                                    (Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache))
+                                    (Rc::clone(&pf.code), pf.globals.clone(), Rc::clone(&pf.constant_cache))
                                 } else { unreachable!() };
                                 let mut f = Frame::new_from_pool(
-                                    code, globals, Arc::clone(&self.builtins), constant_cache,
+                                    code, globals, self.builtins.clone(), constant_cache,
                                     &mut self.frame_pool,
                                 );
                                 f.scope_kind = crate::frame::ScopeKind::Function;
@@ -3643,7 +3642,7 @@ impl VirtualMachine {
                             frame.stack.set_len(method_idx);
                         }
                         // Inherit global cache for recursive calls (same code object)
-                        if Arc::ptr_eq(&frame.code, &new_frame.code) {
+                        if Rc::ptr_eq(&frame.code, &new_frame.code) {
                             if let Some(ref cache) = frame.global_cache {
                                 new_frame.global_cache = Some(cache.clone());
                                 new_frame.global_cache_version = frame.global_cache_version;
@@ -3893,14 +3892,14 @@ impl VirtualMachine {
                         let fast_data = if !matches!(&slot_0.payload, PyObjectPayload::None) {
                             if let PyObjectPayload::Function(pf) = &slot_0.payload {
                                 if pf.is_simple && pf.code.arg_count as usize == arg_count + 1 {
-                                    Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache)))
+                                    Some((Rc::clone(&pf.code), pf.globals.clone(), Rc::clone(&pf.constant_cache)))
                                 } else { None }
                             } else { None }
                         } else { None };
                         if let Some((code, globals, cc)) = fast_data {
                             // Inline frame creation (same as CallMethod)
                             let mut new_frame = Frame::new_from_pool(
-                                code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool,
+                                code, globals, self.builtins.clone(), cc, &mut self.frame_pool,
                             );
                             let arg_start = frame.stack.len() - arg_count;
                             unsafe {
@@ -3912,7 +3911,7 @@ impl VirtualMachine {
                                 let _method = std::ptr::read(base.add(arg_start - 2));
                                 frame.stack.set_len(arg_start - 2);
                             }
-                            if Arc::ptr_eq(&frame.code, &new_frame.code) {
+                            if Rc::ptr_eq(&frame.code, &new_frame.code) {
                                 if let Some(ref cache) = frame.global_cache {
                                     new_frame.global_cache = Some(cache.clone());
                                     new_frame.global_cache_version = frame.global_cache_version;

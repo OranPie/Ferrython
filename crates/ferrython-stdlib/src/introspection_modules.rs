@@ -1284,15 +1284,15 @@ pub fn create_dis_module() -> PyObjectRef {
             return Err(PyException::type_error("dis() requires a function argument"));
         }
         let obj = &args[0];
-        let code: std::sync::Arc<ferrython_bytecode::CodeObject> = match &obj.payload {
-            PyObjectPayload::Function(pf) => std::sync::Arc::clone(&pf.code),
-            PyObjectPayload::Code(c) => std::sync::Arc::clone(c),
+        let code: std::rc::Rc<ferrython_bytecode::CodeObject> = match &obj.payload {
+            PyObjectPayload::Function(pf) => std::rc::Rc::clone(&pf.code),
+            PyObjectPayload::Code(c) => std::rc::Rc::clone(c),
             PyObjectPayload::Str(s) => {
                 // Auto-compile string source code, like CPython
                 let source = s.as_str();
                 match ferrython_parser::parse(source, "<dis>") {
                     Ok(module) => match ferrython_compiler::compile(&module, "<dis>") {
-                        Ok(c) => std::sync::Arc::new(c),
+                        Ok(c) => std::rc::Rc::new(c),
                         Err(e) => return Err(PyException::type_error(
                             format!("could not compile source: {}", e)
                         )),
@@ -1463,9 +1463,9 @@ pub fn create_dis_module() -> PyObjectRef {
         if args.is_empty() {
             return Err(PyException::type_error("code_info() requires argument"));
         }
-        let code: std::sync::Arc<ferrython_bytecode::CodeObject> = match &args[0].payload {
-            PyObjectPayload::Function(pf) => std::sync::Arc::clone(&pf.code),
-            PyObjectPayload::Code(c) => std::sync::Arc::clone(c),
+        let code: std::rc::Rc<ferrython_bytecode::CodeObject> = match &args[0].payload {
+            PyObjectPayload::Function(pf) => std::rc::Rc::clone(&pf.code),
+            PyObjectPayload::Code(c) => std::rc::Rc::clone(c),
             _ => return Err(PyException::type_error("don't know how to get code info")),
         };
         let mut info = String::new();
@@ -1518,9 +1518,9 @@ pub fn create_dis_module() -> PyObjectRef {
         if args.is_empty() {
             return Err(PyException::type_error("Bytecode() requires argument"));
         }
-        let code: std::sync::Arc<ferrython_bytecode::CodeObject> = match &args[0].payload {
-            PyObjectPayload::Function(pf) => std::sync::Arc::clone(&pf.code),
-            PyObjectPayload::Code(c) => std::sync::Arc::clone(c),
+        let code: std::rc::Rc<ferrython_bytecode::CodeObject> = match &args[0].payload {
+            PyObjectPayload::Function(pf) => std::rc::Rc::clone(&pf.code),
+            PyObjectPayload::Code(c) => std::rc::Rc::clone(c),
             _ => return Err(PyException::type_error("don't know how to disassemble")),
         };
         let mut instructions = Vec::new();

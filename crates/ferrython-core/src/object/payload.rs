@@ -513,7 +513,7 @@ pub enum PyObjectPayload {
     BuiltinType(CompactString),
     BoundMethod { receiver: PyObjectRef, method: PyObjectRef },
     BuiltinBoundMethod(Box<BuiltinBoundMethodData>),
-    Code(std::sync::Arc<ferrython_bytecode::CodeObject>),
+    Code(std::rc::Rc<ferrython_bytecode::CodeObject>),
     Class(Box<ClassData>),
     Instance(Box<InstanceData>),
     Module(Box<ModuleData>),
@@ -712,7 +712,7 @@ pub struct ClassData {
     /// Instance attribute shape: maps attr name → dense index for O(1) attr access.
     /// Built from __init__ analysis or __slots__. Instances store values in a Vec
     /// indexed by these offsets. Attrs not in the shape fall back to overflow dict.
-    pub attr_shape: Arc<FxHashMap<CompactString, usize>>,
+    pub attr_shape: Rc<FxHashMap<CompactString, usize>>,
     /// Monotonic version counter — incremented on any class mutation to invalidate
     /// inline caches and method vtable.
     pub class_version: u64,
@@ -842,7 +842,7 @@ impl ClassData {
             has_setattr,
             has_descriptors,
             method_vtable: Rc::new(PyCell::new(vtable)),
-            attr_shape: Arc::new(attr_shape),
+            attr_shape: Rc::new(attr_shape),
             class_version: next_class_version(),
             is_dict_subclass,
             expected_attrs,

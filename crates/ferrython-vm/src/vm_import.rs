@@ -17,7 +17,6 @@ use ferrython_core::object::{ PyCell,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, FxAttrMap,
 };
 use ferrython_core::types::{HashableKey, SharedGlobals};
-use std::sync::Arc;
 use std::rc::Rc;
 
 impl VirtualMachine {
@@ -296,7 +295,7 @@ impl VirtualMachine {
     fn exec_module_source(
         &mut self,
         cache_name: &str,
-        code: std::sync::Arc<ferrython_bytecode::CodeObject>,
+        code: std::rc::Rc<ferrython_bytecode::CodeObject>,
         mod_name: CompactString,
         file_path: Option<CompactString>,
     ) -> PyResult<PyObjectRef> {
@@ -348,7 +347,7 @@ impl VirtualMachine {
 
         // Execute module body — writes go to `globals`, which is the same
         // Arc backing partial_mod's attrs.
-        let frame = Frame::new(code, globals.clone(), Arc::clone(&self.builtins));
+        let frame = Frame::new(code, globals.clone(), self.builtins.clone());
         self.call_stack.push(frame);
         let exec_result = self.run_frame();
         if let Some(frame) = self.call_stack.pop() {
@@ -591,7 +590,7 @@ class _MutableMappingMixin(_MappingMixin):
                 g.insert(CompactString::from("__builtins__"), builtins_mod);
             }
         }
-        let frame = crate::frame::Frame::new(Arc::new(code_obj), globals.clone(), Arc::clone(&self.builtins));
+        let frame = crate::frame::Frame::new(Rc::new(code_obj), globals.clone(), self.builtins.clone());
         self.call_stack.push(frame);
         let _ = self.run_frame();
         if let Some(frame) = self.call_stack.pop() {

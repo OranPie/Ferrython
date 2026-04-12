@@ -618,7 +618,7 @@ impl VirtualMachine {
                         // Unbound method path: slot_0 = method
                         if let PyObjectPayload::Function(pf) = &slot_0.payload {
                             if pf.is_simple && pf.code.arg_count as usize == arg_count + 1 {
-                                Some((Arc::clone(&pf.code), pf.globals.clone(), Arc::clone(&pf.constant_cache)))
+                                Some((Rc::clone(&pf.code), pf.globals.clone(), Rc::clone(&pf.constant_cache)))
                             } else {
                                 None
                             }
@@ -632,7 +632,7 @@ impl VirtualMachine {
                 let result = if let Some((code, globals, cc)) = fast_data {
                     // Super-fast: direct frame creation, move args from stack
                     let mut new_frame = crate::frame::Frame::new_from_pool(
-                        code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool,
+                        code, globals, self.builtins.clone(), cc, &mut self.frame_pool,
                     );
                     {
                         let frame = self.call_stack.last_mut().unwrap();
@@ -936,15 +936,15 @@ impl VirtualMachine {
                     let default_tuple = frame.pop();
                     defaults = default_tuple.to_list().unwrap_or_default();
                 }
-                let code: Arc<CodeObject> = match &code_obj.payload {
-                    PyObjectPayload::Code(c) => Arc::clone(c),
+                let code: Rc<CodeObject> = match &code_obj.payload {
+                    PyObjectPayload::Code(c) => Rc::clone(c),
                     _ => return Err(PyException::type_error(
                         "expected code object for MAKE_FUNCTION",
                     )),
                 };
                 let qualname_str = qualname.as_str().map(CompactString::from)
                     .unwrap_or_else(|| code.name.clone());
-                let constant_cache = Arc::new(PyFunction::build_constant_cache(&code));
+                let constant_cache = Rc::new(PyFunction::build_constant_cache(&code));
                 let is_simple = PyFunction::compute_is_simple_static(&code, &closure_cells);
                 let func = PyFunction {
                     name: code.name.clone(),

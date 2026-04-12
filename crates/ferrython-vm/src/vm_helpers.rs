@@ -1742,14 +1742,14 @@ impl VirtualMachine {
             return Err(PyException::type_error("exec() takes 1 to 3 arguments"));
         }
         let code = if let PyObjectPayload::Code(co) = &args[0].payload {
-            Arc::clone(co)
+            Rc::clone(co)
         } else {
             let code_str = args[0].as_str().ok_or_else(||
                 PyException::type_error("exec() arg 1 must be a string or code object"))?;
             let module = ferrython_parser::parse(code_str, "<string>")
                 .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?;
             let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
-            Arc::new(compiler.compile_module(&module)
+            Rc::new(compiler.compile_module(&module)
                 .map_err(|e| PyException::syntax_error(format!("exec: {}", e)))?)
         };
         if args.len() >= 2 {
@@ -1824,7 +1824,7 @@ impl VirtualMachine {
         }
         // Accept either a string or a code object (from compile())
         let code = if let PyObjectPayload::Code(co) = &args[0].payload {
-            Arc::clone(co)
+            Rc::clone(co)
         } else {
             let code_str = args[0].as_str().ok_or_else(||
                 PyException::type_error("eval() arg 1 must be a string, bytes or code object"))?;
@@ -1832,7 +1832,7 @@ impl VirtualMachine {
             let module = ferrython_parser::parse(&wrapped, "<string>")
                 .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?;
             let mut compiler = ferrython_compiler::Compiler::new("<string>".to_string());
-            Arc::new(compiler.compile_module(&module)
+            Rc::new(compiler.compile_module(&module)
                 .map_err(|e| PyException::syntax_error(format!("eval: {}", e)))?)
         };
         let is_code_obj = matches!(&args[0].payload, PyObjectPayload::Code(_));
@@ -1964,7 +1964,7 @@ impl VirtualMachine {
                 let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
                 let code = compiler.compile_module(&module)
                     .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
-                return Ok(PyObject::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))));
+                return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))));
             }
 
             // No stored source — convert AST objects directly to Rust AST
@@ -1973,7 +1973,7 @@ impl VirtualMachine {
                     let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
                     let code = compiler.compile_module(&module)
                         .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
-                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))));
+                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))));
                 }
                 Err(_e) => {
                     // Fallback: try unparse → reparse
@@ -1986,7 +1986,7 @@ impl VirtualMachine {
                     let mut compiler = ferrython_compiler::Compiler::new(filename.clone());
                     let code = compiler.compile_module(&module)
                         .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
-                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))));
+                    return Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))));
                 }
             }
         }
@@ -2008,7 +2008,7 @@ impl VirtualMachine {
         let mut compiler = ferrython_compiler::Compiler::new(filename);
         let code = compiler.compile_module(&module)
             .map_err(|e| PyException::syntax_error(format!("compile: {}", e)))?;
-        Ok(PyObject::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))))
+        Ok(PyObject::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))))
     }
 
     // ── Regex helpers (moved from vm_call.rs) ──

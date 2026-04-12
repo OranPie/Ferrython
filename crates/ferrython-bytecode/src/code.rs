@@ -3,7 +3,7 @@
 use crate::opcode::Instruction;
 use bitflags::bitflags;
 use compact_str::CompactString;
-use std::sync::Arc;
+use std::rc::Rc;
 
 /// A constant value stored in the code object's constant pool.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,8 +18,8 @@ pub enum ConstantValue {
     Bytes(Vec<u8>),
     Ellipsis,
     /// A nested code object (for nested functions, classes, comprehensions).
-    /// Arc-wrapped to avoid deep clones on MAKE_FUNCTION.
-    Code(Arc<CodeObject>),
+    /// Rc-wrapped to avoid deep clones on MAKE_FUNCTION.
+    Code(Rc<CodeObject>),
     /// A tuple of constants (used for default args, annotations, etc.).
     Tuple(Vec<ConstantValue>),
     /// frozenset of constants
@@ -163,3 +163,18 @@ impl CodeObject {
         self.instructions.len() as u32
     }
 }
+
+// SAFETY: CodeObject is immutable after compilation. Rc<CodeObject> needs Send
+// for storage in static BYTECODE_CACHE (behind LazyLock<Mutex<...>>).
+// Only the Rc refcount is non-Send; under our GIL model the actual mutation
+// of the refcount is single-threaded within each thread.
+unsafe impl Send for CodeObject {}
+unsafe impl Sync for CodeObject {}
+
+/// Newtype wrapper for Rc<CodeObject> that is Send+Sync.
+/// SAFETY: CodeObject is immutable after creation; the Rc is only shared
+/// within a single thread at a time (GIL model). The Send impl is needed
+/// only for storage in static BYTECODE_CACHE behind a Mutex.
+pub struct SendableCode(pub std::rc::Rc<CodeObject>);
+unsafe impl Send for SendableCode {}
+unsafe impl Sync for SendableCode {}

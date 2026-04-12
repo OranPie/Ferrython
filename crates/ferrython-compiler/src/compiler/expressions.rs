@@ -775,7 +775,7 @@ impl Compiler {
             self.emit_arg(Opcode::BuildTuple, n);
         }
 
-        let code_idx = self.add_const(ConstantValue::Code(std::sync::Arc::new(func_code)));
+        let code_idx = self.add_const(ConstantValue::Code(std::rc::Rc::new(func_code)));
         self.emit_arg(Opcode::LoadConst, code_idx);
 
         let qname_idx = self.add_const(ConstantValue::Str(qualname.into()));
@@ -868,7 +868,7 @@ impl Compiler {
         }
 
         // Back in the enclosing scope — emit function creation
-        let code_idx = self.add_const(ConstantValue::Code(std::sync::Arc::new(comp_code)));
+        let code_idx = self.add_const(ConstantValue::Code(std::rc::Rc::new(comp_code)));
         self.emit_arg(Opcode::LoadConst, code_idx);
 
         let qname_idx = self.add_const(ConstantValue::Str(qualname.into()));

@@ -11,7 +11,7 @@ use ferrython_core::object::{
 };
 use ferrython_core::types::HashableKey;
 use ferrython_core::intern;
-use std::sync::Arc;
+use std::rc::Rc;
 
 // ── Group 1: Stack + LoadConst ───────────────────────────────────────
 impl VirtualMachine {
@@ -201,7 +201,7 @@ impl VirtualMachine {
                     }
                 } else if frame.global_cache.is_some() {
                     // Version mismatch — invalidate (clone-on-write if shared)
-                    let cache = Arc::make_mut(frame.global_cache.as_mut().unwrap());
+                    let cache = Rc::make_mut(frame.global_cache.as_mut().unwrap());
                     for slot in cache.iter_mut() { *slot = None; }
                     frame.global_cache_version = ver;
                 }
@@ -218,9 +218,9 @@ impl VirtualMachine {
                 };
                 // Lazily allocate and populate cache (clone-on-write if shared)
                 let cache = frame.global_cache.get_or_insert_with(|| {
-                    Arc::new(vec![None; frame.code.names.len()])
+                    Rc::new(vec![None; frame.code.names.len()])
                 });
-                Arc::make_mut(cache)[idx] = Some(resolved.clone());
+                Rc::make_mut(cache)[idx] = Some(resolved.clone());
                 frame.global_cache_version = ver;
                 frame.push(resolved);
             }

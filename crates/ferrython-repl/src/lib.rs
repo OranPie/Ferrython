@@ -10,7 +10,7 @@
 //! - Special commands: exit(), quit(), help(), clear
 
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -373,7 +373,7 @@ fn execute_source(
         Ok(module) => {
             match ferrython_compiler::compile_interactive(&module, "<stdin>") {
                 Ok(code) => {
-                    match vm.execute_with_globals(Arc::new(code), globals.clone()) {
+                    match vm.execute_with_globals(Rc::new(code), globals.clone()) {
                         Ok(_) => {}
                         Err(e) => {
                             let tb = ferrython_debug::format_traceback(&e);

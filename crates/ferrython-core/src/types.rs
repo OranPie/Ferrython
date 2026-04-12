@@ -227,13 +227,13 @@ impl Hash for PyInt {
 // ── PyFunction ──
 
 /// Pre-built constant cache shared across all frames using the same code object.
-pub type SharedConstantCache = Arc<Vec<PyObjectRef>>;
+pub type SharedConstantCache = Rc<Vec<PyObjectRef>>;
 
 #[derive(Clone)]
 pub struct PyFunction {
     pub name: CompactString,
     pub qualname: CompactString,
-    pub code: Arc<CodeObject>,
+    pub code: Rc<CodeObject>,
     /// Pre-built constant cache — built once at function creation, shared with all frames.
     pub constant_cache: SharedConstantCache,
     pub defaults: Vec<PyObjectRef>,
@@ -271,8 +271,8 @@ impl PyFunction {
     }
 
     pub fn new(name: CompactString, code: CodeObject) -> Self {
-        let code = Arc::new(code);
-        let constant_cache = Arc::new(Self::build_constant_cache(&code));
+        let code = Rc::new(code);
+        let constant_cache = Rc::new(Self::build_constant_cache(&code));
         let is_simple = Self::compute_is_simple(&code, &[]);
         Self {
             qualname: name.clone(), name, code, constant_cache,
@@ -284,9 +284,9 @@ impl PyFunction {
         }
     }
 
-    /// Build from a pre-existing Arc<CodeObject> (avoids double-wrapping).
-    pub fn with_arc_code(name: CompactString, code: Arc<CodeObject>) -> Self {
-        let constant_cache = Arc::new(Self::build_constant_cache(&code));
+    /// Build from a pre-existing Rc<CodeObject> (avoids double-wrapping).
+    pub fn with_arc_code(name: CompactString, code: Rc<CodeObject>) -> Self {
+        let constant_cache = Rc::new(Self::build_constant_cache(&code));
         let is_simple = Self::compute_is_simple(&code, &[]);
         Self {
             qualname: name.clone(), name, code, constant_cache,
@@ -313,7 +313,7 @@ impl PyFunction {
                 ConstantValue::Str(s) => PyObject::str_val(s.clone()),
                 ConstantValue::Bytes(b) => PyObject::bytes(b.clone()),
                 ConstantValue::Ellipsis => PyObject::ellipsis(),
-                ConstantValue::Code(co) => PyObject::wrap(PyObjectPayload::Code(Arc::clone(co))),
+                ConstantValue::Code(co) => PyObject::wrap(PyObjectPayload::Code(Rc::clone(co))),
                 ConstantValue::Tuple(items) => {
                     PyObject::tuple(items.iter().map(|i| convert(i)).collect())
                 }

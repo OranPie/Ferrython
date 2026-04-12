@@ -264,7 +264,7 @@ impl VirtualMachine {
 
     pub(crate) fn call_function(
         &mut self,
-        code: &Arc<CodeObject>,
+        code: &Rc<CodeObject>,
         mut args: Vec<PyObjectRef>,
         defaults: &[PyObjectRef],
         kw_defaults: &IndexMap<CompactString, PyObjectRef>,
@@ -272,7 +272,7 @@ impl VirtualMachine {
         closure: &[Rc<PyCell<Option<PyObjectRef>>>],
         constant_cache: &SharedConstantCache,
     ) -> PyResult<PyObjectRef> {
-        let mut frame = Frame::new_from_pool(Arc::clone(code), globals, Arc::clone(&self.builtins), Arc::clone(constant_cache), &mut self.frame_pool);
+        let mut frame = Frame::new_from_pool(Rc::clone(code), globals, self.builtins.clone(), Rc::clone(constant_cache), &mut self.frame_pool);
         let nparams = code.arg_count as usize;
         let nkwonly = code.kwonlyarg_count as usize;
         let has_varargs = code.flags.contains(CodeFlags::VARARGS);
@@ -363,7 +363,7 @@ impl VirtualMachine {
 
     pub(crate) fn call_function_kw(
         &mut self,
-        code: &Arc<CodeObject>,
+        code: &Rc<CodeObject>,
         mut pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
         defaults: &[PyObjectRef],
@@ -372,7 +372,7 @@ impl VirtualMachine {
         closure: &[Rc<PyCell<Option<PyObjectRef>>>],
         constant_cache: &SharedConstantCache,
     ) -> PyResult<PyObjectRef> {
-        let mut frame = Frame::new_from_pool(Arc::clone(code), globals, Arc::clone(&self.builtins), Arc::clone(constant_cache), &mut self.frame_pool);
+        let mut frame = Frame::new_from_pool(Rc::clone(code), globals, self.builtins.clone(), Rc::clone(constant_cache), &mut self.frame_pool);
         let nparams = code.arg_count as usize;
         let nkwonly = code.kwonlyarg_count as usize;
         let has_varargs = code.flags.contains(CodeFlags::VARARGS);
@@ -1086,11 +1086,11 @@ impl VirtualMachine {
                         full_mro.extend(cd.mro.iter().cloned());
 
                         // Strategy: find the class whose namespace contains the
-                        // currently executing function (by matching Arc<CodeObject>
+                        // currently executing function (by matching Rc<CodeObject>
                         // pointers).  This is robust even when multiple classes
                         // share the same name (e.g. Flask Request vs werkzeug
                         // Request, or same-named EnvironBuilder subclasses).
-                        let code_ptr = Arc::as_ptr(&frame.code);
+                        let code_ptr = Rc::as_ptr(&frame.code);
                         let mut found_by_code = false;
                         for m in &full_mro {
                             if let PyObjectPayload::Class(mc) = &m.payload {
@@ -1101,10 +1101,10 @@ impl VirtualMachine {
                                 if let Some(val) = ns.get(method_name) {
                                     let matches = match &val.payload {
                                         PyObjectPayload::Function(f) =>
-                                            Arc::as_ptr(&f.code) == code_ptr,
+                                            Rc::as_ptr(&f.code) == code_ptr,
                                         PyObjectPayload::BoundMethod { method, .. } => {
                                             if let PyObjectPayload::Function(f) = &method.payload {
-                                                Arc::as_ptr(&f.code) == code_ptr
+                                                Rc::as_ptr(&f.code) == code_ptr
                                             } else { false }
                                         }
                                         _ => false,

@@ -13,7 +13,22 @@ use std::rc::Rc;
 pub type CellRef = Rc<PyCell<Option<PyObjectRef>>>;
 
 /// Shared builtins map — built once, shared across all frames.
-pub type SharedBuiltins = Arc<IndexMap<CompactString, PyObjectRef>>;
+/// Newtype wrapper so we can implement Send + Sync (safe under GIL).
+#[derive(Clone)]
+pub struct SharedBuiltins(pub Rc<IndexMap<CompactString, PyObjectRef>>);
+
+// SAFETY: Builtins are immutable after construction. Access is single-threaded
+// under GIL. Send needed for OnceLock storage and thread::spawn handoff.
+unsafe impl Send for SharedBuiltins {}
+unsafe impl Sync for SharedBuiltins {}
+
+impl std::ops::Deref for SharedBuiltins {
+    type Target = IndexMap<CompactString, PyObjectRef>;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// Thread-local global version counter — incremented on every StoreGlobal/DeleteGlobal.
 /// LoadGlobal checks this to invalidate its per-frame cache.
@@ -131,7 +146,7 @@ impl BlockStack {
 }
 
 pub struct Frame {
-    pub code: Arc<CodeObject>,
+    pub code: Rc<CodeObject>,
     pub ip: usize,
     pub stack: Vec<PyObjectRef>,
     pub block_stack: BlockStack,
@@ -152,7 +167,7 @@ pub struct Frame {
     pub constant_cache: SharedConstantCache,
     /// Per-frame inline cache for LoadGlobal: lazily allocated on first miss.
     /// Arc-wrapped so recursive frames can share the cache cheaply.
-    pub global_cache: Option<Arc<Vec<Option<PyObjectRef>>>>,
+    pub global_cache: Option<Rc<Vec<Option<PyObjectRef>>>>,
     /// The globals_version at which global_cache was populated.
     pub global_cache_version: u64,
     /// The dict returned by metaclass.__prepare__() (PEP 3115).
@@ -235,7 +250,7 @@ impl AttrInlineCache {
 impl Frame {
     /// Create a frame for a function call with a pre-built shared constant cache.
     pub fn new_with_cache(
-        code: Arc<CodeObject>,
+        code: Rc<CodeObject>,
         globals: SharedGlobals,
         builtins: SharedBuiltins,
         constant_cache: SharedConstantCache,
@@ -270,7 +285,7 @@ impl Frame {
     /// Create a frame reusing pooled vectors to avoid heap allocation.
     #[inline]
     pub fn new_from_pool(
-        code: Arc<CodeObject>,
+        code: Rc<CodeObject>,
         globals: SharedGlobals,
         builtins: SharedBuiltins,
         constant_cache: SharedConstantCache,
@@ -321,7 +336,7 @@ impl Frame {
     /// Takes closure cells directly to avoid allocating and then replacing freevars.
     #[inline]
     pub fn new_closure_from_pool(
-        code: Arc<CodeObject>,
+        code: Rc<CodeObject>,
         globals: SharedGlobals,
         builtins: SharedBuiltins,
         constant_cache: SharedConstantCache,
@@ -479,12 +494,12 @@ impl Frame {
     }
 
     pub fn new(
-        code: Arc<CodeObject>,
+        code: Rc<CodeObject>,
         globals: SharedGlobals,
         builtins: SharedBuiltins,
     ) -> Self {
         use ferrython_core::types::PyFunction;
-        let constant_cache = Arc::new(PyFunction::build_constant_cache(&code));
+        let constant_cache = Rc::new(PyFunction::build_constant_cache(&code));
         Self::new_with_cache(code, globals, builtins, constant_cache)
     }
 

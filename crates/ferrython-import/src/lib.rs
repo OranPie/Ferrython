@@ -16,7 +16,8 @@ use ferrython_core::object::PyObjectRef;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::rc::Rc;
+use std::sync::LazyLock;
 use std::time::SystemTime;
 
 /// Result of resolving an import: either a pre-built module or compiled source.
@@ -25,7 +26,7 @@ pub enum ResolvedModule {
     Builtin(PyObjectRef),
     /// Source code compiled to bytecode — VM must execute it to produce the module.
     Source {
-        code: Arc<CodeObject>,
+        code: Rc<CodeObject>,
         name: CompactString,
         /// Filesystem path of the source file (for __file__ metadata).
         file_path: Option<CompactString>,
@@ -290,8 +291,9 @@ pub fn resolve_relative_import(
 }
 
 // ── In-memory bytecode cache (keyed by canonical path + mtime) ──
+use ferrython_bytecode::code::SendableCode;
 
-static BYTECODE_CACHE: LazyLock<Mutex<HashMap<(PathBuf, SystemTime), Arc<CodeObject>>>> =
+static BYTECODE_CACHE: LazyLock<Mutex<HashMap<(PathBuf, SystemTime), SendableCode>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Clear the bytecode cache (useful in tests or when reloading).
@@ -314,7 +316,7 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
         let cache = BYTECODE_CACHE.lock();
         if let Some(cached) = cache.get(&(canonical.clone(), mtime)) {
             return Ok(ResolvedModule::Source {
-                code: Arc::clone(cached),
+                code: Rc::clone(&cached.0),
                 name: CompactString::from(module_name),
                 file_path: Some(CompactString::from(path_str)),
             });
@@ -329,7 +331,7 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
         .map_err(|e| PyException::import_error(
             format!("syntax error in '{}': {}", path_str, e)
         ))?;
-    let code = Arc::new(ferrython_compiler::compile(&ast, &path_str)
+    let code = Rc::new(ferrython_compiler::compile(&ast, &path_str)
         .map_err(|e| PyException::import_error(
             format!("compile error in '{}': {}", path_str, e)
         ))?);
@@ -338,7 +340,7 @@ fn compile_source(path: &Path, module_name: &str) -> PyResult<ResolvedModule> {
     if let Some(mtime) = mtime {
         BYTECODE_CACHE.lock().insert(
             (canonical, mtime),
-            Arc::clone(&code),
+            SendableCode(Rc::clone(&code)),
         );
     }
 

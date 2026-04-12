@@ -368,7 +368,7 @@ impl PyObject {
     pub fn function(func: PyFunction) -> PyObjectRef { Self::wrap(PyObjectPayload::Function(Box::new(func))) }
     pub fn builtin_function(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinFunction(name)) }
     pub fn builtin_type(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinType(name)) }
-    pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef { Self::wrap(PyObjectPayload::Code(std::sync::Arc::new(code))) }
+    pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef { Self::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))) }
     pub fn class(name: CompactString, bases: Vec<PyObjectRef>, namespace: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
         let fx_ns: FxAttrMap = namespace.into_iter().collect();
         Self::wrap(PyObjectPayload::Class(Box::new(ClassData::new(name, bases, fx_ns, Vec::new(), None))))

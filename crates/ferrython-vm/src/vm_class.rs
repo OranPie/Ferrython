@@ -117,10 +117,10 @@ impl VirtualMachine {
 
         let namespace = match &body_func.payload {
             PyObjectPayload::Function(pyfunc) => {
-                let code = Arc::clone(&pyfunc.code);
+                let code = Rc::clone(&pyfunc.code);
                 let globals = pyfunc.globals.clone();
                 let cc = pyfunc.constant_cache.clone();
-                let mut frame = Frame::new_from_pool(code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool);
+                let mut frame = Frame::new_from_pool(code, globals, self.builtins.clone(), cc, &mut self.frame_pool);
                 frame.scope_kind = ScopeKind::Class;
                 // Wire up closure cells from the captured function
                 let n_cell = frame.code.cellvars.len();
@@ -624,10 +624,10 @@ impl VirtualMachine {
         // Execute class body to get namespace
         let namespace = match &body_func.payload {
             PyObjectPayload::Function(pyfunc) => {
-                let code = Arc::clone(&pyfunc.code);
+                let code = Rc::clone(&pyfunc.code);
                 let globals = pyfunc.globals.clone();
                 let cc = pyfunc.constant_cache.clone();
-                let mut frame = Frame::new_from_pool(code, globals, Arc::clone(&self.builtins), cc, &mut self.frame_pool);
+                let mut frame = Frame::new_from_pool(code, globals, self.builtins.clone(), cc, &mut self.frame_pool);
                 frame.scope_kind = ScopeKind::Class;
                 for (k, v) in &prepared_ns {
                     frame.local_names_insert(k.clone(), v.clone());
