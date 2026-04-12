@@ -85,6 +85,7 @@ impl PyInt {
     pub fn is_zero(&self) -> bool {
         match self { PyInt::Small(n) => *n == 0, PyInt::Big(n) => n.is_zero() }
     }
+    #[inline]
     pub fn to_i64(&self) -> Option<i64> {
         match self { PyInt::Small(n) => Some(*n), PyInt::Big(n) => n.to_i64() }
     }
@@ -444,17 +445,19 @@ impl HashableKey {
 }
 
 impl PartialEq for HashableKey {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (HashableKey::None, HashableKey::None) => true,
-            // Bool/Bool
-            (HashableKey::Bool(a), HashableKey::Bool(b)) => a == b,
-            // Int/Int
+            // Int/Int (hot path — most dict keys are ints)
+            (HashableKey::Int(PyInt::Small(a)), HashableKey::Int(PyInt::Small(b))) => a == b,
             (HashableKey::Int(a), HashableKey::Int(b)) => a == b,
-            // Float/Float
-            (HashableKey::Float(a), HashableKey::Float(b)) => a == b,
             // Str/Str
             (HashableKey::Str(a), HashableKey::Str(b)) => a == b,
+            // Bool/Bool
+            (HashableKey::Bool(a), HashableKey::Bool(b)) => a == b,
+            // Float/Float
+            (HashableKey::Float(a), HashableKey::Float(b)) => a == b,
             // Bytes/Bytes
             (HashableKey::Bytes(a), HashableKey::Bytes(b)) => a == b,
             // Tuple/Tuple
@@ -490,18 +493,20 @@ impl PartialEq for HashableKey {
 }
 
 impl Hash for HashableKey {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         // CPython hash consistency: hash(0) == hash(0.0) == hash(False)
         // Numeric types must produce the same hash for equal values.
         match self {
             HashableKey::None => { 0u8.hash(state); 0i64.hash(state); },
             HashableKey::Bool(b) => { 1u8.hash(state); (*b as i64).hash(state); },
-            HashableKey::Int(n) => {
-                let v = n.to_i64().unwrap_or(0);
-                // Check if this int is representable exactly as f64
-                // Use numeric tag so Int(n) and Float(n.0) produce same hash
+            HashableKey::Int(PyInt::Small(v)) => {
                 1u8.hash(state);
                 v.hash(state);
+            },
+            HashableKey::Int(PyInt::Big(n)) => {
+                1u8.hash(state);
+                n.to_i64().unwrap_or(0).hash(state);
             },
             HashableKey::Float(f) => {
                 let fv = f.0;

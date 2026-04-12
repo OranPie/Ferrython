@@ -501,7 +501,7 @@ print("Architectural Probe Benchmarks")
 print("=" * 70)
 print()
 
-N = 100000
+N = 1000000
 
 print("1. OBJECT ALLOCATION & REFCOUNT:")
 bench("alloc_int", bench_alloc_int, N)
