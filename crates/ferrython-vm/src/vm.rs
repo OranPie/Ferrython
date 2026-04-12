@@ -101,6 +101,25 @@ macro_rules! rederive_frame {
     };
 }
 
+/// Chain-skip POP_TOP after void method calls: when a method returns None and the
+/// next instruction is POP_TOP (expression statement), skip pushing None entirely.
+/// Saves: 1 Rc clone (PyObject::none()), 1 push, 1 dispatch cycle, 1 pop.
+macro_rules! chain_pop_none {
+    ($frame:expr, $instr_base:expr, $instr_count:expr, $profiling:expr, $profiler:expr, $op:expr) => {{
+        let next_ip = $frame.ip;
+        if next_ip < $instr_count {
+            if unsafe { (*$instr_base.add(next_ip)).op } == Opcode::PopTop {
+                $frame.ip = next_ip + 1;
+                if $profiling { $profiler.end_instruction($op); }
+                continue;
+            }
+        }
+        spush!($frame, PyObject::none());
+        if $profiling { $profiler.end_instruction($op); }
+        continue;
+    }};
+}
+
 
 use crate::builtins;
 use crate::frame::{AttrInlineCache, BlockKind, Frame, FramePool, SharedBuiltins};
@@ -3892,8 +3911,7 @@ impl VirtualMachine {
                                     let _name = std::ptr::read(frame.stack.as_ptr().add(len - 3));
                                     frame.stack.set_len(len - 3);
                                 }
-                                spush!(frame, PyObject::none());
-                                hot_ok!(profiling, self.profiler, instr.op)
+                                chain_pop_none!(frame, instr_base, instr_count, profiling, self.profiler, instr.op)
                             } else if is_list_pop {
                                 let len = frame.stack.len();
                                 unsafe {
@@ -3979,8 +3997,7 @@ impl VirtualMachine {
                                         };
                                         if let Some(k) = hk {
                                             set.write().insert(k, item);
-                                            spush!(frame, PyObject::none());
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            chain_pop_none!(frame, instr_base, instr_count, profiling, self.profiler, instr.op)
                                         } else {
                                             // Non-hashable: use general dispatch
                                             let result = crate::builtins::call_method(&receiver, "add", &[item])?;
