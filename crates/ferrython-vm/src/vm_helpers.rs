@@ -1368,7 +1368,7 @@ impl VirtualMachine {
         };
         let mut data = iter_data_arc.write();
         match &mut *data {
-            IteratorData::Enumerate { source, index } => {
+            IteratorData::Enumerate { source, index, .. } => {
                 let src = source.clone();
                 let idx = *index;
                 *index += 1;
@@ -1378,7 +1378,7 @@ impl VirtualMachine {
                     None => Ok(None),
                 }
             }
-            IteratorData::Zip { sources, strict } => {
+            IteratorData::Zip { sources, strict, .. } => {
                 let srcs: Vec<PyObjectRef> = sources.clone();
                 let is_strict = *strict;
                 drop(data);

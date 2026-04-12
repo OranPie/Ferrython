@@ -1362,14 +1362,37 @@ impl VirtualMachine {
                                 }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            IteratorData::Enumerate { source, index } => {
+                            IteratorData::Enumerate { source, index, cached_tuple } => {
                                 // Inline advance for enumerate with known source types
                                 let idx = *index;
                                 match Self::advance_source_inline(source) {
                                     Some(Some(val)) => {
                                         *index = idx + 1;
+                                        // CPython-style tuple reuse: mutate cached tuple in-place
+                                        let idx_obj = PyObject::int(idx);
+                                        let tuple = if let Some(ref mut cached) = cached_tuple {
+                                            if let Some(obj) = PyObjectRef::get_mut(cached) {
+                                                if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
+                                                    items[0] = idx_obj;
+                                                    items[1] = val;
+                                                    cached.clone()
+                                                } else {
+                                                    let t = PyObject::tuple(vec![idx_obj, val]);
+                                                    *cached = t.clone();
+                                                    t
+                                                }
+                                            } else {
+                                                let t = PyObject::tuple(vec![idx_obj, val]);
+                                                *cached = t.clone();
+                                                t
+                                            }
+                                        } else {
+                                            let t = PyObject::tuple(vec![idx_obj, val]);
+                                            *cached_tuple = Some(t.clone());
+                                            t
+                                        };
                                         drop(data);
-                                        spush!(frame, PyObject::tuple(vec![PyObject::int(idx), val]));
+                                        spush!(frame, tuple);
                                         hot_ok!(profiling, self.profiler, instr.op)
                                     }
                                     Some(None) => {
@@ -1386,7 +1409,7 @@ impl VirtualMachine {
                                     }
                                 }
                             }
-                            IteratorData::Zip { sources, strict } => {
+                            IteratorData::Zip { sources, strict, cached_tuple } => {
                                 // Inline advance for zip with known source types
                                 let is_strict = *strict;
                                 let n = sources.len();
@@ -1417,16 +1440,51 @@ impl VirtualMachine {
                                     drop(data);
                                     self.execute_one(instr)
                                 } else {
-                                    drop(data);
                                     if !all_ok || (is_strict && exhausted_count > 0 && exhausted_count == n) {
                                         if is_strict && exhausted_count > 0 && exhausted_count != n {
+                                            drop(data);
                                             return Err(PyException::value_error(
                                                 "zip() has arguments with different lengths"));
                                         }
+                                        drop(data);
                                         drop(spop!(frame));
                                         frame.ip = instr.arg as usize;
                                     } else {
-                                        spush!(frame, PyObject::tuple(items_buf));
+                                        // CPython-style tuple reuse for zip
+                                        let tuple = if n == items_buf.len() {
+                                            if let Some(ref mut cached) = cached_tuple {
+                                                if let Some(obj) = PyObjectRef::get_mut(cached) {
+                                                    if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
+                                                        if items.len() == n {
+                                                            for (i, v) in items_buf.drain(..).enumerate() {
+                                                                items[i] = v;
+                                                            }
+                                                            cached.clone()
+                                                        } else {
+                                                            let t = PyObject::tuple(items_buf);
+                                                            *cached = t.clone();
+                                                            t
+                                                        }
+                                                    } else {
+                                                        let t = PyObject::tuple(items_buf);
+                                                        *cached = t.clone();
+                                                        t
+                                                    }
+                                                } else {
+                                                    let t = PyObject::tuple(items_buf);
+                                                    *cached = t.clone();
+                                                    t
+                                                }
+                                            } else {
+                                                let t = PyObject::tuple(items_buf);
+                                                *cached_tuple = Some(t.clone());
+                                                t
+                                            }
+                                        } else {
+                                            PyObject::tuple(items_buf)
+                                        };
+                                        drop(data);
+                                        spush!(frame, tuple);
                                     }
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 }
@@ -3204,6 +3262,35 @@ impl VirtualMachine {
                                     unsafe { frame.stack.set_len(func_idx); }
                                     spush!(frame, v);
                                     hot_ok!(profiling, self.profiler, instr.op)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // Inline hasattr(obj, name) — skip execute_one dispatch
+                            (Some("hasattr"), 2) => {
+                                let name_arg = sget!(frame, stack_len - 1);
+                                if let PyObjectPayload::Str(s) = &name_arg.payload {
+                                    let obj = sget!(frame, stack_len - 2);
+                                    let result = ferrython_core::object::py_has_attr(obj, s.as_str());
+                                    unsafe { frame.stack.set_len(func_idx); }
+                                    spush!(frame, PyObject::bool_val(result));
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                } else {
+                                    self.execute_one(instr)
+                                }
+                            }
+                            // Inline getattr(obj, name) — skip execute_one dispatch
+                            (Some("getattr"), 2) => {
+                                let name_arg = sget!(frame, stack_len - 1);
+                                if let PyObjectPayload::Str(s) = &name_arg.payload {
+                                    let obj = sget!(frame, stack_len - 2);
+                                    if let Some(val) = obj.get_attr(s.as_str()) {
+                                        unsafe { frame.stack.set_len(func_idx); }
+                                        spush!(frame, val);
+                                        hot_ok!(profiling, self.profiler, instr.op)
+                                    } else {
+                                        self.execute_one(instr)
+                                    }
                                 } else {
                                     self.execute_one(instr)
                                 }

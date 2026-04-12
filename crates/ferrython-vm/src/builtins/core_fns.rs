@@ -990,7 +990,7 @@ pub(super) fn builtin_enumerate(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Get an iterator from the source
     let source = get_iter_from_obj(&args[0])?;
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Rc::new(PyCell::new(IteratorData::Enumerate { source, index: start }))
+        Rc::new(PyCell::new(IteratorData::Enumerate { source, index: start, cached_tuple: None }))
     )))
 }
 
@@ -1021,7 +1021,7 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         .map(|a| get_iter_from_obj(a))
         .collect::<PyResult<Vec<_>>>()?;
     Ok(PyObject::wrap(PyObjectPayload::Iterator(
-        Rc::new(PyCell::new(IteratorData::Zip { sources, strict }))
+        Rc::new(PyCell::new(IteratorData::Zip { sources, strict, cached_tuple: None }))
     )))
 }
 
