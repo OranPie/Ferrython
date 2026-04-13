@@ -3109,7 +3109,8 @@ impl VirtualMachine {
                         // ── Inline Class instantiation for simple classes ──
                         // Avoids execute_one + 2 Vec allocs + double call_object dispatch
                         if let PyObjectPayload::Class(cd) = &sget!(frame, func_idx).payload {
-                            if cd.is_simple_class && !{
+                            // Also check for __new__ added after class creation (is_simple_class may be stale)
+                            if cd.is_simple_class && !cd.namespace.read().contains_key("__new__") && !{
                                 // Quick ABC check: skip inline path if class has unoverridden abstract methods
                                 let own_abstract = {
                                     let ns = cd.namespace.read();
