@@ -356,11 +356,11 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 Ok(Some((iter_obj.clone(), v)))
             }
         }
-        PyObjectPayload::VecIter { items, index } => {
-            let idx = index.get();
-            if idx < items.len() {
-                let v = items[idx].clone();
-                index.set(idx + 1);
+        PyObjectPayload::VecIter(data) => {
+            let idx = data.index.get();
+            if idx < data.items.len() {
+                let v = data.items[idx].clone();
+                data.index.set(idx + 1);
                 Ok(Some((iter_obj.clone(), v)))
             } else { Ok(None) }
         }
@@ -488,11 +488,11 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 Ok(Some(v))
             }
         }
-        PyObjectPayload::VecIter { items, index } => {
-            let idx = index.get();
-            if idx < items.len() {
-                let v = items[idx].clone();
-                index.set(idx + 1);
+        PyObjectPayload::VecIter(data) => {
+            let idx = data.index.get();
+            if idx < data.items.len() {
+                let v = data.items[idx].clone();
+                data.index.set(idx + 1);
                 Ok(Some(v))
             } else { Ok(None) }
         }

@@ -58,7 +58,7 @@ fn itertools_count(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn itertools_chain(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     // Convert each arg into an iterator
     let sources: Vec<PyObjectRef> = args.iter().map(|a| {
-        if matches!(&a.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. }) {
+        if matches!(&a.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. }) {
             a.clone()
         } else {
             // Materialize non-iterator iterables into list iterators
@@ -553,7 +553,7 @@ fn itertools_starmap(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let func = args[0].clone();
     let iterable = &args[1];
     // Convert iterable to an iterator for lazy consumption
-    let source = if matches!(&iterable.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. }) {
+    let source = if matches!(&iterable.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. }) {
         iterable.clone()
     } else {
         let items = iterable.to_list()?;

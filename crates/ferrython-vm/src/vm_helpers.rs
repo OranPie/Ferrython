@@ -800,7 +800,7 @@ impl VirtualMachine {
         }
 
         // For iterators with lazy data: advance one at a time
-        if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. } = &iterable.payload {
+        if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } = &iterable.payload {
             let mut result = Vec::new();
             let mut idx = 0usize;
             let mut next_yield = start;
@@ -928,7 +928,7 @@ impl VirtualMachine {
                         return iter_obj.to_list();
                     }
                     // If __iter__ returned a builtin Iterator, use iter_advance
-                    if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. }) {
+                    if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. }) {
                         let mut items = Vec::new();
                         loop {
                             match builtins::iter_advance(&iter_obj)? {
@@ -979,9 +979,9 @@ impl VirtualMachine {
                     obj.to_list()
                 }
             }
-            PyObjectPayload::VecIter { items, index } => {
-                let idx = index.get();
-                Ok(items[idx..].to_vec())
+            PyObjectPayload::VecIter(data) => {
+                let idx = data.index.get();
+                Ok(data.items[idx..].to_vec())
             }
             PyObjectPayload::RefIter { source, index } => {
                 let idx = index.get();
@@ -1453,11 +1453,11 @@ impl VirtualMachine {
                     None => Ok(None),
                 }
             }
-            PyObjectPayload::VecIter { items, index } => {
-                let idx = index.get();
-                if idx < items.len() {
-                    let v = items[idx].clone();
-                    index.set(idx + 1);
+            PyObjectPayload::VecIter(data) => {
+                let idx = data.index.get();
+                if idx < data.items.len() {
+                    let v = data.items[idx].clone();
+                    data.index.set(idx + 1);
                     Ok(Some(v))
                 } else {
                     Ok(None)
@@ -1744,7 +1744,7 @@ impl VirtualMachine {
         }
         // Get an iterator and collect via VM
         let iter_obj = match &obj.payload {
-            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) => obj.clone(),
+            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) => obj.clone(),
             PyObjectPayload::Instance(_) => {
                 if let Some(iter_fn) = obj.get_attr("__iter__") {
                     let result = self.call_object(iter_fn, vec![])?;

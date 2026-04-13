@@ -1059,7 +1059,7 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// Get an iterator from any iterable object.
 pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     match &obj.payload {
-        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
+        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
         PyObjectPayload::Range { start, stop, step } => {
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
                 Rc::new(PyCell::new(IteratorData::Range { current: *start, stop: *stop, step: *step }))
@@ -1105,7 +1105,7 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             if let Some(iter_attr) = obj.get_attr("__iter__") {
                 match &iter_attr.payload {
                     // __iter__ returned a list/iterator directly
-                    PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } => {
+                    PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) => {
                         return get_iter_from_obj(&iter_attr);
                     }
                     // __iter__ is a bound method — call it
@@ -1238,7 +1238,7 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(PyObject::dict(map))
         },
         // dict from iterable of (key, value) pairs
-        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::Set(_) => {
+        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::Set(_) => {
             let pairs = args[0].to_list()?;
             let mut map = IndexMap::new();
             for pair in &pairs {

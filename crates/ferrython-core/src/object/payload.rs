@@ -134,7 +134,7 @@ pub fn next_class_version() -> u64 {
 
 // Compile-time size check: ensure enum stays compact after boxing cold variants
 // Target: ≤32 bytes (down from 40). Further reduction possible by boxing more variants.
-const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <= 40);
+const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <= 32);
 
 // ── PyObject Freelist Allocator ──
 // Replaces Rc<PyObject> with a custom ref-counted pointer backed by a
@@ -644,6 +644,15 @@ pub struct BuiltinBoundMethodData {
     pub receiver: PyObjectRef,
     pub method_name: CompactString,
 }
+
+/// Boxed VecIter data — moved out of enum to shrink PyObjectPayload from 40→32 bytes.
+/// VecIter is used for dict-key/set/bytes iteration (materialized snapshot).
+#[derive(Clone, Debug)]
+pub struct VecIterData {
+    pub items: Vec<PyObjectRef>,
+    pub index: SyncUsize,
+}
+
 /// The actual data of a Python value.
 #[derive(Clone)]
 pub enum PyObjectPayload {
@@ -682,7 +691,8 @@ pub enum PyObjectPayload {
     RangeIter { current: SyncI64, stop: i64, step: i64 },
     /// Lock-free snapshot iterator — items immutable after creation, only index advances.
     /// Used for dict-key/set/bytes iteration where items must be materialized.
-    VecIter { items: Vec<PyObjectRef>, index: SyncUsize },
+    /// Boxed to keep PyObjectPayload at 32 bytes (Vec + SyncUsize = 32 > 24 limit).
+    VecIter(Box<VecIterData>),
     /// Lazy reference iterator — holds a reference to the source container (list/tuple)
     /// and iterates by index without cloning elements upfront. Saves n Rc::clone at
     /// creation + n Rc::drop at destruction. CPython-style: just a pointer + position.
@@ -794,7 +804,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::Module(md) => write!(f, "Module({})", md.name),
             Self::Iterator(_) => write!(f, "Iterator(...)"),
             Self::RangeIter { current, stop, step } => write!(f, "RangeIter({}, {stop}, {step})", current.get()),
-            Self::VecIter { items, index } => write!(f, "VecIter({}/{})", index.get(), items.len()),
+            Self::VecIter(data) => write!(f, "VecIter({}/{})", data.index.get(), data.items.len()),
             Self::RefIter { index, .. } => write!(f, "RefIter({})", index.get()),
             Self::Slice(_) => write!(f, "Slice(...)"),
             Self::Cell(_) => write!(f, "Cell(...)"),

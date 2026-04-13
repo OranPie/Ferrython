@@ -1278,7 +1278,7 @@ impl VirtualMachine {
                 Opcode::GetIter => {
                     let obj = speek!(frame);
                     match &obj.payload {
-                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. } => hot_ok!(profiling, self.profiler, instr.op),
+                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => hot_ok!(profiling, self.profiler, instr.op),
                         PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) | PyObjectPayload::DictKeys(_) => {
                             let iter = PyObject::wrap(PyObjectPayload::RefIter {
                                 source: obj.clone(), index: SyncUsize::new(0)
@@ -1307,11 +1307,11 @@ impl VirtualMachine {
                             spush!(frame, v);
                         }
                         hot_ok!(profiling, self.profiler, instr.op)
-                    } else if let PyObjectPayload::VecIter { items, index } = &iter.payload {
-                        let idx = index.get();
-                        if idx < items.len() {
-                            let v = items[idx].clone();
-                            index.set(idx + 1);
+                    } else if let PyObjectPayload::VecIter(data) = &iter.payload {
+                        let idx = data.index.get();
+                        if idx < data.items.len() {
+                            let v = data.items[idx].clone();
+                            data.index.set(idx + 1);
                             spush!(frame, v);
                         } else {
                             drop(spop!(frame));
@@ -1670,11 +1670,11 @@ impl VirtualMachine {
                             *dest_slot = Some(PyObject::int(cur));
                         }
                         hot_ok!(profiling, self.profiler, instr.op)
-                    } else if let PyObjectPayload::VecIter { items, index } = &iter.payload {
-                        let idx = index.get();
-                        if idx < items.len() {
-                            let obj = items[idx].clone();
-                            index.set(idx + 1);
+                    } else if let PyObjectPayload::VecIter(data) = &iter.payload {
+                        let idx = data.index.get();
+                        if idx < data.items.len() {
+                            let obj = data.items[idx].clone();
+                            data.index.set(idx + 1);
                             sset_local!(frame, store_idx, obj);
                         } else {
                             drop(spop!(frame));
@@ -6307,11 +6307,11 @@ impl VirtualMachine {
                     Some(Some(PyObject::int(cur)))
                 }
             }
-            PyObjectPayload::VecIter { items, index } => {
-                let idx = index.get();
-                if idx < items.len() {
-                    let v = items[idx].clone();
-                    index.set(idx + 1);
+            PyObjectPayload::VecIter(data) => {
+                let idx = data.index.get();
+                if idx < data.items.len() {
+                    let v = data.items[idx].clone();
+                    data.index.set(idx + 1);
                     Some(Some(v))
                 } else {
                     Some(None)
