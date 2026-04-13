@@ -1240,7 +1240,23 @@ fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             )),
         };
     }
-    // Two-pass: first compute exact capacity, then build result
+    // Single-pass for small item counts: CompactString's 24-byte inline buffer
+    // avoids heap allocation for short results without needing a capacity pre-scan.
+    if items.len() <= 16 {
+        let mut result = CompactString::new("");
+        for (i, item) in items.iter().enumerate() {
+            if let PyObjectPayload::Str(s) = &item.payload {
+                if i > 0 { result.push_str(sep); }
+                result.push_str(s.as_str());
+            } else {
+                return Err(PyException::type_error(
+                    format!("sequence item {}: expected str instance, {} found", i, item.type_name())
+                ));
+            }
+        }
+        return Ok(PyObject::str_val(result));
+    }
+    // Two-pass for large item counts: exact capacity avoids reallocation
     let sep_total = sep.len() * (items.len() - 1);
     let mut total_len = sep_total;
     for (i, item) in items.iter().enumerate() {

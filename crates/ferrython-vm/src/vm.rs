@@ -1401,13 +1401,39 @@ impl VirtualMachine {
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
                             IteratorData::Enumerate { source, index, cached_tuple } => {
-                                // Inline advance for enumerate with known source types
                                 let idx = *index;
-                                match Self::advance_source_inline(source) {
+                                // Direct RefIter+List/Tuple advance (avoids advance_source_inline overhead)
+                                let val_opt: Option<Option<PyObjectRef>> = if let PyObjectPayload::RefIter { source: ref src, index: ref src_idx } = source.payload {
+                                    let si = src_idx.get();
+                                    match &src.payload {
+                                        PyObjectPayload::List(cell) => {
+                                            let items = unsafe { &*cell.data_ptr() };
+                                            if si < items.len() {
+                                                src_idx.set(si + 1);
+                                                Some(Some(items[si].clone()))
+                                            } else { Some(None) }
+                                        }
+                                        PyObjectPayload::Tuple(items) => {
+                                            if si < items.len() {
+                                                src_idx.set(si + 1);
+                                                Some(Some(items[si].clone()))
+                                            } else { Some(None) }
+                                        }
+                                        _ => None,
+                                    }
+                                } else if let PyObjectPayload::VecIter(ref vd) = source.payload {
+                                    let si = vd.index.get();
+                                    if si < vd.items.len() {
+                                        vd.index.set(si + 1);
+                                        Some(Some(vd.items[si].clone()))
+                                    } else { Some(None) }
+                                } else { None };
+
+                                match val_opt {
                                     Some(Some(val)) => {
                                         *index = idx + 1;
-                                        // CPython-style tuple reuse: mutate cached tuple in-place
                                         let idx_obj = PyObject::int(idx);
+                                        // CPython-style tuple reuse: mutate cached tuple in-place
                                         let tuple = if let Some(ref mut cached) = cached_tuple {
                                             if let Some(obj) = PyObjectRef::get_mut(cached) {
                                                 if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
@@ -1434,16 +1460,53 @@ impl VirtualMachine {
                                         hot_ok!(profiling, self.profiler, instr.op)
                                     }
                                     Some(None) => {
-                                        // Source exhausted
                                         drop(data);
                                         drop(spop!(frame));
                                         frame.ip = instr.arg as usize;
                                         hot_ok!(profiling, self.profiler, instr.op)
                                     }
                                     None => {
-                                        // Unknown source type — need VM dispatch
-                                        drop(data);
-                                        self.execute_one(instr)
+                                        // Fallback to advance_source_inline for other source types
+                                        match Self::advance_source_inline(source) {
+                                            Some(Some(val)) => {
+                                                *index = idx + 1;
+                                                let idx_obj = PyObject::int(idx);
+                                                let tuple = if let Some(ref mut cached) = cached_tuple {
+                                                    if let Some(obj) = PyObjectRef::get_mut(cached) {
+                                                        if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
+                                                            items[0] = idx_obj;
+                                                            items[1] = val;
+                                                            cached.clone()
+                                                        } else {
+                                                            let t = PyObject::tuple(vec![idx_obj, val]);
+                                                            *cached = t.clone();
+                                                            t
+                                                        }
+                                                    } else {
+                                                        let t = PyObject::tuple(vec![idx_obj, val]);
+                                                        *cached = t.clone();
+                                                        t
+                                                    }
+                                                } else {
+                                                    let t = PyObject::tuple(vec![idx_obj, val]);
+                                                    *cached_tuple = Some(t.clone());
+                                                    t
+                                                };
+                                                drop(data);
+                                                spush!(frame, tuple);
+                                                hot_ok!(profiling, self.profiler, instr.op)
+                                            }
+                                            Some(None) => {
+                                                drop(data);
+                                                drop(spop!(frame));
+                                                frame.ip = instr.arg as usize;
+                                                hot_ok!(profiling, self.profiler, instr.op)
+                                            }
+                                            None => {
+                                                drop(data);
+                                                self.execute_one(instr)
+                                            }
+                                        }
                                     }
                                 }
                             }
