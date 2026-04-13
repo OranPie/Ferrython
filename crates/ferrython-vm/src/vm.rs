@@ -4996,6 +4996,8 @@ impl VirtualMachine {
                                                 if let Some(class_val) = vt.get(name.as_str()) {
                                                     match &class_val.payload {
                                                         PyObjectPayload::Function(_)
+                                                        | PyObjectPayload::NativeFunction(_)
+                                                        | PyObjectPayload::NativeClosure { .. }
                                                         | PyObjectPayload::Property(_)
                                                         | PyObjectPayload::ClassMethod(_)
                                                         | PyObjectPayload::StaticMethod(_) => None,
@@ -5058,6 +5060,8 @@ impl VirtualMachine {
                                             if let Some(class_val) = vt.get(name.as_str()) {
                                                 match &class_val.payload {
                                                     PyObjectPayload::Function(_)
+                                                    | PyObjectPayload::NativeFunction(_)
+                                                    | PyObjectPayload::NativeClosure { .. }
                                                     | PyObjectPayload::Property(_)
                                                     | PyObjectPayload::ClassMethod(_)
                                                     | PyObjectPayload::StaticMethod(_) => None,
@@ -5224,6 +5228,8 @@ impl VirtualMachine {
                                         if let Some(class_val) = vt.get(name.as_str()) {
                                             match &class_val.payload {
                                                 PyObjectPayload::Function(_)
+                                                | PyObjectPayload::NativeFunction(_)
+                                                | PyObjectPayload::NativeClosure { .. }
                                                 | PyObjectPayload::Property(_)
                                                 | PyObjectPayload::ClassMethod(_)
                                                 | PyObjectPayload::StaticMethod(_) => None,
