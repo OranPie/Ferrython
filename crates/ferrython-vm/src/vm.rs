@@ -1571,12 +1571,33 @@ impl VirtualMachine {
                                 }
                                 } // close else (N-source path)
                             }
-                            IteratorData::DictEntries { keys, values, index, .. } => {
+                            IteratorData::DictEntries { keys, values, index, cached_tuple } => {
                                 if *index < keys.len() {
                                     let k = keys[*index].clone();
                                     let v = values[*index].clone();
                                     *index += 1;
-                                    let tuple = PyObject::tuple(vec![k, v]);
+                                    // Reuse cached tuple when consumer has dropped its ref (refcount == 1)
+                                    let tuple = if let Some(ref ct) = cached_tuple {
+                                        if PyObjectRef::strong_count(ct) == 1 {
+                                            // Mutate in-place via raw pointer: only cached_tuple holds a ref
+                                            unsafe {
+                                                let obj_ptr = PyObjectRef::as_ptr(ct) as *mut PyObject;
+                                                if let PyObjectPayload::Tuple(ref mut items) = (*obj_ptr).payload {
+                                                    items[0] = k;
+                                                    items[1] = v;
+                                                }
+                                            }
+                                            ct.clone()
+                                        } else {
+                                            let t = PyObject::tuple(vec![k, v]);
+                                            *cached_tuple = Some(t.clone());
+                                            t
+                                        }
+                                    } else {
+                                        let t = PyObject::tuple(vec![k, v]);
+                                        *cached_tuple = Some(t.clone());
+                                        t
+                                    };
                                     drop(data);
                                     spush!(frame, tuple);
                                 } else {
