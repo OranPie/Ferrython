@@ -13,6 +13,51 @@ use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
 use std::rc::Rc;
 
+/// Generator frame buffer pool — eliminates malloc/free per yield/resume.
+/// Uses static UnsafeCell for zero-overhead access (same pattern as PyObjectRef pool).
+/// SAFETY: single-threaded interpreter — only one thread runs Python bytecode.
+const GEN_FRAME_POOL_CAP: usize = 32;
+
+struct GenFramePool(std::cell::UnsafeCell<Vec<*mut Frame>>);
+unsafe impl Sync for GenFramePool {}
+
+static GEN_FRAME_POOL: GenFramePool = GenFramePool(std::cell::UnsafeCell::new(Vec::new()));
+
+/// Get a heap buffer sized for Frame — from pool or fresh allocation.
+#[inline(always)]
+fn gen_frame_alloc() -> *mut Frame {
+    unsafe {
+        let pool = &mut *GEN_FRAME_POOL.0.get();
+        pool.pop().unwrap_or_else(|| {
+            std::alloc::alloc(std::alloc::Layout::new::<Frame>()) as *mut Frame
+        })
+    }
+}
+
+/// Return a heap buffer to the pool (or dealloc if full).
+#[inline(always)]
+fn gen_frame_recycle(ptr: *mut Frame) {
+    unsafe {
+        let pool = &mut *GEN_FRAME_POOL.0.get();
+        if pool.len() < GEN_FRAME_POOL_CAP {
+            pool.push(ptr);
+        } else {
+            std::alloc::dealloc(ptr as *mut u8, std::alloc::Layout::new::<Frame>());
+        }
+    }
+}
+
+/// Free a generator frame when generator is dropped (e.g. GC).
+/// Must drop the Frame's contents properly before recycling the buffer.
+pub(crate) fn drop_generator_frame(ptr: *mut u8) {
+    if ptr.is_null() { return; }
+    let frame_ptr = ptr as *mut Frame;
+    unsafe {
+        std::ptr::drop_in_place(frame_ptr);
+    }
+    gen_frame_recycle(frame_ptr);
+}
+
 impl VirtualMachine {
     /// Install thread-local __hash__ and __eq__ dispatch callbacks for HashableKey.
     /// Called once at VM creation so all set/dict operations can resolve custom hashing.
@@ -857,6 +902,8 @@ impl VirtualMachine {
     /// Collect all items from any iterable (list, tuple, generator, instance with __iter__/__next__).
     pub(crate) fn collect_iterable(&mut self, obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
         match &obj.payload {
+            PyObjectPayload::List(cell) => Ok(cell.read().clone()),
+            PyObjectPayload::Tuple(items) => Ok(items.to_vec()),
             PyObjectPayload::Generator(gen_arc) => {
                 let gen_arc = gen_arc.clone();
                 let mut items = Vec::new();
@@ -1039,31 +1086,54 @@ impl VirtualMachine {
         if gen.finished {
             return Err(PyException::new(ExceptionKind::StopIteration, ""));
         }
-        let frame_box = match gen.frame.take() {
-            Some(f) => f,
-            None => return Err(PyException::runtime_error("generator already executing")),
-        };
-        let mut frame = *frame_box.downcast::<Frame>().expect("generator frame downcast");
+        let frame_raw = gen.take_frame_ptr();
+        if frame_raw.is_null() {
+            return Err(PyException::runtime_error("generator already executing"));
+        }
+        // Direct cast from raw pointer — no dyn Any downcast.
+        // Push frame onto call_stack using copy_nonoverlapping (1 memcpy, no Box dealloc).
+        let frame_typed = frame_raw as *mut Frame;
+        self.call_stack.reserve(1);
+        unsafe {
+            let len = self.call_stack.len();
+            let dst = self.call_stack.as_mut_ptr().add(len);
+            std::ptr::copy_nonoverlapping(frame_typed, dst, 1);
+            self.call_stack.set_len(len + 1);
+        }
+        // frame_typed now points to deallocated memory — recycle the buffer
+        gen_frame_recycle(frame_typed);
 
         if gen.started {
+            let frame = self.call_stack.last_mut().unwrap();
             frame.push(send_value);
         }
         gen.started = true;
         drop(gen); // release lock before executing
 
-        self.call_stack.push(frame);
         let result = self.run_frame();
-        let mut frame = self.call_stack.pop().unwrap();
+        let cs_len = self.call_stack.len();
+        let frame_ref = &mut self.call_stack[cs_len - 1];
 
         let mut gen = gen_arc.write();
-        if frame.yielded {
-            frame.yielded = false;
-            gen.frame = Some(Box::new(frame));
+        if frame_ref.yielded {
+            frame_ref.yielded = false;
+            // Copy frame from call_stack to a heap buffer (1 memcpy, reuses freelist)
+            let buf = gen_frame_alloc();
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    frame_ref as *const Frame,
+                    buf,
+                    1,
+                );
+                self.call_stack.set_len(cs_len - 1); // "pop" without drop
+            }
+            gen.set_frame_ptr(buf as *mut u8);
             result // Ok(yielded_value)
         } else {
-            // Generator finished — recycle frame
+            // Generator finished — pop and recycle frame normally
             gen.finished = true;
-            gen.frame = None;
+            gen.clear_frame();
+            let frame = self.call_stack.pop().unwrap();
             frame.recycle(&mut self.frame_pool);
             match result {
                 Ok(return_val) => {
@@ -1102,22 +1172,30 @@ impl VirtualMachine {
         if gen.finished {
             return Err(PyException::new(kind, msg));
         }
-        let frame = match gen.frame.take() {
-            Some(f) => *f.downcast::<Frame>().expect("generator frame downcast"),
-            None => return Err(PyException::runtime_error("generator already executing")),
-        };
+        let frame_raw = gen.take_frame_ptr();
+        if frame_raw.is_null() {
+            return Err(PyException::runtime_error("generator already executing"));
+        }
+        // Push frame from raw pointer to call_stack (1 memcpy, no downcast)
+        let frame_typed = frame_raw as *mut Frame;
+        self.call_stack.reserve(1);
+        unsafe {
+            let len = self.call_stack.len();
+            let dst = self.call_stack.as_mut_ptr().add(len);
+            std::ptr::copy_nonoverlapping(frame_typed, dst, 1);
+            self.call_stack.set_len(len + 1);
+        }
+        gen_frame_recycle(frame_typed);
+
         gen.started = true;
         drop(gen);
 
         // Set up exception on the frame so VM will unwind to handler
         let mut exc = PyException::new(kind, msg.clone());
-        // Preserve original exception object for identity-preserving re-raise
         if let Some(ref orig) = original_value {
             exc.original = Some(orig.clone());
         }
-        self.call_stack.push(frame);
         let exc_result = Err(exc);
-        // Use original value if provided (for identity-preserving throws)
         let exc_obj = original_value.clone()
             .unwrap_or_else(|| PyObject::exception_instance(kind, msg.clone()));
         let exc_type = PyObject::exception_type(kind);
@@ -1137,19 +1215,24 @@ impl VirtualMachine {
             frame_ref.ip = handler_ip;
 
             let result = self.run_frame();
-            let frame = self.call_stack.pop().unwrap();
+            let cs_len = self.call_stack.len();
+            let frame_ref = &mut self.call_stack[cs_len - 1];
 
             let mut gen = gen_arc.write();
-            if frame.yielded {
-                let mut saved_frame = frame;
-                saved_frame.yielded = false;
-                gen.frame = Some(Box::new(saved_frame));
+            if frame_ref.yielded {
+                frame_ref.yielded = false;
+                let buf = gen_frame_alloc();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(frame_ref as *const Frame, buf, 1);
+                    self.call_stack.set_len(cs_len - 1);
+                }
+                gen.set_frame_ptr(buf as *mut u8);
                 result
             } else {
                 gen.finished = true;
-                gen.frame = None;
-                // If the generator raised an exception (not caught), re-raise it
-                // instead of converting to StopIteration.
+                gen.clear_frame();
+                let frame = self.call_stack.pop().unwrap();
+                frame.recycle(&mut self.frame_pool);
                 if let Err(e) = result {
                     return Err(e);
                 }
@@ -1161,10 +1244,11 @@ impl VirtualMachine {
             }
         } else {
             // No handler — pop frame and re-raise
-            self.call_stack.pop();
+            let frame = self.call_stack.pop().unwrap();
+            frame.recycle(&mut self.frame_pool);
             let mut gen = gen_arc.write();
             gen.finished = true;
-            gen.frame = None;
+            gen.clear_frame();
             exc_result
         }
     }
@@ -1240,7 +1324,7 @@ impl VirtualMachine {
             AsyncGenAction::Close => {
                 // Like generator.close(): throw GeneratorExit, expect finish
                 let g = gen.read();
-                if g.finished || g.frame.is_none() {
+                if g.finished || !g.has_frame() {
                     drop(g);
                     return Ok(PyObject::none());
                 }
@@ -1254,13 +1338,13 @@ impl VirtualMachine {
                            || e.kind == ExceptionKind::StopAsyncIteration => {
                         let mut g = gen.write();
                         g.finished = true;
-                        g.frame = None;
+                        g.clear_frame();
                         Ok(PyObject::none())
                     }
                     Err(e) => {
                         let mut g = gen.write();
                         g.finished = true;
-                        g.frame = None;
+                        g.clear_frame();
                         Err(e)
                     }
                 }
@@ -1697,9 +1781,12 @@ impl VirtualMachine {
     pub fn vm_sort(&mut self, items: &mut Vec<PyObjectRef>) -> PyResult<()> {
         let n = items.len();
         if n <= 1 { return Ok(()); }
-        let has_instances = items.iter().any(|x| matches!(&x.payload, PyObjectPayload::Instance(_)));
-        if !has_instances {
-            items.sort_by(|a, b| {
+        // Fast check: peek first element to decide sort strategy.
+        // If first is not an Instance, likely all are homogeneous primitives.
+        let first_is_instance = matches!(&items[0].payload, PyObjectPayload::Instance(_));
+        if !first_is_instance {
+            // Use sort_unstable for primitives — faster (no allocation for merge buffer)
+            items.sort_unstable_by(|a, b| {
                 builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
             });
             return Ok(());

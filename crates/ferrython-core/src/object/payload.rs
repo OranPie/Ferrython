@@ -6,7 +6,6 @@ use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use rustc_hash::{FxHashMap, FxHasher};
-use std::any::Any;
 use std::cell::{Cell, UnsafeCell};
 use std::hash::BuildHasherDefault;
 use std::fmt;
@@ -824,13 +823,56 @@ impl fmt::Debug for PyObjectPayload {
     }
 }
 
-/// Opaque generator state. The actual frame is stored as `Box<dyn Any>` and
-/// downcast by the VM crate which owns the Frame type.
+/// Opaque generator state. The frame is stored as a raw pointer to a
+/// heap-allocated Frame (owned, not reference-counted). The VM crate
+/// casts to/from `*mut Frame` directly — no `dyn Any` downcast overhead.
 pub struct GeneratorState {
     pub name: CompactString,
-    pub frame: Option<Box<dyn Any>>,
+    /// Raw pointer to a heap-allocated Frame. Null when no frame is stored.
+    /// SAFETY: owned exclusively by this GeneratorState; freed on drop.
+    pub frame_ptr: *mut u8,
     pub started: bool,
     pub finished: bool,
+}
+
+impl GeneratorState {
+    /// Returns true if a suspended frame is available.
+    #[inline(always)]
+    pub fn has_frame(&self) -> bool { !self.frame_ptr.is_null() }
+    /// Takes the frame pointer out, leaving null.
+    #[inline(always)]
+    pub fn take_frame_ptr(&mut self) -> *mut u8 {
+        let p = self.frame_ptr;
+        self.frame_ptr = std::ptr::null_mut();
+        p
+    }
+    /// Stores a frame pointer.
+    #[inline(always)]
+    pub fn set_frame_ptr(&mut self, p: *mut u8) { self.frame_ptr = p; }
+    /// Clears the frame pointer (e.g., on generator finish).
+    #[inline(always)]
+    pub fn clear_frame(&mut self) { self.frame_ptr = std::ptr::null_mut(); }
+}
+
+/// Global callback registered by the VM crate to drop generator frames.
+/// The core crate doesn't know the concrete Frame type, so the VM registers
+/// a cleanup function at startup.
+static mut GEN_FRAME_DROP_FN: Option<fn(*mut u8)> = None;
+
+/// Register the generator frame drop function (called once by VM init).
+pub fn register_gen_frame_drop(f: fn(*mut u8)) {
+    unsafe { GEN_FRAME_DROP_FN = Some(f); }
+}
+
+impl Drop for GeneratorState {
+    fn drop(&mut self) {
+        if !self.frame_ptr.is_null() {
+            if let Some(drop_fn) = unsafe { GEN_FRAME_DROP_FN } {
+                drop_fn(self.frame_ptr);
+            }
+            self.frame_ptr = std::ptr::null_mut();
+        }
+    }
 }
 
 impl fmt::Debug for GeneratorState {
@@ -846,7 +888,7 @@ impl fmt::Debug for GeneratorState {
 impl Clone for GeneratorState {
     fn clone(&self) -> Self {
         // Generators are not truly clonable; this is a placeholder for the derive requirement
-        Self { name: self.name.clone(), frame: None, started: self.started, finished: self.finished }
+        Self { name: self.name.clone(), frame_ptr: std::ptr::null_mut(), started: self.started, finished: self.finished }
     }
 }
 

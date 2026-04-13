@@ -294,6 +294,8 @@ impl VirtualMachine {
             SHARED_BUILTINS.get_or_init(|| builtins.clone());
             ferrython_core::error::register_thread_spawn(spawn_python_thread_impl);
         }
+        // Register generator frame drop callback (core crate can't know Frame type)
+        ferrython_core::object::register_gen_frame_drop(crate::vm_helpers::drop_generator_frame);
         Self {
             call_stack: Vec::with_capacity(64),
             builtins,

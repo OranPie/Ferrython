@@ -1301,8 +1301,14 @@ impl VirtualMachine {
                         }
                         "sorted" => {
                             if !pos_args.is_empty() {
-                                let items = self.collect_iterable(&pos_args[0])?;
-                                let mut items_vec = items;
+                                // Clone list contents directly — avoids collect_iterable overhead
+                                let mut items_vec = if let PyObjectPayload::List(ref cell) = pos_args[0].payload {
+                                    cell.read().clone()
+                                } else if let PyObjectPayload::Tuple(ref t) = pos_args[0].payload {
+                                    t.to_vec()
+                                } else {
+                                    self.collect_iterable(&pos_args[0])?
+                                };
                                 let key_fn = kwargs.iter().find(|(k, _)| k.as_str() == "key").map(|(_, v)| v.clone());
                                 let reverse = kwargs.iter().find(|(k, _)| k.as_str() == "reverse")
                                     .map(|(_, v)| v.is_truthy()).unwrap_or(false);
@@ -2083,7 +2089,13 @@ impl VirtualMachine {
                     }
                     "sorted" => {
                         if !args.is_empty() {
-                            let mut items = self.collect_iterable(&args[0])?;
+                            let mut items = if let PyObjectPayload::List(ref cell) = args[0].payload {
+                                cell.read().clone()
+                            } else if let PyObjectPayload::Tuple(ref t) = args[0].payload {
+                                t.to_vec()
+                            } else {
+                                self.collect_iterable(&args[0])?
+                            };
                             self.vm_sort(&mut items)?;
                             return Ok(PyObject::list(items));
                         }
@@ -2767,7 +2779,7 @@ impl VirtualMachine {
                             // CPython: throw GeneratorExit into the frame so finally blocks run.
                             // If generator yields during cleanup → RuntimeError.
                             let gen = gen_arc.read();
-                            if gen.finished || gen.frame.is_none() {
+                            if gen.finished || !gen.has_frame() {
                                 // Already finished — nothing to clean up
                                 drop(gen);
                                 return Ok(PyObject::none());
@@ -2785,14 +2797,14 @@ impl VirtualMachine {
                                     // Expected: GeneratorExit propagated out or StopIteration
                                     let mut gen = gen_arc.write();
                                     gen.finished = true;
-                                    gen.frame = None;
+                                    gen.clear_frame();
                                     return Ok(PyObject::none());
                                 }
                                 Err(e) => {
                                     // Other exception from finally block — propagate
                                     let mut gen = gen_arc.write();
                                     gen.finished = true;
-                                    gen.frame = None;
+                                    gen.clear_frame();
                                     return Err(e);
                                 }
                             }
@@ -3553,13 +3565,16 @@ impl VirtualMachine {
         frame.scope_kind = ScopeKind::Function;
 
         if code.flags.contains(CodeFlags::GENERATOR) && code.flags.contains(CodeFlags::COROUTINE) {
-            return Ok(PyObject::async_generator(CompactString::from(code.name.as_str()), Box::new(frame)));
+            let ptr = Box::into_raw(Box::new(frame)) as *mut u8;
+            return Ok(PyObject::async_generator(CompactString::from(code.name.as_str()), ptr));
         }
         if code.flags.contains(CodeFlags::COROUTINE) {
-            return Ok(PyObject::coroutine(CompactString::from(code.name.as_str()), Box::new(frame)));
+            let ptr = Box::into_raw(Box::new(frame)) as *mut u8;
+            return Ok(PyObject::coroutine(CompactString::from(code.name.as_str()), ptr));
         }
         if code.flags.contains(CodeFlags::GENERATOR) {
-            return Ok(PyObject::generator(CompactString::from(code.name.as_str()), Box::new(frame)));
+            let ptr = Box::into_raw(Box::new(frame)) as *mut u8;
+            return Ok(PyObject::generator(CompactString::from(code.name.as_str()), ptr));
         }
 
         self.call_stack.push(frame);

@@ -8,7 +8,6 @@ use crate::types::{HashableKey, PyFunction, PyInt};
 use compact_str::CompactString;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
-use std::any::Any;
 
 use super::payload::*;
 use super::methods::PyObjectMethods;
@@ -688,28 +687,28 @@ impl PyObject {
             alloc_exception_box(kind, message.into(), args),
         )))
     }
-    pub fn generator(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {
+    pub fn generator(name: CompactString, frame_ptr: *mut u8) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Generator(Rc::new(PyCell::new(GeneratorState {
             name,
-            frame: Some(frame),
+            frame_ptr,
             started: false,
             finished: false,
         }))))
     }
 
-    pub fn coroutine(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {
+    pub fn coroutine(name: CompactString, frame_ptr: *mut u8) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Coroutine(Rc::new(PyCell::new(GeneratorState {
             name,
-            frame: Some(frame),
+            frame_ptr,
             started: false,
             finished: false,
         }))))
     }
 
-    pub fn async_generator(name: CompactString, frame: Box<dyn Any>) -> PyObjectRef {
+    pub fn async_generator(name: CompactString, frame_ptr: *mut u8) -> PyObjectRef {
         Self::wrap(PyObjectPayload::AsyncGenerator(Rc::new(PyCell::new(GeneratorState {
             name,
-            frame: Some(frame),
+            frame_ptr,
             started: false,
             finished: false,
         }))))

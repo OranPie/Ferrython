@@ -227,7 +227,7 @@ impl VirtualMachine {
                 let iter = self.vm_pop();
                 if let PyObjectPayload::Generator(ref gen_arc) = iter.payload {
                     let gen = gen_arc.read();
-                    if !gen.finished && gen.frame.is_some() {
+                    if !gen.finished && gen.has_frame() {
                         drop(gen);
                         let gen_arc = gen_arc.clone();
                         match self.gen_throw(&gen_arc, ExceptionKind::GeneratorExit, CompactString::new("")) {
@@ -235,7 +235,7 @@ impl VirtualMachine {
                         }
                         let mut gen = gen_arc.write();
                         gen.finished = true;
-                        gen.frame = None;
+                        gen.clear_frame();
                     }
                 }
             }
