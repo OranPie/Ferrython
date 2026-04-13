@@ -371,21 +371,23 @@ impl Drop for PyObjectRef {
             let new_strong = strong - 1;
             (*p).strong.set(new_strong);
             if new_strong == 0 {
-                // Mark as "being dropped" so PyWeakRef::drop won't recycle
-                // the block while drop_in_place is still running.
-                // (Without this, if the payload holds the last weak ref to itself
-                // via e.g. subclass registration, dropping the payload would trigger
-                // PyWeakRef::drop → sees strong==0 && weak==0 → double-free.)
-                (*p).strong.set(DROPPING_REFCOUNT);
-                // Drop the PyObject value
-                std::ptr::drop_in_place((*p).obj.as_mut_ptr());
-                // Restore strong to 0 (payload is now dropped)
-                (*p).strong.set(0);
-                // If no weak refs remain, recycle immediately
+                // Fast path: when no weak refs exist, skip the DROPPING_REFCOUNT
+                // guard entirely. DROPPING_REFCOUNT is only needed when drop_in_place
+                // might trigger PyWeakRef::drop on a self-referencing weak ref, which
+                // would see strong==0 && weak==0 and try to double-free this block.
+                // Without weak refs, this can't happen.
                 if (*p).weak.get() == 0 {
+                    std::ptr::drop_in_place((*p).obj.as_mut_ptr());
                     pool_recycle(self.0);
+                } else {
+                    // Slow path: has weak refs — need DROPPING guard
+                    (*p).strong.set(DROPPING_REFCOUNT);
+                    std::ptr::drop_in_place((*p).obj.as_mut_ptr());
+                    (*p).strong.set(0);
+                    if (*p).weak.get() == 0 {
+                        pool_recycle(self.0);
+                    }
                 }
-                // else: block stays alive for weak refs; recycled when last weak drops
             }
         }
     }

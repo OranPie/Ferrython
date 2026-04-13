@@ -1278,7 +1278,7 @@ impl VirtualMachine {
                 Opcode::GetIter => {
                     let obj = speek!(frame);
                     match &obj.payload {
-                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => hot_ok!(profiling, self.profiler, instr.op),
+                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) => hot_ok!(profiling, self.profiler, instr.op),
                         PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) | PyObjectPayload::DictKeys(_) => {
                             let iter = PyObject::wrap(PyObjectPayload::RefIter {
                                 source: obj.clone(), index: SyncUsize::new(0)
@@ -1747,6 +1747,28 @@ impl VirtualMachine {
                                 self.execute_one(instr)
                             }
                         }
+                    } else if let PyObjectPayload::Generator(ref gen_arc) = iter.payload {
+                        // Inline generator iteration: avoids execute_one dispatch +
+                        // StopIteration exception allocation on generator completion.
+                        let gen_arc = gen_arc.clone();
+                        match self.resume_generator_for_iter(&gen_arc) {
+                            Ok(Some(value)) => {
+                                // Re-derive frame after resume (call_stack may have reallocated)
+                                rederive_frame!(self, frame_ptr, instr_base, instr_count);
+                                let frame = unsafe { &mut *frame_ptr };
+                                spush!(frame, value);
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
+                            Ok(None) => {
+                                // Generator exhausted — no exception needed
+                                rederive_frame!(self, frame_ptr, instr_base, instr_count);
+                                let frame = unsafe { &mut *frame_ptr };
+                                drop(spop!(frame)); // remove generator from stack
+                                frame.ip = instr.arg as usize;
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
+                            Err(e) => Err(e),
+                        }
                     } else {
                         self.execute_one(instr)
                     }
@@ -1896,6 +1918,25 @@ impl VirtualMachine {
                                 }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
+                        }
+                    } else if let PyObjectPayload::Generator(ref gen_arc) = iter.payload {
+                        // Inline generator in ForIterStoreFast
+                        let gen_arc = gen_arc.clone();
+                        match self.resume_generator_for_iter(&gen_arc) {
+                            Ok(Some(value)) => {
+                                rederive_frame!(self, frame_ptr, instr_base, instr_count);
+                                let frame = unsafe { &mut *frame_ptr };
+                                sset_local!(frame, store_idx, value);
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
+                            Ok(None) => {
+                                rederive_frame!(self, frame_ptr, instr_base, instr_count);
+                                let frame = unsafe { &mut *frame_ptr };
+                                drop(spop!(frame)); // remove generator
+                                frame.ip = jump_target;
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
+                            Err(e) => Err(e),
                         }
                     } else {
                         // Fallback for non-iterator types

@@ -1147,6 +1147,65 @@ impl VirtualMachine {
         }
     }
 
+    /// Specialized generator resume for ForIter: returns Ok(Some(value)) on yield,
+    /// Ok(None) on generator completion (avoids creating StopIteration exception),
+    /// Err(e) on actual errors from within the generator.
+    pub(crate) fn resume_generator_for_iter(
+        &mut self,
+        gen_arc: &Rc<PyCell<GeneratorState>>,
+    ) -> Result<Option<PyObjectRef>, PyException> {
+        let mut gen = gen_arc.write();
+        if gen.finished {
+            return Ok(None);
+        }
+        let frame_raw = gen.take_frame_ptr();
+        if frame_raw.is_null() {
+            return Err(PyException::runtime_error("generator already executing"));
+        }
+        let frame_typed = frame_raw as *mut Frame;
+        self.call_stack.reserve(1);
+        unsafe {
+            let len = self.call_stack.len();
+            let dst = self.call_stack.as_mut_ptr().add(len);
+            std::ptr::copy_nonoverlapping(frame_typed, dst, 1);
+            self.call_stack.set_len(len + 1);
+        }
+        gen_frame_recycle(frame_typed);
+
+        if gen.started {
+            let frame = self.call_stack.last_mut().unwrap();
+            frame.push(PyObject::none());
+        }
+        gen.started = true;
+        drop(gen);
+
+        let result = self.run_frame();
+        let cs_len = self.call_stack.len();
+        let frame_ref = &mut self.call_stack[cs_len - 1];
+
+        let mut gen = gen_arc.write();
+        if frame_ref.yielded {
+            frame_ref.yielded = false;
+            let buf = gen_frame_alloc();
+            unsafe {
+                std::ptr::copy_nonoverlapping(frame_ref as *const Frame, buf, 1);
+                self.call_stack.set_len(cs_len - 1);
+            }
+            gen.set_frame_ptr(buf as *mut u8);
+            result.map(Some)
+        } else {
+            gen.finished = true;
+            gen.clear_frame();
+            let frame = self.call_stack.pop().unwrap();
+            frame.recycle(&mut self.frame_pool);
+            match result {
+                Ok(_) => Ok(None), // Generator finished — no StopIteration needed
+                Err(e) if e.kind == ExceptionKind::StopIteration => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+    }
+
     /// Throw an exception into a generator.
     /// Resumes the generator with an exception injected at the yield point.
     pub(crate) fn gen_throw(
