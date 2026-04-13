@@ -1140,6 +1140,8 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
             unsafe {
                 let cd_ptr = &**cd as *const ClassData as *mut ClassData;
                 (*cd_ptr).has_setattr = true;
+                // Also update cached instance_flags so new instances respect __setattr__
+                (*cd_ptr).instance_flags |= ferrython_core::object::CLASS_FLAG_HAS_SETATTR;
             }
         }
     }

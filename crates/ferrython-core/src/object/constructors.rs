@@ -427,7 +427,7 @@ impl PyObject {
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
         // Use cached flags from ClassData to avoid hierarchy traversal
-        let (dict_storage, attrs) = if let PyObjectPayload::Class(cd) = &class.payload {
+        let (dict_storage, attrs, class_flags) = if let PyObjectPayload::Class(cd) = &class.payload {
             let ds = if cd.is_dict_subclass {
                 Some(alloc_map_inner())
             } else { None };
@@ -436,11 +436,10 @@ impl PyObject {
             } else {
                 FxAttrMap::default()
             };
-            (ds, a)
+            (ds, a, cd.instance_flags)
         } else {
-            (Self::detect_dict_subclass(&class), FxAttrMap::default())
+            (Self::detect_dict_subclass(&class), FxAttrMap::default(), 0xFF)
         };
-        let class_flags = InstanceData::compute_flags(&class);
         let obj = Self::wrap(PyObjectPayload::Instance(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(attrs)), dict_storage, is_special: false, class_flags })));
         track_object(&obj);
         obj

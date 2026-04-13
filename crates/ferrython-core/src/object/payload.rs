@@ -910,6 +910,9 @@ pub struct ClassData {
     /// Fast-path flag: true if this class or any base defines __getattr__.
     /// When false, negative attribute lookups can skip the __getattr__ MRO scan.
     pub has_getattr: bool,
+    /// Cached InstanceData flags (has_getattribute, has_descriptors, etc.)
+    /// Pre-computed to avoid recomputing per instance creation.
+    pub instance_flags: u8,
 }
 
 impl ClassData {
@@ -1088,6 +1091,14 @@ impl ClassData {
             check_exc(base)
         });
 
+        // Pre-compute instance flags
+        let mut instance_flags = 0u8;
+        if has_getattribute { instance_flags |= CLASS_FLAG_HAS_GETATTRIBUTE; }
+        if has_descriptors { instance_flags |= CLASS_FLAG_HAS_DESCRIPTORS; }
+        if has_setattr { instance_flags |= CLASS_FLAG_HAS_SETATTR; }
+        if slots.is_some() { instance_flags |= CLASS_FLAG_HAS_SLOTS; }
+        if has_getattr { instance_flags |= CLASS_FLAG_HAS_GETATTR; }
+
         Self {
             name,
             bases,
@@ -1108,6 +1119,7 @@ impl ClassData {
             expected_attrs,
             is_simple_class: Cell::new(is_simple_class),
             is_exception_subclass,
+            instance_flags,
         }
     }
 

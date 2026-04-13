@@ -141,6 +141,7 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         expected_attrs: cd.expected_attrs,
                         is_simple_class: Cell::new(false), // has metaclass
                         is_exception_subclass: cd.is_exception_subclass,
+                        instance_flags: cd.instance_flags,
                     }))));
                 }
             }
