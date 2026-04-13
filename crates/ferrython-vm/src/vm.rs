@@ -6066,6 +6066,12 @@ impl VirtualMachine {
                             frame.push(exc_type);             // type
                             frame.ip = handler_ip;
                             // Move exc into active_exception (avoids clone)
+                            // Also set thread-local exc info for traceback.format_exc()
+                            ferrython_core::error::set_thread_exc_info(
+                                exc.kind,
+                                exc.message.clone(),
+                                exc.traceback.clone(),
+                            );
                             self.active_exception = Some(exc);
                             // Re-derive frame_ptr: exception unwind may have popped frames
                             rederive_frame!(self, frame_ptr, instr_base, instr_count);

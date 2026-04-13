@@ -487,7 +487,9 @@ impl VirtualMachine {
                 }
                 if let PyObjectPayload::Instance(inst) = &obj.payload {
                     // Look up __getattr__ through class MRO and apply descriptor protocol
-                    if let Some(ga_raw) = lookup_in_class_mro(&inst.class, "__getattr__") {
+                    let ga_raw_opt = lookup_in_class_mro(&inst.class, "__getattr__")
+                        .or_else(|| inst.attrs.read().get("__getattr__").cloned());
+                    if let Some(ga_raw) = ga_raw_opt {
                         let ga = if has_descriptor_get(&ga_raw) {
                             // Descriptor (e.g. _ProxyLookup): invoke __get__ to bind
                             if let Some(get_method) = ga_raw.get_attr("__get__") {

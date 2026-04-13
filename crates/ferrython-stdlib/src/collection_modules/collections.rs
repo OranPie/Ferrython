@@ -767,7 +767,9 @@ fn collections_deque(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     cls_ns.insert(CompactString::from("__getitem__"), PyObject::native_closure(
         "deque.__getitem__", move |args: &[PyObjectRef]| {
             if args.is_empty() { return Err(PyException::type_error("__getitem__ requires index")); }
-            let idx = args[0].to_int()?;
+            // Called as unbound method: args = [self, index] or directly: args = [index]
+            let idx_arg = if args.len() >= 2 { &args[1] } else { &args[0] };
+            let idx = idx_arg.to_int()?;
             let r = d.read();
             let len = r.len() as i64;
             let actual = if idx < 0 { len + idx } else { idx };
