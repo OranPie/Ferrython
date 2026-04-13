@@ -1208,15 +1208,18 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
     let new_len = new.len();
     let limit = max_count.unwrap_or(usize::MAX);
 
-    // Single-pass: when replacement is shorter/equal, result fits in s.len() bytes.
-    // When longer, over-allocate by 2x growth factor to avoid counting pass.
-    let capacity = if new_len <= old_len {
+    // CompactString inlines ≤23 bytes without heap allocation.
+    // Avoid with_capacity() when the result likely fits inline.
+    let max_result_len = if new_len <= old_len {
         s.len()
     } else {
-        // Estimate: assume up to 8 replacements for initial capacity
         s.len() + 8 * (new_len - old_len)
     };
-    let mut result = CompactString::with_capacity(capacity);
+    let mut result = if max_result_len <= 23 {
+        CompactString::new("")
+    } else {
+        CompactString::with_capacity(max_result_len)
+    };
     let mut remainder = s;
     let mut replaced = 0usize;
     while replaced < limit {

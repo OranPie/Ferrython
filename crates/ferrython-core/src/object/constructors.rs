@@ -1,7 +1,7 @@
 //! Singleton values and PyObject factory/constructor methods.
 
 use std::rc::Rc;
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::UnsafeCell;
 use std::mem::ManuallyDrop;
 use crate::error::{ExceptionKind, PyResult};
 use crate::types::{HashableKey, PyFunction, PyInt};
@@ -265,10 +265,10 @@ static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immo
 static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bytes(vec![]) }));
 
 // ── GC Tracking for cycle-capable objects (Instance, Dict, List) ──
-// Thread-local tracking: no mutex, no atomics — single-threaded GIL interpreter.
-thread_local! {
-    static TRACKED_OBJECTS: RefCell<Vec<PyWeakRef>> = RefCell::new(Vec::new());
-}
+// Static UnsafeCell: no TLS overhead — single-threaded GIL interpreter.
+struct TrackedHolder(std::cell::UnsafeCell<Vec<PyWeakRef>>);
+unsafe impl Sync for TrackedHolder {}
+static TRACKED_OBJECTS: TrackedHolder = TrackedHolder(std::cell::UnsafeCell::new(Vec::new()));
 
 /// Register the cycle collector callback with the GC crate.
 pub fn init_gc() {
@@ -286,8 +286,8 @@ pub fn init_gc() {
 /// 4. If strong_count == internal_refs, the object is only reachable from within cycles
 /// 5. Clear contents on unreachable objects to break cycles (dropping internal refs)
 fn run_cycle_collection() -> usize {
-    TRACKED_OBJECTS.with(|cell| {
-        let mut tracked = cell.borrow_mut();
+    unsafe {
+        let tracked = &mut *TRACKED_OBJECTS.0.get();
 
         // 1. Upgrade weak refs, purge dead ones
         let alive: Vec<PyObjectRef> = tracked.iter()
@@ -339,7 +339,7 @@ fn run_cycle_collection() -> usize {
         }
 
         collected
-    })
+    }
 }
 
 /// Count references from a payload to other tracked objects.
@@ -446,9 +446,9 @@ fn break_cycles(payload: &PyObjectPayload) {
 }
 
 fn track_object(obj: &PyObjectRef) {
-    TRACKED_OBJECTS.with(|cell| {
-        cell.borrow_mut().push(PyObjectRef::downgrade(obj));
-    });
+    unsafe {
+        (*TRACKED_OBJECTS.0.get()).push(PyObjectRef::downgrade(obj));
+    }
 }
 
 // ── PyObject constructors ──

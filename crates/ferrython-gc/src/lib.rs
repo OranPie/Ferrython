@@ -15,21 +15,34 @@
 //! All counters use thread-local `Cell<u64>` instead of atomics — Ferrython
 //! is a single-threaded (GIL) interpreter, so atomics are pure overhead.
 
-use std::cell::Cell;
 use std::sync::Mutex;
 
-// ── GC state — thread-local Cells (no atomics, single-threaded interpreter) ──
+// ── GC state — static UnsafeCell (no TLS overhead, single-threaded interpreter) ──
 
-thread_local! {
-    static ENABLED: Cell<bool> = Cell::new(true);
-    static ALLOCATION_COUNT: Cell<u64> = Cell::new(0);
-    static COLLECTION_COUNT: Cell<u64> = Cell::new(0);
-    static THRESHOLD_GEN0: Cell<u64> = Cell::new(700);
-    static THRESHOLD_GEN1: Cell<u64> = Cell::new(10);
-    static THRESHOLD_GEN2: Cell<u64> = Cell::new(10);
-    static GEN0_COLLECTIONS: Cell<u64> = Cell::new(0);
-    static GEN1_COLLECTIONS: Cell<u64> = Cell::new(0);
+struct GcState {
+    enabled: bool,
+    allocation_count: u64,
+    collection_count: u64,
+    threshold_gen0: u64,
+    threshold_gen1: u64,
+    threshold_gen2: u64,
+    gen0_collections: u64,
+    gen1_collections: u64,
 }
+
+struct GcHolder(std::cell::UnsafeCell<GcState>);
+unsafe impl Sync for GcHolder {}
+
+static GC: GcHolder = GcHolder(std::cell::UnsafeCell::new(GcState {
+    enabled: true,
+    allocation_count: 0,
+    collection_count: 0,
+    threshold_gen0: 700,
+    threshold_gen1: 10,
+    threshold_gen2: 10,
+    gen0_collections: 0,
+    gen1_collections: 0,
+}));
 
 // Cycle collection callback — registered once at startup (Mutex is fine here)
 static CYCLE_COLLECTOR: Mutex<Option<Box<dyn Fn() -> usize + Send>>> = Mutex::new(None);
@@ -45,14 +58,12 @@ pub fn register_cycle_collector<F: Fn() -> usize + Send + 'static>(f: F) {
 /// generation-0 collection should be triggered.
 #[inline(always)]
 pub fn notify_alloc() -> bool {
-    ENABLED.with(|e| {
-        if !e.get() { return false; }
-        ALLOCATION_COUNT.with(|c| {
-            let count = c.get() + 1;
-            c.set(count);
-            THRESHOLD_GEN0.with(|t| count >= t.get())
-        })
-    })
+    unsafe {
+        let gc = &mut *GC.0.get();
+        if !gc.enabled { return false; }
+        gc.allocation_count += 1;
+        gc.allocation_count >= gc.threshold_gen0
+    }
 }
 
 /// Run a garbage collection cycle. Returns the number of unreachable
@@ -61,16 +72,17 @@ pub fn notify_alloc() -> bool {
 /// Resets allocation counter and increments generation counters to match
 /// CPython's generational promotion logic.
 pub fn collect() -> usize {
-    ALLOCATION_COUNT.with(|c| c.set(0));
-    COLLECTION_COUNT.with(|c| c.set(c.get() + 1));
-
-    // Generational promotion: gen0 collection happened
-    let gen0 = GEN0_COLLECTIONS.with(|c| { let v = c.get() + 1; c.set(v); v });
-    if gen0 >= THRESHOLD_GEN1.with(|t| t.get()) {
-        GEN0_COLLECTIONS.with(|c| c.set(0));
-        let gen1 = GEN1_COLLECTIONS.with(|c| { let v = c.get() + 1; c.set(v); v });
-        if gen1 >= THRESHOLD_GEN2.with(|t| t.get()) {
-            GEN1_COLLECTIONS.with(|c| c.set(0));
+    unsafe {
+        let gc = &mut *GC.0.get();
+        gc.allocation_count = 0;
+        gc.collection_count += 1;
+        gc.gen0_collections += 1;
+        if gc.gen0_collections >= gc.threshold_gen1 {
+            gc.gen0_collections = 0;
+            gc.gen1_collections += 1;
+            if gc.gen1_collections >= gc.threshold_gen2 {
+                gc.gen1_collections = 0;
+            }
         }
     }
 
@@ -85,42 +97,47 @@ pub fn collect() -> usize {
 
 /// Enable garbage collection.
 pub fn enable() {
-    ENABLED.with(|e| e.set(true));
+    unsafe { (*GC.0.get()).enabled = true; }
 }
 
 /// Disable garbage collection.
 pub fn disable() {
-    ENABLED.with(|e| e.set(false));
+    unsafe { (*GC.0.get()).enabled = false; }
 }
 
 /// Return whether GC is currently enabled.
 pub fn is_enabled() -> bool {
-    ENABLED.with(|e| e.get())
+    unsafe { (*GC.0.get()).enabled }
 }
 
 /// Get the current collection thresholds as `(gen0, gen1, gen2)`.
 pub fn get_threshold() -> (u64, u64, u64) {
-    (
-        THRESHOLD_GEN0.with(|t| t.get()),
-        THRESHOLD_GEN1.with(|t| t.get()),
-        THRESHOLD_GEN2.with(|t| t.get()),
-    )
+    unsafe {
+        let gc = &*GC.0.get();
+        (gc.threshold_gen0, gc.threshold_gen1, gc.threshold_gen2)
+    }
 }
 
 /// Set the collection thresholds `(gen0, gen1, gen2)`.
 pub fn set_threshold(gen0: u64, gen1: u64, gen2: u64) {
-    THRESHOLD_GEN0.with(|t| t.set(gen0));
-    THRESHOLD_GEN1.with(|t| t.set(gen1));
-    THRESHOLD_GEN2.with(|t| t.set(gen2));
+    unsafe {
+        let gc = &mut *GC.0.get();
+        gc.threshold_gen0 = gen0;
+        gc.threshold_gen1 = gen1;
+        gc.threshold_gen2 = gen2;
+    }
 }
 
 /// Get GC statistics: `(alloc_count, total_collections, enabled)`.
 pub fn get_stats() -> GcStats {
-    GcStats {
-        allocations: ALLOCATION_COUNT.with(|c| c.get()),
-        collections: COLLECTION_COUNT.with(|c| c.get()),
-        enabled: ENABLED.with(|e| e.get()),
-        threshold: get_threshold(),
+    unsafe {
+        let gc = &*GC.0.get();
+        GcStats {
+            allocations: gc.allocation_count,
+            collections: gc.collection_count,
+            enabled: gc.enabled,
+            threshold: (gc.threshold_gen0, gc.threshold_gen1, gc.threshold_gen2),
+        }
     }
 }
 
