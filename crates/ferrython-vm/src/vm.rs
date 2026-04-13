@@ -1742,20 +1742,43 @@ impl VirtualMachine {
                     if frame.block_stack.is_empty() {
                         // SAFETY: stack non-empty for well-formed bytecode
                         let val = spop!(frame);
-                        Ok(Some(val))
+                        // __init__ must return None — check here so Err flows
+                        // through the normal exception unwind (try/except catches it)
+                        if frame.discard_return && !matches!(&val.payload, PyObjectPayload::None) {
+                            Err(PyException::type_error(
+                                "__init__() should return None".to_string()
+                            ))
+                        } else {
+                            Ok(Some(val))
+                        }
                     } else if frame.block_stack.iter().any(|b| b.kind() == BlockKind::Finally) {
                         self.execute_one(instr)
                     } else {
                         // SAFETY: stack non-empty for well-formed bytecode
                         let val = spop!(frame);
-                        Ok(Some(val))
+                        if frame.discard_return && !matches!(&val.payload, PyObjectPayload::None) {
+                            Err(PyException::type_error(
+                                "__init__() should return None".to_string()
+                            ))
+                        } else {
+                            Ok(Some(val))
+                        }
                     }
                 }
                 // Fused LoadFast + ReturnValue — common `return x` pattern
                 Opcode::LoadFastReturnValue => {
                     if frame.block_stack.is_empty() {
                         match slocal!(frame, instr.arg as usize) {
-                            Some(val) => Ok(Some(val.clone())),
+                            Some(val) => {
+                                let val = val.clone();
+                                if frame.discard_return && !matches!(&val.payload, PyObjectPayload::None) {
+                                    Err(PyException::type_error(
+                                        "__init__() should return None".to_string()
+                                    ))
+                                } else {
+                                    Ok(Some(val))
+                                }
+                            }
                             None => Self::err_unbound_local(&frame.code.varnames, instr.arg as usize),
                         }
                     } else {
@@ -1774,7 +1797,13 @@ impl VirtualMachine {
                 Opcode::LoadConstReturnValue => {
                     if frame.block_stack.is_empty() {
                         let val = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize) };
-                        Ok(Some(val.clone()))
+                        if frame.discard_return && !matches!(&val.payload, PyObjectPayload::None) {
+                            Err(PyException::type_error(
+                                "__init__() should return None".to_string()
+                            ))
+                        } else {
+                            Ok(Some(val.clone()))
+                        }
                     } else {
                         let val = unsafe { frame.constant_cache.get_unchecked(instr.arg as usize) };
                         spush!(frame, val.clone());
@@ -3287,6 +3316,7 @@ impl VirtualMachine {
                                             (PyObjectPayload::Bytes(_), "bytes") => true,
                                             (PyObjectPayload::ByteArray(_), "bytearray") => true,
                                             (PyObjectPayload::None, "NoneType") => true,
+                                            (_, "object") => true, // everything is an instance of object
                                             _ => false,
                                         };
                                         Some(matches)
@@ -3905,6 +3935,7 @@ impl VirtualMachine {
                                             "set" => Some(matches!(&obj.payload, PyObjectPayload::Set(_))),
                                             "bytes" => Some(matches!(&obj.payload, PyObjectPayload::Bytes(_))),
                                             "bytearray" => Some(matches!(&obj.payload, PyObjectPayload::ByteArray(_))),
+                                            "object" => Some(true),
                                             _ => None,
                                         }
                                     } else {
@@ -5922,13 +5953,6 @@ impl VirtualMachine {
                         let caller_op = parent.code.instructions.get(parent.ip.wrapping_sub(1))
                             .map(|i| i.op);
                         if discard || caller_op == Some(Opcode::CallMethodPopTop) {
-                            // __init__ must return None — check before discarding
-                            if discard && !matches!(&ret.payload, PyObjectPayload::None) {
-                                drop(ret);
-                                return Err(PyException::type_error(
-                                    "__init__() should return None".to_string()
-                                ));
-                            }
                             drop(ret);
                         } else {
                             parent.stack.push(ret);

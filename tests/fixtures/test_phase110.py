@@ -12,7 +12,7 @@ assert socket.SOCK_RAW == 3
 assert socket.SOL_TCP == 6
 assert socket.IPPROTO_IP == 0
 assert socket.has_ipv6 == True
-assert socket.SOMAXCONN == 128
+assert socket.SOMAXCONN >= 128  # system-dependent (128 or 4096 on Linux)
 assert socket.INADDR_ANY == 0
 assert socket.INADDR_LOOPBACK == 0x7F000001
 assert socket.MSG_PEEK == 2

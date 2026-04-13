@@ -75,7 +75,7 @@ pub fn create_pathlib_module() -> PyObjectRef {
         match result {
             Ok(()) => Ok(PyObject::none()),
             Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => Ok(PyObject::none()),
-            Err(e) => Err(PyException::runtime_error(format!("{}: '{}'", e, path))),
+            Err(e) => Err(PyException::from_io_error(&e, Some(&path))),
         }
     }));
 
@@ -84,7 +84,7 @@ pub fn create_pathlib_module() -> PyObjectRef {
         if args.is_empty() { return Err(PyException::type_error("read_text requires self")); }
         let path = get_path_str(&args[0]);
         let content = std::fs::read_to_string(&path)
-            .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+            .map_err(|e| PyException::from_io_error(&e, Some(&path)))?;
         Ok(PyObject::str_val(CompactString::from(&content)))
     }));
 
