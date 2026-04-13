@@ -267,32 +267,12 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                         Ok(Some((iter_obj.clone(), v)))
                     } else { Ok(None) }
                 }
-                IteratorData::DictEntries { keys, values, index, cached_tuple } => {
+                IteratorData::DictEntries { keys, values, index, .. } => {
                     if *index < keys.len() {
                         let k = keys[*index].clone();
                         let v = values[*index].clone();
                         *index += 1;
-                        let tuple = if let Some(ref mut cached) = cached_tuple {
-                            if let Some(obj) = PyObjectRef::get_mut(cached) {
-                                if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
-                                    items[0] = k;
-                                    items[1] = v;
-                                    cached.clone()
-                                } else {
-                                    let t = PyObject::tuple(vec![k, v]);
-                                    *cached = t.clone();
-                                    t
-                                }
-                            } else {
-                                let t = PyObject::tuple(vec![k, v]);
-                                *cached = t.clone();
-                                t
-                            }
-                        } else {
-                            let t = PyObject::tuple(vec![k, v]);
-                            *cached_tuple = Some(t.clone());
-                            t
-                        };
+                        let tuple = PyObject::tuple(vec![k, v]);
                         Ok(Some((iter_obj.clone(), tuple)))
                     } else { Ok(None) }
                 }
@@ -420,33 +400,12 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         Ok(Some(v))
                     } else { Ok(None) }
                 }
-                IteratorData::DictEntries { keys, values, index, cached_tuple } => {
+                IteratorData::DictEntries { keys, values, index, .. } => {
                     if *index < keys.len() {
                         let k = keys[*index].clone();
                         let v = values[*index].clone();
                         *index += 1;
-                        let tuple = if let Some(ref mut cached) = cached_tuple {
-                            if let Some(obj) = PyObjectRef::get_mut(cached) {
-                                if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
-                                    items[0] = k;
-                                    items[1] = v;
-                                    cached.clone()
-                                } else {
-                                    let t = PyObject::tuple(vec![k, v]);
-                                    *cached = t.clone();
-                                    t
-                                }
-                            } else {
-                                let t = PyObject::tuple(vec![k, v]);
-                                *cached = t.clone();
-                                t
-                            }
-                        } else {
-                            let t = PyObject::tuple(vec![k, v]);
-                            *cached_tuple = Some(t.clone());
-                            t
-                        };
-                        Ok(Some(tuple))
+                        Ok(Some(PyObject::tuple(vec![k, v])))
                     } else { Ok(None) }
                 }
                 IteratorData::DictKeys { keys, index } => {

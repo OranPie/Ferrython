@@ -492,7 +492,42 @@ impl VirtualMachine {
         pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
     ) -> PyResult<PyObjectRef> {
-        // ── ABC check (must run before any fast path) ──
+        // ── FAST PATH: simple class — skip ABC check entirely ──
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            if cd.is_simple_class && kwargs.is_empty() && !{
+                let ns = cd.namespace.read();
+                ns.contains_key("__new__") || ns.contains_key("__enum__") || ns.contains_key("__namedtuple__")
+            } {
+                let instance = PyObject::instance(cls.clone());
+                let init_fn = cd.namespace.read().get("__init__").cloned()
+                    .or_else(|| lookup_in_class_mro(cls, "__init__"));
+                if let Some(init_fn) = init_fn {
+                    let mut init_args = Vec::with_capacity(1 + pos_args.len());
+                    init_args.push(instance.clone());
+                    init_args.extend(pos_args.clone());
+                    let init_result = self.call_object(init_fn, init_args)?;
+                    if !matches!(&init_result.payload, PyObjectPayload::None) {
+                        return Err(PyException::type_error(
+                            "__init__() should return None, not '".to_string()
+                                + init_result.type_name() + "'"
+                        ));
+                    }
+                }
+                if Self::is_exception_class(cls) {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        let mut attrs = inst.attrs.write();
+                        if !attrs.contains_key("args") {
+                            if pos_args.len() == 1 {
+                                attrs.insert(CompactString::from("message"), pos_args[0].clone());
+                            }
+                            attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args));
+                        }
+                    }
+                }
+                return Ok(instance);
+            }
+        }
+        // ── ABC check (only for non-simple classes) ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
             let is_abstract_marker = |val: &PyObjectRef| -> bool {
                 if let PyObjectPayload::Tuple(items) = &val.payload {
@@ -547,46 +582,6 @@ impl VirtualMachine {
                 )));
             }
         }
-        // ── FAST PATH: simple class with no enum/abstract/__new__/dataclass/namedtuple ──
-        if let PyObjectPayload::Class(cd) = &cls.payload {
-            // Also check for __new__/__enum__/__namedtuple__ added after class creation (is_simple_class is stale)
-            if cd.is_simple_class && kwargs.is_empty() && !{
-                let ns = cd.namespace.read();
-                ns.contains_key("__new__") || ns.contains_key("__enum__") || ns.contains_key("__namedtuple__")
-            } {
-                let instance = PyObject::instance(cls.clone());
-                // Look up __init__ via MRO (may be inherited from a base class).
-                // Use namespace first (own class), then fall back to MRO.
-                let init_fn = cd.namespace.read().get("__init__").cloned()
-                    .or_else(|| lookup_in_class_mro(cls, "__init__"));
-                if let Some(init_fn) = init_fn {
-                    let mut init_args = Vec::with_capacity(1 + pos_args.len());
-                    init_args.push(instance.clone());
-                    init_args.extend(pos_args.clone());
-                    let init_result = self.call_object(init_fn, init_args)?;
-                    if !matches!(&init_result.payload, PyObjectPayload::None) {
-                        return Err(PyException::type_error(
-                            "__init__() should return None, not '".to_string()
-                                + init_result.type_name() + "'"
-                        ));
-                    }
-                }
-                // Exception subclass: set args tuple
-                if Self::is_exception_class(cls) {
-                    if let PyObjectPayload::Instance(inst) = &instance.payload {
-                        let mut attrs = inst.attrs.write();
-                        if !attrs.contains_key("args") {
-                            if pos_args.len() == 1 {
-                                attrs.insert(CompactString::from("message"), pos_args[0].clone());
-                            }
-                            attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args));
-                        }
-                    }
-                }
-                return Ok(instance);
-            }
-        }
-
         // ── STANDARD PATH ──
         // Enum lookup: Color(2) returns the member with that value
         // Also handle Enum functional API: Enum("Name", "mem1 mem2") or Enum("Name", ["mem1", "mem2"])

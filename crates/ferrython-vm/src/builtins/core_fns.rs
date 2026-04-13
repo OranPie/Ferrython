@@ -224,35 +224,51 @@ pub(super) fn builtin_min(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("min expected at least 1 argument, got 0"));
     }
-    let items = if args.len() == 1 { args[0].to_list()? } else { args.to_vec() };
-    if items.is_empty() {
-        return Err(PyException::value_error("min() arg is an empty sequence"));
-    }
-    let mut best = items[0].clone();
-    for item in &items[1..] {
-        // Use partial_cmp_objects for zero-allocation comparison
-        if ferrython_core::object::helpers::partial_cmp_objects(item, &best)
-            == Some(std::cmp::Ordering::Less)
-        {
-            best = item.clone();
-        }
-    }
-    Ok(best)
+    min_max_impl(args, std::cmp::Ordering::Less, "min")
 }
 
 pub(super) fn builtin_max(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() {
         return Err(PyException::type_error("max expected at least 1 argument, got 0"));
     }
-    let items = if args.len() == 1 { args[0].to_list()? } else { args.to_vec() };
+    min_max_impl(args, std::cmp::Ordering::Greater, "max")
+}
+
+fn min_max_impl(args: &[PyObjectRef], target_ord: std::cmp::Ordering, name: &str) -> PyResult<PyObjectRef> {
+    // Multi-arg: min(a, b, c, ...)
+    if args.len() > 1 {
+        let mut best = args[0].clone();
+        for item in &args[1..] {
+            if ferrython_core::object::helpers::partial_cmp_objects(item, &best) == Some(target_ord) {
+                best = item.clone();
+            }
+        }
+        return Ok(best);
+    }
+    // Single-arg: direct slice access for list/tuple (avoid to_list clone)
+    let items: &[PyObjectRef] = match &args[0].payload {
+        PyObjectPayload::List(v) => unsafe { &*v.data_ptr() },
+        PyObjectPayload::Tuple(v) => v.as_slice(),
+        _ => {
+            let materialized = args[0].to_list()?;
+            if materialized.is_empty() {
+                return Err(PyException::value_error(&format!("{}() arg is an empty sequence", name)));
+            }
+            let mut best = materialized[0].clone();
+            for item in &materialized[1..] {
+                if ferrython_core::object::helpers::partial_cmp_objects(item, &best) == Some(target_ord) {
+                    best = item.clone();
+                }
+            }
+            return Ok(best);
+        }
+    };
     if items.is_empty() {
-        return Err(PyException::value_error("max() arg is an empty sequence"));
+        return Err(PyException::value_error(&format!("{}() arg is an empty sequence", name)));
     }
     let mut best = items[0].clone();
     for item in &items[1..] {
-        if ferrython_core::object::helpers::partial_cmp_objects(item, &best)
-            == Some(std::cmp::Ordering::Greater)
-        {
+        if ferrython_core::object::helpers::partial_cmp_objects(item, &best) == Some(target_ord) {
             best = item.clone();
         }
     }

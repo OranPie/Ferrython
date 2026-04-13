@@ -1023,10 +1023,52 @@ impl ClassData {
         let expected_attrs = attr_shape.len();
 
         // A class is "simple" if instantiation needs no special dispatch:
-        // no enum, no abstract methods, no custom __new__, no __dataclass__,
-        // and no metaclass __call__. This lets instantiate_class skip all the
-        // expensive checks on every call.
+        // no enum, no abstract methods (own or inherited), no custom __new__,
+        // no __dataclass__, and no metaclass __call__.
+        let is_abstract_marker = |val: &PyObjectRef| -> bool {
+            if let PyObjectPayload::Tuple(items) = &val.payload {
+                items.len() == 2 && items[0].as_str() == Some("__abstract__")
+            } else if let PyObjectPayload::Property(pd) = &val.payload {
+                if let Some(fg) = &pd.fget {
+                    if let PyObjectPayload::Tuple(items) = &fg.payload {
+                        return items.len() == 2 && items[0].as_str() == Some("__abstract__");
+                    }
+                }
+                false
+            } else {
+                false
+            }
+        };
+        let has_own_abstract = namespace.values().any(|val| is_abstract_marker(val));
+        let has_inherited_abstract = !has_own_abstract && mro.iter().any(|base| {
+            if let PyObjectPayload::Class(bcd) = &base.payload {
+                let bns = bcd.namespace.read();
+                bns.values().any(|val| {
+                    if !is_abstract_marker(val) { return false; }
+                    // Check if overridden in our namespace
+                    false // conservative: if base has abstract, check if we override
+                })
+            } else { false }
+        });
+        // Simpler: check if any MRO base has unoverridden abstract methods
+        let has_abstract = has_own_abstract || {
+            let mut found = false;
+            for base in &mro {
+                if let PyObjectPayload::Class(bcd) = &base.payload {
+                    let bns = bcd.namespace.read();
+                    for (name, val) in bns.iter() {
+                        if is_abstract_marker(val) && !namespace.contains_key(name.as_str()) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if found { break; }
+                }
+            }
+            found
+        };
         let is_simple_class = metaclass.is_none()
+            && !has_abstract
             && !namespace.contains_key("__enum__")
             && !namespace.contains_key("__dataclass__")
             && !namespace.contains_key("__new__")
