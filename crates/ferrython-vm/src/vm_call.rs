@@ -492,6 +492,61 @@ impl VirtualMachine {
         pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
     ) -> PyResult<PyObjectRef> {
+        // ── ABC check (must run before any fast path) ──
+        if let PyObjectPayload::Class(cd) = &cls.payload {
+            let is_abstract_marker = |val: &PyObjectRef| -> bool {
+                if let PyObjectPayload::Tuple(items) = &val.payload {
+                    items.len() == 2 && items[0].as_str() == Some("__abstract__")
+                } else if let PyObjectPayload::Property(pd) = &val.payload {
+                    if let Some(fg) = &pd.fget {
+                        if let PyObjectPayload::Tuple(items) = &fg.payload {
+                            return items.len() == 2 && items[0].as_str() == Some("__abstract__");
+                        }
+                    }
+                    false
+                } else {
+                    false
+                }
+            };
+            let mut abstract_names: Vec<String> = Vec::new();
+            {
+                let ns = cd.namespace.read();
+                for (name, val) in ns.iter() {
+                    if is_abstract_marker(val) {
+                        abstract_names.push(name.to_string());
+                    }
+                }
+            }
+            for ancestor in &cd.mro {
+                if let PyObjectPayload::Class(ancestor_cd) = &ancestor.payload {
+                    let ancestor_ns = ancestor_cd.namespace.read();
+                    for (name, val) in ancestor_ns.iter() {
+                        if !is_abstract_marker(val) { continue; }
+                        let overridden_in_own = cd.namespace.read().get(name.as_str())
+                            .map(|v| !is_abstract_marker(v)).unwrap_or(false);
+                        let overridden_in_mro = cd.mro.iter().any(|m| {
+                            if PyObjectRef::ptr_eq(m, ancestor) { return false; }
+                            if let PyObjectPayload::Class(mcd) = &m.payload {
+                                mcd.namespace.read().get(name.as_str())
+                                    .map(|v| !is_abstract_marker(v)).unwrap_or(false)
+                            } else { false }
+                        });
+                        if !overridden_in_own && !overridden_in_mro && !abstract_names.contains(&name.to_string()) {
+                            abstract_names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            if !abstract_names.is_empty() {
+                abstract_names.sort();
+                return Err(PyException::type_error(format!(
+                    "Can't instantiate abstract class {} with abstract method{}{}",
+                    cd.name,
+                    if abstract_names.len() > 1 { "s " } else { " " },
+                    abstract_names.join(", ")
+                )));
+            }
+        }
         // ── FAST PATH: simple class with no enum/abstract/__new__/dataclass/namedtuple ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
             if cd.is_simple_class && kwargs.is_empty() {
@@ -603,72 +658,6 @@ impl VirtualMachine {
                 }
                 return Err(PyException::value_error(format!(
                     "{} is not a valid {}", target_val.repr(), cd.name
-                )));
-            }
-        }
-        // Check for abstract methods (ABC support)
-        // Walk the full MRO to collect abstract markers, then check if
-        // the concrete class (or any class earlier in MRO) overrides them.
-        if let PyObjectPayload::Class(cd) = &cls.payload {
-            let is_abstract_marker = |val: &PyObjectRef| -> bool {
-                if let PyObjectPayload::Tuple(items) = &val.payload {
-                    items.len() == 2 && items[0].as_str() == Some("__abstract__")
-                } else if let PyObjectPayload::Property(pd) = &val.payload {
-                    // @property @abstractmethod: fget is the abstract marker tuple
-                    if let Some(fg) = &pd.fget {
-                        if let PyObjectPayload::Tuple(items) = &fg.payload {
-                            return items.len() == 2 && items[0].as_str() == Some("__abstract__");
-                        }
-                    }
-                    false
-                } else {
-                    false
-                }
-            };
-            let mut abstract_names: Vec<String> = Vec::new();
-            // Check this class's own namespace for abstract markers
-            {
-                let ns = cd.namespace.read();
-                for (name, val) in ns.iter() {
-                    if is_abstract_marker(val) {
-                        abstract_names.push(name.to_string());
-                    }
-                }
-            }
-            // Walk full MRO (bases + their bases) for inherited abstract methods
-            for ancestor in &cd.mro {
-                if let PyObjectPayload::Class(ancestor_cd) = &ancestor.payload {
-                    let ancestor_ns = ancestor_cd.namespace.read();
-                    for (name, val) in ancestor_ns.iter() {
-                        if !is_abstract_marker(val) {
-                            continue;
-                        }
-                        // Check if any class from the concrete class through
-                        // the MRO (before this ancestor) provides a concrete override
-                        let overridden_in_own = cd.namespace.read().get(name.as_str())
-                            .map(|v| !is_abstract_marker(v))
-                            .unwrap_or(false);
-                        let overridden_in_mro = cd.mro.iter().any(|m| {
-                            if PyObjectRef::ptr_eq(m, ancestor) { return false; }
-                            if let PyObjectPayload::Class(mcd) = &m.payload {
-                                mcd.namespace.read().get(name.as_str())
-                                    .map(|v| !is_abstract_marker(v))
-                                    .unwrap_or(false)
-                            } else { false }
-                        });
-                        if !overridden_in_own && !overridden_in_mro && !abstract_names.contains(&name.to_string()) {
-                            abstract_names.push(name.to_string());
-                        }
-                    }
-                }
-            }
-            if !abstract_names.is_empty() {
-                abstract_names.sort();
-                return Err(PyException::type_error(format!(
-                    "Can't instantiate abstract class {} with abstract method{}{}",
-                    cd.name,
-                    if abstract_names.len() > 1 { "s " } else { " " },
-                    abstract_names.join(", ")
                 )));
             }
         }

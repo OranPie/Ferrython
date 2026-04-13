@@ -3093,7 +3093,28 @@ impl VirtualMachine {
                         // ── Inline Class instantiation for simple classes ──
                         // Avoids execute_one + 2 Vec allocs + double call_object dispatch
                         if let PyObjectPayload::Class(cd) = &sget!(frame, func_idx).payload {
-                            if cd.is_simple_class {
+                            if cd.is_simple_class && !{
+                                // Quick ABC check: skip inline path if class has unoverridden abstract methods
+                                let own_abstract = {
+                                    let ns = cd.namespace.read();
+                                    ns.values().any(|v| matches!(&v.payload, PyObjectPayload::Tuple(items) if items.len() == 2 && items[0].as_str() == Some("__abstract__")))
+                                };
+                                let inherited_abstract = cd.mro.iter().any(|ancestor| {
+                                    if let PyObjectPayload::Class(acd) = &ancestor.payload {
+                                        let ans = acd.namespace.read();
+                                        ans.iter().any(|(name, v)| {
+                                            if !matches!(&v.payload, PyObjectPayload::Tuple(items) if items.len() == 2 && items[0].as_str() == Some("__abstract__")) {
+                                                return false;
+                                            }
+                                            let overridden = cd.namespace.read().get(name.as_str())
+                                                .map(|ov| !matches!(&ov.payload, PyObjectPayload::Tuple(items) if items.len() == 2 && items[0].as_str() == Some("__abstract__")))
+                                                .unwrap_or(false);
+                                            !overridden
+                                        })
+                                    } else { false }
+                                });
+                                own_abstract || inherited_abstract
+                            } {
                                 // Look up __init__: try vtable first (O(1) hash), fall back to namespace
                                 let vt = unsafe { &*cd.method_vtable.data_ptr() };
                                 let init_fn = if !vt.is_empty() {
