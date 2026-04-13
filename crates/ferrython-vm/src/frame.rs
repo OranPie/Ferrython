@@ -202,6 +202,8 @@ pub struct Frame {
     /// True when code/globals/builtins/constant_cache were borrowed (not ref-counted)
     /// from the parent frame or held function. recycle() must not drop those Arcs.
     pub(crate) borrowed_env: bool,
+    /// When true, discard the return value (used for __init__ frames in inline class instantiation)
+    pub(crate) discard_return: bool,
 }
 
 /// Fixed-size direct-mapped inline cache for class attribute lookups.
@@ -293,6 +295,7 @@ impl Frame {
             global_cache_version: u64::MAX, // force miss on first access
             prepare_dict: None,
             borrowed_env: false,
+            discard_return: false,
             held_func: None,
             attr_ic: None,
         }
@@ -343,6 +346,7 @@ impl Frame {
             global_cache_version: u64::MAX,
             prepare_dict: None,
             borrowed_env: false,
+            discard_return: false,
             held_func: None,
             attr_ic: None,
         }
@@ -406,6 +410,7 @@ impl Frame {
             global_cache_version: u64::MAX,
             prepare_dict: None,
             borrowed_env: false,
+            discard_return: false,
             held_func: None,
             attr_ic: None,
         }
@@ -455,6 +460,7 @@ impl Frame {
             global_cache_version: parent.global_cache_version,
             prepare_dict: None,
             borrowed_env: true,
+            discard_return: false,
             held_func: None,
             attr_ic: None,
         }
@@ -504,6 +510,7 @@ impl Frame {
             global_cache_version: u64::MAX,
             prepare_dict: None,
             borrowed_env: true,
+            discard_return: false,
             held_func: Some(func_obj),
             attr_ic: None,
         }

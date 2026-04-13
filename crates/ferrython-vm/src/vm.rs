@@ -3090,6 +3090,87 @@ impl VirtualMachine {
                         }
                         } // close the mini-interpreter else (normal frame creation path)
                     } else {
+                        // ── Inline Class instantiation for simple classes ──
+                        // Avoids execute_one + 2 Vec allocs + double call_object dispatch
+                        if let PyObjectPayload::Class(cd) = &sget!(frame, func_idx).payload {
+                            if cd.is_simple_class {
+                                // Look up __init__: try vtable first (O(1) hash), fall back to namespace
+                                let vt = unsafe { &*cd.method_vtable.data_ptr() };
+                                let init_fn = if vt.is_empty() {
+                                    // Vtable was invalidated (class attr mutation) — use namespace
+                                    cd.namespace.read().get("__init__").cloned()
+                                        .or_else(|| ferrython_core::object::lookup_in_class_mro(
+                                            sget!(frame, func_idx), "__init__"))
+                                } else {
+                                    vt.get("__init__").cloned()
+                                };
+                                if let Some(init_fn) = init_fn {
+                                    // Check if __init__ is a simple Function we can inline
+                                    if let PyObjectPayload::Function(pf) = &init_fn.payload {
+                                        if pf.is_simple && pf.code.arg_count as usize == arg_count + 1 {
+                                            let cls = sget!(frame, func_idx).clone();
+                                            let instance = PyObject::instance(cls);
+                                            // Create frame directly for __init__(self, *args)
+                                            let mut new_frame = Frame::new_from_pool(
+                                                Rc::clone(&pf.code),
+                                                pf.globals.clone(),
+                                                self.builtins.clone(),
+                                                Rc::clone(&pf.constant_cache),
+                                                &mut self.frame_pool,
+                                            );
+                                            new_frame.scope_kind = crate::frame::ScopeKind::Function;
+                                            // locals[0] = self (instance)
+                                            new_frame.locals[0] = Some(instance.clone());
+                                            // Move args from parent stack to locals[1..]
+                                            let args_start = func_idx + 1;
+                                            unsafe {
+                                                let base = frame.stack.as_ptr();
+                                                for i in 0..arg_count {
+                                                    new_frame.locals[1 + i] = Some(
+                                                        std::ptr::read(base.add(args_start + i))
+                                                    );
+                                                }
+                                                // Drop function ref from stack
+                                                let _func = std::ptr::read(base.add(func_idx));
+                                                frame.stack.set_len(func_idx);
+                                            }
+                                            // Push instance as return value BEFORE __init__ frame
+                                            spush!(frame, instance);
+                                            // Mark frame to discard __init__'s return value
+                                            new_frame.discard_return = true;
+                                            self.call_stack.push(new_frame);
+                                            rederive_frame!(self, frame_ptr, instr_base, instr_count);
+                                            if self.call_stack.len() > self.recursion_limit {
+                                                if let Some(f) = self.call_stack.pop() { f.recycle(&mut self.frame_pool); }
+                                                Err(PyException::recursion_error("maximum recursion depth exceeded"))
+                                            } else {
+                                                hot_ok!(profiling, self.profiler, instr.op)
+                                            }
+                                        } else {
+                                            // __init__ has complex signature — fall back
+                                            self.execute_one(instr)
+                                        }
+                                    } else {
+                                        self.execute_one(instr)
+                                    }
+                                } else {
+                                    // No __init__ found — create bare instance
+                                    let cls = sget!(frame, func_idx).clone();
+                                    let instance = PyObject::instance(cls);
+                                    unsafe {
+                                        let base = frame.stack.as_ptr();
+                                        for i in 0..=arg_count {
+                                            let _ = std::ptr::read(base.add(func_idx + i));
+                                        }
+                                        frame.stack.set_len(func_idx);
+                                    }
+                                    spush!(frame, instance);
+                                    hot_ok!(profiling, self.profiler, instr.op)
+                                }
+                            } else {
+                                self.execute_one(instr)
+                            }
+                        } else {
                         // Fast path for common builtins: len(x), range(n)
                         let builtin_name = if let PyObjectPayload::BuiltinFunction(name) = &sget!(frame, func_idx).payload {
                             Some(name.as_str())
@@ -3398,7 +3479,8 @@ impl VirtualMachine {
                             }
                             _ => self.execute_one(instr),
                         }
-                    }
+                    } // close else for BuiltinFunction checks
+                    } // close else for Class check
                 }
                 // Inline LoadGlobal + CallFunction fused: load global, then call
                 // arg = (name_idx << 16) | arg_count
@@ -5734,15 +5816,17 @@ impl VirtualMachine {
                             self.call_stack.set_len(new_len);
                             child
                         };
+                        let discard = child.discard_return;
                         child.recycle(&mut self.frame_pool);
                         // SAFETY: we verified len > initial_depth >= 1 and popped one
                         let cs_len = self.call_stack.len();
                         let parent = unsafe { self.call_stack.get_unchecked_mut(cs_len - 1) };
                         // Check if the calling instruction was CallMethodPopTop — if so,
                         // discard the return value instead of pushing it to the stack.
+                        // Also discard if child was an __init__ frame from inline class instantiation.
                         let caller_op = parent.code.instructions.get(parent.ip.wrapping_sub(1))
                             .map(|i| i.op);
-                        if caller_op == Some(Opcode::CallMethodPopTop) {
+                        if discard || caller_op == Some(Opcode::CallMethodPopTop) {
                             drop(ret);
                         } else {
                             parent.stack.push(ret);
