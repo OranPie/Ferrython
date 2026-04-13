@@ -323,8 +323,11 @@ impl Frame {
 
         // Reuse a pooled locals vector or allocate new
         let mut locals = pool.take_locals();
-        locals.clear();
-        locals.resize(nl, None);
+        if locals.len() != nl {
+            locals.clear();
+            locals.resize(nl, None);
+        }
+        // else: locals is already len=nl with all None from recycle()
 
         let cells: Vec<CellRef> = if nc > 0 {
             (0..nc).map(|_| Rc::new(PyCell::new(None))).collect()
@@ -539,7 +542,11 @@ impl Frame {
     #[inline]
     pub fn recycle(mut self, pool: &mut FramePool) {
         self.stack.clear();
-        self.locals.clear();
+        // Zero out locals in place — keeps Vec length so pool reuse can
+        // skip clear+resize when the next frame has the same local count.
+        for slot in &mut self.locals {
+            *slot = None;
+        }
 
         if self.borrowed_env {
             // Extract held_func BEFORE ManuallyDrop — must be dropped normally

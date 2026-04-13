@@ -212,9 +212,20 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                         Some(n) => s.splitn(n + 1, sep)
                             .map(|p| PyObject::str_val(CompactString::from(p)))
                             .collect(),
-                        None => s.split(sep)
-                            .map(|p| PyObject::str_val(CompactString::from(p)))
-                            .collect(),
+                        None => {
+                            // Pre-count matches to allocate Vec with exact capacity
+                            let count = if sep.len() == 1 {
+                                let b = sep.as_bytes()[0];
+                                s.as_bytes().iter().filter(|&&c| c == b).count()
+                            } else {
+                                s.matches(sep).count()
+                            };
+                            let mut parts = Vec::with_capacity(count + 1);
+                            for p in s.split(sep) {
+                                parts.push(PyObject::str_val(CompactString::from(p)));
+                            }
+                            parts
+                        }
                     }
                 }
             };
@@ -1195,12 +1206,27 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
         }
         return result;
     }
-    // Estimate capacity
-    let mut result = CompactString::with_capacity(s.len());
+    // Pre-count matches to compute exact capacity (avoids heap alloc for short results)
+    let limit = max_count.unwrap_or(usize::MAX);
+    let mut match_count = 0;
+    let mut scan = s;
+    while match_count < limit {
+        match scan.find(old) {
+            Some(pos) => {
+                scan = &scan[pos + old.len()..];
+                match_count += 1;
+            }
+            None => break,
+        }
+    }
+    if match_count == 0 {
+        return CompactString::from(s);
+    }
+    let exact_len = s.len() - match_count * old.len() + match_count * new.len();
+    let mut result = CompactString::with_capacity(exact_len);
     let mut remaining = s;
     let mut count = 0;
-    let limit = max_count.unwrap_or(usize::MAX);
-    while count < limit {
+    while count < match_count {
         match remaining.find(old) {
             Some(pos) => {
                 result.push_str(&remaining[..pos]);
@@ -1228,13 +1254,13 @@ fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             )),
         }
     }
-    let mut result = String::with_capacity(total_len);
+    // Build directly into CompactString — short results stay inline (no heap alloc)
+    let mut result = CompactString::with_capacity(total_len);
     for (i, item) in items.iter().enumerate() {
         if i > 0 { result.push_str(sep); }
-        // SAFETY: validated all items are str in the loop above
-        if let Some(part) = item.as_str() {
-            result.push_str(part);
+        if let PyObjectPayload::Str(s) = &item.payload {
+            result.push_str(s.as_str());
         }
     }
-    Ok(PyObject::str_val(CompactString::from(result)))
+    Ok(PyObject::str_val(result))
 }

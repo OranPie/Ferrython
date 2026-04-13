@@ -926,14 +926,19 @@ impl VirtualMachine {
     /// Call __set_name__ on descriptors in the class namespace (PEP 487).
     fn call_set_name_on_descriptors(&mut self, cls: &PyObjectRef) -> PyResult<()> {
         if let PyObjectPayload::Class(cd) = &cls.payload {
+            // Quick scan: skip snapshot if no Instance values exist in namespace
+            let has_instances = {
+                let ns = cd.namespace.read();
+                ns.values().any(|v| matches!(&v.payload, PyObjectPayload::Instance(_)))
+            };
+            if !has_instances { return Ok(()); }
             let ns_snapshot: Vec<(CompactString, PyObjectRef)> = {
                 let ns = cd.namespace.read();
-                ns.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                ns.iter()
+                    .filter(|(_, v)| matches!(&v.payload, PyObjectPayload::Instance(_)))
+                    .map(|(k, v)| (k.clone(), v.clone())).collect()
             };
             for (attr_name, attr_val) in &ns_snapshot {
-                if !matches!(&attr_val.payload, PyObjectPayload::Instance(_)) {
-                    continue;
-                }
                 if let Some(set_name_method) = attr_val.get_attr("__set_name__") {
                     let bound = if matches!(&set_name_method.payload, PyObjectPayload::BoundMethod { .. }) {
                         set_name_method
