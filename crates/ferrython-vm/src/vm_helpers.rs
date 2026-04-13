@@ -106,7 +106,8 @@ impl VirtualMachine {
     /// and leave descriptors (Instance with __get__) as-is for the VM to invoke __get__.
     fn bind_class_val_for_instance(obj: &PyObjectRef, inst: &ferrython_core::object::InstanceData, class_val: PyObjectRef) -> PyObjectRef {
         match &class_val.payload {
-            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_) => {
+            PyObjectPayload::Function(_) | PyObjectPayload::NativeFunction(_)
+            | PyObjectPayload::NativeClosure { .. } => {
                 PyObjectRef::new(PyObject {
                     payload: PyObjectPayload::BoundMethod {
                         receiver: obj.clone(),

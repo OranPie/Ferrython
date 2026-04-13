@@ -5922,6 +5922,13 @@ impl VirtualMachine {
                         let caller_op = parent.code.instructions.get(parent.ip.wrapping_sub(1))
                             .map(|i| i.op);
                         if discard || caller_op == Some(Opcode::CallMethodPopTop) {
+                            // __init__ must return None — check before discarding
+                            if discard && !matches!(&ret.payload, PyObjectPayload::None) {
+                                drop(ret);
+                                return Err(PyException::type_error(
+                                    "__init__() should return None".to_string()
+                                ));
+                            }
                             drop(ret);
                         } else {
                             parent.stack.push(ret);
