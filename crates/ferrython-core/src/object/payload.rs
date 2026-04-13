@@ -159,6 +159,12 @@ struct PyObjectBlock {
 /// Clone and Drop are no-ops when strong == IMMORTAL_REFCOUNT.
 const IMMORTAL_REFCOUNT: u32 = u32::MAX;
 
+/// Marker set on strong count during drop_in_place of the payload.
+/// Prevents PyWeakRef::drop from recycling the block while the payload
+/// is still being dropped (which would cause a double-free if the payload's
+/// destructor drops the last weak ref to this block).
+const DROPPING_REFCOUNT: u32 = u32::MAX - 1;
+
 const MAX_POOL_SIZE: usize = 1024;
 const SLAB_SIZE: usize = 64;
 
@@ -203,7 +209,11 @@ fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
         if i == 0 {
             first = ptr;
         } else {
-            unsafe { set_free_next(ptr, chain_head); }
+            // Mark with sentinel before adding to freelist chain
+            unsafe { 
+                (*ptr).strong = Cell::new(FREELIST_SENTINEL);
+                set_free_next(ptr, chain_head);
+            }
             chain_head = ptr;
             chain_count += 1;
         }
@@ -227,6 +237,10 @@ fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
 
     unsafe { NonNull::new_unchecked(first) }
 }
+
+/// Sentinel value written to strong count when a block is on the freelist.
+/// Used to detect double-free and use-after-free in debug mode.
+const FREELIST_SENTINEL: u32 = 0xDEAD_BEEF;
 
 #[inline(always)]
 fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
@@ -256,7 +270,10 @@ fn pool_recycle(block: NonNull<PyObjectBlock>) {
     POOL.with(|pool| {
         let mut state = pool.get();
         if state.count < MAX_POOL_SIZE as u32 {
-            unsafe { set_free_next(block.as_ptr(), state.head); }
+            unsafe { 
+                (*block.as_ptr()).strong = Cell::new(FREELIST_SENTINEL);
+                set_free_next(block.as_ptr(), state.head);
+            }
             state.head = block.as_ptr();
             state.count += 1;
             pool.set(state);
@@ -382,9 +399,17 @@ impl Drop for PyObjectRef {
             let new_strong = strong - 1;
             (*p).strong.set(new_strong);
             if new_strong == 0 {
+                // Mark as "being dropped" so PyWeakRef::drop won't recycle
+                // the block while drop_in_place is still running.
+                // (Without this, if the payload holds the last weak ref to itself
+                // via e.g. subclass registration, dropping the payload would trigger
+                // PyWeakRef::drop → sees strong==0 && weak==0 → double-free.)
+                (*p).strong.set(DROPPING_REFCOUNT);
                 // Drop the PyObject value
                 std::ptr::drop_in_place((*p).obj.as_mut_ptr());
-                // If no weak refs, recycle immediately
+                // Restore strong to 0 (payload is now dropped)
+                (*p).strong.set(0);
+                // If no weak refs remain, recycle immediately
                 if (*p).weak.get() == 0 {
                     pool_recycle(self.0);
                 }
@@ -429,7 +454,9 @@ impl PyWeakRef {
         unsafe {
             let p = self.0.as_ptr();
             let s = (*p).strong.get();
-            if s > 0 {
+            // Only upgrade if strong > 0 and not in a special state
+            // (DROPPING_REFCOUNT means payload is being destroyed)
+            if s > 0 && s < DROPPING_REFCOUNT {
                 (*p).strong.set(s + 1);
                 Some(PyObjectRef(self.0))
             } else {

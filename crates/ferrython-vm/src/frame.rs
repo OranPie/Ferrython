@@ -515,7 +515,12 @@ impl Frame {
         builtins: SharedBuiltins,
     ) -> Self {
         use ferrython_core::types::PyFunction;
-        let constant_cache = PyFunction::get_or_build_constant_cache(&code);
+        // For ephemeral code objects (exec/eval), always build a fresh cache.
+        // The CODE_CONSTANT_CACHE is keyed by Rc pointer address, which can be
+        // reused after the Rc is freed — causing an ABA stale-cache bug.
+        // Only function code objects (long-lived, held by PyFunction) benefit
+        // from the cache.
+        let constant_cache = Rc::new(PyFunction::build_constant_cache(&code));
         Self::new_with_cache(code, globals, builtins, constant_cache)
     }
 
