@@ -99,11 +99,11 @@ pub fn get_recursion_limit() -> i64 {
 
 pub fn create_sys_module() -> PyObjectRef {
     make_module("sys", vec![
-        ("version", PyObject::str_val(CompactString::from("3.12.0 (ferrython)"))),
+        ("version", PyObject::str_val(CompactString::from("3.8.0 (ferrython)"))),
         ("version_info", {
             let vi_attrs = IndexMap::from([
                 (CompactString::from("major"), PyObject::int(3)),
-                (CompactString::from("minor"), PyObject::int(12)),
+                (CompactString::from("minor"), PyObject::int(8)),
                 (CompactString::from("micro"), PyObject::int(0)),
                 (CompactString::from("releaselevel"), PyObject::str_val(CompactString::from("final"))),
                 (CompactString::from("serial"), PyObject::int(0)),
@@ -120,7 +120,7 @@ pub fn create_sys_module() -> PyObjectRef {
                             return Err(PyException::type_error("__getitem__ requires index"));
                         };
                         let items = vec![
-                            PyObject::int(3), PyObject::int(12), PyObject::int(0),
+                            PyObject::int(3), PyObject::int(8), PyObject::int(0),
                             PyObject::str_val(CompactString::from("final")), PyObject::int(0),
                         ];
                         // Handle slice
@@ -1574,7 +1574,7 @@ fn os_mkdir(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match std::fs::create_dir(&path) {
         Ok(_) => Ok(PyObject::none()),
         Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => Ok(PyObject::none()),
-        Err(e) => Err(PyException::os_error(format!("{}", e))),
+        Err(e) => Err(PyException::from_io_error(&e, Some(&path))),
     }
 }
 fn os_makedirs(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {

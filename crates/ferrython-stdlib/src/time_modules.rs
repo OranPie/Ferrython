@@ -1207,6 +1207,32 @@ fn install_datetime_methods(inst: &PyObjectRef, year: i64, month: i64, day: i64,
             }
         ));
 
+        // isocalendar() -> (iso_year, iso_week, iso_weekday)
+        w.insert(CompactString::from("isocalendar"), PyObject::native_closure(
+            "datetime.isocalendar", move |_: &[PyObjectRef]| {
+                let ordinal = ymd_to_ordinal(y, mo, da);
+                let dow = ((ordinal + 6) % 7); // 0=Monday
+                // Find Thursday of the same ISO week
+                let thu = ordinal + 3 - dow;
+                // ISO year is the year containing that Thursday
+                let (iso_year, _, _) = ordinal_to_ymd(thu);
+                let jan1_ord = ymd_to_ordinal(iso_year, 1, 1);
+                let jan1_dow = ((jan1_ord + 6) % 7);
+                // Monday of ISO week 1
+                let iso_week1_mon = if jan1_dow <= 3 {
+                    jan1_ord - jan1_dow
+                } else {
+                    jan1_ord + 7 - jan1_dow
+                };
+                let week_num = (ordinal - iso_week1_mon) / 7 + 1;
+                Ok(PyObject::tuple(vec![
+                    PyObject::int(iso_year),
+                    PyObject::int(week_num),
+                    PyObject::int(dow + 1), // Monday=1
+                ]))
+            }
+        ));
+
         // isoweekday() -> int (1=Monday, 7=Sunday)
         let iwd = wd + 1;
         w.insert(CompactString::from("isoweekday"), PyObject::native_closure(

@@ -1125,11 +1125,11 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }
                         return Some(PyObject::none());
                     }
-                    "setter" | "getter" | "deleter" | "pd.fget" | "pd.fset" | "pd.fdel" => {
+                    "setter" | "getter" | "deleter" | "fget" | "fset" | "fdel" => {
                         match name {
-                            "pd.fget" => return pd.fget.clone().or_else(|| Some(PyObject::none())),
-                            "pd.fset" => return pd.fset.clone().or_else(|| Some(PyObject::none())),
-                            "pd.fdel" => return pd.fdel.clone().or_else(|| Some(PyObject::none())),
+                            "fget" => return pd.fget.clone().or_else(|| Some(PyObject::none())),
+                            "fset" => return pd.fset.clone().or_else(|| Some(PyObject::none())),
+                            "fdel" => return pd.fdel.clone().or_else(|| Some(PyObject::none())),
                             _ => {}
                         }
                         // Return a BuiltinBoundMethod that the VM will handle
