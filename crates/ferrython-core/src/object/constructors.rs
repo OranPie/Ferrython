@@ -33,6 +33,23 @@ thread_local! {
         UnsafeCell::new(Vec::with_capacity(EXCEPTION_FREELIST_MAX));
 }
 
+// ── Instance freelist ──
+// Recycle Box<InstanceData> + its inner Rc<PyCell<FxAttrMap>> to avoid 2 mallocs per instance.
+// SAFETY: Single-threaded interpreter (GIL) — no concurrent access to TLS.
+const INSTANCE_FREELIST_MAX: usize = 80;
+thread_local! {
+    static INSTANCE_FREELIST: UnsafeCell<Vec<Box<InstanceData>>> =
+        UnsafeCell::new(Vec::with_capacity(INSTANCE_FREELIST_MAX));
+}
+
+// ── Attr map freelist ──
+// Recycle Rc<PyCell<FxAttrMap>> for instance attrs.
+const ATTR_FREELIST_MAX: usize = 80;
+thread_local! {
+    static ATTR_FREELIST: UnsafeCell<Vec<SharedFxAttrMap>> =
+        UnsafeCell::new(Vec::with_capacity(ATTR_FREELIST_MAX));
+}
+
 /// Allocate an ExceptionInstanceData box, reusing from freelist if possible.
 #[inline]
 pub fn alloc_exception_box(
@@ -76,6 +93,113 @@ pub(crate) fn recycle_exception_box(mut data: Box<ExceptionInstanceData>) {
             list.push(data);
         }
     })
+}
+
+/// Allocate an InstanceData box, reusing from freelist if possible.
+/// The returned InstanceData has a recycled attrs map with cleared entries but retained capacity.
+#[inline]
+pub fn alloc_instance_box(class: PyObjectRef, class_flags: u8, dict_storage: Option<Rc<PyCell<FxHashKeyMap>>>, expected_attrs: usize) -> Box<InstanceData> {
+    INSTANCE_FREELIST.with(|fl| {
+        let list = unsafe { &mut *fl.get() };
+        if let Some(mut data) = list.pop() {
+            data.class = class;
+            data.class_flags = class_flags;
+            data.dict_storage = dict_storage;
+            data.is_special = false;
+            // Check if attrs Rc is uniquely owned — if shared (e.g., __dict__ created
+            // an InstanceDict), we must not clear it; allocate a fresh one instead.
+            if Rc::strong_count(&data.attrs) == 1 {
+                unsafe { &mut *data.attrs.data_ptr() }.clear();
+            } else {
+                data.attrs = alloc_attr_map();
+            }
+            data
+        } else {
+            let attrs: FxAttrMap = if expected_attrs > 0 {
+                FxAttrMap::with_capacity_and_hasher(expected_attrs, Default::default())
+            } else {
+                FxAttrMap::default()
+            };
+            Box::new(InstanceData {
+                class,
+                attrs: alloc_attr_map_with(attrs),
+                dict_storage,
+                is_special: false,
+                class_flags,
+            })
+        }
+    })
+}
+
+/// Return an InstanceData box to the freelist.
+/// Clears inner references to avoid holding PyObjectRef alive.
+#[inline]
+pub(crate) fn recycle_instance_box(mut data: Box<InstanceData>) {
+    // Clear attrs: if uniquely owned, clear entries (retain capacity); else drop reference.
+    if Rc::strong_count(&data.attrs) == 1 {
+        unsafe { &mut *data.attrs.data_ptr() }.clear();
+    } else {
+        // Someone else (e.g., InstanceDict from __dict__) holds a reference.
+        // Replace with a fresh empty Rc so they keep their data.
+        data.attrs = alloc_attr_map();
+    }
+    data.dict_storage = None;
+    let old_class = std::mem::replace(&mut data.class, NONE_SINGLETON.clone());
+    drop(old_class);
+    INSTANCE_FREELIST.with(|fl| {
+        let list = unsafe { &mut *fl.get() };
+        if list.len() < INSTANCE_FREELIST_MAX {
+            list.push(data);
+        }
+    })
+}
+
+/// Allocate an attr map (Rc<PyCell<FxAttrMap>>), reusing from freelist if possible.
+#[inline]
+pub fn alloc_attr_map() -> SharedFxAttrMap {
+    ATTR_FREELIST.with(|fl| {
+        let list = unsafe { &mut *fl.get() };
+        if let Some(rc) = list.pop() {
+            rc
+        } else {
+            Rc::new(PyCell::new(FxAttrMap::default()))
+        }
+    })
+}
+
+/// Allocate an attr map with initial data.
+#[inline]
+fn alloc_attr_map_with(attrs: FxAttrMap) -> SharedFxAttrMap {
+    ATTR_FREELIST.with(|fl| {
+        let list = unsafe { &mut *fl.get() };
+        if let Some(rc) = list.pop() {
+            // Replace contents with new data (retaining allocation if capacity fits)
+            let map = unsafe { &mut *rc.data_ptr() };
+            *map = attrs;
+            rc
+        } else {
+            Rc::new(PyCell::new(attrs))
+        }
+    })
+}
+
+/// Try to recycle an attr map back to the freelist (if uniquely owned).
+#[inline]
+pub(crate) fn try_recycle_attr_map(rc: &SharedFxAttrMap) -> bool {
+    if Rc::strong_count(rc) == 1 {
+        unsafe { &mut *rc.data_ptr() }.clear();
+        ATTR_FREELIST.with(|fl| {
+            let list = unsafe { &mut *fl.get() };
+            if list.len() < ATTR_FREELIST_MAX {
+                list.push(rc.clone());
+                true
+            } else {
+                false
+            }
+        })
+    } else {
+        false
+    }
 }
 
 /// Allocate an inner Rc<PyCell<FxHashKeyMap>>, reusing from freelist if possible.
@@ -427,20 +551,16 @@ impl PyObject {
     }
     pub fn instance(class: PyObjectRef) -> PyObjectRef {
         // Use cached flags from ClassData to avoid hierarchy traversal
-        let (dict_storage, attrs, class_flags) = if let PyObjectPayload::Class(cd) = &class.payload {
+        let (dict_storage, expected_attrs, class_flags) = if let PyObjectPayload::Class(cd) = &class.payload {
             let ds = if cd.is_dict_subclass {
                 Some(alloc_map_inner())
             } else { None };
-            let a: FxAttrMap = if cd.expected_attrs > 0 {
-                FxAttrMap::with_capacity_and_hasher(cd.expected_attrs, Default::default())
-            } else {
-                FxAttrMap::default()
-            };
-            (ds, a, cd.instance_flags)
+            (ds, cd.expected_attrs, cd.instance_flags)
         } else {
-            (Self::detect_dict_subclass(&class), FxAttrMap::default(), 0xFF)
+            (Self::detect_dict_subclass(&class), 0, 0xFF)
         };
-        let obj = Self::wrap(PyObjectPayload::Instance(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(attrs)), dict_storage, is_special: false, class_flags })));
+        let data = alloc_instance_box(class, class_flags, dict_storage, expected_attrs);
+        let obj = Self::wrap(PyObjectPayload::Instance(ManuallyDrop::new(data)));
         track_object(&obj);
         obj
     }
@@ -454,7 +574,7 @@ impl PyObject {
         };
         let fx_attrs: FxAttrMap = attrs.into_iter().collect();
         let class_flags = InstanceData::compute_flags(&class);
-        let obj = Self::wrap(PyObjectPayload::Instance(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(fx_attrs)), dict_storage, is_special: false, class_flags })));
+        let obj = Self::wrap(PyObjectPayload::Instance(ManuallyDrop::new(Box::new(InstanceData { class, attrs: Rc::new(PyCell::new(fx_attrs)), dict_storage, is_special: false, class_flags }))));
         track_object(&obj);
         obj
     }

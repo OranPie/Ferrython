@@ -3293,12 +3293,12 @@ pub fn create_token_module() -> PyObjectRef {
 fn make_ns(cls_name: &str, attrs: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
     let cls = PyObject::class(CompactString::from(cls_name), vec![], IndexMap::new());
     let class_flags = InstanceData::compute_flags(&cls);
-    PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
+    PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(InstanceData {
         class: cls,
         attrs: to_shared_fx(attrs),
         is_special: true, dict_storage: None,
         class_flags,
-    })))
+    }))))
 }
 
 // ── tokenize module ──

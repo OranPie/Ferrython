@@ -675,7 +675,8 @@ pub enum PyObjectPayload {
     BuiltinBoundMethod(Box<BuiltinBoundMethodData>),
     Code(std::rc::Rc<ferrython_bytecode::CodeObject>),
     Class(Box<ClassData>),
-    Instance(Box<InstanceData>),
+    /// ManuallyDrop enables recycling the Box through the instance freelist.
+    Instance(ManuallyDrop<Box<InstanceData>>),
     Module(Box<ModuleData>),
     Iterator(Rc<PyCell<IteratorData>>),
     /// Lock-free range iterator — avoids Mutex overhead for `for i in range(n)`.
@@ -755,6 +756,10 @@ impl Drop for PyObjectPayload {
                 // is a no-op, so no double-free occurs.
                 let taken = unsafe { ManuallyDrop::take(data) };
                 super::constructors::recycle_exception_box(taken);
+            }
+            PyObjectPayload::Instance(data) => {
+                let taken = unsafe { ManuallyDrop::take(data) };
+                super::constructors::recycle_instance_box(taken);
             }
             _ => {}
         }

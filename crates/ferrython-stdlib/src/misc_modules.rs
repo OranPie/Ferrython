@@ -1204,12 +1204,12 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         PyObjectPayload::Set(set) => Ok(PyObject::set(set.read().clone())),
         PyObjectPayload::Instance(inst) => {
             // Create new instance with same class, shallow copy of attrs
-            Ok(PyObject::wrap(PyObjectPayload::Instance(Box::new(InstanceData {
+            Ok(PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(InstanceData {
                 class: inst.class.clone(),
                 attrs: Rc::new(PyCell::new(inst.attrs.read().clone())),
                 is_special: true, dict_storage: inst.dict_storage.as_ref().map(|ds| Rc::new(PyCell::new(ds.read().clone()))),
                 class_flags: InstanceData::compute_flags(&inst.class),
-            }))))
+            })))))
         }
         _ => Ok(obj.clone()),
     }
