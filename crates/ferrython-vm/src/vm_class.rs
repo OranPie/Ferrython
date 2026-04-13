@@ -10,6 +10,7 @@ use ferrython_core::object::{ new_fx_hashkey_map, PyCell,
 };
 use ferrython_core::types::HashableKey;
 use indexmap::IndexMap;
+use std::cell::Cell;
 use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
@@ -365,8 +366,7 @@ impl VirtualMachine {
 
         // Invalidate stale vtable/cache
         drop(ns);
-        cd.method_vtable.write().clear();
-        cd.method_cache.write().clear();
+        cd.invalidate_cache();
     }
 
     /// Process enum class: transform simple attributes into enum member instances.
@@ -676,8 +676,7 @@ impl VirtualMachine {
         // ClassData::new() built the vtable.  Invalidate caches so lookups
         // pick up the new methods instead of stale base-class versions.
         drop(ns); // release namespace write guard first
-        cd.method_vtable.write().clear();
-        cd.method_cache.write().clear();
+        cd.invalidate_cache();
 
         Ok(())
     }
@@ -848,7 +847,8 @@ impl VirtualMachine {
                             class_version: cd.class_version,
                             is_dict_subclass: cd.is_dict_subclass,
                             expected_attrs: cd.expected_attrs,
-                            is_simple_class: false, // has metaclass
+                            is_simple_class: Cell::new(false), // has metaclass
+                            is_exception_subclass: cd.is_exception_subclass,
                         })))
                     } else {
                         result

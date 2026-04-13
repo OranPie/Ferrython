@@ -1132,8 +1132,7 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
     // The decorator added __init__ (and possibly __eq__/__repr__/etc.) AFTER class creation,
     // so the vtable is stale and must be cleared.
     if let PyObjectPayload::Class(cd) = &cls.payload {
-        cd.method_vtable.write().clear();
-        cd.method_cache.write().clear();
+        cd.invalidate_cache();
         // Update has_setattr flag if frozen (decorator added __setattr__ after creation)
         if frozen {
             // Safety: we have unique logical ownership during class creation; no other

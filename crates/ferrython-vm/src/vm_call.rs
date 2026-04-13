@@ -494,13 +494,14 @@ impl VirtualMachine {
     ) -> PyResult<PyObjectRef> {
         // ── FAST PATH: simple class — skip ABC check entirely ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
-            if cd.is_simple_class && kwargs.is_empty() && !{
-                let ns = cd.namespace.read();
-                ns.contains_key("__new__") || ns.contains_key("__enum__") || ns.contains_key("__namedtuple__")
-            } {
+            if cd.is_simple_class.get() && kwargs.is_empty()
+                && !cd.namespace.read().contains_key("__new__")
+            {
                 let instance = PyObject::instance(cls.clone());
-                let init_fn = cd.namespace.read().get("__init__").cloned()
-                    .or_else(|| lookup_in_class_mro(cls, "__init__"));
+                // Try vtable first (O(1)), fall back to namespace + MRO if vtable was cleared
+                let init_fn = cd.method_vtable.read().get("__init__").cloned()
+                    .or_else(|| cd.namespace.read().get("__init__").cloned())
+                    .or_else(|| ferrython_core::object::lookup_in_class_mro(cls, "__init__"));
                 if let Some(init_fn) = init_fn {
                     let mut init_args = Vec::with_capacity(1 + pos_args.len());
                     init_args.push(instance.clone());
@@ -513,7 +514,7 @@ impl VirtualMachine {
                         ));
                     }
                 }
-                if Self::is_exception_class(cls) {
+                if cd.is_exception_subclass {
                     if let PyObjectPayload::Instance(inst) = &instance.payload {
                         let mut attrs = inst.attrs.write();
                         if !attrs.contains_key("args") {

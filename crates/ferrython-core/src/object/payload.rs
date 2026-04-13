@@ -902,8 +902,11 @@ pub struct ClassData {
     pub expected_attrs: usize,
     /// Fast-path flag: true if this class can be instantiated without checking
     /// enum, abstract methods, custom __new__, or dataclass markers.
-    /// Computed once at class creation time.
-    pub is_simple_class: bool,
+    /// Computed at class creation time; invalidated on class mutation.
+    pub is_simple_class: Cell<bool>,
+    /// Cached flag: true if this class inherits from an ExceptionType.
+    /// Pre-computed at class creation to avoid recursive base walk per instantiation.
+    pub is_exception_subclass: bool,
     /// Fast-path flag: true if this class or any base defines __getattr__.
     /// When false, negative attribute lookups can skip the __getattr__ MRO scan.
     pub has_getattr: bool,
@@ -1074,6 +1077,17 @@ impl ClassData {
             && !namespace.contains_key("__new__")
             && !namespace.contains_key("__namedtuple__");
 
+        // Pre-compute exception subclass flag (avoids recursive base walk per instantiation)
+        let is_exception_subclass = bases.iter().any(|base| {
+            fn check_exc(obj: &PyObjectRef) -> bool {
+                if matches!(&obj.payload, PyObjectPayload::ExceptionType(_)) { return true; }
+                if let PyObjectPayload::Class(cd) = &obj.payload {
+                    cd.is_exception_subclass
+                } else { false }
+            }
+            check_exc(base)
+        });
+
         Self {
             name,
             bases,
@@ -1092,7 +1106,8 @@ impl ClassData {
             class_version: next_class_version(),
             is_dict_subclass,
             expected_attrs,
-            is_simple_class,
+            is_simple_class: Cell::new(is_simple_class),
+            is_exception_subclass,
         }
     }
 
@@ -1173,6 +1188,9 @@ impl ClassData {
     pub fn invalidate_cache(&self) {
         self.method_cache.write().clear();
         self.method_vtable.write().clear();
+        // Class mutation may have added __new__/__enum__/__namedtuple__ or abstract methods,
+        // so conservatively disable the simple-class fast path.
+        self.is_simple_class.set(false);
     }
 
     /// Detect if this class or any base has data descriptors (Property, __set__, __delete__).

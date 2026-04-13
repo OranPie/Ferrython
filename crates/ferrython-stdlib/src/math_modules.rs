@@ -2812,6 +2812,7 @@ pub fn create_fractions_module() -> PyObjectRef {
                 Ok(make_frac_instance(n, d))
             }),
         );
+        cd.invalidate_cache();
     }
 
     make_module("fractions", vec![

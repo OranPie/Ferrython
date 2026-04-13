@@ -10,6 +10,7 @@ use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell,
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
+use std::cell::Cell;
 use std::rc::Rc;
 
 use super::iter_advance;
@@ -138,7 +139,8 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         class_version: cd.class_version,
                         is_dict_subclass: cd.is_dict_subclass,
                         expected_attrs: cd.expected_attrs,
-                        is_simple_class: false, // has metaclass
+                        is_simple_class: Cell::new(false), // has metaclass
+                        is_exception_subclass: cd.is_exception_subclass,
                     }))));
                 }
             }
@@ -993,7 +995,7 @@ pub(super) fn builtin_sorted(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args[0].to_list()?
     };
-    items.sort_by(|a, b| {
+    items.sort_unstable_by(|a, b| {
         ferrython_core::object::helpers::partial_cmp_objects(a, b)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
