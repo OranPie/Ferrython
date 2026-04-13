@@ -164,26 +164,19 @@ const IMMORTAL_REFCOUNT: u32 = u32::MAX;
 /// destructor drops the last weak ref to this block).
 const DROPPING_REFCOUNT: u32 = u32::MAX - 1;
 
-const MAX_POOL_SIZE: usize = 1024;
-const SLAB_SIZE: usize = 64;
+const SLAB_SIZE: usize = 128;
 
 /// Pool state: intrusive singly-linked freelist through freed blocks.
 /// When a block is free, its `obj` area stores a `*mut PyObjectBlock` next-pointer.
+/// Blocks are never individually deallocated — they're allocated as contiguous slabs
+/// and recycled indefinitely (matching CPython's obmalloc strategy).
 /// SAFETY: Single-threaded interpreter (GIL semantics) — only one thread runs Python
 /// bytecode at a time, so direct static access is safe without TLS overhead.
-struct PoolHolder(std::cell::UnsafeCell<PoolStateInner>);
+struct PoolHolder(std::cell::UnsafeCell<*mut PyObjectBlock>);
 // SAFETY: GIL guarantees single-threaded access to pool during Python execution.
 unsafe impl Sync for PoolHolder {}
 
-struct PoolStateInner {
-    head: *mut PyObjectBlock,
-    count: u32,
-}
-
-static POOL: PoolHolder = PoolHolder(std::cell::UnsafeCell::new(PoolStateInner {
-    head: std::ptr::null_mut(),
-    count: 0,
-}));
+static POOL: PoolHolder = PoolHolder(std::cell::UnsafeCell::new(std::ptr::null_mut()));
 
 /// Read the next-free pointer from a freed block's obj area.
 #[inline(always)]
@@ -197,45 +190,39 @@ unsafe fn set_free_next(block: *mut PyObjectBlock, next: *mut PyObjectBlock) {
     *((*block).obj.as_mut_ptr() as *mut *mut PyObjectBlock) = next;
 }
 
-/// Allocate a slab of SLAB_SIZE blocks, return one, push rest into pool.
+/// Allocate a contiguous slab of SLAB_SIZE blocks, return one, push rest into pool.
+/// Contiguous allocation ensures adjacent blocks share cache lines, reducing
+/// cache misses when popping from the freelist in hot loops.
 #[cold]
 #[inline(never)]
 fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
-    let layout = std::alloc::Layout::new::<PyObjectBlock>();
-    let mut first: *mut PyObjectBlock = std::ptr::null_mut();
-    let mut chain_head: *mut PyObjectBlock = std::ptr::null_mut();
-    let mut chain_count: u32 = 0;
+    let layout = std::alloc::Layout::array::<PyObjectBlock>(SLAB_SIZE).unwrap();
+    let base = unsafe { std::alloc::alloc(layout) as *mut PyObjectBlock };
+    assert!(!base.is_null(), "allocation failed");
 
-    for i in 0..SLAB_SIZE {
-        let ptr = unsafe { std::alloc::alloc(layout) as *mut PyObjectBlock };
-        assert!(!ptr.is_null(), "allocation failed");
-        if i == 0 {
-            first = ptr;
-        } else {
-            unsafe { 
-                (*ptr).strong = Cell::new(FREELIST_SENTINEL);
-                set_free_next(ptr, chain_head);
-            }
-            chain_head = ptr;
-            chain_count += 1;
+    // Link blocks 1..SLAB_SIZE into freelist in forward order.
+    // Block[1] becomes freelist head → next alloc gets the adjacent block
+    // (same cache line or next cache line as block[0] which is returned).
+    unsafe {
+        let head = &mut *POOL.0.get();
+        // Link last block to existing freelist head
+        let last = base.add(SLAB_SIZE - 1);
+        (*last).strong = Cell::new(FREELIST_SENTINEL);
+        set_free_next(last, *head);
+        // Link blocks in reverse so block[1] ends up at head
+        for i in (1..SLAB_SIZE - 1).rev() {
+            let block = base.add(i);
+            (*block).strong = Cell::new(FREELIST_SENTINEL);
+            set_free_next(block, base.add(i + 1));
         }
+        // block[1] is new freelist head
+        let first_free = base.add(1);
+        (*first_free).strong = Cell::new(FREELIST_SENTINEL);
+        set_free_next(first_free, base.add(2));
+        *head = first_free;
     }
 
-    // Push chain into pool
-    if chain_count > 0 {
-        unsafe {
-            let state = &mut *POOL.0.get();
-            let mut tail = chain_head;
-            for _ in 1..chain_count {
-                tail = free_next(tail);
-            }
-            set_free_next(tail, state.head);
-            state.head = chain_head;
-            state.count += chain_count;
-        }
-    }
-
-    unsafe { NonNull::new_unchecked(first) }
+    unsafe { NonNull::new_unchecked(base) }
 }
 
 /// Sentinel value written to strong count when a block is on the freelist.
@@ -245,11 +232,10 @@ const FREELIST_SENTINEL: u32 = 0xDEAD_BEEF;
 #[inline(always)]
 fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
     let block = unsafe {
-        let state = &mut *POOL.0.get();
-        if !state.head.is_null() {
-            let block = state.head;
-            state.head = free_next(block);
-            state.count -= 1;
+        let head = &mut *POOL.0.get();
+        if !(*head).is_null() {
+            let block = *head;
+            *head = free_next(block);
             NonNull::new_unchecked(block)
         } else {
             alloc_slab_and_pop()
@@ -267,18 +253,10 @@ fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
 #[inline(always)]
 fn pool_recycle(block: NonNull<PyObjectBlock>) {
     unsafe {
-        let state = &mut *POOL.0.get();
-        if state.count < MAX_POOL_SIZE as u32 {
-            (*block.as_ptr()).strong = Cell::new(FREELIST_SENTINEL);
-            set_free_next(block.as_ptr(), state.head);
-            state.head = block.as_ptr();
-            state.count += 1;
-        } else {
-            std::alloc::dealloc(
-                block.as_ptr() as *mut u8,
-                std::alloc::Layout::new::<PyObjectBlock>(),
-            );
-        }
+        let head = &mut *POOL.0.get();
+        (*block.as_ptr()).strong = Cell::new(FREELIST_SENTINEL);
+        set_free_next(block.as_ptr(), *head);
+        *head = block.as_ptr();
     }
 }
 
