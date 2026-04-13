@@ -213,13 +213,10 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             .map(|p| PyObject::str_val(CompactString::from(p)))
                             .collect(),
                         None => {
-                            // Single-pass split with estimated capacity (avoids counting scan)
-                            let sep_len = sep.len();
-                            if sep_len == 0 {
+                            if sep.is_empty() {
                                 return Err(PyException::value_error("empty separator"));
                             }
-                            let est_parts = if s.len() < 256 { 8 } else { 16 };
-                            let mut parts = Vec::with_capacity(est_parts);
+                            let mut parts = Vec::with_capacity(8);
                             for p in s.split(sep) {
                                 parts.push(PyObject::str_val(CompactString::from(p)));
                             }
@@ -1208,67 +1205,27 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
     let new_len = new.len();
     let limit = max_count.unwrap_or(usize::MAX);
 
-    if new_len <= old_len {
-        // Shrinking or same-size: result ≤ s.len(). Single-pass, no reallocation.
-        // CompactString inlines ≤23 bytes without heap allocation.
-        let mut result = if s.len() <= 23 {
-            CompactString::new("")
+    // Single-pass replace. Start with inline CompactString (23-byte buffer, no heap alloc).
+    // For results ≤23 bytes this is zero-allocation. For longer results, CompactString
+    // auto-promotes to heap on the first push_str that exceeds inline capacity.
+    let mut result = CompactString::new("");
+    let mut remainder = s;
+    let mut replaced = 0usize;
+    while replaced < limit {
+        if let Some(pos) = remainder.find(old) {
+            result.push_str(&remainder[..pos]);
+            result.push_str(new);
+            remainder = &remainder[pos + old_len..];
+            replaced += 1;
         } else {
-            CompactString::with_capacity(s.len())
-        };
-        let mut remainder = s;
-        let mut replaced = 0usize;
-        while replaced < limit {
-            if let Some(pos) = remainder.find(old) {
-                result.push_str(&remainder[..pos]);
-                result.push_str(new);
-                remainder = &remainder[pos + old_len..];
-                replaced += 1;
-            } else {
-                break;
-            }
+            break;
         }
-        if replaced == 0 {
-            return CompactString::from(s);
-        }
-        result.push_str(remainder);
-        result
-    } else {
-        // Growing: two-pass to compute exact capacity (avoids reallocation).
-        let mut match_count = 0usize;
-        let mut search = s;
-        while match_count < limit {
-            if let Some(pos) = search.find(old) {
-                match_count += 1;
-                search = &search[pos + old_len..];
-            } else {
-                break;
-            }
-        }
-        if match_count == 0 {
-            return CompactString::from(s);
-        }
-        let exact_len = s.len() + match_count * (new_len - old_len);
-        let mut result = if exact_len <= 23 {
-            CompactString::new("")
-        } else {
-            CompactString::with_capacity(exact_len)
-        };
-        let mut remainder = s;
-        let mut replaced = 0usize;
-        while replaced < match_count {
-            if let Some(pos) = remainder.find(old) {
-                result.push_str(&remainder[..pos]);
-                result.push_str(new);
-                remainder = &remainder[pos + old_len..];
-                replaced += 1;
-            } else {
-                break;
-            }
-        }
-        result.push_str(remainder);
-        result
     }
+    if replaced == 0 {
+        return CompactString::from(s);
+    }
+    result.push_str(remainder);
+    result
 }
 /// Avoids cloning the list/tuple just to iterate.
 fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
