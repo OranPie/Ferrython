@@ -3138,8 +3138,11 @@ impl VirtualMachine {
                         // ── Inline Class instantiation for simple classes ──
                         // Avoids execute_one + 2 Vec allocs + double call_object dispatch
                         if let PyObjectPayload::Class(cd) = &sget!(frame, func_idx).payload {
-                            // Also check for __new__ added after class creation (is_simple_class may be stale)
-                            if cd.is_simple_class && !cd.namespace.read().contains_key("__new__") && !{
+                            // Also check for __new__/__enum__/__namedtuple__ added after class creation (is_simple_class may be stale)
+                            if cd.is_simple_class && !{
+                                let ns = cd.namespace.read();
+                                ns.contains_key("__new__") || ns.contains_key("__enum__") || ns.contains_key("__namedtuple__")
+                            } && !{
                                 // Quick ABC check: skip inline path if class has unoverridden abstract methods
                                 let own_abstract = {
                                     let ns = cd.namespace.read();
@@ -3325,11 +3328,10 @@ impl VirtualMachine {
                                         if let PyObjectPayload::Instance(inst) = &obj.payload {
                                             if let PyObjectPayload::Class(obj_cd) = &inst.class.payload {
                                                 if obj_cd.name == cd.name { Some(true) }
-                                                else {
-                                                    Some(obj_cd.mro.iter().any(|b| {
-                                                        matches!(&b.payload, PyObjectPayload::Class(bc) if bc.name == cd.name)
-                                                    }))
-                                                }
+                                                else if obj_cd.mro.iter().any(|b| {
+                                                    matches!(&b.payload, PyObjectPayload::Class(bc) if bc.name == cd.name)
+                                                }) { Some(true) }
+                                                else { None } // fall through to full isinstance (handles ABC registry, etc.)
                                             } else { None }
                                         } else { None }
                                     }
@@ -4142,11 +4144,10 @@ impl VirtualMachine {
                                                             if let PyObjectPayload::Instance(inst) = &obj.payload {
                                                                 if let PyObjectPayload::Class(obj_cd) = &inst.class.payload {
                                                                     if obj_cd.name == cd.name { Some(true) }
-                                                                    else {
-                                                                        Some(obj_cd.mro.iter().any(|b| {
-                                                                            matches!(&b.payload, PyObjectPayload::Class(bc) if bc.name == cd.name)
-                                                                        }))
-                                                                    }
+                                                                    else if obj_cd.mro.iter().any(|b| {
+                                                                        matches!(&b.payload, PyObjectPayload::Class(bc) if bc.name == cd.name)
+                                                                    }) { Some(true) }
+                                                                    else { None } // fall through to full isinstance (handles ABC registry, etc.)
                                                                 } else { None }
                                                             } else { None }
                                                         }
@@ -5001,6 +5002,8 @@ impl VirtualMachine {
                                                         | PyObjectPayload::Property(_)
                                                         | PyObjectPayload::ClassMethod(_)
                                                         | PyObjectPayload::StaticMethod(_) => None,
+                                                        // cached_property descriptor — must invoke, not return raw
+                                                        PyObjectPayload::Instance(cp_inst) if cp_inst.attrs.read().contains_key("__cached_property_func__") => None,
                                                         _ => Some(class_val.clone()),
                                                     }
                                                 } else { None }
@@ -5065,6 +5068,8 @@ impl VirtualMachine {
                                                     | PyObjectPayload::Property(_)
                                                     | PyObjectPayload::ClassMethod(_)
                                                     | PyObjectPayload::StaticMethod(_) => None,
+                                                    // cached_property descriptor — must invoke, not return raw
+                                                    PyObjectPayload::Instance(cp_inst) if cp_inst.attrs.read().contains_key("__cached_property_func__") => None,
                                                     _ => {
                                                         // Cache class-level non-descriptor attrs
                                                         let val = class_val.clone();
@@ -5233,6 +5238,8 @@ impl VirtualMachine {
                                                 | PyObjectPayload::Property(_)
                                                 | PyObjectPayload::ClassMethod(_)
                                                 | PyObjectPayload::StaticMethod(_) => None,
+                                                // cached_property descriptor — must invoke, not return raw
+                                                PyObjectPayload::Instance(cp_inst) if cp_inst.attrs.read().contains_key("__cached_property_func__") => None,
                                                 _ => Some(class_val.clone()),
                                             }
                                         } else { None }

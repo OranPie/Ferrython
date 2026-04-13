@@ -549,8 +549,11 @@ impl VirtualMachine {
         }
         // ── FAST PATH: simple class with no enum/abstract/__new__/dataclass/namedtuple ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
-            // Also check for __new__ added after class creation (is_simple_class is stale)
-            if cd.is_simple_class && kwargs.is_empty() && !cd.namespace.read().contains_key("__new__") {
+            // Also check for __new__/__enum__/__namedtuple__ added after class creation (is_simple_class is stale)
+            if cd.is_simple_class && kwargs.is_empty() && !{
+                let ns = cd.namespace.read();
+                ns.contains_key("__new__") || ns.contains_key("__enum__") || ns.contains_key("__namedtuple__")
+            } {
                 let instance = PyObject::instance(cls.clone());
                 // Look up __init__ via MRO (may be inherited from a base class).
                 // Use namespace first (own class), then fall back to MRO.

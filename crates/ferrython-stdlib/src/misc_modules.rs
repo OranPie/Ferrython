@@ -3,9 +3,9 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
+    FxHashKeyMap, new_fx_hashkey_map, PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, InstanceData,
-    make_module, make_builtin, check_args, check_args_min,
+    ClassData, make_module, make_builtin, check_args, check_args_min,
     FxAttrMap,
 };
 use ferrython_core::types::HashableKey;
@@ -1133,6 +1133,16 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
     // so the vtable is stale and must be cleared.
     if let PyObjectPayload::Class(cd) = &cls.payload {
         cd.method_vtable.write().clear();
+        cd.method_cache.write().clear();
+        // Update has_setattr flag if frozen (decorator added __setattr__ after creation)
+        if frozen {
+            // Safety: we have unique logical ownership during class creation; no other
+            // thread or Rc observer reads has_setattr concurrently with this write.
+            unsafe {
+                let cd_ptr = &**cd as *const ClassData as *mut ClassData;
+                (*cd_ptr).has_setattr = true;
+            }
+        }
     }
     
     Ok(cls.clone())

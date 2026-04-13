@@ -1,9 +1,9 @@
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
 use ferrython_core::object::{
-    FxHashKeyMap, new_fx_hashkey_map,PyCell, 
+    FxHashKeyMap, new_fx_hashkey_map, PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    InstanceData, PartialData,
+    InstanceData, PartialData, PropertyData,
     make_module, make_builtin,
     new_shared_fx,
 };
@@ -108,19 +108,18 @@ pub fn create_functools_module() -> PyObjectRef {
         ("cached_property", make_builtin(|args| {
             if args.is_empty() { return Err(PyException::type_error("cached_property requires 1 argument")); }
             let func = args[0].clone();
-            // Create a marker instance that the descriptor protocol recognizes
-            let cls = PyObject::class(CompactString::from("cached_property"), vec![], IndexMap::new());
-            let inst = PyObject::instance(cls);
-            if let PyObjectPayload::Instance(ref id) = inst.payload {
-                let mut attrs = id.attrs.write();
-                attrs.insert(CompactString::from("__cached_property_func__"), func.clone());
-                // Store the function name for the attr name
-                let name = func.get_attr("__name__")
-                    .map(|n| n.py_to_string())
-                    .unwrap_or_else(|| "cached".to_string());
-                attrs.insert(CompactString::from("__name__"), PyObject::str_val(CompactString::from(name)));
+            // Create an Instance with __cached_property_func__ attr
+            // LoadAttr in data.rs detects this and calls the func, caching the result
+            let mut attrs = IndexMap::default();
+            attrs.insert(CompactString::from("__cached_property_func__"), func.clone());
+            if let Some(name) = func.get_attr("__name__") {
+                attrs.insert(CompactString::from("__name__"), name);
             }
-            Ok(inst)
+            let instance = PyObject::instance_with_attrs(
+                PyObject::builtin_type("cached_property".into()),
+                attrs,
+            );
+            Ok(instance)
         })),
         ("total_ordering", make_builtin(functools_total_ordering)),
         ("singledispatch", make_builtin(functools_singledispatch)),
