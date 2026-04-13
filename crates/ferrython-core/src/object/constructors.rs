@@ -515,6 +515,12 @@ impl PyObject {
         track_object(&obj);
         obj
     }
+    /// Create a list of known leaf types (str, int, float, etc.) — skips GC tracking
+    /// since leaf-only lists cannot form reference cycles.
+    #[inline]
+    pub fn list_leaf(items: Vec<PyObjectRef>) -> PyObjectRef {
+        Self::wrap_leaf(PyObjectPayload::List(PyCell::new(items)))
+    }
     pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef {
         if items.is_empty() { return EMPTY_TUPLE.clone(); }
         Self::wrap_leaf(PyObjectPayload::Tuple(items))

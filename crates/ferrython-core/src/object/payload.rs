@@ -208,20 +208,25 @@ fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
         // Link last block to existing freelist head
         let last = base.add(SLAB_SIZE - 1);
         (*last).strong = Cell::new(FREELIST_SENTINEL);
+        (*last).weak = Cell::new(0); // init weak once — never reset after recycle
         set_free_next(last, *head);
         // Link blocks in reverse so block[1] ends up at head
         for i in (1..SLAB_SIZE - 1).rev() {
             let block = base.add(i);
             (*block).strong = Cell::new(FREELIST_SENTINEL);
+            (*block).weak = Cell::new(0);
             set_free_next(block, base.add(i + 1));
         }
         // block[1] is new freelist head
         let first_free = base.add(1);
         (*first_free).strong = Cell::new(FREELIST_SENTINEL);
+        (*first_free).weak = Cell::new(0);
         set_free_next(first_free, base.add(2));
         *head = first_free;
     }
 
+    // Initialize block[0] weak count (returned directly, not through freelist)
+    unsafe { (*base).weak = Cell::new(0); }
     unsafe { NonNull::new_unchecked(base) }
 }
 
@@ -244,7 +249,8 @@ fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
     unsafe {
         let p = block.as_ptr();
         (*p).strong = Cell::new(1);
-        (*p).weak = Cell::new(0);
+        // weak is already 0: initialized in alloc_slab_and_pop, and blocks are
+        // only recycled when weak==0 (Drop fast path), so no reset needed.
         (*p).obj.as_mut_ptr().write(obj);
     }
     block

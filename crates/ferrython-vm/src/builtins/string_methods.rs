@@ -186,7 +186,6 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                 extract_kwarg(args, "maxsplit").and_then(|v| v.as_int().map(|n| n as usize))
             };
             let sep_arg = pos.first();
-            // Build result Vec<PyObjectRef> directly — no intermediate Vec<&str>
             let parts: Vec<PyObjectRef> = match sep_arg {
                 None => match maxsplit {
                     Some(n) => s.splitn(n + 1, char::is_whitespace)
@@ -216,7 +215,15 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             if sep.is_empty() {
                                 return Err(PyException::value_error("empty separator"));
                             }
-                            let mut parts = Vec::with_capacity(8);
+                            // Pre-count separator occurrences for exact Vec sizing
+                            let sep_len = sep.len();
+                            let count = if sep_len == 1 {
+                                let sep_byte = sep.as_bytes()[0];
+                                s.as_bytes().iter().filter(|&&b| b == sep_byte).count()
+                            } else {
+                                s.matches(sep).count()
+                            };
+                            let mut parts = Vec::with_capacity(count + 1);
                             for p in s.split(sep) {
                                 parts.push(PyObject::str_val(CompactString::from(p)));
                             }
@@ -225,7 +232,8 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                     }
                 }
             };
-            Ok(PyObject::list(parts))
+            // Result list contains only strings (leaf types) — skip GC tracking
+            Ok(PyObject::list_leaf(parts))
         }
         "rsplit" => {
             let pos = positional_args(args);
@@ -1202,30 +1210,56 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
         return result;
     }
     let old_len = old.len();
-    let new_len = new.len();
     let limit = max_count.unwrap_or(usize::MAX);
 
-    // Single-pass replace. Start with inline CompactString (23-byte buffer, no heap alloc).
-    // For results ≤23 bytes this is zero-allocation. For longer results, CompactString
-    // auto-promotes to heap on the first push_str that exceeds inline capacity.
-    let mut result = CompactString::new("");
-    let mut remainder = s;
-    let mut replaced = 0usize;
-    while replaced < limit {
-        if let Some(pos) = remainder.find(old) {
-            result.push_str(&remainder[..pos]);
-            result.push_str(new);
-            remainder = &remainder[pos + old_len..];
-            replaced += 1;
-        } else {
-            break;
+    // For results that likely fit inline (≤23 bytes), use single-pass with inline
+    // CompactString — avoids the cost of a pre-counting scan.
+    // For larger strings where growth is expected, pre-count for exact capacity.
+    let new_len = new.len();
+    let growth_per_replace = new_len as isize - old_len as isize;
+    if growth_per_replace <= 0 || s.len() <= 23 {
+        // Result shrinks or is short — inline CompactString handles it efficiently
+        let mut result = CompactString::new("");
+        let mut remainder = s;
+        let mut replaced = 0usize;
+        while replaced < limit {
+            if let Some(pos) = remainder.find(old) {
+                result.push_str(&remainder[..pos]);
+                result.push_str(new);
+                remainder = &remainder[pos + old_len..];
+                replaced += 1;
+            } else {
+                break;
+            }
         }
+        if replaced == 0 { return CompactString::from(s); }
+        result.push_str(remainder);
+        result
+    } else {
+        // Result grows — pre-count to allocate exact capacity
+        let occurrence_count = if limit == usize::MAX {
+            s.matches(old).count()
+        } else {
+            s.matches(old).take(limit).count()
+        };
+        if occurrence_count == 0 { return CompactString::from(s); }
+        let result_len = s.len() + occurrence_count * new_len - occurrence_count * old_len;
+        let mut result = CompactString::with_capacity(result_len);
+        let mut remainder = s;
+        let mut replaced = 0usize;
+        while replaced < limit {
+            if let Some(pos) = remainder.find(old) {
+                result.push_str(&remainder[..pos]);
+                result.push_str(new);
+                remainder = &remainder[pos + old_len..];
+                replaced += 1;
+            } else {
+                break;
+            }
+        }
+        result.push_str(remainder);
+        result
     }
-    if replaced == 0 {
-        return CompactString::from(s);
-    }
-    result.push_str(remainder);
-    result
 }
 /// Avoids cloning the list/tuple just to iterate.
 fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
