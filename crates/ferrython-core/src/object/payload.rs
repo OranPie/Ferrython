@@ -532,6 +532,33 @@ impl fmt::Debug for SyncI64 {
 unsafe impl Send for SyncI64 {}
 unsafe impl Sync for SyncI64 {}
 
+/// Single-threaded usize wrapper using Cell (no atomics needed under GIL).
+#[repr(transparent)]
+pub struct SyncUsize(pub Cell<usize>);
+
+impl SyncUsize {
+    #[inline(always)]
+    pub fn new(v: usize) -> Self { Self(Cell::new(v)) }
+    #[inline(always)]
+    pub fn get(&self) -> usize { self.0.get() }
+    #[inline(always)]
+    pub fn set(&self, v: usize) { self.0.set(v) }
+}
+
+impl Clone for SyncUsize {
+    #[inline(always)]
+    fn clone(&self) -> Self { Self::new(self.get()) }
+}
+
+impl fmt::Debug for SyncUsize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SyncUsize({})", self.get())
+    }
+}
+
+unsafe impl Send for SyncUsize {}
+unsafe impl Sync for SyncUsize {}
+
 /// A Python object.
 #[derive(Debug, Clone)]
 pub struct PyObject {
@@ -658,6 +685,9 @@ pub enum PyObjectPayload {
     Iterator(Rc<PyCell<IteratorData>>),
     /// Lock-free range iterator — avoids Mutex overhead for `for i in range(n)`.
     RangeIter { current: SyncI64, stop: i64, step: i64 },
+    /// Lock-free snapshot iterator — items immutable after creation, only index advances.
+    /// Used for list/tuple/dict-key iteration. Eliminates Rc<PyCell<>> overhead per iteration.
+    VecIter { items: Vec<PyObjectRef>, index: SyncUsize },
     Slice(Box<SliceData>),
     /// A cell object wrapping a shared mutable reference (for closures).
     Cell(Rc<PyCell<Option<PyObjectRef>>>),
@@ -761,6 +791,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::Module(md) => write!(f, "Module({})", md.name),
             Self::Iterator(_) => write!(f, "Iterator(...)"),
             Self::RangeIter { current, stop, step } => write!(f, "RangeIter({}, {stop}, {step})", current.get()),
+            Self::VecIter { items, index } => write!(f, "VecIter({}/{})", index.get(), items.len()),
             Self::Slice(_) => write!(f, "Slice(...)"),
             Self::Cell(_) => write!(f, "Cell(...)"),
             Self::ExceptionType(k) => write!(f, "ExceptionType({k:?})"),
@@ -1222,8 +1253,8 @@ pub enum IteratorData {
     Starmap { func: PyObjectRef, source: PyObjectRef },
     /// Lazy dict items iteration with cached tuple reuse (CPython-style)
     DictEntries { keys: Vec<PyObjectRef>, values: Vec<PyObjectRef>, index: usize, cached_tuple: Option<PyObjectRef> },
-    /// Lazy dict keys iteration — stores Rc to dict map, converts keys on-the-fly.
-    /// Avoids upfront Vec<PyObjectRef> allocation for all keys.
-    DictKeys { map: Rc<PyCell<FxHashKeyMap>>, index: usize, len: usize },
+    /// Snapshot dict keys iteration — converts keys eagerly at iterator creation.
+    /// Trades upfront Vec<PyObjectRef> for cache-friendly, branch-free iteration.
+    DictKeys { keys: Vec<PyObjectRef>, index: usize },
 }
 

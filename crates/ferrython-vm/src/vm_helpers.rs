@@ -755,7 +755,7 @@ impl VirtualMachine {
         }
 
         // For iterators with lazy data: advance one at a time
-        if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } = &iterable.payload {
+        if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } = &iterable.payload {
             let mut result = Vec::new();
             let mut idx = 0usize;
             let mut next_yield = start;
@@ -881,7 +881,7 @@ impl VirtualMachine {
                         return iter_obj.to_list();
                     }
                     // If __iter__ returned a builtin Iterator, use iter_advance
-                    if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. }) {
+                    if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. }) {
                         let mut items = Vec::new();
                         loop {
                             match builtins::iter_advance(&iter_obj)? {
@@ -931,6 +931,10 @@ impl VirtualMachine {
                 } else {
                     obj.to_list()
                 }
+            }
+            PyObjectPayload::VecIter { items, index } => {
+                let idx = index.get();
+                Ok(items[idx..].to_vec())
             }
             PyObjectPayload::Iterator(iter_data_arc) => {
                 // Check for lazy iterators that need VM context
@@ -1022,13 +1026,12 @@ impl VirtualMachine {
         if gen.finished {
             return Err(PyException::new(ExceptionKind::StopIteration, ""));
         }
-        let mut frame = match gen.frame.take() {
-            Some(f) => *f.downcast::<Frame>().expect("generator frame downcast"),
+        let frame_box = match gen.frame.take() {
+            Some(f) => f,
             None => return Err(PyException::runtime_error("generator already executing")),
         };
+        let mut frame = *frame_box.downcast::<Frame>().expect("generator frame downcast");
 
-        // If generator was already started, push the send value onto the frame's stack
-        // (it becomes the result of the `yield` expression)
         if gen.started {
             frame.push(send_value);
         }
@@ -1037,28 +1040,26 @@ impl VirtualMachine {
 
         self.call_stack.push(frame);
         let result = self.run_frame();
-        let frame = self.call_stack.pop().unwrap();
+        let mut frame = self.call_stack.pop().unwrap();
 
         let mut gen = gen_arc.write();
         if frame.yielded {
-            // Generator yielded — save frame for later resumption
-            let mut saved_frame = frame;
-            saved_frame.yielded = false;
-            gen.frame = Some(Box::new(saved_frame));
+            frame.yielded = false;
+            gen.frame = Some(Box::new(frame));
             result // Ok(yielded_value)
         } else {
-            // Generator finished (returned or raised)
+            // Generator finished — recycle frame
             gen.finished = true;
             gen.frame = None;
+            frame.recycle(&mut self.frame_pool);
             match result {
                 Ok(return_val) => {
-                    // Normal return → StopIteration with return value
                     let msg = return_val.py_to_string();
                     let mut exc = PyException::new(ExceptionKind::StopIteration, msg);
                     exc.value = Some(return_val);
                     Err(exc)
                 }
-                Err(e) => Err(e), // Propagate the actual exception
+                Err(e) => Err(e),
             }
         }
     }
@@ -1355,6 +1356,16 @@ impl VirtualMachine {
                     None => Ok(None),
                 }
             }
+            PyObjectPayload::VecIter { items, index } => {
+                let idx = index.get();
+                if idx < items.len() {
+                    let v = items[idx].clone();
+                    index.set(idx + 1);
+                    Ok(Some(v))
+                } else {
+                    Ok(None)
+                }
+            }
             _ => Err(PyException::type_error(format!(
                 "'{}' object is not an iterator", iter_obj.type_name()
             ))),
@@ -1601,7 +1612,7 @@ impl VirtualMachine {
         }
         // Get an iterator and collect via VM
         let iter_obj = match &obj.payload {
-            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::Generator(_) => obj.clone(),
+            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::Generator(_) => obj.clone(),
             PyObjectPayload::Instance(_) => {
                 if let Some(iter_fn) = obj.get_attr("__iter__") {
                     let result = self.call_object(iter_fn, vec![])?;

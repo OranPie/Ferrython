@@ -129,7 +129,7 @@ use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{ new_fx_hashkey_map, PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
-    lookup_in_class_mro, SyncI64, FxAttrMap,
+    lookup_in_class_mro, SyncI64, SyncUsize, FxAttrMap,
     CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt, SharedGlobals};
@@ -1276,25 +1276,21 @@ impl VirtualMachine {
                 Opcode::GetIter => {
                     let obj = speek!(frame);
                     match &obj.payload {
-                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } => hot_ok!(profiling, self.profiler, instr.op),
+                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } => hot_ok!(profiling, self.profiler, instr.op),
                         PyObjectPayload::List(items) => {
                             let items_vec = unsafe { &*items.data_ptr() }.clone();
-                            let iter = PyObject::wrap(PyObjectPayload::Iterator(
-                                std::rc::Rc::new(PyCell::new(
-                                    IteratorData::List { items: items_vec, index: 0 }
-                                ))
-                            ));
+                            let iter = PyObject::wrap(PyObjectPayload::VecIter {
+                                items: items_vec, index: SyncUsize::new(0)
+                            });
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
                         PyObjectPayload::Tuple(items) => {
                             let items_vec = items.clone();
-                            let iter = PyObject::wrap(PyObjectPayload::Iterator(
-                                std::rc::Rc::new(PyCell::new(
-                                    IteratorData::Tuple { items: items_vec, index: 0 }
-                                ))
-                            ));
+                            let iter = PyObject::wrap(PyObjectPayload::VecIter {
+                                items: items_vec, index: SyncUsize::new(0)
+                            });
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
                             hot_ok!(profiling, self.profiler, instr.op)
@@ -1317,6 +1313,17 @@ impl VirtualMachine {
                             let v = PyObject::int(cur);
                             current.set(cur + *step);
                             spush!(frame, v);
+                        }
+                        hot_ok!(profiling, self.profiler, instr.op)
+                    } else if let PyObjectPayload::VecIter { items, index } = &iter.payload {
+                        let idx = index.get();
+                        if idx < items.len() {
+                            let v = items[idx].clone();
+                            index.set(idx + 1);
+                            spush!(frame, v);
+                        } else {
+                            drop(spop!(frame));
+                            frame.ip = instr.arg as usize;
                         }
                         hot_ok!(profiling, self.profiler, instr.op)
                     } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
@@ -1591,19 +1598,12 @@ impl VirtualMachine {
                                 }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            IteratorData::DictKeys { map, index, len } => {
-                                if *index < *len {
-                                    let r = unsafe { &*map.data_ptr() };
-                                    if let Some((k, _)) = r.get_index(*index) {
-                                        let obj = k.to_object();
-                                        *index += 1;
-                                        drop(data);
-                                        spush!(frame, obj);
-                                    } else {
-                                        drop(data);
-                                        drop(spop!(frame));
-                                        frame.ip = instr.arg as usize;
-                                    }
+                            IteratorData::DictKeys { keys, index } => {
+                                if *index < keys.len() {
+                                    let obj = keys[*index].clone();
+                                    *index += 1;
+                                    drop(data);
+                                    spush!(frame, obj);
                                 } else {
                                     drop(data);
                                     drop(spop!(frame));
@@ -1645,6 +1645,17 @@ impl VirtualMachine {
                             *dest_slot = Some(PyObject::int(cur));
                         }
                         hot_ok!(profiling, self.profiler, instr.op)
+                    } else if let PyObjectPayload::VecIter { items, index } = &iter.payload {
+                        let idx = index.get();
+                        if idx < items.len() {
+                            let obj = items[idx].clone();
+                            index.set(idx + 1);
+                            sset_local!(frame, store_idx, obj);
+                        } else {
+                            drop(spop!(frame));
+                            frame.ip = jump_target;
+                        }
+                        hot_ok!(profiling, self.profiler, instr.op)
                     } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
                         let mut data = iter_data.write();
                         match &mut *data {
@@ -1658,7 +1669,6 @@ impl VirtualMachine {
                                     let v = PyObject::int(*current);
                                     *current += *step;
                                     drop(data);
-                                    // Store directly to local — no stack push/pop!
                                     sset_local!(frame, store_idx, v);
                                 }
                                 hot_ok!(profiling, self.profiler, instr.op)
@@ -1689,19 +1699,12 @@ impl VirtualMachine {
                                 }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             }
-                            IteratorData::DictKeys { map, index, len } => {
-                                if *index < *len {
-                                    let r = unsafe { &*map.data_ptr() };
-                                    if let Some((k, _)) = r.get_index(*index) {
-                                        let obj = k.to_object();
-                                        *index += 1;
-                                        drop(data);
-                                        sset_local!(frame, store_idx, obj);
-                                    } else {
-                                        drop(data);
-                                        drop(spop!(frame));
-                                        frame.ip = jump_target;
-                                    }
+                            IteratorData::DictKeys { keys, index } => {
+                                if *index < keys.len() {
+                                    let obj = keys[*index].clone();
+                                    *index += 1;
+                                    drop(data);
+                                    sset_local!(frame, store_idx, obj);
                                 } else {
                                     drop(data);
                                     drop(spop!(frame));
@@ -6275,6 +6278,16 @@ impl VirtualMachine {
                 } else {
                     current.set(cur + *step);
                     Some(Some(PyObject::int(cur)))
+                }
+            }
+            PyObjectPayload::VecIter { items, index } => {
+                let idx = index.get();
+                if idx < items.len() {
+                    let v = items[idx].clone();
+                    index.set(idx + 1);
+                    Some(Some(v))
+                } else {
+                    Some(None)
                 }
             }
             _ => None,

@@ -296,14 +296,11 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                         Ok(Some((iter_obj.clone(), tuple)))
                     } else { Ok(None) }
                 }
-                IteratorData::DictKeys { map, index, len } => {
-                    if *index < *len {
-                        let r = unsafe { &*map.data_ptr() };
-                        if let Some((k, _)) = r.get_index(*index) {
-                            let obj = k.to_object();
-                            *index += 1;
-                            Ok(Some((iter_obj.clone(), obj)))
-                        } else { Ok(None) }
+                IteratorData::DictKeys { keys, index } => {
+                    if *index < keys.len() {
+                        let obj = keys[*index].clone();
+                        *index += 1;
+                        Ok(Some((iter_obj.clone(), obj)))
                     } else { Ok(None) }
                 }
                 IteratorData::Count { current, step } => {
@@ -352,6 +349,14 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 current.set(cur + *step);
                 Ok(Some((iter_obj.clone(), v)))
             }
+        }
+        PyObjectPayload::VecIter { items, index } => {
+            let idx = index.get();
+            if idx < items.len() {
+                let v = items[idx].clone();
+                index.set(idx + 1);
+                Ok(Some((iter_obj.clone(), v)))
+            } else { Ok(None) }
         }
         _ => Err(PyException::type_error("iter_advance on non-iterator")),
     }
@@ -423,16 +428,11 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         Ok(Some(tuple))
                     } else { Ok(None) }
                 }
-                IteratorData::DictKeys { map, index, len } => {
-                    if *index < *len {
-                        let r = unsafe { &*map.data_ptr() };
-                        if let Some((k, _)) = r.get_index(*index) {
-                            let obj = k.to_object();
-                            *index += 1;
-                            Ok(Some(obj))
-                        } else {
-                            Ok(None)
-                        }
+                IteratorData::DictKeys { keys, index } => {
+                    if *index < keys.len() {
+                        let obj = keys[*index].clone();
+                        *index += 1;
+                        Ok(Some(obj))
                     } else { Ok(None) }
                 }
                 _ => Err(PyException::type_error("lazy iterator requires VM-level iteration")),
@@ -446,6 +446,14 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 current.set(cur + *step);
                 Ok(Some(v))
             }
+        }
+        PyObjectPayload::VecIter { items, index } => {
+            let idx = index.get();
+            if idx < items.len() {
+                let v = items[idx].clone();
+                index.set(idx + 1);
+                Ok(Some(v))
+            } else { Ok(None) }
         }
         _ => Err(PyException::type_error("iter_next_value on non-iterator")),
     }

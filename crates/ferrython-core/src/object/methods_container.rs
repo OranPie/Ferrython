@@ -100,6 +100,10 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                     Ok(0)
                 }
             }
+            PyObjectPayload::VecIter { items, index } => {
+                let idx = index.get();
+                Ok(if idx < items.len() { items.len() - idx } else { 0 })
+            }
             PyObjectPayload::DictKeys(m) | PyObjectPayload::DictValues(m) | PyObjectPayload::DictItems(m) => {
                 let map = m.read();
                 let hidden = map.keys().filter(|k| is_hidden_dict_key(k)).count();
@@ -320,6 +324,10 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                     Ok(false)
                 }
             }
+            PyObjectPayload::VecIter { items, index } => {
+                let idx = index.get();
+                Ok(items[idx..].iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
+            }
             PyObjectPayload::DictKeys(m) => {
                 let hk = item.to_hashable_key()?;
                 Ok(m.read().contains_key(&hk))
@@ -348,48 +356,46 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
 pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         
         match &obj.payload {
-            PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::List { items: items.read().clone(), index: 0 }))))),
-            PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Tuple { items: items.clone(), index: 0 }))))),
+            PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::VecIter { items: items.read().clone(), index: SyncUsize::new(0) })),
+            PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::VecIter { items: items.clone(), index: SyncUsize::new(0) })),
             PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
             PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
-                let len = m.read().len();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-                    IteratorData::DictKeys { map: Rc::clone(m), index: 0, len }
-                )))))
+                let keys: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
+                Ok(PyObject::wrap(PyObjectPayload::VecIter { items: keys, index: SyncUsize::new(0) }))
             }
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
                 if let Some(storage) = inst.dict_storage.as_ref() {
                     let keys: Vec<PyObjectRef> = storage.read().keys().map(|k| k.to_object()).collect();
-                    Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::List { items: keys, index: 0 })))))
+                    Ok(PyObject::wrap(PyObjectPayload::VecIter { items: keys, index: SyncUsize::new(0) }))
                 } else {
                     Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name())))
                 }
             }
             PyObjectPayload::Set(m) => {
                 let vals: Vec<PyObjectRef> = m.read().values().cloned().collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::List { items: vals, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::VecIter { items: vals, index: SyncUsize::new(0) }))
             }
             PyObjectPayload::FrozenSet(m) => {
                 let vals: Vec<PyObjectRef> = m.values().cloned().collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::List { items: vals, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::VecIter { items: vals, index: SyncUsize::new(0) }))
             }
             PyObjectPayload::Range { start, stop, step } => {
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Range { current: *start, stop: *stop, step: *step })))))
             }
-            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } => Ok(obj.clone()),
+            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } => Ok(obj.clone()),
             PyObjectPayload::Generator(_) => Ok(obj.clone()), // generators are their own iterators
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 let items: Vec<PyObjectRef> = b.iter().map(|byte| PyObject::int(*byte as i64)).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::List { items, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::VecIter { items, index: SyncUsize::new(0) }))
             }
             // namedtuple instances: iterate over the underlying _tuple
             PyObjectPayload::Instance(inst) if inst.class.get_attr("__namedtuple__").is_some() => {
                 if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                     if let PyObjectPayload::Tuple(items) = &tup.payload {
-                        return Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Tuple { items: items.clone(), index: 0 })))));
+                        return Ok(PyObject::wrap(PyObjectPayload::VecIter { items: items.clone(), index: SyncUsize::new(0) }));
                     }
                 }
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Tuple { items: vec![], index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::VecIter { items: vec![], index: SyncUsize::new(0) }))
             }
             // Builtin base type subclass: delegate to __builtin_value__
             PyObjectPayload::Instance(inst) if inst.attrs.read().contains_key("__builtin_value__") => {
@@ -397,16 +403,14 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 py_get_iter(&bv)
             }
             PyObjectPayload::DictKeys(m) => {
-                let len = m.read().len();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-                    IteratorData::DictKeys { map: Rc::clone(m), index: 0, len }
-                )))))
+                let keys: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
+                Ok(PyObject::wrap(PyObjectPayload::VecIter { items: keys, index: SyncUsize::new(0) }))
             }
             PyObjectPayload::DictValues(m) => {
                 let vals: Vec<PyObjectRef> = m.read().iter()
                     .filter(|(k, _)| !is_hidden_dict_key(k))
                     .map(|(_, v)| v.clone()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::List { items: vals, index: 0 })))))
+                Ok(PyObject::wrap(PyObjectPayload::VecIter { items: vals, index: SyncUsize::new(0) }))
             }
             PyObjectPayload::DictItems(m) => {
                 let r = m.read();
