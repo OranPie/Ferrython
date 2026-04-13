@@ -40,7 +40,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
             }
             PyObjectPayload::Module(_) => "module",
             PyObjectPayload::RangeIter { .. } => "range_iterator",
-            PyObjectPayload::VecIter { .. } => "list_iterator",
+            PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. } => "list_iterator",
             PyObjectPayload::Iterator(iter_data) => {
                 let guard = iter_data.read();
                 match &*guard {
@@ -379,7 +379,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 format!("<module '{}'>", m.name)
             }
             PyObjectPayload::Iterator(_) => "<iterator>".into(),
-            PyObjectPayload::VecIter { .. } => "<iterator>".into(),
+            PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. } => "<iterator>".into(),
             PyObjectPayload::Range { start, stop, step } => {
                 if *step == 1 { format!("range({}, {})", start, stop) }
                 else { format!("range({}, {}, {})", start, stop, step) }
@@ -609,6 +609,19 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             PyObjectPayload::VecIter { items, index } => {
                 let idx = index.get();
                 Ok(items[idx..].to_vec())
+            }
+            PyObjectPayload::RefIter { source, index } => {
+                let idx = index.get();
+                match &source.payload {
+                    PyObjectPayload::List(cell) => {
+                        let items = unsafe { &*cell.data_ptr() };
+                        Ok(items[idx..].to_vec())
+                    }
+                    PyObjectPayload::Tuple(items) => {
+                        Ok(items[idx..].to_vec())
+                    }
+                    _ => Ok(vec![]),
+                }
             }
             // namedtuple instances: convert _tuple to list
             PyObjectPayload::Instance(inst) if inst.class.get_attr("__namedtuple__").is_some() => {

@@ -5,7 +5,7 @@ use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell, 
     check_args, check_args_min,
     IteratorData, PropertyData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    FxAttrMap,
+    FxAttrMap, SyncUsize,
 };
 use ferrython_core::types::{HashableKey, PyInt};
 use indexmap::IndexMap;
@@ -1040,22 +1040,16 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// Get an iterator from any iterable object.
 pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     match &obj.payload {
-        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::Generator(_) | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
+        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
         PyObjectPayload::Range { start, stop, step } => {
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
                 Rc::new(PyCell::new(IteratorData::Range { current: *start, stop: *stop, step: *step }))
             )))
         }
-        PyObjectPayload::List(items) => {
-            let items = items.read().clone();
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::List { items, index: 0 }))
-            )))
-        }
-        PyObjectPayload::Tuple(items) => {
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::Tuple { items: items.clone(), index: 0 }))
-            )))
+        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
+            Ok(PyObject::wrap(PyObjectPayload::RefIter {
+                source: obj.clone(), index: SyncUsize::new(0)
+            }))
         }
         PyObjectPayload::Str(s) => {
             let chars: Vec<char> = s.chars().collect();

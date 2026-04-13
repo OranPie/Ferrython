@@ -681,8 +681,12 @@ pub enum PyObjectPayload {
     /// Lock-free range iterator — avoids Mutex overhead for `for i in range(n)`.
     RangeIter { current: SyncI64, stop: i64, step: i64 },
     /// Lock-free snapshot iterator — items immutable after creation, only index advances.
-    /// Used for list/tuple/dict-key iteration. Eliminates Rc<PyCell<>> overhead per iteration.
+    /// Used for dict-key/set/bytes iteration where items must be materialized.
     VecIter { items: Vec<PyObjectRef>, index: SyncUsize },
+    /// Lazy reference iterator — holds a reference to the source container (list/tuple)
+    /// and iterates by index without cloning elements upfront. Saves n Rc::clone at
+    /// creation + n Rc::drop at destruction. CPython-style: just a pointer + position.
+    RefIter { source: PyObjectRef, index: SyncUsize },
     Slice(Box<SliceData>),
     /// A cell object wrapping a shared mutable reference (for closures).
     Cell(Rc<PyCell<Option<PyObjectRef>>>),
@@ -787,6 +791,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::Iterator(_) => write!(f, "Iterator(...)"),
             Self::RangeIter { current, stop, step } => write!(f, "RangeIter({}, {stop}, {step})", current.get()),
             Self::VecIter { items, index } => write!(f, "VecIter({}/{})", index.get(), items.len()),
+            Self::RefIter { index, .. } => write!(f, "RefIter({})", index.get()),
             Self::Slice(_) => write!(f, "Slice(...)"),
             Self::Cell(_) => write!(f, "Cell(...)"),
             Self::ExceptionType(k) => write!(f, "ExceptionType({k:?})"),

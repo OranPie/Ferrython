@@ -104,6 +104,15 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 let idx = index.get();
                 Ok(if idx < items.len() { items.len() - idx } else { 0 })
             }
+            PyObjectPayload::RefIter { source, index } => {
+                let idx = index.get();
+                let total = match &source.payload {
+                    PyObjectPayload::List(cell) => unsafe { &*cell.data_ptr() }.len(),
+                    PyObjectPayload::Tuple(items) => items.len(),
+                    _ => 0,
+                };
+                Ok(if idx < total { total - idx } else { 0 })
+            }
             PyObjectPayload::DictKeys(m) | PyObjectPayload::DictValues(m) | PyObjectPayload::DictItems(m) => {
                 let map = m.read();
                 let hidden = map.keys().filter(|k| is_hidden_dict_key(k)).count();
@@ -328,6 +337,19 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                 let idx = index.get();
                 Ok(items[idx..].iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
             }
+            PyObjectPayload::RefIter { source, index } => {
+                let idx = index.get();
+                match &source.payload {
+                    PyObjectPayload::List(cell) => {
+                        let items = unsafe { &*cell.data_ptr() };
+                        Ok(items[idx..].iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
+                    }
+                    PyObjectPayload::Tuple(items) => {
+                        Ok(items[idx..].iter().any(|x| partial_cmp_objects(x, item) == Some(std::cmp::Ordering::Equal)))
+                    }
+                    _ => Ok(false),
+                }
+            }
             PyObjectPayload::DictKeys(m) => {
                 let hk = item.to_hashable_key()?;
                 Ok(m.read().contains_key(&hk))
@@ -356,8 +378,7 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
 pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         
         match &obj.payload {
-            PyObjectPayload::List(items) => Ok(PyObject::wrap(PyObjectPayload::VecIter { items: items.read().clone(), index: SyncUsize::new(0) })),
-            PyObjectPayload::Tuple(items) => Ok(PyObject::wrap(PyObjectPayload::VecIter { items: items.clone(), index: SyncUsize::new(0) })),
+            PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => Ok(PyObject::wrap(PyObjectPayload::RefIter { source: obj.clone(), index: SyncUsize::new(0) })),
             PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
             PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
                 let keys: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
@@ -382,7 +403,7 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             PyObjectPayload::Range { start, stop, step } => {
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Range { current: *start, stop: *stop, step: *step })))))
             }
-            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } => Ok(obj.clone()),
+            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. } => Ok(obj.clone()),
             PyObjectPayload::Generator(_) => Ok(obj.clone()), // generators are their own iterators
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 let items: Vec<PyObjectRef> = b.iter().map(|byte| PyObject::int(*byte as i64)).collect();
