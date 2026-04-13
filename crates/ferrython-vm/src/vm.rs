@@ -3096,14 +3096,16 @@ impl VirtualMachine {
                             if cd.is_simple_class {
                                 // Look up __init__: try vtable first (O(1) hash), fall back to namespace
                                 let vt = unsafe { &*cd.method_vtable.data_ptr() };
-                                let init_fn = if vt.is_empty() {
-                                    // Vtable was invalidated (class attr mutation) — use namespace
+                                let init_fn = if !vt.is_empty() {
+                                    vt.get("__init__").cloned()
+                                } else {
+                                    None
+                                }.or_else(|| {
+                                    // Vtable miss or empty — check namespace + MRO
                                     cd.namespace.read().get("__init__").cloned()
                                         .or_else(|| ferrython_core::object::lookup_in_class_mro(
                                             sget!(frame, func_idx), "__init__"))
-                                } else {
-                                    vt.get("__init__").cloned()
-                                };
+                                });
                                 if let Some(init_fn) = init_fn {
                                     // Check if __init__ is a simple Function we can inline
                                     if let PyObjectPayload::Function(pf) = &init_fn.payload {

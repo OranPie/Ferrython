@@ -19,7 +19,11 @@ pub fn lookup_in_class_mro(class: &PyObjectRef, name: &str) -> Option<PyObjectRe
         {
             let vt = cd.method_vtable.read();
             if !vt.is_empty() {
-                return vt.get(name).cloned();
+                if let Some(v) = vt.get(name) {
+                    return Some(v.clone());
+                }
+                // Vtable miss: fall through to namespace/MRO lookup.
+                // The vtable can be stale (e.g., decorator added methods after class creation).
             }
         }
 
@@ -52,7 +56,10 @@ fn has_in_class_mro(class: &PyObjectRef, name: &str) -> bool {
         {
             let vt = cd.method_vtable.read();
             if !vt.is_empty() {
-                return vt.contains_key(name);
+                if vt.contains_key(name) {
+                    return true;
+                }
+                // Vtable miss: fall through (vtable may be stale)
             }
         }
         // Check cache
