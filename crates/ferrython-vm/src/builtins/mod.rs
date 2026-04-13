@@ -375,6 +375,14 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                         Ok(Some((iter_obj.clone(), v)))
                     } else { Ok(None) }
                 }
+                PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                    let map = unsafe { &*cell.data_ptr() };
+                    if idx < map.len() {
+                        let v = map.get_index(idx).unwrap().0.to_object();
+                        index.set(idx + 1);
+                        Ok(Some((iter_obj.clone(), v)))
+                    } else { Ok(None) }
+                }
                 _ => Ok(None),
             }
         }
@@ -488,6 +496,14 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 PyObjectPayload::Tuple(items) => {
                     if idx < items.len() {
                         let v = items[idx].clone();
+                        index.set(idx + 1);
+                        Ok(Some(v))
+                    } else { Ok(None) }
+                }
+                PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                    let map = unsafe { &*cell.data_ptr() };
+                    if idx < map.len() {
+                        let v = map.get_index(idx).unwrap().0.to_object();
                         index.set(idx + 1);
                         Ok(Some(v))
                     } else { Ok(None) }

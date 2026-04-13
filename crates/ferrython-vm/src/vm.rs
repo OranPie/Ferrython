@@ -1277,7 +1277,7 @@ impl VirtualMachine {
                     let obj = speek!(frame);
                     match &obj.payload {
                         PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter { .. } | PyObjectPayload::RefIter { .. } => hot_ok!(profiling, self.profiler, instr.op),
-                        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
+                        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) | PyObjectPayload::DictKeys(_) => {
                             let iter = PyObject::wrap(PyObjectPayload::RefIter {
                                 source: obj.clone(), index: SyncUsize::new(0)
                             });
@@ -1325,6 +1325,12 @@ impl VirtualMachine {
                             }
                             PyObjectPayload::Tuple(items) => {
                                 if idx < items.len() { Some(items[idx].clone()) } else { None }
+                            }
+                            PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                                let map = unsafe { &*cell.data_ptr() };
+                                if idx < map.len() {
+                                    Some(map.get_index(idx).unwrap().0.to_object())
+                                } else { None }
                             }
                             _ => None,
                         };
@@ -1674,6 +1680,12 @@ impl VirtualMachine {
                             }
                             PyObjectPayload::Tuple(items) => {
                                 if idx < items.len() { Some(items[idx].clone()) } else { None }
+                            }
+                            PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                                let map = unsafe { &*cell.data_ptr() };
+                                if idx < map.len() {
+                                    Some(map.get_index(idx).unwrap().0.to_object())
+                                } else { None }
                             }
                             _ => None,
                         };
@@ -6311,6 +6323,16 @@ impl VirtualMachine {
                     PyObjectPayload::Tuple(items) => {
                         if idx < items.len() {
                             let v = items[idx].clone();
+                            index.set(idx + 1);
+                            Some(Some(v))
+                        } else {
+                            Some(None)
+                        }
+                    }
+                    PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                        let map = unsafe { &*cell.data_ptr() };
+                        if idx < map.len() {
+                            let v = map.get_index(idx).unwrap().0.to_object();
                             index.set(idx + 1);
                             Some(Some(v))
                         } else {

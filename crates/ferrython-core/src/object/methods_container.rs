@@ -380,9 +380,8 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         match &obj.payload {
             PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => Ok(PyObject::wrap(PyObjectPayload::RefIter { source: obj.clone(), index: SyncUsize::new(0) })),
             PyObjectPayload::Str(s) => Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Str { chars: s.chars().collect(), index: 0 }))))),
-            PyObjectPayload::Dict(m) | PyObjectPayload::MappingProxy(m) => {
-                let keys: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::VecIter { items: keys, index: SyncUsize::new(0) }))
+            PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) => {
+                Ok(PyObject::wrap(PyObjectPayload::RefIter { source: obj.clone(), index: SyncUsize::new(0) }))
             }
             PyObjectPayload::Instance(inst) if inst.dict_storage.is_some() => {
                 if let Some(storage) = inst.dict_storage.as_ref() {
@@ -423,9 +422,8 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 let bv = inst.attrs.read().get("__builtin_value__").cloned().unwrap();
                 py_get_iter(&bv)
             }
-            PyObjectPayload::DictKeys(m) => {
-                let keys: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
-                Ok(PyObject::wrap(PyObjectPayload::VecIter { items: keys, index: SyncUsize::new(0) }))
+            PyObjectPayload::DictKeys(_) => {
+                Ok(PyObject::wrap(PyObjectPayload::RefIter { source: obj.clone(), index: SyncUsize::new(0) }))
             }
             PyObjectPayload::DictValues(m) => {
                 let vals: Vec<PyObjectRef> = m.read().iter()

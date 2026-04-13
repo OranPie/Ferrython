@@ -1082,11 +1082,10 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 Rc::new(PyCell::new(IteratorData::List { items, index: 0 }))
             )))
         }
-        PyObjectPayload::Dict(m) => {
-            let items: Vec<PyObjectRef> = m.read().keys().map(|k| k.to_object()).collect();
-            Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::List { items, index: 0 }))
-            )))
+        PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) => {
+            Ok(PyObject::wrap(PyObjectPayload::RefIter {
+                source: obj.clone(), index: SyncUsize::new(0)
+            }))
         }
         PyObjectPayload::Instance(_) => {
             // For builtins without VM access, check if it's already an iterator

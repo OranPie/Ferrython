@@ -1401,6 +1401,16 @@ impl VirtualMachine {
                             Ok(None)
                         }
                     }
+                    PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                        let map = unsafe { &*cell.data_ptr() };
+                        if idx < map.len() {
+                            let v = map.get_index(idx).unwrap().0.to_object();
+                            index.set(idx + 1);
+                            Ok(Some(v))
+                        } else {
+                            Ok(None)
+                        }
+                    }
                     _ => Ok(None),
                 }
             }
