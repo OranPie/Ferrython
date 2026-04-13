@@ -1379,13 +1379,13 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
         "read_text" => {
             let path = get_path();
             let content = std::fs::read_to_string(&path)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             Ok(PyObject::str_val(CompactString::from(&content)))
         }
         "read_bytes" => {
             let path = get_path();
             let content = std::fs::read(&path)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             Ok(PyObject::bytes(content))
         }
         "write_text" => {
@@ -1394,7 +1394,7 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let text = args[0].py_to_string();
             let len = text.len();
             std::fs::write(&path, &text)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             Ok(PyObject::int(len as i64))
         }
         "write_bytes" => {
@@ -1406,7 +1406,7 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             };
             let len = data.len();
             std::fs::write(&path, &data)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             Ok(PyObject::int(len as i64))
         }
         "mkdir" => {
@@ -1432,25 +1432,25 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             match result {
                 Ok(()) => Ok(PyObject::none()),
                 Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => Ok(PyObject::none()),
-                Err(e) => Err(PyException::runtime_error(format!("{}: '{}'", e, path))),
+                Err(e) => Err(PyException::os_error(format!("{}: '{}'", e, path))),
             }
         }
         "rmdir" => {
             let path = get_path();
             std::fs::remove_dir(&path)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             Ok(PyObject::none())
         }
         "unlink" => {
             let path = get_path();
             std::fs::remove_file(&path)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             Ok(PyObject::none())
         }
         "iterdir" => {
             let path = get_path();
             let entries = std::fs::read_dir(&path)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             let mut items = Vec::new();
             for entry in entries.flatten() {
                 let p = entry.path().to_string_lossy().to_string();
@@ -1602,7 +1602,7 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
         "stat" => {
             let path = get_path();
             let meta = std::fs::metadata(&path)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             let mut ns = IndexMap::new();
             ns.insert(CompactString::from("st_size"), PyObject::int(meta.len() as i64));
             ns.insert(CompactString::from("st_mode"), PyObject::int(0));
@@ -1629,14 +1629,14 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let p = std::path::Path::new(&path);
             if p.exists() {
                 if !exist_ok {
-                    return Err(PyException::runtime_error(format!("FileExistsError: '{}'", path)));
+                    return Err(PyException::os_error(format!("FileExistsError: '{}'", path)));
                 }
                 // Update modification time by opening and closing
                 std::fs::OpenOptions::new().write(true).open(&path)
-                    .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                    .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             } else {
                 std::fs::File::create(&path)
-                    .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                    .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             }
             Ok(PyObject::none())
         }
@@ -1672,7 +1672,7 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
                 use std::os::unix::fs::PermissionsExt;
                 let perms = std::fs::Permissions::from_mode(mode);
                 std::fs::set_permissions(&path, perms)
-                    .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                    .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             }
             #[cfg(not(unix))]
             {
@@ -1695,9 +1695,9 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let path = get_path();
             let other = args[0].py_to_string();
             let meta1 = std::fs::canonicalize(&path)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
             let meta2 = std::fs::canonicalize(&other)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, other)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}'", e, other)))?;
             Ok(PyObject::bool_val(meta1 == meta2))
         }
         "rename" => {
@@ -1705,7 +1705,7 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let path = get_path();
             let target = args[0].py_to_string();
             std::fs::rename(&path, &target)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}' -> '{}'", e, path, target)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}' -> '{}'", e, path, target)))?;
             Ok(PyObject::str_val(CompactString::from(&target)))
         }
         "replace" => {
@@ -1714,7 +1714,7 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let target = args[0].py_to_string();
             // replace is like rename but silently replaces target if it exists
             std::fs::rename(&path, &target)
-                .map_err(|e| PyException::runtime_error(format!("{}: '{}' -> '{}'", e, path, target)))?;
+                .map_err(|e| PyException::os_error(format!("{}: '{}' -> '{}'", e, path, target)))?;
             Ok(PyObject::str_val(CompactString::from(&target)))
         }
         "open" => {
@@ -1723,12 +1723,12 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             let mode = if !args.is_empty() { args[0].py_to_string() } else { "r".to_string() };
             if mode.contains('r') {
                 let content = std::fs::read_to_string(&path)
-                    .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                    .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
                 Ok(PyObject::str_val(CompactString::from(&content)))
             } else {
                 // For write modes, create/truncate the file and return None
                 std::fs::File::create(&path)
-                    .map_err(|e| PyException::runtime_error(format!("{}: '{}'", e, path)))?;
+                    .map_err(|e| PyException::os_error(format!("{}: '{}'", e, path)))?;
                 Ok(PyObject::none())
             }
         }

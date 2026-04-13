@@ -3156,7 +3156,23 @@ impl VirtualMachine {
                                 } else {
                                     // No __init__ found — create bare instance
                                     let cls = sget!(frame, func_idx).clone();
-                                    let instance = PyObject::instance(cls);
+                                    let instance = PyObject::instance(cls.clone());
+                                    // Set exception `args` for exception subclasses
+                                    if Self::is_exception_class(&cls) {
+                                        if let PyObjectPayload::Instance(inst) = &instance.payload {
+                                            let mut args_vec = Vec::with_capacity(arg_count);
+                                            for i in 0..arg_count {
+                                                args_vec.push(sget!(frame, func_idx + 1 + i).clone());
+                                            }
+                                            let mut attrs = inst.attrs.write();
+                                            if arg_count == 1 {
+                                                attrs.insert(CompactString::from("message"),
+                                                    args_vec[0].clone());
+                                            }
+                                            attrs.insert(CompactString::from("args"),
+                                                PyObject::tuple(args_vec));
+                                        }
+                                    }
                                     unsafe {
                                         let base = frame.stack.as_ptr();
                                         for i in 0..=arg_count {
@@ -3225,6 +3241,8 @@ impl VirtualMachine {
                                             (PyObjectPayload::List(_), "list") => true,
                                             (PyObjectPayload::Tuple(_), "tuple") => true,
                                             (PyObjectPayload::Dict(_), "dict") => true,
+                                            (PyObjectPayload::InstanceDict(_), "dict") => true,
+                                            (PyObjectPayload::MappingProxy(_), "dict") => true,
                                             (PyObjectPayload::Set(_), "set") => true,
                                             (PyObjectPayload::Bytes(_), "bytes") => true,
                                             (PyObjectPayload::ByteArray(_), "bytearray") => true,
@@ -3440,6 +3458,10 @@ impl VirtualMachine {
                                 } else {
                                     self.execute_one(instr)
                                 }
+                            }
+                            // next() — fall through to VM-level dispatch (needs proper exception handling)
+                            (Some("next"), 1) | (Some("next"), 2) => {
+                                self.execute_one(instr)
                             }
                             // Inline sum(iterable) — native i64 accumulation for list/tuple of ints
                             (Some("sum"), 1) | (Some("sum"), 2) => {
@@ -4377,9 +4399,10 @@ impl VirtualMachine {
                                             chain_pop_none!(frame, instr_base, instr_count, profiling, self.profiler, instr.op)
                                         } else {
                                             // Non-hashable: use general dispatch
-                                            let result = crate::builtins::call_method(&receiver, "add", &[item])?;
-                                            spush!(frame, result);
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            match crate::builtins::call_method(&receiver, "add", &[item]) {
+                                                Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
+                                                Err(e) => Err(e)
+                                            }
                                         }
                                     } else { unreachable!() }
                                 } else if inline_kind == 7 || inline_kind == 8 {
@@ -4394,9 +4417,10 @@ impl VirtualMachine {
                                     } else {
                                         // Not both strings — use general dispatch
                                         let name = if inline_kind == 7 { "startswith" } else { "endswith" };
-                                        let result = crate::builtins::call_method(&receiver, name, &[arg])?;
-                                        spush!(frame, result);
-                                        hot_ok!(profiling, self.profiler, instr.op)
+                                        match crate::builtins::call_method(&receiver, name, &[arg]) {
+                                            Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
+                                            Err(e) => Err(e)
+                                        }
                                     }
                                 } else {
                                     // General builtin method dispatch — avoid Vec for 1-2 args
@@ -4405,9 +4429,30 @@ impl VirtualMachine {
                                         let receiver = spop!(frame);
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                            let result = crate::builtins::call_method(&receiver, name.as_str(), &[a0])?;
-                                            spush!(frame, result);
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            // str.join with generator/lazy iter: collect via VM first
+                                            let a0_result: Result<PyObjectRef, PyException> = if name.as_str() == "join" && matches!(&receiver.payload, PyObjectPayload::Str(_)) {
+                                                match &a0.payload {
+                                                    PyObjectPayload::Generator(_) => {
+                                                        self.collect_iterable(&a0).map(PyObject::list)
+                                                    }
+                                                    PyObjectPayload::Iterator(iter_data) => {
+                                                        let needs_vm = matches!(&*iter_data.read(),
+                                                            IteratorData::Enumerate { .. } | IteratorData::Zip { .. }
+                                                            | IteratorData::Map { .. } | IteratorData::Filter { .. }
+                                                            | IteratorData::Chain { .. } | IteratorData::Starmap { .. }
+                                                            | IteratorData::TakeWhile { .. } | IteratorData::DropWhile { .. }
+                                                        );
+                                                        if needs_vm {
+                                                            self.collect_iterable(&a0).map(PyObject::list)
+                                                        } else { Ok(a0) }
+                                                    }
+                                                    _ => Ok(a0),
+                                                }
+                                            } else { Ok(a0) };
+                                            match a0_result.and_then(|a0| crate::builtins::call_method(&receiver, name.as_str(), &[a0])) {
+                                                Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
+                                                Err(e) => Err(e)
+                                            }
                                         } else { unreachable!() }
                                     } else if arg_count == 2 {
                                         let a1 = spop!(frame);
@@ -4415,17 +4460,19 @@ impl VirtualMachine {
                                         let receiver = spop!(frame);
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                            let result = crate::builtins::call_method(&receiver, name.as_str(), &[a0, a1])?;
-                                            spush!(frame, result);
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            match crate::builtins::call_method(&receiver, name.as_str(), &[a0, a1]) {
+                                                Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
+                                                Err(e) => Err(e)
+                                            }
                                         } else { unreachable!() }
                                     } else if arg_count == 0 {
                                         let receiver = spop!(frame);
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                            let result = crate::builtins::call_method(&receiver, name.as_str(), &[])?;
-                                            spush!(frame, result);
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            match crate::builtins::call_method(&receiver, name.as_str(), &[]) {
+                                                Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
+                                                Err(e) => Err(e)
+                                            }
                                         } else { unreachable!() }
                                     } else {
                                         let mut args = Vec::with_capacity(arg_count);
@@ -4436,9 +4483,10 @@ impl VirtualMachine {
                                         let receiver = spop!(frame);
                                         let name_obj = spop!(frame);
                                         if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                            let result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
-                                            spush!(frame, result);
-                                            hot_ok!(profiling, self.profiler, instr.op)
+                                            match crate::builtins::call_method(&receiver, name.as_str(), &args) {
+                                                Ok(result) => { spush!(frame, result); hot_ok!(profiling, self.profiler, instr.op) }
+                                                Err(e) => Err(e)
+                                            }
                                         } else {
                                             unreachable!()
                                         }
@@ -4529,19 +4577,19 @@ impl VirtualMachine {
                             }
                         } else {
                             // General builtin method — execute, then discard result
-                            if arg_count == 1 {
+                            let call_result = if arg_count == 1 {
                                 let a0 = spop!(frame);
                                 let receiver = spop!(frame);
                                 let name_obj = spop!(frame);
                                 if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                    let _result = crate::builtins::call_method(&receiver, name.as_str(), &[a0])?;
-                                }
+                                    crate::builtins::call_method(&receiver, name.as_str(), &[a0])
+                                } else { Ok(PyObject::none()) }
                             } else if arg_count == 0 {
                                 let receiver = spop!(frame);
                                 let name_obj = spop!(frame);
                                 if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                    let _result = crate::builtins::call_method(&receiver, name.as_str(), &[])?;
-                                }
+                                    crate::builtins::call_method(&receiver, name.as_str(), &[])
+                                } else { Ok(PyObject::none()) }
                             } else {
                                 let mut args = Vec::with_capacity(arg_count);
                                 for _ in 0..arg_count { args.push(spop!(frame)); }
@@ -4549,10 +4597,13 @@ impl VirtualMachine {
                                 let receiver = spop!(frame);
                                 let name_obj = spop!(frame);
                                 if let PyObjectPayload::Str(ref name) = name_obj.payload {
-                                    let _result = crate::builtins::call_method(&receiver, name.as_str(), &args)?;
-                                }
+                                    crate::builtins::call_method(&receiver, name.as_str(), &args)
+                                } else { Ok(PyObject::none()) }
+                            };
+                            match call_result {
+                                Ok(_) => { hot_ok!(profiling, self.profiler, instr.op) }
+                                Err(e) => Err(e)
                             }
-                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                     } else {
                         // Python function call or other: delegate to CallMethod, result handler
@@ -4602,14 +4653,18 @@ impl VirtualMachine {
                             }
                         } else {
                             // Non-fast-path: delegate to execute_one, then pop result
-                            let res = self.execute_one(cm_instr)?;
-                            if res.is_none() {
-                                let frame2 = self.call_stack.last_mut().unwrap();
-                                if !frame2.stack.is_empty() {
-                                    drop(spop!(frame2));
+                            match self.execute_one(cm_instr) {
+                                Ok(res) => {
+                                    if res.is_none() {
+                                        let frame2 = self.call_stack.last_mut().unwrap();
+                                        if !frame2.stack.is_empty() {
+                                            drop(spop!(frame2));
+                                        }
+                                    }
+                                    hot_ok!(profiling, self.profiler, instr.op)
                                 }
+                                Err(e) => Err(e)
                             }
-                            hot_ok!(profiling, self.profiler, instr.op)
                         }
                     }
                 }

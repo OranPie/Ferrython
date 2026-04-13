@@ -267,7 +267,70 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                         Ok(Some((iter_obj.clone(), v)))
                     } else { Ok(None) }
                 }
-                // Lazy iterators need VM context — shouldn't reach here
+                IteratorData::DictEntries { keys, values, index, cached_tuple } => {
+                    if *index < keys.len() {
+                        let k = keys[*index].clone();
+                        let v = values[*index].clone();
+                        *index += 1;
+                        let tuple = if let Some(ref mut cached) = cached_tuple {
+                            if let Some(obj) = PyObjectRef::get_mut(cached) {
+                                if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
+                                    items[0] = k;
+                                    items[1] = v;
+                                    cached.clone()
+                                } else {
+                                    let t = PyObject::tuple(vec![k, v]);
+                                    *cached = t.clone();
+                                    t
+                                }
+                            } else {
+                                let t = PyObject::tuple(vec![k, v]);
+                                *cached = t.clone();
+                                t
+                            }
+                        } else {
+                            let t = PyObject::tuple(vec![k, v]);
+                            *cached_tuple = Some(t.clone());
+                            t
+                        };
+                        Ok(Some((iter_obj.clone(), tuple)))
+                    } else { Ok(None) }
+                }
+                IteratorData::DictKeys { map, index, len } => {
+                    if *index < *len {
+                        let r = unsafe { &*map.data_ptr() };
+                        if let Some((k, _)) = r.get_index(*index) {
+                            let obj = k.to_object();
+                            *index += 1;
+                            Ok(Some((iter_obj.clone(), obj)))
+                        } else { Ok(None) }
+                    } else { Ok(None) }
+                }
+                IteratorData::Count { current, step } => {
+                    let v = PyObject::int(*current);
+                    *current += *step;
+                    Ok(Some((iter_obj.clone(), v)))
+                }
+                IteratorData::Repeat { item, remaining } => {
+                    if let Some(ref mut rem) = remaining {
+                        if *rem == 0 { Ok(None) }
+                        else {
+                            *rem -= 1;
+                            Ok(Some((iter_obj.clone(), item.clone())))
+                        }
+                    } else {
+                        Ok(Some((iter_obj.clone(), item.clone())))
+                    }
+                }
+                IteratorData::Cycle { items, index } => {
+                    if items.is_empty() { Ok(None) }
+                    else {
+                        let v = items[*index].clone();
+                        *index = (*index + 1) % items.len();
+                        Ok(Some((iter_obj.clone(), v)))
+                    }
+                }
+                // Lazy iterators that truly need VM context (call user functions)
                 IteratorData::Enumerate { .. }
                 | IteratorData::Zip { .. }
                 | IteratorData::Map { .. }
@@ -275,13 +338,8 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 | IteratorData::Sentinel { .. }
                 | IteratorData::TakeWhile { .. }
                 | IteratorData::DropWhile { .. }
-                | IteratorData::Count { .. }
-                | IteratorData::Cycle { .. }
-                | IteratorData::Repeat { .. }
                 | IteratorData::Chain { .. }
-                | IteratorData::Starmap { .. }
-                | IteratorData::DictEntries { .. }
-                | IteratorData::DictKeys { .. } => {
+                | IteratorData::Starmap { .. } => {
                     Err(PyException::type_error("lazy iterator requires VM-level iteration"))
                 }
             }

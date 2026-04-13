@@ -492,7 +492,7 @@ impl VirtualMachine {
         pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
     ) -> PyResult<PyObjectRef> {
-        // ── FAST PATH: simple class with no enum/abstract/__new__/dataclass ──
+        // ── FAST PATH: simple class with no enum/abstract/__new__/dataclass/namedtuple ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
             if cd.is_simple_class && kwargs.is_empty() {
                 let instance = PyObject::instance(cls.clone());
@@ -503,8 +503,20 @@ impl VirtualMachine {
                 if let Some(init_fn) = init_fn {
                     let mut init_args = Vec::with_capacity(1 + pos_args.len());
                     init_args.push(instance.clone());
-                    init_args.extend(pos_args);
+                    init_args.extend(pos_args.clone());
                     self.call_object(init_fn, init_args)?;
+                }
+                // Exception subclass: set args tuple
+                if Self::is_exception_class(cls) {
+                    if let PyObjectPayload::Instance(inst) = &instance.payload {
+                        let mut attrs = inst.attrs.write();
+                        if !attrs.contains_key("args") {
+                            if pos_args.len() == 1 {
+                                attrs.insert(CompactString::from("message"), pos_args[0].clone());
+                            }
+                            attrs.insert(CompactString::from("args"), PyObject::tuple(pos_args));
+                        }
+                    }
                 }
                 return Ok(instance);
             }
@@ -1313,13 +1325,20 @@ impl VirtualMachine {
                         "locals" => {
                             if let Some(frame) = self.call_stack.last() {
                                 let mut map = IndexMap::new();
-                                let g = frame.globals.read();
-                                for (k, v) in g.iter() {
-                                    map.insert(HashableKey::str_key(k.clone()), v.clone());
+                                for (i, name) in frame.code.varnames.iter().enumerate() {
+                                    if let Some(Some(val)) = frame.locals.get(i) {
+                                        map.insert(HashableKey::str_key(name.clone()), val.clone());
+                                    }
                                 }
-                                drop(g);
-                                for (k, v) in frame.local_names_iter() {
-                                    map.insert(HashableKey::str_key(k.clone()), v.clone());
+                                if frame.code.varnames.is_empty() {
+                                    let g = frame.globals.read();
+                                    for (k, v) in g.iter() {
+                                        map.insert(HashableKey::str_key(k.clone()), v.clone());
+                                    }
+                                    drop(g);
+                                    for (k, v) in frame.local_names_iter() {
+                                        map.insert(HashableKey::str_key(k.clone()), v.clone());
+                                    }
                                 }
                                 return Ok(PyObject::dict(map));
                             }
@@ -1902,13 +1921,22 @@ impl VirtualMachine {
                     "locals" => {
                         if let Some(frame) = self.call_stack.last() {
                             let mut map = IndexMap::new();
-                            let g = frame.globals.read();
-                            for (k, v) in g.iter() {
-                                map.insert(HashableKey::str_key(k.clone()), v.clone());
+                            // Include function-scope locals (varnames → locals array)
+                            for (i, name) in frame.code.varnames.iter().enumerate() {
+                                if let Some(Some(val)) = frame.locals.get(i) {
+                                    map.insert(HashableKey::str_key(name.clone()), val.clone());
+                                }
                             }
-                            drop(g);
-                            for (k, v) in frame.local_names_iter() {
-                                map.insert(HashableKey::str_key(k.clone()), v.clone());
+                            // If no varnames (module scope), include globals + local_names
+                            if frame.code.varnames.is_empty() {
+                                let g = frame.globals.read();
+                                for (k, v) in g.iter() {
+                                    map.insert(HashableKey::str_key(k.clone()), v.clone());
+                                }
+                                drop(g);
+                                for (k, v) in frame.local_names_iter() {
+                                    map.insert(HashableKey::str_key(k.clone()), v.clone());
+                                }
                             }
                             return Ok(PyObject::dict(map));
                         }

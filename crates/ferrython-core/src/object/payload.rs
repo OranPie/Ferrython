@@ -998,7 +998,8 @@ impl ClassData {
         let is_simple_class = metaclass.is_none()
             && !namespace.contains_key("__enum__")
             && !namespace.contains_key("__dataclass__")
-            && !namespace.contains_key("__new__");
+            && !namespace.contains_key("__new__")
+            && !namespace.contains_key("__namedtuple__");
 
         Self {
             name,

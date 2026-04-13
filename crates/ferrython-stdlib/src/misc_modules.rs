@@ -896,11 +896,9 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
             }));
         }
 
-        // Generate __setattr__ and __delattr__ for frozen=True
-        if frozen {
-            ns.insert(CompactString::from("__dataclass_frozen__"), PyObject::bool_val(true));
-
-            // Generate a Rust __init__ that bypasses __setattr__ (like CPython uses object.__setattr__)
+        // Generate __init__ for all dataclasses (frozen and non-frozen),
+        // but only if the class doesn't already define __init__ (CPython _set_new_attribute behavior)
+        if !ns.contains_key("__init__") {
             let init_field_names = init_fields.clone();
             let init_field_defaults = field_defaults.clone();
             let cls_for_init = cls.clone();
@@ -909,9 +907,13 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                     return Err(PyException::type_error("__init__ requires self"));
                 }
                 let self_obj = &args[0];
-                // Detect trailing kwargs dict (VM packs kwargs as last arg for NativeClosure)
+                // Detect trailing kwargs dict (VM packs kwargs as last arg for NativeClosure).
+                // Only check when arg count doesn't match field count exactly —
+                // if we have exactly the right number of positional args, they ARE positional
+                // (avoids treating a user dict arg like {"a":1} as kwargs).
+                let n_args_excl_self = args.len() - 1;
                 let trailing_kwargs: Option<FxHashKeyMap> =
-                    if args.len() >= 2 {
+                    if n_args_excl_self != init_field_names.len() && args.len() >= 2 {
                         if let PyObjectPayload::Dict(map) = &args[args.len() - 1].payload {
                             Some(map.read().clone())
                         } else {
@@ -960,6 +962,11 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                 }
                 Ok(PyObject::none())
             }));
+        }
+
+        // Generate __setattr__ and __delattr__ for frozen=True
+        if frozen {
+            ns.insert(CompactString::from("__dataclass_frozen__"), PyObject::bool_val(true));
 
             // Raise FrozenInstanceError on frozen field assignment, allow other attrs
             let frozen_field_names: Vec<CompactString> = field_names.clone();
@@ -1119,6 +1126,13 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                 tup_a.compare(&tup_b, ferrython_core::object::CompareOp::Ge)
             }));
         }
+    }
+
+    // Invalidate vtable so the inline class instantiation uses namespace lookup.
+    // The decorator added __init__ (and possibly __eq__/__repr__/etc.) AFTER class creation,
+    // so the vtable is stale and must be cleared.
+    if let PyObjectPayload::Class(cd) = &cls.payload {
+        cd.method_vtable.write().clear();
     }
     
     Ok(cls.clone())
