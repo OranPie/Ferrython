@@ -1209,15 +1209,46 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
         }
         return result;
     }
-    match max_count {
-        None => {
-            // Unlimited replace: use Rust's optimized single-pass replace
-            CompactString::from(s.replace(old, new))
-        }
+    // Direct construction into CompactString — avoids intermediate String allocation.
+    // Count occurrences to pre-compute exact capacity, then build in one pass.
+    let old_len = old.len();
+    let new_len = new.len();
+    let count = match max_count {
         Some(n) => {
-            CompactString::from(s.replacen(old, new, n))
+            let mut c = 0usize;
+            let mut start = 0;
+            while c < n {
+                if let Some(pos) = s[start..].find(old) {
+                    c += 1;
+                    start += pos + old_len;
+                } else {
+                    break;
+                }
+            }
+            c
+        }
+        None => s.matches(old).count(),
+    };
+    if count == 0 {
+        return CompactString::from(s);
+    }
+    let result_len = s.len() - count * old_len + count * new_len;
+    let mut result = CompactString::with_capacity(result_len);
+    let limit = max_count.unwrap_or(usize::MAX);
+    let mut remainder = s;
+    let mut replaced = 0usize;
+    while replaced < limit {
+        if let Some(pos) = remainder.find(old) {
+            result.push_str(&remainder[..pos]);
+            result.push_str(new);
+            remainder = &remainder[pos + old_len..];
+            replaced += 1;
+        } else {
+            break;
         }
     }
+    result.push_str(remainder);
+    result
 }
 /// Avoids cloning the list/tuple just to iterate.
 fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {

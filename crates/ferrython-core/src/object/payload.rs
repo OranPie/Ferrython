@@ -170,16 +170,21 @@ const SLAB_SIZE: usize = 64;
 
 /// Pool state: intrusive singly-linked freelist through freed blocks.
 /// When a block is free, its `obj` area stores a `*mut PyObjectBlock` next-pointer.
-/// This eliminates RefCell borrow overhead and Vec capacity tracking.
-#[derive(Clone, Copy)]
-struct PoolState {
+/// SAFETY: Single-threaded interpreter (GIL semantics) — only one thread runs Python
+/// bytecode at a time, so direct static access is safe without TLS overhead.
+struct PoolHolder(std::cell::UnsafeCell<PoolStateInner>);
+// SAFETY: GIL guarantees single-threaded access to pool during Python execution.
+unsafe impl Sync for PoolHolder {}
+
+struct PoolStateInner {
     head: *mut PyObjectBlock,
     count: u32,
 }
 
-thread_local! {
-    static POOL: Cell<PoolState> = const { Cell::new(PoolState { head: std::ptr::null_mut(), count: 0 }) };
-}
+static POOL: PoolHolder = PoolHolder(std::cell::UnsafeCell::new(PoolStateInner {
+    head: std::ptr::null_mut(),
+    count: 0,
+}));
 
 /// Read the next-free pointer from a freed block's obj area.
 #[inline(always)]
@@ -198,7 +203,6 @@ unsafe fn set_free_next(block: *mut PyObjectBlock, next: *mut PyObjectBlock) {
 #[inline(never)]
 fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
     let layout = std::alloc::Layout::new::<PyObjectBlock>();
-    // Allocate SLAB_SIZE individual blocks (mimalloc handles batching internally)
     let mut first: *mut PyObjectBlock = std::ptr::null_mut();
     let mut chain_head: *mut PyObjectBlock = std::ptr::null_mut();
     let mut chain_count: u32 = 0;
@@ -209,7 +213,6 @@ fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
         if i == 0 {
             first = ptr;
         } else {
-            // Mark with sentinel before adding to freelist chain
             unsafe { 
                 (*ptr).strong = Cell::new(FREELIST_SENTINEL);
                 set_free_next(ptr, chain_head);
@@ -221,18 +224,16 @@ fn alloc_slab_and_pop() -> NonNull<PyObjectBlock> {
 
     // Push chain into pool
     if chain_count > 0 {
-        POOL.with(|pool| {
-            let mut state = pool.get();
-            // Find tail of new chain to link to existing head
+        unsafe {
+            let state = &mut *POOL.0.get();
             let mut tail = chain_head;
             for _ in 1..chain_count {
-                tail = unsafe { free_next(tail) };
+                tail = free_next(tail);
             }
-            unsafe { set_free_next(tail, state.head); }
+            set_free_next(tail, state.head);
             state.head = chain_head;
             state.count += chain_count;
-            pool.set(state);
-        });
+        }
     }
 
     unsafe { NonNull::new_unchecked(first) }
@@ -244,18 +245,17 @@ const FREELIST_SENTINEL: u32 = 0xDEAD_BEEF;
 
 #[inline(always)]
 fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
-    let block = POOL.with(|pool| {
-        let mut state = pool.get();
+    let block = unsafe {
+        let state = &mut *POOL.0.get();
         if !state.head.is_null() {
             let block = state.head;
-            state.head = unsafe { free_next(block) };
+            state.head = free_next(block);
             state.count -= 1;
-            pool.set(state);
-            unsafe { NonNull::new_unchecked(block) }
+            NonNull::new_unchecked(block)
         } else {
             alloc_slab_and_pop()
         }
-    });
+    };
     unsafe {
         let p = block.as_ptr();
         (*p).strong = Cell::new(1);
@@ -267,25 +267,20 @@ fn pool_alloc(obj: PyObject) -> NonNull<PyObjectBlock> {
 
 #[inline(always)]
 fn pool_recycle(block: NonNull<PyObjectBlock>) {
-    POOL.with(|pool| {
-        let mut state = pool.get();
+    unsafe {
+        let state = &mut *POOL.0.get();
         if state.count < MAX_POOL_SIZE as u32 {
-            unsafe { 
-                (*block.as_ptr()).strong = Cell::new(FREELIST_SENTINEL);
-                set_free_next(block.as_ptr(), state.head);
-            }
+            (*block.as_ptr()).strong = Cell::new(FREELIST_SENTINEL);
+            set_free_next(block.as_ptr(), state.head);
             state.head = block.as_ptr();
             state.count += 1;
-            pool.set(state);
         } else {
-            unsafe {
-                std::alloc::dealloc(
-                    block.as_ptr() as *mut u8,
-                    std::alloc::Layout::new::<PyObjectBlock>(),
-                );
-            }
+            std::alloc::dealloc(
+                block.as_ptr() as *mut u8,
+                std::alloc::Layout::new::<PyObjectBlock>(),
+            );
         }
-    });
+    }
 }
 
 /// A reference-counted handle to a Python object.
