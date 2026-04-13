@@ -2826,15 +2826,10 @@ impl VirtualMachine {
                 // Inline UnpackSequence for tuple fast path
                 Opcode::UnpackSequence => {
                     let count = instr.arg as usize;
-                    // Check type without holding borrow across spop
-                    let kind: u8 = match &speek!(frame).payload {
-                        PyObjectPayload::Tuple(items) if items.len() == count => 1,
-                        PyObjectPayload::List(_) => 2,
-                        _ => 0,
-                    };
-                    if kind == 1 {
-                        let top = spop!(frame);
-                        if let PyObjectPayload::Tuple(items) = &top.payload {
+                    // Pop first, match once — push back only in rare fallback case
+                    let top = spop!(frame);
+                    match &top.payload {
+                        PyObjectPayload::Tuple(items) if items.len() == count => {
                             unsafe {
                                 let stack = &mut frame.stack;
                                 stack.reserve(count);
@@ -2845,11 +2840,9 @@ impl VirtualMachine {
                                 stack.set_len(stack.len() + count);
                             }
                             hot_ok!(profiling, self.profiler, instr.op)
-                        } else { unreachable!() }
-                    } else if kind == 2 {
-                        let top = spop!(frame);
-                        if let PyObjectPayload::List(items) = &top.payload {
-                            let list = items.read();
+                        }
+                        PyObjectPayload::List(cell) => {
+                            let list = unsafe { &*cell.data_ptr() };
                             if list.len() == count {
                                 unsafe {
                                     let stack = &mut frame.stack;
@@ -2862,13 +2855,14 @@ impl VirtualMachine {
                                 }
                                 hot_ok!(profiling, self.profiler, instr.op)
                             } else {
-                                drop(list);
                                 spush!(frame, top);
                                 self.execute_one(instr)
                             }
-                        } else { unreachable!() }
-                    } else {
-                        self.execute_one(instr)
+                        }
+                        _ => {
+                            spush!(frame, top);
+                            self.execute_one(instr)
+                        }
                     }
                 }
                 Opcode::BuildMap => self.execute_one(instr),

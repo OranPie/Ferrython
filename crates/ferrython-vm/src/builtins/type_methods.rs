@@ -152,9 +152,25 @@ pub(super) fn call_list_method(items: &PyCell<Vec<PyObjectRef>>, method: &str, a
         "sort" => {
             let mut w = items.write();
             let mut v: Vec<_> = w.drain(..).collect();
-            v.sort_by(|a, b| {
-                partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            // Homogeneous small-int sort: only for large lists (≥32 elements)
+            if v.len() >= 32 {
+                let all_small_int = v.iter().all(|x| matches!(&x.payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))));
+                if all_small_int {
+                    v.sort_unstable_by(|a, b| {
+                        let av = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(val)) = &a.payload { *val } else { 0 };
+                        let bv = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(val)) = &b.payload { *val } else { 0 };
+                        av.cmp(&bv)
+                    });
+                } else {
+                    v.sort_by(|a, b| {
+                        partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                }
+            } else if v.len() > 1 {
+                v.sort_by(|a, b| {
+                    partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
             w.extend(v);
             Ok(PyObject::none())
         }

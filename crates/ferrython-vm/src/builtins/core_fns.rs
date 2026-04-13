@@ -238,15 +238,15 @@ pub(super) fn builtin_max(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 }
 
 fn min_max_impl(args: &[PyObjectRef], target_ord: std::cmp::Ordering, name: &str) -> PyResult<PyObjectRef> {
-    // Multi-arg: min(a, b, c, ...)
+    // Multi-arg: min(a, b, c, ...) — track best by index, clone once at end
     if args.len() > 1 {
-        let mut best = args[0].clone();
-        for item in &args[1..] {
-            if ferrython_core::object::helpers::partial_cmp_objects(item, &best) == Some(target_ord) {
-                best = item.clone();
+        let mut best_idx = 0usize;
+        for (i, item) in args[1..].iter().enumerate() {
+            if ferrython_core::object::helpers::partial_cmp_objects(item, &args[best_idx]) == Some(target_ord) {
+                best_idx = i + 1;
             }
         }
-        return Ok(best);
+        return Ok(args[best_idx].clone());
     }
     // Single-arg: direct slice access for list/tuple (avoid to_list clone)
     let items: &[PyObjectRef] = match &args[0].payload {
@@ -257,25 +257,42 @@ fn min_max_impl(args: &[PyObjectRef], target_ord: std::cmp::Ordering, name: &str
             if materialized.is_empty() {
                 return Err(PyException::value_error(&format!("{}() arg is an empty sequence", name)));
             }
-            let mut best = materialized[0].clone();
-            for item in &materialized[1..] {
-                if ferrython_core::object::helpers::partial_cmp_objects(item, &best) == Some(target_ord) {
-                    best = item.clone();
-                }
-            }
-            return Ok(best);
+            return min_max_slice(&materialized, target_ord);
         }
     };
     if items.is_empty() {
         return Err(PyException::value_error(&format!("{}() arg is an empty sequence", name)));
     }
-    let mut best = items[0].clone();
-    for item in &items[1..] {
-        if ferrython_core::object::helpers::partial_cmp_objects(item, &best) == Some(target_ord) {
-            best = item.clone();
+    min_max_slice(items, target_ord)
+}
+
+/// Optimized min/max over a slice: uses direct i64 comparison for homogeneous small-int lists.
+fn min_max_slice(items: &[PyObjectRef], target_ord: std::cmp::Ordering) -> PyResult<PyObjectRef> {
+    // Homogeneous small-int: scan as i64, return the winning element by index
+    if items.len() >= 2 {
+        let all_small_int = items.iter().all(|x| matches!(&x.payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))));
+        if all_small_int {
+            let is_min = target_ord == std::cmp::Ordering::Less;
+            let mut best_idx = 0usize;
+            let mut best_val = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &items[0].payload { *v } else { 0 };
+            for (i, item) in items[1..].iter().enumerate() {
+                let v = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(val)) = &item.payload { *val } else { 0 };
+                if (is_min && v < best_val) || (!is_min && v > best_val) {
+                    best_val = v;
+                    best_idx = i + 1;
+                }
+            }
+            return Ok(items[best_idx].clone());
         }
     }
-    Ok(best)
+    // Generic path: track best by index, clone only once at the end
+    let mut best_idx = 0usize;
+    for (i, item) in items[1..].iter().enumerate() {
+        if ferrython_core::object::helpers::partial_cmp_objects(item, &items[best_idx]) == Some(target_ord) {
+            best_idx = i + 1;
+        }
+    }
+    Ok(items[best_idx].clone())
 }
 
 pub(super) fn builtin_sum(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
@@ -996,10 +1013,28 @@ pub(super) fn builtin_sorted(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args[0].to_list()?
     };
-    items.sort_unstable_by(|a, b| {
-        ferrython_core::object::helpers::partial_cmp_objects(a, b)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Homogeneous small-int sort: only for large lists (≥32 elements)
+    // to avoid detection overhead dominating small sorts.
+    if items.len() >= 32 {
+        let all_small_int = items.iter().all(|x| matches!(&x.payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))));
+        if all_small_int {
+            items.sort_unstable_by(|a, b| {
+                let av = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &a.payload { *v } else { 0 };
+                let bv = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &b.payload { *v } else { 0 };
+                av.cmp(&bv)
+            });
+        } else {
+            items.sort_unstable_by(|a, b| {
+                ferrython_core::object::helpers::partial_cmp_objects(a, b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+    } else if items.len() > 1 {
+        items.sort_unstable_by(|a, b| {
+            ferrython_core::object::helpers::partial_cmp_objects(a, b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
     Ok(PyObject::list(items))
 }
 

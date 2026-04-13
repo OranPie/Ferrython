@@ -1208,35 +1208,67 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
     let new_len = new.len();
     let limit = max_count.unwrap_or(usize::MAX);
 
-    // CompactString inlines ≤23 bytes without heap allocation.
-    // Avoid with_capacity() when the result likely fits inline.
-    let max_result_len = if new_len <= old_len {
-        s.len()
-    } else {
-        s.len() + 8 * (new_len - old_len)
-    };
-    let mut result = if max_result_len <= 23 {
-        CompactString::new("")
-    } else {
-        CompactString::with_capacity(max_result_len)
-    };
-    let mut remainder = s;
-    let mut replaced = 0usize;
-    while replaced < limit {
-        if let Some(pos) = remainder.find(old) {
-            result.push_str(&remainder[..pos]);
-            result.push_str(new);
-            remainder = &remainder[pos + old_len..];
-            replaced += 1;
+    if new_len <= old_len {
+        // Shrinking or same-size: result ≤ s.len(). Single-pass, no reallocation.
+        // CompactString inlines ≤23 bytes without heap allocation.
+        let mut result = if s.len() <= 23 {
+            CompactString::new("")
         } else {
-            break;
+            CompactString::with_capacity(s.len())
+        };
+        let mut remainder = s;
+        let mut replaced = 0usize;
+        while replaced < limit {
+            if let Some(pos) = remainder.find(old) {
+                result.push_str(&remainder[..pos]);
+                result.push_str(new);
+                remainder = &remainder[pos + old_len..];
+                replaced += 1;
+            } else {
+                break;
+            }
         }
+        if replaced == 0 {
+            return CompactString::from(s);
+        }
+        result.push_str(remainder);
+        result
+    } else {
+        // Growing: two-pass to compute exact capacity (avoids reallocation).
+        let mut match_count = 0usize;
+        let mut search = s;
+        while match_count < limit {
+            if let Some(pos) = search.find(old) {
+                match_count += 1;
+                search = &search[pos + old_len..];
+            } else {
+                break;
+            }
+        }
+        if match_count == 0 {
+            return CompactString::from(s);
+        }
+        let exact_len = s.len() + match_count * (new_len - old_len);
+        let mut result = if exact_len <= 23 {
+            CompactString::new("")
+        } else {
+            CompactString::with_capacity(exact_len)
+        };
+        let mut remainder = s;
+        let mut replaced = 0usize;
+        while replaced < match_count {
+            if let Some(pos) = remainder.find(old) {
+                result.push_str(&remainder[..pos]);
+                result.push_str(new);
+                remainder = &remainder[pos + old_len..];
+                replaced += 1;
+            } else {
+                break;
+            }
+        }
+        result.push_str(remainder);
+        result
     }
-    if replaced == 0 {
-        return CompactString::from(s);
-    }
-    result.push_str(remainder);
-    result
 }
 /// Avoids cloning the list/tuple just to iterate.
 fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
