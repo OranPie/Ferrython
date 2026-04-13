@@ -213,18 +213,10 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             .map(|p| PyObject::str_val(CompactString::from(p)))
                             .collect(),
                         None => {
-                            // Pre-count matches to allocate Vec with exact capacity
-                            let count = if sep.len() == 1 {
-                                let b = sep.as_bytes()[0];
-                                s.as_bytes().iter().filter(|&&c| c == b).count()
-                            } else {
-                                s.matches(sep).count()
-                            };
-                            let mut parts = Vec::with_capacity(count + 1);
-                            for p in s.split(sep) {
-                                parts.push(PyObject::str_val(CompactString::from(p)));
-                            }
-                            parts
+                            // Single-pass: collect directly with small initial capacity
+                            s.split(sep)
+                                .map(|p| PyObject::str_val(CompactString::from(p)))
+                                .collect()
                         }
                     }
                 }
@@ -1220,21 +1212,26 @@ fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if items.is_empty() {
         return Ok(PyObject::str_val(CompactString::new("")));
     }
-    let mut total_len = sep.len() * (items.len() - 1);
-    for (i, item) in items.iter().enumerate() {
-        match item.as_str() {
-            Some(part) => total_len += part.len(),
-            None => return Err(PyException::type_error(
-                format!("sequence item {}: expected str instance, {} found", i, item.type_name())
+    if items.len() == 1 {
+        return match items[0].as_str() {
+            Some(s) => Ok(PyObject::str_val(CompactString::from(s))),
+            None => Err(PyException::type_error(
+                format!("sequence item 0: expected str instance, {} found", items[0].type_name())
             )),
-        }
+        };
     }
-    // Build directly into CompactString — short results stay inline (no heap alloc)
-    let mut result = CompactString::with_capacity(total_len);
+    // Single pass: build result directly, validate as we go
+    // Estimate capacity from item count (avoid scanning twice)
+    let est_cap = items.len() * 8 + sep.len() * (items.len() - 1);
+    let mut result = CompactString::with_capacity(est_cap);
     for (i, item) in items.iter().enumerate() {
-        if i > 0 { result.push_str(sep); }
         if let PyObjectPayload::Str(s) = &item.payload {
+            if i > 0 { result.push_str(sep); }
             result.push_str(s.as_str());
+        } else {
+            return Err(PyException::type_error(
+                format!("sequence item {}: expected str instance, {} found", i, item.type_name())
+            ));
         }
     }
     Ok(PyObject::str_val(result))

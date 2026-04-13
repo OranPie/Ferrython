@@ -2771,19 +2771,50 @@ impl VirtualMachine {
                 }
                 // Inline UnpackSequence for tuple fast path
                 Opcode::UnpackSequence => {
-                    let top = speek!(frame);
                     let count = instr.arg as usize;
-                    match &top.payload {
-                        PyObjectPayload::Tuple(items) if items.len() == count => {
-                            let top = spop!(frame);
-                            if let PyObjectPayload::Tuple(items) = &top.payload {
-                                for item in items.iter().rev() {
-                                    unsafe { frame.push_unchecked(item.clone()) };
+                    // Check type without holding borrow across spop
+                    let kind: u8 = match &speek!(frame).payload {
+                        PyObjectPayload::Tuple(items) if items.len() == count => 1,
+                        PyObjectPayload::List(_) => 2,
+                        _ => 0,
+                    };
+                    if kind == 1 {
+                        let top = spop!(frame);
+                        if let PyObjectPayload::Tuple(items) = &top.payload {
+                            unsafe {
+                                let stack = &mut frame.stack;
+                                stack.reserve(count);
+                                let base = stack.as_mut_ptr().add(stack.len());
+                                for i in 0..count {
+                                    std::ptr::write(base.add(i), items[count - 1 - i].clone());
+                                }
+                                stack.set_len(stack.len() + count);
+                            }
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        } else { unreachable!() }
+                    } else if kind == 2 {
+                        let top = spop!(frame);
+                        if let PyObjectPayload::List(items) = &top.payload {
+                            let list = items.read();
+                            if list.len() == count {
+                                unsafe {
+                                    let stack = &mut frame.stack;
+                                    stack.reserve(count);
+                                    let base = stack.as_mut_ptr().add(stack.len());
+                                    for i in 0..count {
+                                        std::ptr::write(base.add(i), list[count - 1 - i].clone());
+                                    }
+                                    stack.set_len(stack.len() + count);
                                 }
                                 hot_ok!(profiling, self.profiler, instr.op)
-                            } else { unreachable!() }
-                        }
-                        _ => self.execute_one(instr),
+                            } else {
+                                drop(list);
+                                spush!(frame, top);
+                                self.execute_one(instr)
+                            }
+                        } else { unreachable!() }
+                    } else {
+                        self.execute_one(instr)
                     }
                 }
                 Opcode::BuildMap => self.execute_one(instr),
