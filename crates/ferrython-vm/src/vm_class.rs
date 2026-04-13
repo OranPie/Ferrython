@@ -975,35 +975,38 @@ impl VirtualMachine {
 
     pub(crate) fn c3_merge(linearizations: &mut Vec<Vec<PyObjectRef>>) -> PyResult<Vec<PyObjectRef>> {
         let mut result = Vec::new();
+        // Track start index per linearization to avoid O(n) vec.remove(0)
+        let mut starts: Vec<usize> = vec![0; linearizations.len()];
         loop {
-            // Remove empty lists
-            linearizations.retain(|l| !l.is_empty());
-            if linearizations.is_empty() {
+            // Check if all lists are exhausted
+            let any_remaining = starts.iter().enumerate().any(|(i, &s)| s < linearizations[i].len());
+            if !any_remaining {
                 break;
             }
             // Find a good head: first element of some list that doesn't appear in the tail of any list
             let mut found = None;
-            for lin in linearizations.iter() {
-                let candidate = &lin[0];
-                let candidate_ptr = PyObjectRef::as_ptr(candidate);
-                let in_tail = linearizations.iter().any(|other| {
-                    other.iter().skip(1).any(|x| PyObjectRef::as_ptr(x) == candidate_ptr)
+            for (i, lin) in linearizations.iter().enumerate() {
+                if starts[i] >= lin.len() { continue; }
+                let candidate_ptr = PyObjectRef::as_ptr(&lin[starts[i]]);
+                let in_tail = linearizations.iter().enumerate().any(|(j, other)| {
+                    let s = starts[j];
+                    if s >= other.len() { return false; }
+                    other[s+1..].iter().any(|x| PyObjectRef::as_ptr(x) == candidate_ptr)
                 });
                 if !in_tail {
-                    found = Some(candidate.clone());
+                    found = Some(lin[starts[i]].clone());
                     break;
                 }
             }
             if let Some(head) = found {
                 let head_ptr = PyObjectRef::as_ptr(&head);
                 result.push(head);
-                for lin in linearizations.iter_mut() {
-                    if !lin.is_empty() && PyObjectRef::as_ptr(&lin[0]) == head_ptr {
-                        lin.remove(0);
+                for (i, lin) in linearizations.iter().enumerate() {
+                    if starts[i] < lin.len() && PyObjectRef::as_ptr(&lin[starts[i]]) == head_ptr {
+                        starts[i] += 1;
                     }
                 }
             } else {
-                // C3 linearization failure — raise TypeError like CPython
                 return Err(PyException::type_error(
                     "Cannot create a consistent method resolution order (MRO)"
                 ));

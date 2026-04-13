@@ -417,7 +417,8 @@ impl HashableKey {
             PyObjectPayload::FrozenSet(m) => {
                 let mut keys: Vec<HashableKey> = Vec::with_capacity(m.len());
                 for (k, _) in m.iter() { keys.push(k.clone()); }
-                keys.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
+                // Sort by hash value for deterministic ordering without heap allocation
+                keys.sort_by(|a, b| a.hash_key().cmp(&b.hash_key()));
                 Ok(HashableKey::FrozenSet(Box::new(keys)))
             }
             PyObjectPayload::Ellipsis => Ok(HashableKey::str_key(CompactString::from("Ellipsis"))),
@@ -465,13 +466,14 @@ impl HashableKey {
             _ => Err(PyException::type_error(format!("unhashable type: '{}'", obj.type_name()))),
         }
     }
+    #[inline]
     pub fn to_object(&self) -> PyObjectRef {
         match self {
+            HashableKey::Int(n) => n.to_object(),
+            HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
             HashableKey::None => PyObject::none(),
             HashableKey::Bool(b) => PyObject::bool_val(*b),
-            HashableKey::Int(n) => n.to_object(),
             HashableKey::Float(f) => PyObject::float(f.0),
-            HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
             HashableKey::Bytes(b) => PyObject::bytes(Vec::clone(b)),
             HashableKey::Tuple(keys) => PyObject::tuple(keys.iter().map(|k| k.to_object()).collect()),
             HashableKey::FrozenSet(keys) => {
@@ -479,11 +481,18 @@ impl HashableKey {
                 for k in keys.iter() { map.insert(k.clone(), k.to_object()); }
                 PyObject::frozenset(map)
             },
-            HashableKey::Identity(_ptr, obj) => {
-                obj.clone()
-            },
+            HashableKey::Identity(_ptr, obj) => obj.clone(),
             HashableKey::Custom { object, .. } => object.clone(),
         }
+    }
+
+    /// Return a u64 hash for deterministic ordering (used by frozenset key sorting).
+    #[inline]
+    pub fn hash_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = rustc_hash::FxHasher::default();
+        self.hash(&mut h);
+        h.finish()
     }
 }
 
