@@ -967,8 +967,16 @@ pub(super) fn builtin_bin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 pub(super) fn builtin_sorted(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("sorted", args, 1)?;
-    let mut items = args[0].to_list()?;
-    // Use partial_cmp_objects for zero-allocation comparison (no PyObject bool created)
+    // For temporary lists (refcount==1), steal contents instead of cloning
+    let mut items = if let PyObjectPayload::List(ref cell) = args[0].payload {
+        if PyObjectRef::strong_count(&args[0]) == 1 {
+            std::mem::take(&mut *cell.write())
+        } else {
+            cell.read().clone()
+        }
+    } else {
+        args[0].to_list()?
+    };
     items.sort_by(|a, b| {
         ferrython_core::object::helpers::partial_cmp_objects(a, b)
             .unwrap_or(std::cmp::Ordering::Equal)

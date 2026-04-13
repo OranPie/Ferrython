@@ -213,10 +213,22 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             .map(|p| PyObject::str_val(CompactString::from(p)))
                             .collect(),
                         None => {
-                            // Single-pass: collect directly with small initial capacity
-                            s.split(sep)
-                                .map(|p| PyObject::str_val(CompactString::from(p)))
-                                .collect()
+                            // Count separators first to pre-allocate result vec
+                            let sep_len = sep.len();
+                            if sep_len == 0 {
+                                return Err(PyException::value_error("empty separator"));
+                            }
+                            let count = if sep_len == 1 {
+                                let sep_byte = sep.as_bytes()[0];
+                                s.as_bytes().iter().filter(|&&b| b == sep_byte).count()
+                            } else {
+                                s.matches(sep).count()
+                            };
+                            let mut parts = Vec::with_capacity(count + 1);
+                            for p in s.split(sep) {
+                                parts.push(PyObject::str_val(CompactString::from(p)));
+                            }
+                            parts
                         }
                     }
                 }
@@ -1220,18 +1232,23 @@ fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             )),
         };
     }
-    // Single pass: build result directly, validate as we go
-    // Estimate capacity from item count (avoid scanning twice)
-    let est_cap = items.len() * 8 + sep.len() * (items.len() - 1);
-    let mut result = CompactString::with_capacity(est_cap);
+    // Two-pass: first compute exact capacity, then build result
+    let sep_total = sep.len() * (items.len() - 1);
+    let mut total_len = sep_total;
     for (i, item) in items.iter().enumerate() {
         if let PyObjectPayload::Str(s) = &item.payload {
-            if i > 0 { result.push_str(sep); }
-            result.push_str(s.as_str());
+            total_len += s.len();
         } else {
             return Err(PyException::type_error(
                 format!("sequence item {}: expected str instance, {} found", i, item.type_name())
             ));
+        }
+    }
+    let mut result = CompactString::with_capacity(total_len);
+    for (i, item) in items.iter().enumerate() {
+        if let PyObjectPayload::Str(s) = &item.payload {
+            if i > 0 { result.push_str(sep); }
+            result.push_str(s.as_str());
         }
     }
     Ok(PyObject::str_val(result))
