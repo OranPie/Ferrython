@@ -489,32 +489,40 @@ impl VirtualMachine {
     pub(crate) fn instantiate_class(
         &mut self,
         cls: &PyObjectRef,
-        pos_args: Vec<PyObjectRef>,
+        mut pos_args: Vec<PyObjectRef>,
         kwargs: Vec<(CompactString, PyObjectRef)>,
     ) -> PyResult<PyObjectRef> {
         // ── FAST PATH: simple class — skip ABC check entirely ──
         if let PyObjectPayload::Class(cd) = &cls.payload {
             if cd.is_simple_class.get() && kwargs.is_empty()
-                && !cd.namespace.read().contains_key("__new__")
+                && !cd.has_custom_new.get()
             {
                 let instance = PyObject::instance(cls.clone());
-                // Try vtable first (O(1)), fall back to namespace + MRO if vtable was cleared
-                let init_fn = cd.method_vtable.read().get("__init__").cloned()
-                    .or_else(|| cd.namespace.read().get("__init__").cloned())
-                    .or_else(|| ferrython_core::object::lookup_in_class_mro(cls, "__init__"));
+                // Use cached __init__ (populated lazily, invalidated on class mutation)
+                let init_fn = {
+                    let cached = cd.cached_init.read();
+                    if cached.is_some() {
+                        cached.clone()
+                    } else {
+                        drop(cached);
+                        let found = cd.method_vtable.read().get("__init__").cloned()
+                            .or_else(|| cd.namespace.read().get("__init__").cloned())
+                            .or_else(|| ferrython_core::object::lookup_in_class_mro(cls, "__init__"));
+                        *cd.cached_init.write() = found.clone();
+                        found
+                    }
+                };
                 if let Some(init_fn) = init_fn {
-                    let mut init_args = Vec::with_capacity(1 + pos_args.len());
-                    init_args.push(instance.clone());
-                    init_args.extend(pos_args.clone());
-                    let init_result = self.call_object(init_fn, init_args)?;
+                    // Prepend instance to pos_args in-place (avoids new Vec allocation)
+                    pos_args.insert(0, instance.clone());
+                    let init_result = self.call_object(init_fn, pos_args)?;
                     if !matches!(&init_result.payload, PyObjectPayload::None) {
                         return Err(PyException::type_error(
                             "__init__() should return None, not '".to_string()
                                 + init_result.type_name() + "'"
                         ));
                     }
-                }
-                if cd.is_exception_subclass {
+                } else if cd.is_exception_subclass {
                     if let PyObjectPayload::Instance(inst) = &instance.payload {
                         let mut attrs = inst.attrs.write();
                         if !attrs.contains_key("args") {

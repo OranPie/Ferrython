@@ -956,6 +956,12 @@ pub struct ClassData {
     /// Cached InstanceData flags (has_getattribute, has_descriptors, etc.)
     /// Pre-computed to avoid recomputing per instance creation.
     pub instance_flags: u8,
+    /// Cached __init__ function for fast instantiation (avoids vtable/namespace
+    /// lookup per call). Populated lazily on first instantiation. Cleared on class mutation.
+    pub cached_init: PyCell<Option<PyObjectRef>>,
+    /// Cached flag: true if __new__ is defined in this class's namespace.
+    /// Pre-computed at class creation, invalidated on mutation.
+    pub has_custom_new: Cell<bool>,
 }
 
 impl ClassData {
@@ -1142,6 +1148,8 @@ impl ClassData {
         if slots.is_some() { instance_flags |= CLASS_FLAG_HAS_SLOTS; }
         if has_getattr { instance_flags |= CLASS_FLAG_HAS_GETATTR; }
 
+        let has_custom_new = namespace.contains_key("__new__");
+        
         Self {
             name,
             bases,
@@ -1163,6 +1171,8 @@ impl ClassData {
             is_simple_class: Cell::new(is_simple_class),
             is_exception_subclass,
             instance_flags,
+            cached_init: PyCell::new(None),
+            has_custom_new: Cell::new(has_custom_new),
         }
     }
 
@@ -1181,6 +1191,9 @@ impl ClassData {
         }
         self.method_vtable = Rc::new(PyCell::new(vtable));
         self.class_version = next_class_version();
+        // Invalidate cached __init__ and __new__ flags
+        *self.cached_init.write() = None;
+        self.has_custom_new.set(self.namespace.read().contains_key("__new__"));
     }
 
     /// Collect all allowed slot names from this class and its MRO.
