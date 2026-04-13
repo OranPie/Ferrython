@@ -559,7 +559,13 @@ impl VirtualMachine {
                     let mut init_args = Vec::with_capacity(1 + pos_args.len());
                     init_args.push(instance.clone());
                     init_args.extend(pos_args.clone());
-                    self.call_object(init_fn, init_args)?;
+                    let init_result = self.call_object(init_fn, init_args)?;
+                    if !matches!(&init_result.payload, PyObjectPayload::None) {
+                        return Err(PyException::type_error(
+                            "__init__() should return None, not '".to_string()
+                                + init_result.type_name() + "'"
+                        ));
+                    }
                 }
                 // Exception subclass: set args tuple
                 if Self::is_exception_class(cls) {

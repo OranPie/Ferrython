@@ -2145,6 +2145,14 @@ impl VirtualMachine {
                                 match (&x.payload, &needle.payload) {
                                     (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
                                     (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
+                                    (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a == b,
+                                    (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => a == b,
+                                    (PyObjectPayload::None, PyObjectPayload::None) => true,
+                                    (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
+                                        a.len() == b.len() && a.iter().zip(b.iter()).all(|(ai, bi)| {
+                                            ferrython_core::object::helpers::partial_cmp_objects(ai, bi) == Some(std::cmp::Ordering::Equal)
+                                        })
+                                    }
                                     _ => PyObjectRef::ptr_eq(x, needle),
                                 }
                             }))
@@ -2154,6 +2162,14 @@ impl VirtualMachine {
                                 match (&x.payload, &needle.payload) {
                                     (PyObjectPayload::Int(PyInt::Small(a)), PyObjectPayload::Int(PyInt::Small(b))) => a == b,
                                     (PyObjectPayload::Str(a), PyObjectPayload::Str(b)) => a == b,
+                                    (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a == b,
+                                    (PyObjectPayload::Float(a), PyObjectPayload::Float(b)) => a == b,
+                                    (PyObjectPayload::None, PyObjectPayload::None) => true,
+                                    (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
+                                        a.len() == b.len() && a.iter().zip(b.iter()).all(|(ai, bi)| {
+                                            ferrython_core::object::helpers::partial_cmp_objects(ai, bi) == Some(std::cmp::Ordering::Equal)
+                                        })
+                                    }
                                     _ => PyObjectRef::ptr_eq(x, needle),
                                 }
                             }))

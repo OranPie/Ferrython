@@ -9,7 +9,7 @@ mod methods_compare;
 mod methods_attr;
 mod methods_container;
 mod methods_format;
-mod helpers;
+pub mod helpers;
 
 // Re-export all public types and functions
 pub use payload::*;

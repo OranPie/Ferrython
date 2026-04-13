@@ -185,7 +185,7 @@ pub(super) fn int_bitop(a: &PyObjectRef, b: &PyObjectRef, op_name: &str, op: fn(
     Ok(PyObject::int(op(ai, bi)))
 }
 
-pub(super) fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ordering> {
+pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp::Ordering> {
     match (&a.payload, &b.payload) {
         (PyObjectPayload::None, PyObjectPayload::None) => Some(std::cmp::Ordering::Equal),
         (PyObjectPayload::Bool(a), PyObjectPayload::Bool(b)) => a.partial_cmp(b),
