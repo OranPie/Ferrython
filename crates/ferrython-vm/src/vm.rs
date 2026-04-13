@@ -1334,6 +1334,19 @@ impl VirtualMachine {
                                     Some(map.get_index(idx).unwrap().0.to_object())
                                 } else { None }
                             }
+                            PyObjectPayload::DictValues(cell) => {
+                                let map = unsafe { &*cell.data_ptr() };
+                                if idx < map.len() {
+                                    Some(map.get_index(idx).unwrap().1.clone())
+                                } else { None }
+                            }
+                            PyObjectPayload::DictItems(cell) => {
+                                let map = unsafe { &*cell.data_ptr() };
+                                if idx < map.len() {
+                                    let (k, v) = map.get_index(idx).unwrap();
+                                    Some(PyObject::tuple(vec![k.to_object(), v.clone()]))
+                                } else { None }
+                            }
                             _ => None,
                         };
                         if let Some(v) = item {
@@ -1440,8 +1453,38 @@ impl VirtualMachine {
 
                                 // ── 2-source fast path (most common: zip(a, b)) ──
                                 if n == 2 {
-                                    let v0 = Self::advance_source_inline(&sources[0]);
-                                    let v1 = Self::advance_source_inline(&sources[1]);
+                                    // Inline RefIter+List advancement: avoids 4 enum matches
+                                    // in advance_source_inline per iteration.
+                                    let (v0, v1) = 'zip_inline: {
+                                        if let (
+                                            PyObjectPayload::RefIter { source: ref src0, index: ref idx0 },
+                                            PyObjectPayload::RefIter { source: ref src1, index: ref idx1 },
+                                        ) = (&sources[0].payload, &sources[1].payload) {
+                                            if let (
+                                                PyObjectPayload::List(ref cell0),
+                                                PyObjectPayload::List(ref cell1),
+                                            ) = (&src0.payload, &src1.payload) {
+                                                let items0 = unsafe { &*cell0.data_ptr() };
+                                                let items1 = unsafe { &*cell1.data_ptr() };
+                                                let i0 = idx0.get();
+                                                let i1 = idx1.get();
+                                                if i0 < items0.len() && i1 < items1.len() {
+                                                    idx0.set(i0 + 1);
+                                                    idx1.set(i1 + 1);
+                                                    break 'zip_inline (Some(Some(items0[i0].clone())), Some(Some(items1[i1].clone())));
+                                                } else {
+                                                    let e0 = if i0 >= items0.len() { Some(None) } else { Some(Some(items0[i0].clone())) };
+                                                    let e1 = if i1 >= items1.len() { Some(None) } else { Some(Some(items1[i1].clone())) };
+                                                    if e0.as_ref().map_or(false, |v| v.is_some()) { idx0.set(i0 + 1); }
+                                                    if e1.as_ref().map_or(false, |v| v.is_some()) { idx1.set(i1 + 1); }
+                                                    break 'zip_inline (e0, e1);
+                                                }
+                                            }
+                                        }
+                                        // Fallback to generic advance
+                                        (Self::advance_source_inline(&sources[0]),
+                                         Self::advance_source_inline(&sources[1]))
+                                    };
                                     match (v0, v1) {
                                         (Some(Some(a)), Some(Some(b))) => {
                                             // Both sources yielded — reuse cached tuple
@@ -1695,6 +1738,19 @@ impl VirtualMachine {
                                 let map = unsafe { &*cell.data_ptr() };
                                 if idx < map.len() {
                                     Some(map.get_index(idx).unwrap().0.to_object())
+                                } else { None }
+                            }
+                            PyObjectPayload::DictValues(cell) => {
+                                let map = unsafe { &*cell.data_ptr() };
+                                if idx < map.len() {
+                                    Some(map.get_index(idx).unwrap().1.clone())
+                                } else { None }
+                            }
+                            PyObjectPayload::DictItems(cell) => {
+                                let map = unsafe { &*cell.data_ptr() };
+                                if idx < map.len() {
+                                    let (k, v) = map.get_index(idx).unwrap();
+                                    Some(PyObject::tuple(vec![k.to_object(), v.clone()]))
                                 } else { None }
                             }
                             _ => None,
@@ -6339,6 +6395,27 @@ impl VirtualMachine {
                             let v = map.get_index(idx).unwrap().0.to_object();
                             index.set(idx + 1);
                             Some(Some(v))
+                        } else {
+                            Some(None)
+                        }
+                    }
+                    PyObjectPayload::DictValues(cell) => {
+                        let map = unsafe { &*cell.data_ptr() };
+                        if idx < map.len() {
+                            let v = map.get_index(idx).unwrap().1.clone();
+                            index.set(idx + 1);
+                            Some(Some(v))
+                        } else {
+                            Some(None)
+                        }
+                    }
+                    PyObjectPayload::DictItems(cell) => {
+                        let map = unsafe { &*cell.data_ptr() };
+                        if idx < map.len() {
+                            let (k, v) = map.get_index(idx).unwrap();
+                            let tuple = PyObject::tuple(vec![k.to_object(), v.clone()]);
+                            index.set(idx + 1);
+                            Some(Some(tuple))
                         } else {
                             Some(None)
                         }

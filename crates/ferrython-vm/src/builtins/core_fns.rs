@@ -1013,22 +1013,15 @@ pub(super) fn builtin_sorted(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     } else {
         args[0].to_list()?
     };
-    // Homogeneous small-int sort: only for large lists (≥32 elements)
-    // to avoid detection overhead dominating small sorts.
-    if items.len() >= 32 {
-        let all_small_int = items.iter().all(|x| matches!(&x.payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))));
-        if all_small_int {
-            items.sort_unstable_by(|a, b| {
-                let av = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &a.payload { *v } else { 0 };
-                let bv = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &b.payload { *v } else { 0 };
-                av.cmp(&bv)
-            });
-        } else {
-            items.sort_unstable_by(|a, b| {
-                ferrython_core::object::helpers::partial_cmp_objects(a, b)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-        }
+    // Homogeneous small-int sort: extract i64 values, sort natively, avoid repeated
+    // enum matching in the comparator. Detection is O(n) matches vs O(n log n) match-pairs.
+    let all_small_int = items.iter().all(|x| matches!(&x.payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))));
+    if all_small_int {
+        items.sort_unstable_by(|a, b| {
+            let av = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &a.payload { *v } else { 0 };
+            let bv = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &b.payload { *v } else { 0 };
+            av.cmp(&bv)
+        });
     } else if items.len() > 1 {
         items.sort_unstable_by(|a, b| {
             ferrython_core::object::helpers::partial_cmp_objects(a, b)
