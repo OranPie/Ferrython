@@ -9,7 +9,7 @@ mod instance_methods;
 use std::rc::Rc;
 use compact_str::CompactString;
 use ferrython_core::error::{PyException, PyResult};
-use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef};
+use ferrython_core::object::{PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, is_hidden_dict_key};
 use indexmap::IndexMap;
 
 use core_fns::*;
@@ -267,10 +267,17 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                         Ok(Some((iter_obj.clone(), v)))
                     } else { Ok(None) }
                 }
-                IteratorData::DictEntries { keys, values, index, cached_tuple } => {
-                    if *index < keys.len() {
-                        let k = keys[*index].clone();
-                        let v = values[*index].clone();
+                IteratorData::DictEntries { source, index, cached_tuple } => {
+                    let map = unsafe { &*source.data_ptr() };
+                    while *index < map.len() {
+                        let (hk, _) = map.get_index(*index).unwrap();
+                        if !is_hidden_dict_key(hk) { break; }
+                        *index += 1;
+                    }
+                    if *index < map.len() {
+                        let (hk, v) = map.get_index(*index).unwrap();
+                        let k = hk.to_object();
+                        let v = v.clone();
                         *index += 1;
                         let tuple = if let Some(ref ct) = cached_tuple {
                             if PyObjectRef::strong_count(ct) == 1 {
@@ -427,10 +434,17 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                         Ok(Some(v))
                     } else { Ok(None) }
                 }
-                IteratorData::DictEntries { keys, values, index, cached_tuple } => {
-                    if *index < keys.len() {
-                        let k = keys[*index].clone();
-                        let v = values[*index].clone();
+                IteratorData::DictEntries { source, index, cached_tuple } => {
+                    let map = unsafe { &*source.data_ptr() };
+                    while *index < map.len() {
+                        let (hk, _) = map.get_index(*index).unwrap();
+                        if !is_hidden_dict_key(hk) { break; }
+                        *index += 1;
+                    }
+                    if *index < map.len() {
+                        let (hk, v) = map.get_index(*index).unwrap();
+                        let k = hk.to_object();
+                        let v = v.clone();
                         *index += 1;
                         let tuple = if let Some(ref ct) = cached_tuple {
                             if PyObjectRef::strong_count(ct) == 1 {

@@ -1323,10 +1323,10 @@ pub enum IteratorData {
     Chain { sources: Vec<PyObjectRef>, current: usize },
     /// Starmap: apply func to each tuple of args
     Starmap { func: PyObjectRef, source: PyObjectRef },
-    /// Lazy dict items iteration with cached tuple reuse (CPython-style)
-    DictEntries { keys: Vec<PyObjectRef>, values: Vec<PyObjectRef>, index: usize, cached_tuple: Option<PyObjectRef> },
+    /// Lazy dict entries iteration: stores reference to dict, iterates by index.
+    /// Uses cached_tuple reuse (CPython-style) for (key, value) pairs.
+    DictEntries { source: Rc<PyCell<FxHashKeyMap>>, index: usize, cached_tuple: Option<PyObjectRef> },
     /// Snapshot dict keys iteration — converts keys eagerly at iterator creation.
     /// Trades upfront Vec<PyObjectRef> for cache-friendly, branch-free iteration.
     DictKeys { keys: Vec<PyObjectRef>, index: usize },
 }
-

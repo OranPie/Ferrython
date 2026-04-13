@@ -213,18 +213,13 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             .map(|p| PyObject::str_val(CompactString::from(p)))
                             .collect(),
                         None => {
-                            // Count separators first to pre-allocate result vec
+                            // Single-pass split with estimated capacity (avoids counting scan)
                             let sep_len = sep.len();
                             if sep_len == 0 {
                                 return Err(PyException::value_error("empty separator"));
                             }
-                            let count = if sep_len == 1 {
-                                let sep_byte = sep.as_bytes()[0];
-                                s.as_bytes().iter().filter(|&&b| b == sep_byte).count()
-                            } else {
-                                s.matches(sep).count()
-                            };
-                            let mut parts = Vec::with_capacity(count + 1);
+                            let est_parts = if s.len() < 256 { 8 } else { 16 };
+                            let mut parts = Vec::with_capacity(est_parts);
                             for p in s.split(sep) {
                                 parts.push(PyObject::str_val(CompactString::from(p)));
                             }
@@ -1209,32 +1204,19 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
         }
         return result;
     }
-    // Direct construction into CompactString — avoids intermediate String allocation.
-    // Count occurrences to pre-compute exact capacity, then build in one pass.
     let old_len = old.len();
     let new_len = new.len();
-    let count = match max_count {
-        Some(n) => {
-            let mut c = 0usize;
-            let mut start = 0;
-            while c < n {
-                if let Some(pos) = s[start..].find(old) {
-                    c += 1;
-                    start += pos + old_len;
-                } else {
-                    break;
-                }
-            }
-            c
-        }
-        None => s.matches(old).count(),
-    };
-    if count == 0 {
-        return CompactString::from(s);
-    }
-    let result_len = s.len() - count * old_len + count * new_len;
-    let mut result = CompactString::with_capacity(result_len);
     let limit = max_count.unwrap_or(usize::MAX);
+
+    // Single-pass: when replacement is shorter/equal, result fits in s.len() bytes.
+    // When longer, over-allocate by 2x growth factor to avoid counting pass.
+    let capacity = if new_len <= old_len {
+        s.len()
+    } else {
+        // Estimate: assume up to 8 replacements for initial capacity
+        s.len() + 8 * (new_len - old_len)
+    };
+    let mut result = CompactString::with_capacity(capacity);
     let mut remainder = s;
     let mut replaced = 0usize;
     while replaced < limit {
@@ -1246,6 +1228,9 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
         } else {
             break;
         }
+    }
+    if replaced == 0 {
+        return CompactString::from(s);
     }
     result.push_str(remainder);
     result

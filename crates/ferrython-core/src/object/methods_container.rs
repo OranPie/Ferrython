@@ -432,17 +432,8 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 Ok(PyObject::wrap(PyObjectPayload::VecIter { items: vals, index: SyncUsize::new(0) }))
             }
             PyObjectPayload::DictItems(m) => {
-                let r = m.read();
-                let mut keys = Vec::with_capacity(r.len());
-                let mut values = Vec::with_capacity(r.len());
-                for (k, v) in r.iter() {
-                    if !is_hidden_dict_key(k) {
-                        keys.push(k.to_object());
-                        values.push(v.clone());
-                    }
-                }
                 Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(
-                    IteratorData::DictEntries { keys, values, index: 0, cached_tuple: None }
+                    IteratorData::DictEntries { source: m.clone(), index: 0, cached_tuple: None }
                 )))))
             }
             _ => Err(PyException::type_error(format!("'{}' object is not iterable", obj.type_name()))),

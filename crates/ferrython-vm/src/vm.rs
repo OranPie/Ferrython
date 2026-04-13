@@ -129,7 +129,7 @@ use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{ new_fx_hashkey_map, PyCell, 
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
-    lookup_in_class_mro, SyncI64, SyncUsize, FxAttrMap,
+    lookup_in_class_mro, SyncI64, SyncUsize, FxAttrMap, is_hidden_dict_key,
     CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
 use ferrython_core::types::{BorrowedIntKey, BorrowedStrKey, HashableKey, PyInt, SharedGlobals};
@@ -1577,10 +1577,18 @@ impl VirtualMachine {
                                 }
                                 } // close else (N-source path)
                             }
-                            IteratorData::DictEntries { keys, values, index, cached_tuple } => {
-                                if *index < keys.len() {
-                                    let k = keys[*index].clone();
-                                    let v = values[*index].clone();
+                            IteratorData::DictEntries { source, index, cached_tuple } => {
+                                let map = unsafe { &*source.data_ptr() };
+                                // Skip hidden keys
+                                while *index < map.len() {
+                                    let (hk, _) = map.get_index(*index).unwrap();
+                                    if !is_hidden_dict_key(hk) { break; }
+                                    *index += 1;
+                                }
+                                if *index < map.len() {
+                                    let (hk, v) = map.get_index(*index).unwrap();
+                                    let k = hk.to_object();
+                                    let v = v.clone();
                                     *index += 1;
                                     // Reuse cached tuple when consumer has dropped its ref (refcount == 1)
                                     let tuple = if let Some(ref ct) = cached_tuple {
