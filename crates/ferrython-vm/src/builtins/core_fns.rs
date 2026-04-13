@@ -230,7 +230,10 @@ pub(super) fn builtin_min(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let mut best = items[0].clone();
     for item in &items[1..] {
-        if item.compare(&best, ferrython_core::object::CompareOp::Lt)?.is_truthy() {
+        // Use partial_cmp_objects for zero-allocation comparison
+        if ferrython_core::object::helpers::partial_cmp_objects(item, &best)
+            == Some(std::cmp::Ordering::Less)
+        {
             best = item.clone();
         }
     }
@@ -247,7 +250,9 @@ pub(super) fn builtin_max(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     }
     let mut best = items[0].clone();
     for item in &items[1..] {
-        if item.compare(&best, ferrython_core::object::CompareOp::Gt)?.is_truthy() {
+        if ferrython_core::object::helpers::partial_cmp_objects(item, &best)
+            == Some(std::cmp::Ordering::Greater)
+        {
             best = item.clone();
         }
     }
@@ -963,12 +968,10 @@ pub(super) fn builtin_bin(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 pub(super) fn builtin_sorted(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     check_args_min("sorted", args, 1)?;
     let mut items = args[0].to_list()?;
+    // Use partial_cmp_objects for zero-allocation comparison (no PyObject bool created)
     items.sort_by(|a, b| {
-        if let Ok(r) = a.compare(b, ferrython_core::object::CompareOp::Lt) {
-            if r.is_truthy() { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }
-        } else {
-            std::cmp::Ordering::Equal
-        }
+        ferrython_core::object::helpers::partial_cmp_objects(a, b)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     Ok(PyObject::list(items))
 }

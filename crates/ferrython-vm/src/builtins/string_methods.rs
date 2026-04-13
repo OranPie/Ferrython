@@ -1189,7 +1189,6 @@ pub fn punycode_decode_bytes(bytes: &[u8]) -> PyResult<PyObjectRef> {
 /// Avoids the intermediate String allocation that `str::replace()` creates.
 fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>) -> CompactString {
     if old.is_empty() {
-        // Empty pattern: insert `new` between each character (CPython behavior)
         let char_count = s.chars().count();
         let limit = max_count.unwrap_or(char_count + 1);
         let mut result = CompactString::with_capacity(s.len() + new.len() * limit.min(char_count + 1));
@@ -1206,39 +1205,15 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
         }
         return result;
     }
-    // Pre-count matches to compute exact capacity (avoids heap alloc for short results)
-    let limit = max_count.unwrap_or(usize::MAX);
-    let mut match_count = 0;
-    let mut scan = s;
-    while match_count < limit {
-        match scan.find(old) {
-            Some(pos) => {
-                scan = &scan[pos + old.len()..];
-                match_count += 1;
-            }
-            None => break,
+    match max_count {
+        None => {
+            // Unlimited replace: use Rust's optimized single-pass replace
+            CompactString::from(s.replace(old, new))
+        }
+        Some(n) => {
+            CompactString::from(s.replacen(old, new, n))
         }
     }
-    if match_count == 0 {
-        return CompactString::from(s);
-    }
-    let exact_len = s.len() - match_count * old.len() + match_count * new.len();
-    let mut result = CompactString::with_capacity(exact_len);
-    let mut remaining = s;
-    let mut count = 0;
-    while count < match_count {
-        match remaining.find(old) {
-            Some(pos) => {
-                result.push_str(&remaining[..pos]);
-                result.push_str(new);
-                remaining = &remaining[pos + old.len()..];
-                count += 1;
-            }
-            None => break,
-        }
-    }
-    result.push_str(remaining);
-    result
 }
 /// Avoids cloning the list/tuple just to iterate.
 fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
