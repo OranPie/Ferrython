@@ -982,7 +982,7 @@ fn pickle_extract_instance(
         if let PyObjectPayload::Dict(map) = &state.payload {
             for (k, v) in map.read().iter() {
                 if let HashableKey::Str(name) = k {
-                    data_pairs.push((name.as_ref().clone(), v.clone()));
+                    data_pairs.push((name.clone(), v.clone()));
                 }
             }
         }
@@ -1326,7 +1326,7 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         let mut attrs = IndexMap::new();
                         for (k, v) in map_r.iter() {
                             if let HashableKey::Str(s) = k {
-                                attrs.insert(s.as_ref().clone(), v.clone());
+                                attrs.insert(s.clone(), v.clone());
                             }
                         }
                         let cls = PyObject::class(CompactString::from(name.as_str()), vec![], IndexMap::new());

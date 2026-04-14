@@ -59,7 +59,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                                 let r = kw_map.read();
                                 for (k, v) in r.iter() {
                                     if let HashableKey::Str(ks) = k {
-                                        kwargs.insert(ks.as_ref().clone(), v.clone());
+                                        kwargs.insert(ks.clone(), v.clone());
                                     }
                                 }
                             }
@@ -214,7 +214,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                                             let r = kw_map.read();
                                             for (k, v) in r.iter() {
                                                 if let HashableKey::Str(ks) = k {
-                                                    kwargs.insert(ks.as_ref().clone(), v.clone());
+                                                    kwargs.insert(ks.clone(), v.clone());
                                                 }
                                             }
                                         }
@@ -271,7 +271,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                     let r = kw_map.read();
                     for (k, v) in r.iter() {
                         if let HashableKey::Str(ks) = k {
-                            attrs.insert(ks.as_ref().clone(), v.clone());
+                            attrs.insert(ks.clone(), v.clone());
                         }
                     }
                 }

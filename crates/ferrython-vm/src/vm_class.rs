@@ -224,7 +224,7 @@ impl VirtualMachine {
                     let d = d.read();
                     d.keys().map(|k| {
                         if let HashableKey::Str(s) = k {
-                            s.as_ref().clone()
+                            s.clone()
                         } else {
                             CompactString::from(k.to_object().py_to_string())
                         }
@@ -555,7 +555,7 @@ impl VirtualMachine {
                                 .filter_map(|(k, v)| {
                                     if let HashableKey::Str(name) = k {
                                         v.get_attr("value").and_then(|v| v.as_int())
-                                            .map(|val| (name.as_ref().clone(), val))
+                                            .map(|val| (name.clone(), val))
                                     } else { None }
                                 })
                                 .collect();
@@ -718,7 +718,7 @@ impl VirtualMachine {
                             let mut ns = FxAttrMap::default();
                             for (k, v) in d.iter() {
                                 if let HashableKey::Str(s) = k {
-                                    ns.insert(s.as_ref().clone(), v.clone());
+                                    ns.insert(s.clone(), v.clone());
                                 }
                             }
                             ns

@@ -642,7 +642,7 @@ fn urllib_request_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     for (k, v) in hm.read().iter() {
                         if let HashableKey::Str(key) = k {
                             extra_headers.insert(
-                                HashableKey::str_key(key.as_ref().clone()),
+                                HashableKey::str_key(key.clone()),
                                 v.clone(),
                             );
                         }

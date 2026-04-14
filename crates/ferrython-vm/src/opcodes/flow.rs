@@ -9,7 +9,7 @@ use ferrython_bytecode::{CodeObject, Instruction};
 use ferrython_core::error::{ExceptionKind, PyException};
 use ferrython_core::object::{ PyCell, 
     IteratorData, PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
-    has_descriptor_get, lookup_in_class_mro, FxAttrMap,
+    has_descriptor_get, lookup_in_class_mro, FxAttrMap, FxHashKeyMap,
 };
 use ferrython_core::types::{HashableKey, PyFunction};
 use indexmap::IndexMap;
@@ -299,35 +299,36 @@ impl VirtualMachine {
             }
             Opcode::BuildMap => {
                 let count = instr.arg as usize;
-                let mut entries = Vec::new();
-                for _ in 0..count {
-                    let value = frame.pop();
-                    let key = frame.pop();
-                    entries.push((key, value));
-                }
-                entries.reverse();
+                let pair_count = count * 2;
+                let start = frame.stack.len() - pair_count;
                 let _ = frame;
-                let mut map = IndexMap::new();
-                for (key, value) in entries {
+                let mut map = FxHashKeyMap::with_capacity_and_hasher(count, Default::default());
+                for i in 0..count {
+                    let frame = self.vm_frame();
+                    let key = frame.stack[start + i * 2].clone();
+                    let value = frame.stack[start + i * 2 + 1].clone();
                     let hkey = self.vm_to_hashable_key(&key)?;
                     map.insert(hkey, value);
                 }
-                self.vm_frame().push(PyObject::dict(map));
+                let frame = self.vm_frame();
+                frame.stack.truncate(start);
+                frame.push(PyObject::dict_fx(map));
             }
             Opcode::BuildConstKeyMap => {
                 let keys_tuple = frame.pop();
                 let keys = keys_tuple.to_list()?;
                 let count = instr.arg as usize;
-                let mut values = Vec::new();
-                for _ in 0..count { values.push(frame.pop()); }
-                values.reverse();
+                let start = frame.stack.len() - count;
                 let _ = frame;
-                let mut map = IndexMap::new();
-                for (key, value) in keys.into_iter().zip(values) {
+                let mut map = FxHashKeyMap::with_capacity_and_hasher(count, Default::default());
+                for (i, key) in keys.into_iter().enumerate() {
+                    let value = self.vm_frame().stack[start + i].clone();
                     let hkey = self.vm_to_hashable_key(&key)?;
                     map.insert(hkey, value);
                 }
-                self.vm_frame().push(PyObject::dict(map));
+                let frame = self.vm_frame();
+                frame.stack.truncate(start);
+                frame.push(PyObject::dict_fx(map));
             }
             Opcode::BuildString => {
                 let count = instr.arg as usize;
@@ -914,7 +915,7 @@ impl VirtualMachine {
                     if let PyObjectPayload::Dict(m) = &ann_obj.payload {
                         for (k, v) in m.read().iter() {
                             if let HashableKey::Str(name) = k {
-                                annotations.insert(name.as_ref().clone(), v.clone());
+                                annotations.insert(name.clone(), v.clone());
                             }
                         }
                     }
@@ -925,7 +926,7 @@ impl VirtualMachine {
                         let mut result = IndexMap::new();
                         for (k, v) in m.read().iter() {
                             if let HashableKey::Str(name) = k {
-                                result.insert(name.as_ref().clone(), v.clone());
+                                result.insert(name.clone(), v.clone());
                             }
                         }
                         result

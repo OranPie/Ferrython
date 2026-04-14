@@ -554,7 +554,7 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                             for (k, _v) in dict.iter() {
                                 if let HashableKey::Str(name) = k {
                                     if let Some(v) = attrs.get(name.as_str()) {
-                                        map.insert(HashableKey::str_key(name.as_ref().clone()), v.clone());
+                                        map.insert(HashableKey::str_key(name.clone()), v.clone());
                                     }
                                 }
                             }
@@ -630,7 +630,7 @@ pub fn create_dataclasses_module() -> PyObjectRef {
                     if let PyObjectPayload::Dict(kw_map) = &args[1].payload {
                         for (k, v) in kw_map.read().iter() {
                             if let HashableKey::Str(name) = k {
-                                new_attrs.insert(name.as_ref().clone(), v.clone());
+                                new_attrs.insert(name.clone(), v.clone());
                             }
                         }
                     }
@@ -796,9 +796,9 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                         for (k, v) in ann_map.read().iter() {
                             if let HashableKey::Str(name) = k {
                                 if !field_names.contains(name) {
-                                    field_names.push(name.as_ref().clone());
+                                    field_names.push(name.clone());
                                 }
-                                field_types.insert(name.as_ref().clone(), v.clone());
+                                field_types.insert(name.clone(), v.clone());
                                 let mut compare = true;
                                 let mut init = true;
                                 let mut field_repr = true;
@@ -816,17 +816,17 @@ fn dataclass_apply(cls: &PyObjectRef, eq: bool, order: bool, frozen: bool, repr:
                                             field_repr = repr_flag.is_truthy();
                                         }
                                         if let Some(factory) = mod_attrs.get("__field_factory__") {
-                                            field_defaults.insert(name.as_ref().clone(), factory.clone());
+                                            field_defaults.insert(name.clone(), factory.clone());
                                         } else if let Some(default_val) = mod_attrs.get("__field_default__") {
-                                            field_defaults.insert(name.as_ref().clone(), default_val.clone());
+                                            field_defaults.insert(name.clone(), default_val.clone());
                                         }
                                     } else {
-                                        field_defaults.insert(name.as_ref().clone(), default.clone());
+                                        field_defaults.insert(name.clone(), default.clone());
                                     }
                                 }
-                                if compare { compare_fields.push(name.as_ref().clone()); }
-                                if init { init_fields.push(name.as_ref().clone()); }
-                                if field_repr { repr_fields.push(name.as_ref().clone()); }
+                                if compare { compare_fields.push(name.clone()); }
+                                if init { init_fields.push(name.clone()); }
+                                if field_repr { repr_fields.push(name.clone()); }
                             }
                         }
                     }

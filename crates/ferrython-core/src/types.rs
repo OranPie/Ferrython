@@ -374,9 +374,8 @@ pub enum HashableKey {
     Bool(bool),
     Int(PyInt),
     Float(OrderedFloat),
-    /// String key — boxed to shrink HashableKey from 32 to 24 bytes.
-    /// Saves 8 bytes per dict/set entry (48→40 bytes).
-    Str(Box<CompactString>),
+    /// String key — inlined to avoid Box heap allocation per key.
+    Str(CompactString),
     Bytes(Box<Vec<u8>>),
     Tuple(Box<Vec<HashableKey>>),
     FrozenSet(Box<Vec<HashableKey>>),
@@ -391,13 +390,13 @@ pub enum HashableKey {
 
 impl Eq for HashableKey {}
 
-const _HASHABLE_KEY_SIZE_CHECK: () = assert!(std::mem::size_of::<HashableKey>() <= 24);
+const _HASHABLE_KEY_SIZE_CHECK: () = assert!(std::mem::size_of::<HashableKey>() <= 32);
 
 impl HashableKey {
-    /// Convenience constructor: wraps a CompactString in Box for the Str variant.
+    /// Convenience constructor for string keys.
     #[inline]
     pub fn str_key(s: CompactString) -> Self {
-        HashableKey::Str(Box::new(s))
+        HashableKey::Str(s)
     }
 
     pub fn from_object(obj: &PyObjectRef) -> PyResult<Self> {

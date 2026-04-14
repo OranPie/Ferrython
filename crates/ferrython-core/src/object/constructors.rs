@@ -546,6 +546,17 @@ impl PyObject {
         track_object(&obj);
         obj
     }
+    /// Build dict directly from a FxHashKeyMap — avoids re-hashing from IndexMap.
+    pub fn dict_fx(items: FxHashKeyMap) -> PyObjectRef {
+        let inner = if items.is_empty() {
+            alloc_map_inner()
+        } else {
+            Rc::new(PyCell::new(items))
+        };
+        let obj = Self::wrap(PyObjectPayload::Dict(inner));
+        track_object(&obj);
+        obj
+    }
     pub fn function(func: PyFunction) -> PyObjectRef { Self::wrap(PyObjectPayload::Function(Box::new(func))) }
     pub fn builtin_function(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinFunction(name)) }
     pub fn builtin_type(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinType(name)) }
