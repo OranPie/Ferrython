@@ -547,11 +547,21 @@ impl PyObject {
         obj
     }
     /// Build dict directly from a FxHashKeyMap — avoids re-hashing from IndexMap.
+    /// Reuses freelist Rc when available to avoid Rc+PyCell allocation.
     pub fn dict_fx(items: FxHashKeyMap) -> PyObjectRef {
         let inner = if items.is_empty() {
             alloc_map_inner()
         } else {
-            Rc::new(PyCell::new(items))
+            // Try to reuse a freelist Rc (already cleared) — just write items into it
+            MAP_FREELIST.with(|fl| {
+                let list = unsafe { &mut *fl.get() };
+                if let Some(rc) = list.pop() {
+                    *rc.write() = items;
+                    rc
+                } else {
+                    Rc::new(PyCell::new(items))
+                }
+            })
         };
         let obj = Self::wrap(PyObjectPayload::Dict(inner));
         track_object(&obj);
