@@ -762,7 +762,8 @@ impl VirtualMachine {
                                                 hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                             }
                                         }
-                                        *dest_slot = Some(PyObject::int(r));
+                                        // Force non-immortal for in-place mutation next time
+                                        *dest_slot = Some(PyObject::wrap_leaf(PyObjectPayload::Int(PyInt::Small(r))));
                                     } else {
                                         use num_bigint::BigInt;
                                         let result = PyObject::big_int(BigInt::from(x) + BigInt::from(y));
@@ -1792,12 +1793,13 @@ impl VirtualMachine {
                             if let Some(ref mut arc) = dest_slot {
                                 if let Some(obj) = PyObjectRef::get_mut(arc) {
                                     obj.payload = PyObjectPayload::Int(PyInt::Small(cur));
-                                    hot_ok!(profiling, self.profiler, instr.op)
+                                    hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                                 }
                             }
-                            *dest_slot = Some(PyObject::int(cur));
+                            // Force non-immortal allocation so get_mut succeeds next iteration
+                            *dest_slot = Some(PyObject::wrap_leaf(PyObjectPayload::Int(PyInt::Small(cur))));
                         }
-                        hot_ok!(profiling, self.profiler, instr.op)
+                        hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                     } else if let PyObjectPayload::VecIter(data) = &iter.payload {
                         let idx = data.index.get();
                         if idx < data.items.len() {
@@ -1808,7 +1810,7 @@ impl VirtualMachine {
                             drop(spop!(frame));
                             frame.ip = jump_target;
                         }
-                        hot_ok!(profiling, self.profiler, instr.op)
+                        hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                     } else if let PyObjectPayload::RefIter { source, index } = &iter.payload {
                         let idx = index.get();
                         let item = match &source.payload {
@@ -1847,7 +1849,7 @@ impl VirtualMachine {
                             drop(spop!(frame));
                             frame.ip = jump_target;
                         }
-                        hot_ok!(profiling, self.profiler, instr.op)
+                        hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                     } else if let PyObjectPayload::Iterator(ref iter_data) = iter.payload {
                         let mut data = iter_data.write();
                         match &mut *data {
@@ -1863,7 +1865,7 @@ impl VirtualMachine {
                                     drop(data);
                                     sset_local!(frame, store_idx, v);
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
+                                hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                             }
                             IteratorData::List { items, index } => {
                                 if *index < items.len() {
@@ -1876,7 +1878,7 @@ impl VirtualMachine {
                                     drop(spop!(frame));
                                     frame.ip = jump_target;
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
+                                hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                             }
                             IteratorData::Tuple { items, index } => {
                                 if *index < items.len() {
@@ -1889,7 +1891,7 @@ impl VirtualMachine {
                                     drop(spop!(frame));
                                     frame.ip = jump_target;
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
+                                hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                             }
                             IteratorData::DictKeys { keys, index } => {
                                 if *index < keys.len() {
@@ -1902,7 +1904,7 @@ impl VirtualMachine {
                                     drop(spop!(frame));
                                     frame.ip = jump_target;
                                 }
-                                hot_ok!(profiling, self.profiler, instr.op)
+                                hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
                             }
                             _ => {
                                 // Fallback: execute as ForIter, then the StoreFast
