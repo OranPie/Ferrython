@@ -215,19 +215,37 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             if sep.is_empty() {
                                 return Err(PyException::value_error("empty separator"));
                             }
-                            // Pre-count separator occurrences for exact Vec sizing
                             let sep_len = sep.len();
-                            let count = if sep_len == 1 {
+                            if sep_len == 1 {
+                                // Single-byte separator: direct byte scan in one pass.
+                                // Avoids the two-pass count+split approach.
                                 let sep_byte = sep.as_bytes()[0];
-                                s.as_bytes().iter().filter(|&&b| b == sep_byte).count()
+                                let bytes = s.as_bytes();
+                                let len = bytes.len();
+                                // Heuristic capacity: most splits produce few parts
+                                let mut parts = Vec::with_capacity(8);
+                                let mut start = 0;
+                                for i in 0..len {
+                                    if unsafe { *bytes.get_unchecked(i) } == sep_byte {
+                                        parts.push(PyObject::str_val(CompactString::from(unsafe {
+                                            std::str::from_utf8_unchecked(&bytes[start..i])
+                                        })));
+                                        start = i + 1;
+                                    }
+                                }
+                                // Push final segment
+                                parts.push(PyObject::str_val(CompactString::from(unsafe {
+                                    std::str::from_utf8_unchecked(&bytes[start..len])
+                                })));
+                                parts
                             } else {
-                                s.matches(sep).count()
-                            };
-                            let mut parts = Vec::with_capacity(count + 1);
-                            for p in s.split(sep) {
-                                parts.push(PyObject::str_val(CompactString::from(p)));
+                                // Multi-byte separator: use Rust's split with heuristic capacity
+                                let mut parts = Vec::with_capacity(8);
+                                for p in s.split(sep) {
+                                    parts.push(PyObject::str_val(CompactString::from(p)));
+                                }
+                                parts
                             }
-                            parts
                         }
                     }
                 }
@@ -1218,7 +1236,7 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
     let new_len = new.len();
     let growth_per_replace = new_len as isize - old_len as isize;
     if growth_per_replace <= 0 || s.len() <= 23 {
-        // Result shrinks or is short — inline CompactString handles it efficiently
+        // Result shrinks or fits inline — single-pass with inline CompactString
         let mut result = CompactString::new("");
         let mut remainder = s;
         let mut replaced = 0usize;
@@ -1274,23 +1292,8 @@ fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             )),
         };
     }
-    // Single-pass for small item counts: CompactString's 24-byte inline buffer
-    // avoids heap allocation for short results without needing a capacity pre-scan.
-    if items.len() <= 16 {
-        let mut result = CompactString::new("");
-        for (i, item) in items.iter().enumerate() {
-            if let PyObjectPayload::Str(s) = &item.payload {
-                if i > 0 { result.push_str(sep); }
-                result.push_str(s.as_str());
-            } else {
-                return Err(PyException::type_error(
-                    format!("sequence item {}: expected str instance, {} found", i, item.type_name())
-                ));
-            }
-        }
-        return Ok(PyObject::str_val(result));
-    }
-    // Two-pass for large item counts: exact capacity avoids reallocation
+    // Pre-compute total length and build result in a single pass.
+    // For all item counts, exact capacity avoids CompactString reallocation.
     let sep_total = sep.len() * (items.len() - 1);
     let mut total_len = sep_total;
     for (i, item) in items.iter().enumerate() {
