@@ -2988,10 +2988,39 @@ impl VirtualMachine {
                 // Inline UnpackSequence for tuple fast path
                 Opcode::UnpackSequence => {
                     let count = instr.arg as usize;
-                    // Pop first, match once — push back only in rare fallback case
                     let top = spop!(frame);
                     match &top.payload {
                         PyObjectPayload::Tuple(items) if items.len() == count => {
+                            // Look-ahead: if next instructions are StoreFast (or fused variant),
+                            // write directly to locals — skip stack, save N dispatches.
+                            let ip = frame.ip;
+                            if count >= 2 && count <= 8 && ip + count <= instr_count {
+                                let mut ok = true;
+                                for i in 0..count - 1 {
+                                    if unsafe { *instr_base.add(ip + i) }.op != Opcode::StoreFast {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                                if ok {
+                                    let last = unsafe { *instr_base.add(ip + count - 1) };
+                                    let last_info = match last.op {
+                                        Opcode::StoreFast => Some((last.arg as usize, None)),
+                                        Opcode::StoreFastJumpAbsolute => Some(((last.arg >> 16) as usize, Some((last.arg & 0xFFFF) as usize))),
+                                        _ => None,
+                                    };
+                                    if let Some((last_idx, jump)) = last_info {
+                                        for i in 0..count - 1 {
+                                            let si = unsafe { *instr_base.add(ip + i) }.arg as usize;
+                                            sset_local!(frame, si, items[i].clone());
+                                        }
+                                        sset_local!(frame, last_idx, items[count - 1].clone());
+                                        frame.ip = jump.unwrap_or(ip + count);
+                                        hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
+                                    }
+                                }
+                            }
+                            // Fallback: push to stack in reverse order
                             unsafe {
                                 let stack = &mut frame.stack;
                                 stack.reserve(count);
@@ -3006,6 +3035,33 @@ impl VirtualMachine {
                         PyObjectPayload::List(cell) => {
                             let list = unsafe { &*cell.data_ptr() };
                             if list.len() == count {
+                                let ip = frame.ip;
+                                if count >= 2 && count <= 8 && ip + count <= instr_count {
+                                    let mut ok = true;
+                                    for i in 0..count - 1 {
+                                        if unsafe { *instr_base.add(ip + i) }.op != Opcode::StoreFast {
+                                            ok = false;
+                                            break;
+                                        }
+                                    }
+                                    if ok {
+                                        let last = unsafe { *instr_base.add(ip + count - 1) };
+                                        let last_info = match last.op {
+                                            Opcode::StoreFast => Some((last.arg as usize, None)),
+                                            Opcode::StoreFastJumpAbsolute => Some(((last.arg >> 16) as usize, Some((last.arg & 0xFFFF) as usize))),
+                                            _ => None,
+                                        };
+                                        if let Some((last_idx, jump)) = last_info {
+                                            for i in 0..count - 1 {
+                                                let si = unsafe { *instr_base.add(ip + i) }.arg as usize;
+                                                sset_local!(frame, si, list[i].clone());
+                                            }
+                                            sset_local!(frame, last_idx, list[count - 1].clone());
+                                            frame.ip = jump.unwrap_or(ip + count);
+                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
+                                        }
+                                    }
+                                }
                                 unsafe {
                                     let stack = &mut frame.stack;
                                     stack.reserve(count);
