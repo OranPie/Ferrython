@@ -207,7 +207,7 @@ pub fn create_socket_module() -> PyObjectRef {
                 Ok(PyObject::bytes(bytes))
             })),
             ("inet_ntoa", make_builtin(|args: &[PyObjectRef]| {
-                let data = args.first().and_then(|a| match &a.payload { PyObjectPayload::Bytes(b) => Some(b.clone()), _ => None })
+                let data = args.first().and_then(|a| match &a.payload { PyObjectPayload::Bytes(b) => Some((**b).clone()), _ => None })
                     .unwrap_or_default();
                 if data.len() != 4 { return Err(PyException::os_error("packed IP wrong length")); }
                 Ok(PyObject::str_val(CompactString::from(format!("{}.{}.{}.{}", data[0], data[1], data[2], data[3]))))
@@ -667,7 +667,7 @@ fn build_socket_object(
                 return Err(PyException::type_error("send() requires a data argument"));
             }
             let data = match &args[0].payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                 _ => {
                     return Err(PyException::type_error(
@@ -708,7 +708,7 @@ fn build_socket_object(
                 ));
             }
             let data = match &args[0].payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                 _ => {
                     return Err(PyException::type_error(
@@ -1081,7 +1081,7 @@ fn build_socket_object(
                 ));
             }
             let data = match &args[0].payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                 _ => {
                     return Err(PyException::type_error(
@@ -1235,7 +1235,7 @@ fn build_socket_object(
                     PyObject::native_closure("write", move |args| {
                         if args.is_empty() { return Err(PyException::type_error("write() requires data")); }
                         let data = match &args[0].payload {
-                            PyObjectPayload::Bytes(b) => b.clone(),
+                            PyObjectPayload::Bytes(b) => (**b).clone(),
                             PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                             _ => return Err(PyException::type_error("a bytes-like object is required")),
                         };

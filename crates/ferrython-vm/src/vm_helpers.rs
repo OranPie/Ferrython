@@ -578,7 +578,7 @@ impl VirtualMachine {
                             } else { "?".to_string() };
                             let mut parts = Vec::new();
                             let attrs = inst.attrs.read();
-                            for field in field_names {
+                            for field in field_names.iter() {
                                 let name = field.py_to_string();
                                 if let Some(val) = attrs.get(name.as_str()) {
                                     let val_repr = self.vm_repr(val)?;
@@ -608,7 +608,7 @@ impl VirtualMachine {
             }
             PyObjectPayload::Tuple(items) => {
                 let mut parts = Vec::new();
-                for item in items {
+                for item in items.iter() {
                     parts.push(self.vm_repr(item)?);
                 }
                 if parts.len() == 1 {
@@ -800,7 +800,7 @@ impl VirtualMachine {
         }
 
         // For iterators with lazy data: advance one at a time
-        if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } = &iterable.payload {
+        if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } = &iterable.payload {
             let mut result = Vec::new();
             let mut idx = 0usize;
             let mut next_yield = start;
@@ -928,7 +928,7 @@ impl VirtualMachine {
                         return iter_obj.to_list();
                     }
                     // If __iter__ returned a builtin Iterator, use iter_advance
-                    if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. }) {
+                    if matches!(&iter_obj.payload, PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. }) {
                         let mut items = Vec::new();
                         loop {
                             match builtins::iter_advance(&iter_obj)? {
@@ -1803,7 +1803,7 @@ impl VirtualMachine {
         }
         // Get an iterator and collect via VM
         let iter_obj = match &obj.payload {
-            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) => obj.clone(),
+            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) => obj.clone(),
             PyObjectPayload::Instance(_) => {
                 if let Some(iter_fn) = obj.get_attr("__iter__") {
                     let result = self.call_object(iter_fn, vec![])?;
@@ -2437,7 +2437,7 @@ impl VirtualMachine {
         if size < 0 {
             return self.rawiobase_readall(this);
         }
-        let buf = PyObject::wrap(PyObjectPayload::ByteArray(vec![0u8; size as usize]));
+        let buf = PyObject::wrap(PyObjectPayload::ByteArray(Box::new(vec![0u8; size as usize])));
         let readinto = self.exec_load_attr_value(this, "readinto")?;
         let n_obj = self.call_object(readinto, vec![buf.clone()])?;
         let n = n_obj.as_int().unwrap_or(0).max(0) as usize;
@@ -2453,7 +2453,7 @@ impl VirtualMachine {
         let readinto = self.exec_load_attr_value(this, "readinto")?;
         let mut result = Vec::new();
         loop {
-            let buf = PyObject::wrap(PyObjectPayload::ByteArray(vec![0u8; 8192]));
+            let buf = PyObject::wrap(PyObjectPayload::ByteArray(Box::new(vec![0u8; 8192])));
             let n_obj = self.call_object(readinto.clone(), vec![buf.clone()])?;
             let n = n_obj.as_int().unwrap_or(0).max(0) as usize;
             if n == 0 { break; }

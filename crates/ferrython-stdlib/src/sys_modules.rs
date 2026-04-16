@@ -1168,7 +1168,7 @@ pub fn create_os_module() -> PyObjectRef {
             if args.len() < 2 { return Err(PyException::type_error("os.write requires fd and data")); }
             let fd = args[0].as_int().ok_or_else(|| PyException::type_error("fd must be int"))? as i32;
             let data = match &args[1].payload {
-                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                 _ => return Err(PyException::type_error("data must be bytes-like")),
             };
@@ -1245,7 +1245,7 @@ pub fn create_os_module() -> PyObjectRef {
                     }
                     let data_arg = if a.len() > 1 { &a[1] } else { &a[0] };
                     let data_bytes = match &data_arg.payload {
-                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
                         PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                         _ => return Err(PyException::type_error("write requires str or bytes")),
                     };
@@ -2965,7 +2965,7 @@ pub fn create_sched_module() -> PyObjectRef {
                         let action = &next.3;
                         let argument = &next.4;
                         let call_args: Vec<PyObjectRef> = if let PyObjectPayload::Tuple(items) = &argument.payload {
-                            items.clone()
+                            (**items).clone()
                         } else {
                             vec![]
                         };
@@ -3095,7 +3095,7 @@ pub fn create_mmap_module() -> PyObjectRef {
             w.insert(CompactString::from("write"), PyObject::native_closure("write", move |args| {
                 if args.is_empty() { return Err(PyException::type_error("write requires bytes")); }
                 let bytes = match &args[0].payload {
-                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
                     PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                     _ => return Err(PyException::type_error("write requires bytes argument")),
                 };
@@ -3167,7 +3167,7 @@ pub fn create_mmap_module() -> PyObjectRef {
             w.insert(CompactString::from("find"), PyObject::native_closure("find", move |args| {
                 if args.is_empty() { return Err(PyException::type_error("find requires bytes argument")); }
                 let sub = match &args[0].payload {
-                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
                     PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                     PyObjectPayload::Int(n) => vec![n.to_i64().unwrap_or(0) as u8],
                     _ => return Err(PyException::type_error("expected bytes")),
@@ -3193,7 +3193,7 @@ pub fn create_mmap_module() -> PyObjectRef {
             w.insert(CompactString::from("rfind"), PyObject::native_closure("rfind", move |args| {
                 if args.is_empty() { return Err(PyException::type_error("rfind requires bytes argument")); }
                 let sub = match &args[0].payload {
-                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                    PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
                     PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                     PyObjectPayload::Int(n) => vec![n.to_i64().unwrap_or(0) as u8],
                     _ => return Err(PyException::type_error("expected bytes")),

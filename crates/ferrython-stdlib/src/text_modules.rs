@@ -715,7 +715,7 @@ fn match_group(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if let PyObjectPayload::Str(name) = &args[1].payload {
             if let Some(groupindex) = self_obj.get_attr("_groupindex") {
                 if let PyObjectPayload::Dict(d) = &groupindex.payload {
-                    let key = HashableKey::str_key(name.clone());
+                    let key = HashableKey::str_key((**name).clone());
                     if let Some(idx_obj) = d.read().get(&key).cloned() {
                         let idx = idx_obj.to_int().unwrap_or(0);
                         if idx == 0 {
@@ -1923,7 +1923,7 @@ pub fn create_shlex_module() -> PyObjectRef {
         if args.is_empty() { return Err(PyException::type_error("shlex.join requires 1 argument")); }
         let items = match &args[0].payload {
             PyObjectPayload::List(items) => items.read().clone(),
-            PyObjectPayload::Tuple(items) => items.clone(),
+            PyObjectPayload::Tuple(items) => (**items).clone(),
             _ => return Err(PyException::type_error("shlex.join expects an iterable")),
         };
         let parts: Vec<String> = items.iter().map(|item| {
@@ -3892,7 +3892,7 @@ fn pprint_saferepr(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         PyObjectPayload::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
         PyObjectPayload::Bytes(b) => {
             let mut r = String::from("b'");
-            for &byte in b {
+            for &byte in b.iter() {
                 if byte == b'\\' { r.push_str("\\\\"); }
                 else if byte == b'\'' { r.push_str("\\'"); }
                 else if byte >= 0x20 && byte < 0x7F { r.push(byte as char); }

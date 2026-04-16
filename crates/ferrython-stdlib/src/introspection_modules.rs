@@ -1686,7 +1686,7 @@ pub fn create_ast_module() -> PyObjectRef {
                             if value.type_name() == "Constant" {
                                 if let Some(val) = value.get_attr("value") {
                                     if let PyObjectPayload::Str(s) = &val.payload {
-                                        return Ok(PyObject::str_val(s.clone()));
+                                        return Ok(PyObject::str_val((**s).clone()));
                                     }
                                 }
                             }
@@ -4166,7 +4166,7 @@ fn convert_constant(val: &PyObjectRef) -> AstConstant {
         },
         PyObjectPayload::Float(f) => AstConstant::Float(*f),
         PyObjectPayload::Str(s) => AstConstant::Str(CompactString::from(s.as_str())),
-        PyObjectPayload::Bytes(b) => AstConstant::Bytes(b.clone()),
+        PyObjectPayload::Bytes(b) => AstConstant::Bytes((**b).clone()),
         _ => {
             let s = val.py_to_string();
             if let Ok(i) = s.parse::<i64>() {

@@ -442,11 +442,11 @@ pub fn create_hmac_module() -> PyObjectRef {
     fn recompute_digest(inst: &InstanceData) {
         let attrs = inst.attrs.read();
         let key = match attrs.get("_key").map(|k| &k.payload) {
-            Some(PyObjectPayload::Bytes(b)) => b.clone(),
+            Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
             _ => return,
         };
         let msg = match attrs.get("_msg").map(|m| &m.payload) {
-            Some(PyObjectPayload::Bytes(b)) => b.clone(),
+            Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
             _ => vec![],
         };
         let digestmod = attrs.get("_digestmod").map(|d| d.py_to_string()).unwrap_or_else(|| "sha256".to_string());
@@ -464,14 +464,14 @@ pub fn create_hmac_module() -> PyObjectRef {
     fn hmac_new(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         if args.is_empty() { return Err(PyException::type_error("hmac.new() requires key argument")); }
         let key = match &args[0].payload {
-            PyObjectPayload::Bytes(b) => b.clone(),
+            PyObjectPayload::Bytes(b) => (**b).clone(),
             PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
             _ => return Err(PyException::type_error("key must be bytes")),
         };
         // msg is optional (default empty)
         let msg = if args.len() > 1 {
             match &args[1].payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                 PyObjectPayload::None => vec![],
                 _ => vec![],
@@ -504,14 +504,14 @@ pub fn create_hmac_module() -> PyObjectRef {
             };
             if let PyObjectPayload::Instance(inst) = &inst_ref.payload {
                 let new_data = match &data_arg.payload {
-                    PyObjectPayload::Bytes(b) => b.clone(),
+                    PyObjectPayload::Bytes(b) => (**b).clone(),
                     PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                     _ => return Err(PyException::type_error("update() argument must be bytes")),
                 };
                 {
                     let mut attrs = inst.attrs.write();
                     let cur_msg = match attrs.get("_msg").map(|m| &m.payload) {
-                        Some(PyObjectPayload::Bytes(b)) => b.clone(),
+                        Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
                         _ => vec![],
                     };
                     let mut combined = cur_msg;

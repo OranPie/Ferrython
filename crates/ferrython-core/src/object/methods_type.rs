@@ -39,7 +39,7 @@ pub(super) fn py_type_name(obj: &PyObjectRef) -> &'static str {
                 } else { "object" }
             }
             PyObjectPayload::Module(_) => "module",
-            PyObjectPayload::RangeIter { .. } => "range_iterator",
+            PyObjectPayload::RangeIter(..) => "range_iterator",
             PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => "list_iterator",
             PyObjectPayload::Iterator(iter_data) => {
                 let guard = iter_data.read();
@@ -380,9 +380,9 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
             }
             PyObjectPayload::Iterator(_) => "<iterator>".into(),
             PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => "<iterator>".into(),
-            PyObjectPayload::Range { start, stop, step } => {
-                if *step == 1 { format!("range({}, {})", start, stop) }
-                else { format!("range({}, {}, {})", start, stop, step) }
+            PyObjectPayload::Range(rd) => {
+                if rd.step == 1 { format!("range({}, {})", rd.start, rd.stop) }
+                else { format!("range({}, {}, {})", rd.start, rd.stop, rd.step) }
             }
             PyObjectPayload::ExceptionType(kind) => format!("<class '{}'>", kind),
             PyObjectPayload::ExceptionInstance(ei) => {
@@ -534,7 +534,7 @@ pub(super) fn py_repr(obj: &PyObjectRef) -> String {
 pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
         match &obj.payload {
             PyObjectPayload::List(v) => Ok(v.read().clone()),
-            PyObjectPayload::Tuple(v) => Ok(v.clone()),
+            PyObjectPayload::Tuple(v) => Ok((**v).clone()),
             PyObjectPayload::Set(m) => Ok(m.read().values().cloned().collect()),
             PyObjectPayload::FrozenSet(m) => Ok(m.values().cloned().collect()),
             PyObjectPayload::Str(s) => Ok(s.chars().map(|c| PyObject::str_val(CompactString::from(c.to_string()))).collect()),
@@ -552,12 +552,12 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 Ok(b.iter().map(|byte| PyObject::int(*byte as i64)).collect())
             }
-            PyObjectPayload::Range { start, stop, step } => {
+            PyObjectPayload::Range(rd) => {
                 let mut result = Vec::new();
-                let mut val = *start;
-                while (*step > 0 && val < *stop) || (*step < 0 && val > *stop) {
+                let mut val = rd.start;
+                while (rd.step > 0 && val < rd.stop) || (rd.step < 0 && val > rd.stop) {
                     result.push(PyObject::int(val));
-                    val += step;
+                    val += rd.step;
                 }
                 Ok(result)
             }
@@ -597,12 +597,12 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
                     }
                 }
             }
-            PyObjectPayload::RangeIter { current, stop, step } => {
+            PyObjectPayload::RangeIter(ri) => {
                 let mut result = Vec::new();
-                let mut val = current.get();
-                while (*step > 0 && val < *stop) || (*step < 0 && val > *stop) {
+                let mut val = ri.current.get();
+                while (ri.step > 0 && val < ri.stop) || (ri.step < 0 && val > ri.stop) {
                     result.push(PyObject::int(val));
-                    val += step;
+                    val += ri.step;
                 }
                 Ok(result)
             }
@@ -627,7 +627,7 @@ pub(super) fn py_to_list(obj: &PyObjectRef) -> PyResult<Vec<PyObjectRef>> {
             PyObjectPayload::Instance(inst) if inst.class.get_attr("__namedtuple__").is_some() => {
                 if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                     if let PyObjectPayload::Tuple(items) = &tup.payload {
-                        return Ok(items.clone());
+                        return Ok((**items).clone());
                     }
                 }
                 Ok(vec![])

@@ -137,7 +137,7 @@ pub fn create_base64_module() -> PyObjectRef {
 
 pub(crate) fn extract_bytes(obj: &PyObjectRef) -> PyResult<Vec<u8>> {
     match &obj.payload {
-        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok(b.clone()),
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok((**b).clone()),
         PyObjectPayload::Str(s) => Ok(s.as_bytes().to_vec()),
         _ => Err(PyException::type_error("expected bytes-like object")),
     }
@@ -381,7 +381,7 @@ fn pack_one_format(c: char, count: usize, args: &[PyObjectRef], arg_idx: &mut us
         's' => {
             if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
             let src = match &args[*arg_idx].payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 _ => args[*arg_idx].py_to_string().into_bytes(),
             };
             for i in 0..count {
@@ -474,7 +474,7 @@ fn pack_one_format(c: char, count: usize, args: &[PyObjectRef], arg_idx: &mut us
             // Pascal string: first byte is length, then data, padded to `count` bytes total
             if *arg_idx >= args.len() { return Err(PyException::type_error("not enough args")); }
             let src = match &args[*arg_idx].payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 _ => args[*arg_idx].py_to_string().into_bytes(),
             };
             let max_len = if count > 0 { count - 1 } else { 0 };
@@ -514,7 +514,7 @@ fn struct_unpack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("unpack requires format string and bytes")); }
     let fmt = args[0].py_to_string();
     let data = match &args[1].payload {
-        PyObjectPayload::Bytes(b) => b.clone(),
+        PyObjectPayload::Bytes(b) => (**b).clone(),
         _ => return Err(PyException::type_error("unpack requires bytes argument")),
     };
     // Validate buffer length
@@ -561,7 +561,7 @@ fn struct_pack_into(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     pack_args.extend_from_slice(&args[3..]);
     let packed = struct_pack(&pack_args)?;
     let packed_bytes = match &packed.payload {
-        PyObjectPayload::Bytes(b) => b.clone(),
+        PyObjectPayload::Bytes(b) => (**b).clone(),
         _ => return Err(PyException::runtime_error("pack returned non-bytes")),
     };
     // Write into the buffer
@@ -594,8 +594,8 @@ fn struct_pack_into(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn struct_unpack_from(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("unpack_from requires format and buffer")); }
     let data = match &args[1].payload {
-        PyObjectPayload::Bytes(b) => b.clone(),
-        PyObjectPayload::ByteArray(b) => b.clone(),
+        PyObjectPayload::Bytes(b) => (**b).clone(),
+        PyObjectPayload::ByteArray(b) => (**b).clone(),
         _ => return Err(PyException::type_error("unpack_from requires bytes buffer")),
     };
     let start_offset = if args.len() > 2 { args[2].as_int().unwrap_or(0) as usize } else { 0 };
@@ -611,7 +611,7 @@ fn struct_iter_unpack(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.len() < 2 { return Err(PyException::type_error("iter_unpack requires format and buffer")); }
     let fmt_obj = &args[0];
     let data = match &args[1].payload {
-        PyObjectPayload::Bytes(b) => b.clone(),
+        PyObjectPayload::Bytes(b) => (**b).clone(),
         _ => return Err(PyException::type_error("iter_unpack requires bytes buffer")),
     };
     let size = struct_calcsize(&[fmt_obj.clone()])?.as_int().unwrap_or(0) as usize;
@@ -1284,7 +1284,7 @@ fn pkl_stack_top_value(stack: &[PklStackItem]) -> PyResult<PyObjectRef> {
 fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectRef> {
     if let PklStackItem::Global(module, name) = callable {
         let arg_list = match &args.payload {
-            PyObjectPayload::Tuple(items) => items.clone(),
+            PyObjectPayload::Tuple(items) => (**items).clone(),
             _ => vec![args.clone()],
         };
         match (module.as_str(), name.as_str()) {
@@ -3382,7 +3382,7 @@ pub fn create_dbm_module() -> PyObjectRef {
                     let key = HashableKey::str_key(CompactString::from(key_str.as_str()));
                     // Convert value to bytes if it's a string
                     let val = match &args[1].payload {
-                        PyObjectPayload::Bytes(b) => PyObject::bytes(b.clone()),
+                        PyObjectPayload::Bytes(b) => PyObject::bytes((**b).clone()),
                         _ => PyObject::bytes(args[1].py_to_string().as_bytes().to_vec()),
                     };
                     d2.write().insert(key, val);
@@ -3472,7 +3472,7 @@ fn sync_dbm_to_disk(data: &Rc<PyCell<FxHashKeyMap>>, path: &str) {
             _ => format!("{:?}", k).into_bytes(),
         };
         let val_bytes = match &v.payload {
-            PyObjectPayload::Bytes(b) => b.clone(),
+            PyObjectPayload::Bytes(b) => (**b).clone(),
             _ => v.py_to_string().as_bytes().to_vec(),
         };
         buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
@@ -3553,7 +3553,7 @@ pub fn create_marshal_module() -> PyObjectRef {
     let loads_fn = make_builtin(|args: &[PyObjectRef]| {
         check_args_min("marshal.loads", args, 1)?;
         let data = match &args[0].payload {
-            PyObjectPayload::Bytes(b) => b.clone(),
+            PyObjectPayload::Bytes(b) => (**b).clone(),
             _ => return Err(PyException::type_error("marshal.loads requires bytes")),
         };
         fn marshal_decode(data: &[u8], pos: &mut usize) -> PyResult<PyObjectRef> {
@@ -3599,7 +3599,7 @@ pub fn create_marshal_module() -> PyObjectRef {
                         let k = marshal_decode(data, pos)?;
                         let v = marshal_decode(data, pos)?;
                         let key = match &k.payload {
-                            PyObjectPayload::Str(s) => HashableKey::str_key(s.clone()),
+                            PyObjectPayload::Str(s) => HashableKey::str_key((**s).clone()),
                             PyObjectPayload::Int(n) => HashableKey::Int(n.clone()),
                             PyObjectPayload::Bool(b) => HashableKey::Bool(*b),
                             _ => HashableKey::str_key(CompactString::from(k.py_to_string())),

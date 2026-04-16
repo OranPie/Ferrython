@@ -575,7 +575,7 @@ pub(super) fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
     let cls = &args[1];
     // Handle tuple of types: isinstance(x, (int, str))
     if let PyObjectPayload::Tuple(types) = &cls.payload {
-        for t in types {
+        for t in types.iter() {
             if is_instance_of(obj, t) {
                 return Ok(PyObject::bool_val(true));
             }
@@ -587,7 +587,7 @@ pub(super) fn builtin_isinstance(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
         if union_flag.is_truthy() {
             if let Some(args_tuple) = cls.get_attr("__args__") {
                 if let PyObjectPayload::Tuple(types) = &args_tuple.payload {
-                    for t in types {
+                    for t in types.iter() {
                         if is_instance_of(obj, t) {
                             return Ok(PyObject::bool_val(true));
                         }
@@ -1089,10 +1089,10 @@ pub(super) fn builtin_zip(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 /// Get an iterator from any iterable object.
 pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
     match &obj.payload {
-        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
-        PyObjectPayload::Range { start, stop, step } => {
+        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) | PyObjectPayload::AsyncGenerator(_) => Ok(obj.clone()),
+        PyObjectPayload::Range(rd) => {
             Ok(PyObject::wrap(PyObjectPayload::Iterator(
-                Rc::new(PyCell::new(IteratorData::Range { current: *start, stop: *stop, step: *step }))
+                Rc::new(PyCell::new(IteratorData::Range { current: rd.start, stop: rd.stop, step: rd.step }))
             )))
         }
         PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
@@ -1135,7 +1135,7 @@ pub(super) fn get_iter_from_obj(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             if let Some(iter_attr) = obj.get_attr("__iter__") {
                 match &iter_attr.payload {
                     // __iter__ returned a list/iterator directly
-                    PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) => {
+                    PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) => {
                         return get_iter_from_obj(&iter_attr);
                     }
                     // __iter__ is a bound method — call it
@@ -1268,7 +1268,7 @@ pub(super) fn builtin_dict(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             Ok(PyObject::dict(map))
         },
         // dict from iterable of (key, value) pairs
-        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::Set(_) => {
+        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::Set(_) => {
             let pairs = args[0].to_list()?;
             let mut map = IndexMap::new();
             for pair in &pairs {
@@ -1580,8 +1580,8 @@ pub(super) fn builtin_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Ok(PyObject::bytes(vec![]));
     }
     match &args[0].payload {
-        PyObjectPayload::Bytes(b) => Ok(PyObject::bytes(b.clone())),
-        PyObjectPayload::ByteArray(b) => Ok(PyObject::bytes(b.clone())),
+        PyObjectPayload::Bytes(b) => Ok(PyObject::bytes((**b).clone())),
+        PyObjectPayload::ByteArray(b) => Ok(PyObject::bytes((**b).clone())),
         PyObjectPayload::Str(s) => {
             // bytes(string, encoding) — require encoding argument
             if args.len() >= 2 {
@@ -1637,8 +1637,8 @@ pub(super) fn builtin_bytearray(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         return Ok(PyObject::bytearray(vec![]));
     }
     match &args[0].payload {
-        PyObjectPayload::Bytes(b) => Ok(PyObject::bytearray(b.clone())),
-        PyObjectPayload::ByteArray(b) => Ok(PyObject::bytearray(b.clone())),
+        PyObjectPayload::Bytes(b) => Ok(PyObject::bytearray((**b).clone())),
+        PyObjectPayload::ByteArray(b) => Ok(PyObject::bytearray((**b).clone())),
         PyObjectPayload::Str(s) => {
             if args.len() >= 2 {
                 Ok(PyObject::bytearray(s.as_bytes().to_vec()))
@@ -1719,7 +1719,7 @@ pub(super) fn builtin_issubclass(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
     let sup = &args[1];
     // Handle tuple of types: issubclass(A, (B, C))
     if let PyObjectPayload::Tuple(types) = &sup.payload {
-        for t in types {
+        for t in types.iter() {
             if check_subclass(sub, t) {
                 return Ok(PyObject::bool_val(true));
             }
@@ -2037,14 +2037,14 @@ pub(super) fn builtin_memoryview(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
         PyObjectPayload::Bytes(_) => {
             // Read-only memoryview — wrap as bytes (immutable)
             Ok(PyObject::bytes(match &args[0].payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 _ => unreachable!(),
             }))
         }
         PyObjectPayload::ByteArray(_) => {
             // Mutable memoryview — keep as bytearray so __setitem__ works
             Ok(PyObject::bytearray(match &args[0].payload {
-                PyObjectPayload::ByteArray(b) => b.clone(),
+                PyObjectPayload::ByteArray(b) => (**b).clone(),
                 _ => unreachable!(),
             }))
         }

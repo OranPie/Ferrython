@@ -388,7 +388,7 @@ fn make_http_response_class() -> PyObjectRef {
             let n = if args.len() > 1 { args[1].as_int().unwrap_or(-1) } else { -1 };
             let body_bytes = self_obj.get_attr("_body")
                 .map(|b| match &b.payload {
-                    PyObjectPayload::Bytes(v) => v.clone(),
+                    PyObjectPayload::Bytes(v) => (**v).clone(),
                     _ => vec![],
                 })
                 .unwrap_or_default();
@@ -419,7 +419,7 @@ fn make_http_response_class() -> PyObjectRef {
             let self_obj = &args[0];
             let body_bytes = self_obj.get_attr("_body")
                 .map(|b| match &b.payload {
-                    PyObjectPayload::Bytes(v) => v.clone(),
+                    PyObjectPayload::Bytes(v) => (**v).clone(),
                     _ => vec![],
                 })
                 .unwrap_or_default();
@@ -570,7 +570,7 @@ fn urllib_urlopen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             .unwrap_or_else(|| "GET".to_string());
         let data_bytes = args[0].get_attr("data").and_then(|d| {
             match &d.payload {
-                PyObjectPayload::Bytes(b) => Some(b.clone()),
+                PyObjectPayload::Bytes(b) => Some((**b).clone()),
                 PyObjectPayload::None => None,
                 _ => Some(d.py_to_string().into_bytes()),
             }
@@ -592,7 +592,7 @@ fn urllib_urlopen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         // Check for data= kwarg (second arg or trailing dict)
         let data_bytes = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
             match &args[1].payload {
-                PyObjectPayload::Bytes(b) => Some(b.clone()),
+                PyObjectPayload::Bytes(b) => Some((**b).clone()),
                 _ => Some(args[1].py_to_string().into_bytes()),
             }
         } else {
@@ -852,7 +852,7 @@ fn urllib_parse_quote_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectRef> 
         return Err(PyException::type_error("quote_from_bytes() requires a bytes argument"));
     }
     let data = match &args[0].payload {
-        PyObjectPayload::Bytes(b) => b.clone(),
+        PyObjectPayload::Bytes(b) => (**b).clone(),
         PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
         _ => return Err(PyException::type_error("quote_from_bytes: expected bytes")),
     };
@@ -1005,7 +1005,7 @@ fn urllib_parse_urlparse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn urllib_parse_urlunparse(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("urlunparse() requires 1 argument")); }
     let components = match &args[0].payload {
-        PyObjectPayload::Tuple(items) => items.clone(),
+        PyObjectPayload::Tuple(items) => (**items).clone(),
         PyObjectPayload::List(items) => items.read().clone(),
         // Also handle ParseResult-like objects with scheme/netloc/path/etc
         PyObjectPayload::Instance(_) => {
@@ -1135,7 +1135,7 @@ fn urllib_parse_urlsplit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn urllib_parse_urlunsplit(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if args.is_empty() { return Err(PyException::type_error("urlunsplit() requires 1 argument")); }
     let components = match &args[0].payload {
-        PyObjectPayload::Tuple(items) => items.clone(),
+        PyObjectPayload::Tuple(items) => (**items).clone(),
         PyObjectPayload::List(items) => items.read().clone(),
         _ => return Err(PyException::type_error("urlunsplit requires a tuple/list")),
     };
@@ -1485,7 +1485,7 @@ fn make_http_connection_class(default_port: u16, class_name: &str, is_https: boo
             let raw_obj = self_obj.get_attr("_response_data")
                 .ok_or_else(|| PyException::runtime_error("no response available"))?;
             let raw = match &raw_obj.payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 PyObjectPayload::None => return Err(PyException::runtime_error("no response available")),
                 _ => vec![],
             };
@@ -1971,7 +1971,7 @@ fn build_handler_instance(
             PyObject::native_closure("wfile.write", move |args| {
                 if !args.is_empty() {
                     let data = match &args[0].payload {
-                        PyObjectPayload::Bytes(b) => b.clone(),
+                        PyObjectPayload::Bytes(b) => (**b).clone(),
                         PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                         _ => args[0].py_to_string().into_bytes(),
                     };

@@ -447,7 +447,7 @@ fn array_array(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             "array.frombytes", { let s = self_ref.clone(); move |args: &[PyObjectRef]| {
                 check_args_min("array.frombytes", args, 1)?;
                 let input_bytes = if let PyObjectPayload::Bytes(b) = &args[0].payload {
-                    b.clone()
+                    (**b).clone()
                 } else {
                     return Err(PyException::type_error("frombytes requires a bytes argument"));
                 };

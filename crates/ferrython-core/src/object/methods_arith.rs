@@ -78,10 +78,10 @@ pub(super) fn py_add(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
                 let mut r = a.read().clone(); r.extend(b.read().iter().cloned()); Ok(PyObject::list(r))
             }
             (PyObjectPayload::Tuple(a), PyObjectPayload::Tuple(b)) => {
-                let mut r = a.clone(); r.extend(b.iter().cloned()); Ok(PyObject::tuple(r))
+                let mut r = (**a).clone(); r.extend(b.iter().cloned()); Ok(PyObject::tuple(r))
             }
             (PyObjectPayload::Bytes(a), PyObjectPayload::Bytes(b)) | (PyObjectPayload::ByteArray(a), PyObjectPayload::Bytes(b)) | (PyObjectPayload::Bytes(a), PyObjectPayload::ByteArray(b)) => {
-                let mut r = a.clone(); r.extend(b); Ok(PyObject::bytes(r))
+                let mut r = (**a).clone(); r.extend(b.iter()); Ok(PyObject::bytes(r))
             }
             // Dict addition (Counter + Counter)
             (PyObjectPayload::Dict(a_map), PyObjectPayload::Dict(b_map)) => {
@@ -326,13 +326,13 @@ pub(super) fn py_mul(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             (PyObjectPayload::Bytes(b), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::Bytes(b)) => {
                 let count = n.to_i64().unwrap_or(0).max(0) as usize;
                 let mut result = Vec::with_capacity(b.len() * count);
-                for _ in 0..count { result.extend(b); }
+                for _ in 0..count { result.extend(b.iter()); }
                 Ok(PyObject::bytes(result))
             }
             (PyObjectPayload::Bytes(bytes), PyObjectPayload::Bool(bl)) | (PyObjectPayload::Bool(bl), PyObjectPayload::Bytes(bytes)) => {
                 let count = *bl as usize;
                 let mut result = Vec::with_capacity(bytes.len() * count);
-                for _ in 0..count { result.extend(bytes); }
+                for _ in 0..count { result.extend(bytes.iter()); }
                 Ok(PyObject::bytes(result))
             }
             (PyObjectPayload::ByteArray(b), PyObjectPayload::Int(n)) | (PyObjectPayload::Int(n), PyObjectPayload::ByteArray(b)) => {
@@ -465,7 +465,7 @@ pub(super) fn py_modulo(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRe
                 // printf-style string formatting: "Hello %s" % "world"
                 // Also supports dict-keyed format: "%(name)s" % {"name": "Bob"}
                 let args_list = match &b.payload {
-                    PyObjectPayload::Tuple(items) => items.clone(),
+                    PyObjectPayload::Tuple(items) => (**items).clone(),
                     _ => vec![b.clone()],
                 };
                 let mut result = String::new();

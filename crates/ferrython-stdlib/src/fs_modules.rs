@@ -443,7 +443,7 @@ pub fn create_pathlib_module() -> PyObjectRef {
         if args.len() < 2 { return Err(PyException::type_error("write_bytes requires self and data")); }
         let path = get_path_str(&args[0]);
         let data = match &args[1].payload {
-            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+            PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
             _ => args[1].py_to_string().into_bytes(),
         };
         let len = data.len();
@@ -1170,7 +1170,7 @@ fn named_temporary_file(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                 return Err(PyException::type_error("write requires data"));
             };
             let data_bytes = match &data_arg.payload {
-                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                 _ => data_arg.py_to_string().into_bytes(),
             };
@@ -1655,7 +1655,7 @@ pub fn create_io_module() -> PyObjectRef {
                     let mut guard = buf3.write();
                     if let Some(ref mut f) = *guard {
                         let data = match &wargs[0].payload {
-                            PyObjectPayload::Bytes(b) => b.clone(),
+                            PyObjectPayload::Bytes(b) => (**b).clone(),
                             _ => wargs[0].py_to_string().into_bytes(),
                         };
                         let n = f.write(&data).map_err(|e| PyException::os_error(format!("{}", e)))?;
@@ -1864,7 +1864,7 @@ fn io_bytes_io_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let self_obj = args[0].clone();
     let initial = if args.len() > 1 {
         if let PyObjectPayload::Bytes(b) = &args[1].payload {
-            b.clone()
+            (**b).clone()
         } else {
             vec![]
         }
@@ -1886,7 +1886,7 @@ fn io_bytes_io_init(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         attrs.insert(CompactString::from("write"), PyObject::native_closure("BytesIO.write", move |a: &[PyObjectRef]| {
             if a.is_empty() { return Err(PyException::type_error("write() takes 1 argument")); }
             let data = match &a[0].payload {
-                PyObjectPayload::Bytes(v) => v.clone(),
+                PyObjectPayload::Bytes(v) => (**v).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                 _ => return Err(PyException::type_error("a bytes-like object is required")),
             };
@@ -2496,7 +2496,7 @@ fn subprocess_run(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             }
             if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("input"))) {
                 match &v.payload {
-                    PyObjectPayload::Bytes(b) => input_data = Some(b.clone()),
+                    PyObjectPayload::Bytes(b) => input_data = Some((**b).clone()),
                     PyObjectPayload::Str(s) => input_data = Some(s.as_bytes().to_vec()),
                     _ if !matches!(v.payload, PyObjectPayload::None) => input_data = Some(v.py_to_string().into_bytes()),
                     _ => {}
@@ -2872,7 +2872,7 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         if let Some(v) = r.get(&HashableKey::str_key(CompactString::from("input"))) {
                             if !matches!(v.payload, PyObjectPayload::None) {
                                 input_data = Some(match &v.payload {
-                                    PyObjectPayload::Bytes(b) => b.clone(),
+                                    PyObjectPayload::Bytes(b) => (**b).clone(),
                                     PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                                     _ => v.py_to_string().into_bytes(),
                                 });
@@ -2880,7 +2880,7 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         }
                     } else if !matches!(arg.payload, PyObjectPayload::None) && input_data.is_none() {
                         input_data = Some(match &arg.payload {
-                            PyObjectPayload::Bytes(b) => b.clone(),
+                            PyObjectPayload::Bytes(b) => (**b).clone(),
                             PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                             _ => arg.py_to_string().into_bytes(),
                         });
@@ -3038,7 +3038,7 @@ fn subprocess_popen(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 
 fn gzip_extract_bytes(obj: &PyObjectRef) -> PyResult<Vec<u8>> {
     match &obj.payload {
-        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok(b.clone()),
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok((**b).clone()),
         PyObjectPayload::Str(s) => Ok(s.as_bytes().to_vec()),
         _ => Err(PyException::type_error("expected bytes-like object")),
     }

@@ -132,9 +132,9 @@ pub fn next_class_version() -> u64 {
     })
 }
 
-// Compile-time size check: ensure enum stays compact after boxing cold variants
-// Target: ≤32 bytes (down from 40). Further reduction possible by boxing more variants.
-const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <= 32);
+// Compile-time size check: ensure enum stays compact after boxing all >16-byte variants.
+// Target: ≤24 bytes (down from 32). All variants must have data ≤ 16 bytes.
+const _PAYLOAD_SIZE_CHECK: () = assert!(std::mem::size_of::<PyObjectPayload>() <= 24);
 
 // ── PyObject Freelist Allocator ──
 // Replaces Rc<PyObject> with a custom ref-counted pointer backed by a
@@ -639,7 +639,24 @@ pub struct VecIterData {
     pub index: SyncUsize,
 }
 
+/// Boxed range data — moved out of enum to shrink PyObjectPayload from 32→24 bytes.
+#[derive(Clone, Debug)]
+pub struct RangeData {
+    pub start: i64,
+    pub stop: i64,
+    pub step: i64,
+}
+
+/// Boxed range iterator data — moved out of enum to shrink PyObjectPayload from 32→24 bytes.
+#[derive(Clone, Debug)]
+pub struct RangeIterData {
+    pub current: SyncI64,
+    pub stop: i64,
+    pub step: i64,
+}
+
 /// The actual data of a Python value.
+/// All variants ≤ 16 bytes of data so the enum (with tag) fits in 24 bytes.
 #[derive(Clone)]
 pub enum PyObjectPayload {
     None,
@@ -649,11 +666,13 @@ pub enum PyObjectPayload {
     Int(PyInt),
     Float(f64),
     Complex { real: f64, imag: f64 },
-    Str(CompactString),
-    Bytes(Vec<u8>),
-    ByteArray(Vec<u8>),
-    List(PyCell<Vec<PyObjectRef>>),
-    Tuple(Vec<PyObjectRef>),
+    /// Boxed to keep PyObjectPayload at 24 bytes (CompactString is 24 bytes).
+    Str(Box<CompactString>),
+    /// Boxed to keep PyObjectPayload at 24 bytes (Vec is 24 bytes).
+    Bytes(Box<Vec<u8>>),
+    ByteArray(Box<Vec<u8>>),
+    List(Box<PyCell<Vec<PyObjectRef>>>),
+    Tuple(Box<Vec<PyObjectRef>>),
     Set(Rc<PyCell<FxHashKeyMap>>),
     FrozenSet(Box<FxHashKeyMap>),
     Dict(Rc<PyCell<FxHashKeyMap>>),
@@ -662,9 +681,11 @@ pub enum PyObjectPayload {
     /// Read-only view of a class namespace (types.MappingProxyType)
     MappingProxy(Rc<PyCell<FxHashKeyMap>>),
     Function(Box<PyFunction>),
-    BuiltinFunction(CompactString),
-    /// Built-in type object (int, str, float, etc.) — callable as constructor
-    BuiltinType(CompactString),
+    /// Boxed to keep PyObjectPayload at 24 bytes.
+    BuiltinFunction(Box<CompactString>),
+    /// Built-in type object (int, str, float, etc.) — callable as constructor.
+    /// Boxed to keep PyObjectPayload at 24 bytes.
+    BuiltinType(Box<CompactString>),
     BoundMethod { receiver: PyObjectRef, method: PyObjectRef },
     BuiltinBoundMethod(Box<BuiltinBoundMethodData>),
     Code(std::rc::Rc<ferrython_bytecode::CodeObject>),
@@ -674,7 +695,8 @@ pub enum PyObjectPayload {
     Module(Box<ModuleData>),
     Iterator(Rc<PyCell<IteratorData>>),
     /// Lock-free range iterator — avoids Mutex overhead for `for i in range(n)`.
-    RangeIter { current: SyncI64, stop: i64, step: i64 },
+    /// Boxed to keep PyObjectPayload at 24 bytes.
+    RangeIter(Box<RangeIterData>),
     /// Lock-free snapshot iterator — items immutable after creation, only index advances.
     /// Used for dict-key/set/bytes iteration where items must be materialized.
     /// Boxed to keep PyObjectPayload at 32 bytes (Vec + SyncUsize = 32 > 24 limit).
@@ -718,8 +740,9 @@ pub enum PyObjectPayload {
     ClassMethod(PyObjectRef),
     /// super() proxy — wraps (class, instance) for parent method dispatch
     Super { cls: PyObjectRef, instance: PyObjectRef },
-    /// Range object — preserves start/stop/step, creates fresh iterators
-    Range { start: i64, stop: i64, step: i64 },
+    /// Range object — preserves start/stop/step, creates fresh iterators.
+    /// Boxed to keep PyObjectPayload at 24 bytes.
+    Range(Box<RangeData>),
     /// Awaitable that immediately resolves to a pre-computed value.
     /// Used by asyncio.sleep(), asyncio.gather(), etc. to return proper awaitables
     /// from native functions that don't have their own coroutine frame.
@@ -789,7 +812,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::Instance(id) => write!(f, "Instance(class={:?})", id.class.payload),
             Self::Module(md) => write!(f, "Module({})", md.name),
             Self::Iterator(_) => write!(f, "Iterator(...)"),
-            Self::RangeIter { current, stop, step } => write!(f, "RangeIter({}, {stop}, {step})", current.get()),
+            Self::RangeIter(ri) => write!(f, "RangeIter({}, {}, {})", ri.current.get(), ri.stop, ri.step),
             Self::VecIter(data) => write!(f, "VecIter({}/{})", data.index.get(), data.items.len()),
             Self::RefIter { index, .. } => write!(f, "RefIter({})", index.get()),
             Self::Slice(_) => write!(f, "Slice(...)"),
@@ -809,7 +832,7 @@ impl fmt::Debug for PyObjectPayload {
             Self::StaticMethod(_) => write!(f, "StaticMethod(...)"),
             Self::ClassMethod(_) => write!(f, "ClassMethod(...)"),
             Self::Super { .. } => write!(f, "Super(...)"),
-            Self::Range { start, stop, step } => write!(f, "Range({start}, {stop}, {step})"),
+            Self::Range(rd) => write!(f, "Range({}, {}, {})", rd.start, rd.stop, rd.step),
             Self::BuiltinAwaitable(_) => write!(f, "BuiltinAwaitable(...)"),
             Self::DeferredSleep { secs, .. } => write!(f, "DeferredSleep({secs}s)"),
             Self::DictKeys(_) => write!(f, "dict_keys(...)"),
@@ -984,7 +1007,7 @@ impl ClassData {
                 }
                 PyObjectPayload::Str(s) => {
                     // Single string slot: __slots__ = "x"
-                    Some(vec![s.clone()])
+                    Some(vec![(**s).clone()])
                 }
                 _ => None,
             }

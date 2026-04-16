@@ -24,7 +24,7 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
                 if let PyObjectPayload::Tuple(field_names) = &fields.payload {
                     let mut map = IndexMap::new();
                     let attrs = inst.attrs.read();
-                    for field in field_names {
+                    for field in field_names.iter() {
                         let name = field.py_to_string();
                         let val = attrs.get(name.as_str()).cloned().unwrap_or_else(PyObject::none);
                         map.insert(HashableKey::str_key(CompactString::from(name.as_str())), val);
@@ -50,7 +50,7 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
                 if let PyObjectPayload::Tuple(field_names) = &fields.payload {
                     let attrs = inst.attrs.read();
                     let mut new_values: Vec<PyObjectRef> = Vec::new();
-                    for field in field_names {
+                    for field in field_names.iter() {
                         let name = field.py_to_string();
                         let hk = HashableKey::str_key(CompactString::from(name.as_str()));
                         let val = if let Some(ref kw) = kwargs_dict {
@@ -114,7 +114,7 @@ pub(super) fn call_namedtuple_method(inst: &ferrython_core::object::InstanceData
                 if let PyObjectPayload::Tuple(items) = &tup.payload {
                     return Ok(PyObject::wrap(PyObjectPayload::Iterator(
                         Rc::new(PyCell::new(
-                            ferrython_core::object::IteratorData::Tuple { items: items.clone(), index: 0 }
+                            ferrython_core::object::IteratorData::Tuple { items: (**items).clone(), index: 0 }
                         ))
                     )));
                 }
@@ -690,14 +690,14 @@ pub(super) fn call_hashlib_method(inst: &ferrython_core::object::InstanceData, m
                 return Err(PyException::type_error("update() takes exactly 1 argument"));
             }
             let new_data = match &args[0].payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                 _ => return Err(PyException::type_error("a bytes-like object is required")),
             };
             let mut w = inst.attrs.write();
             // Append to accumulated data
             let mut accumulated = if let Some(d) = w.get("_data") {
-                if let PyObjectPayload::Bytes(b) = &d.payload { b.clone() } else { vec![] }
+                if let PyObjectPayload::Bytes(b) = &d.payload { (**b).clone() } else { vec![] }
             } else {
                 vec![]
             };
@@ -859,7 +859,7 @@ pub(super) fn builtin_int_from_bytes(args: &[PyObjectRef]) -> PyResult<PyObjectR
         return Err(PyException::type_error("int.from_bytes requires at least 1 argument"));
     }
     let bytes = match &args[0].payload {
-        PyObjectPayload::Bytes(b) => b.clone(),
+        PyObjectPayload::Bytes(b) => (**b).clone(),
         _ => return Err(PyException::type_error("expected bytes")),
     };
     // Extract byteorder and signed from positional or kwargs dict
@@ -962,11 +962,11 @@ pub(super) fn builtin_bytes_maketrans(args: &[PyObjectRef]) -> PyResult<PyObject
         return Err(PyException::type_error("maketrans requires 2 arguments"));
     }
     let from_bytes = match &args[0].payload {
-        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
         _ => return Err(PyException::type_error("a bytes-like object is required")),
     };
     let to_bytes = match &args[1].payload {
-        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
         _ => return Err(PyException::type_error("a bytes-like object is required")),
     };
     if from_bytes.len() != to_bytes.len() {
@@ -1249,7 +1249,7 @@ pub(super) fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, m
         "write" => {
             check_args_min("write", args, 1)?;
             let new_bytes = match &args[0].payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                 _ => return Err(PyException::type_error("a bytes-like object is required")),
             };
@@ -1257,7 +1257,7 @@ pub(super) fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, m
             let mut attrs = inst.attrs.write();
             let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
             let mut buf = match attrs.get("_buffer").map(|b| &b.payload) {
-                Some(PyObjectPayload::Bytes(b)) => b.clone(),
+                Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
                 _ => vec![],
             };
             // Extend if needed
@@ -1273,7 +1273,7 @@ pub(super) fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, m
         "read" => {
             let mut attrs = inst.attrs.write();
             let buf = match attrs.get("_buffer").map(|b| &b.payload) {
-                Some(PyObjectPayload::Bytes(b)) => b.clone(),
+                Some(PyObjectPayload::Bytes(b)) => (**b).clone(),
                 _ => vec![],
             };
             let pos = attrs.get("_pos").and_then(|p| p.as_int()).unwrap_or(0) as usize;
@@ -1293,7 +1293,7 @@ pub(super) fn call_bytesio_method(inst: &ferrython_core::object::InstanceData, m
         "getvalue" => {
             let attrs = inst.attrs.read();
             match attrs.get("_buffer").map(|b| &b.payload) {
-                Some(PyObjectPayload::Bytes(b)) => Ok(PyObject::bytes(b.clone())),
+                Some(PyObjectPayload::Bytes(b)) => Ok(PyObject::bytes((**b).clone())),
                 _ => Ok(PyObject::bytes(vec![])),
             }
         }
@@ -1401,7 +1401,7 @@ pub(super) fn call_pathlib_method(inst: &ferrython_core::object::InstanceData, m
             check_args_min("write_bytes", args, 1)?;
             let path = get_path();
             let data = match &args[0].payload {
-                PyObjectPayload::Bytes(b) => b.clone(),
+                PyObjectPayload::Bytes(b) => (**b).clone(),
                 _ => return Err(PyException::type_error("expected bytes")),
             };
             let len = data.len();

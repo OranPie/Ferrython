@@ -813,7 +813,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
             }
             PyObjectPayload::BuiltinType(n) => {
                 match name {
-                    "__name__" | "__qualname__" => Some(PyObject::str_val(n.clone())),
+                    "__name__" | "__qualname__" => Some(PyObject::str_val((**n).clone())),
                     "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
                     "__dict__" => {
                         // Return a mappingproxy with common type descriptors
@@ -1331,7 +1331,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         Some(PyObject::native_closure("mro", move |_args| {
                             if let Some(ref mro_tuple) = mro_val {
                                 if let PyObjectPayload::Tuple(items) = &mro_tuple.payload {
-                                    return Ok(PyObject::list(items.clone()));
+                                    return Ok(PyObject::list((**items).clone()));
                                 }
                             }
                             Ok(PyObject::list(vec![]))
@@ -1563,7 +1563,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 _ => None,
             }
             PyObjectPayload::BuiltinFunction(fname) => match name {
-                "__name__" | "__qualname__" => Some(PyObject::str_val(fname.clone())),
+                "__name__" | "__qualname__" => Some(PyObject::str_val((**fname).clone())),
                 "__module__" => Some(PyObject::str_val(CompactString::from("builtins"))),
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("builtin_function_or_method"))),
                 "__doc__" => Some(PyObject::none()),
@@ -1657,10 +1657,10 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 _ => None,
             },
             // Built-in type methods — return bound method for KNOWN methods only
-            PyObjectPayload::Range { start, stop, step } => match name {
-                "start" => Some(PyObject::int(*start)),
-                "stop" => Some(PyObject::int(*stop)),
-                "step" => Some(PyObject::int(*step)),
+            PyObjectPayload::Range(rd) => match name {
+                "start" => Some(PyObject::int(rd.start)),
+                "stop" => Some(PyObject::int(rd.stop)),
+                "step" => Some(PyObject::int(rd.step)),
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("range"))),
                 "count" | "index" | "__contains__" | "__iter__" | "__reversed__" | "__len__" => {
                     Some(PyObjectRef::new(PyObject {
@@ -2277,7 +2277,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("cell"))),
                 _ => None,
             }
-            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => {
+            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => {
                 match name {
                     "__next__" | "__iter__" | "__length_hint__" => {
                         Some(PyObjectRef::new(PyObject {

@@ -1048,7 +1048,7 @@ fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObject
         let sql = args[0].py_to_string();
         let params: Vec<PyObjectRef> = if args.len() > 1 {
             match &args[1].payload {
-                PyObjectPayload::Tuple(items) => items.clone(),
+                PyObjectPayload::Tuple(items) => (**items).clone(),
                 PyObjectPayload::List(items) => items.read().clone(),
                 _ => vec![args[1].clone()],
             }
@@ -1091,7 +1091,7 @@ fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObject
         let sql = args[0].py_to_string();
         let seq = match &args[1].payload {
             PyObjectPayload::List(items) => items.read().clone(),
-            PyObjectPayload::Tuple(items) => items.clone(),
+            PyObjectPayload::Tuple(items) => (**items).clone(),
             _ => return Err(PyException::type_error("executemany() second arg must be iterable")),
         };
 
@@ -1106,7 +1106,7 @@ fn build_cursor_object_with_conn(db: Arc<Mutex<Database>>, conn: Option<PyObject
         let mut last_id = 0i64;
         for param_set in &seq {
             let params: Vec<PyObjectRef> = match &param_set.payload {
-                PyObjectPayload::Tuple(items) => items.clone(),
+                PyObjectPayload::Tuple(items) => (**items).clone(),
                 PyObjectPayload::List(items) => items.read().clone(),
                 _ => vec![param_set.clone()],
             };

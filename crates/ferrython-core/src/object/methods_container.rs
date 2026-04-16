@@ -63,11 +63,11 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                 }
                 Err(PyException::type_error(format!("object of type '{}' has no len()", obj.type_name())))
             },
-            PyObjectPayload::Range { start, stop, step } => {
-                if *step > 0 && *start < *stop {
-                    Ok(((stop - start + step - 1) / step) as usize)
-                } else if *step < 0 && *start > *stop {
-                    Ok(((start - stop - step - 1) / (-step)) as usize)
+            PyObjectPayload::Range(rd) => {
+                if rd.step > 0 && rd.start < rd.stop {
+                    Ok(((rd.stop - rd.start + rd.step - 1) / rd.step) as usize)
+                } else if rd.step < 0 && rd.start > rd.stop {
+                    Ok(((rd.start - rd.stop - rd.step - 1) / (-rd.step)) as usize)
                 } else {
                     Ok(0)
                 }
@@ -90,12 +90,12 @@ pub(super) fn py_len(obj: &PyObjectRef) -> PyResult<usize> {
                     _ => Err(PyException::type_error("object of type 'iterator' has no len()")),
                 }
             }
-            PyObjectPayload::RangeIter { current, stop, step } => {
-                let cur = current.get();
-                if *step > 0 && cur < *stop {
-                    Ok(((stop - cur + step - 1) / step) as usize)
-                } else if *step < 0 && cur > *stop {
-                    Ok(((cur - stop - step - 1) / (-step)) as usize)
+            PyObjectPayload::RangeIter(ri) => {
+                let cur = ri.current.get();
+                if ri.step > 0 && cur < ri.stop {
+                    Ok(((ri.stop - cur + ri.step - 1) / ri.step) as usize)
+                } else if ri.step < 0 && cur > ri.stop {
+                    Ok(((cur - ri.stop - ri.step - 1) / (-ri.step)) as usize)
                 } else {
                     Ok(0)
                 }
@@ -213,16 +213,16 @@ pub(super) fn py_get_item(obj: &PyObjectRef, key: &PyObjectRef) -> PyResult<PyOb
                     Err(PyException::key_error(key.repr()))
                 }
             }
-            PyObjectPayload::Range { start, stop, step } => {
+            PyObjectPayload::Range(rd) => {
                 let idx = key.to_int()?;
-                let len = if *step > 0 && *start < *stop {
-                    (stop - start + step - 1) / step
-                } else if *step < 0 && *start > *stop {
-                    (start - stop - step - 1) / (-step)
+                let len = if rd.step > 0 && rd.start < rd.stop {
+                    (rd.stop - rd.start + rd.step - 1) / rd.step
+                } else if rd.step < 0 && rd.start > rd.stop {
+                    (rd.start - rd.stop - rd.step - 1) / (-rd.step)
                 } else { 0 };
                 let actual = if idx < 0 { len + idx } else { idx };
                 if actual < 0 || actual >= len { return Err(PyException::index_error("range object index out of range")); }
-                Ok(PyObject::int(start + actual * step))
+                Ok(PyObject::int(rd.start + actual * rd.step))
             }
             _ => {
                 // Builtin base type subclass: delegate to __builtin_value__
@@ -289,12 +289,12 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                     _ => Err(PyException::type_error("a bytes-like object is required")),
                 }
             }
-            PyObjectPayload::Range { start, stop, step } => {
+            PyObjectPayload::Range(rd) => {
                 if let Some(val) = item.as_int() {
-                    if *step > 0 {
-                        Ok(val >= *start && val < *stop && (val - start) % step == 0)
+                    if rd.step > 0 {
+                        Ok(val >= rd.start && val < rd.stop && (val - rd.start) % rd.step == 0)
                     } else {
-                        Ok(val <= *start && val > *stop && (start - val) % (-step) == 0)
+                        Ok(val <= rd.start && val > rd.stop && (rd.start - val) % (-rd.step) == 0)
                     }
                 } else {
                     Ok(false)
@@ -321,13 +321,13 @@ pub(super) fn py_contains(obj: &PyObjectRef, item: &PyObjectRef) -> PyResult<boo
                     }
                 }
             }
-            PyObjectPayload::RangeIter { current, stop, step } => {
+            PyObjectPayload::RangeIter(ri) => {
                 if let Some(val) = item.as_int() {
-                    let cur = current.get();
-                    if *step > 0 {
-                        Ok(val >= cur && val < *stop && (val - cur) % step == 0)
+                    let cur = ri.current.get();
+                    if ri.step > 0 {
+                        Ok(val >= cur && val < ri.stop && (val - cur) % ri.step == 0)
                     } else {
-                        Ok(val <= cur && val > *stop && (cur - val) % (-step) == 0)
+                        Ok(val <= cur && val > ri.stop && (cur - val) % (-ri.step) == 0)
                     }
                 } else {
                     Ok(false)
@@ -399,10 +399,10 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
                 let vals: Vec<PyObjectRef> = m.values().cloned().collect();
                 Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(VecIterData { items: vals, index: SyncUsize::new(0) }))))
             }
-            PyObjectPayload::Range { start, stop, step } => {
-                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Range { current: *start, stop: *stop, step: *step })))))
+            PyObjectPayload::Range(rd) => {
+                Ok(PyObject::wrap(PyObjectPayload::Iterator(Rc::new(PyCell::new(IteratorData::Range { current: rd.start, stop: rd.stop, step: rd.step })))))
             }
-            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => Ok(obj.clone()),
+            PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } => Ok(obj.clone()),
             PyObjectPayload::Generator(_) => Ok(obj.clone()), // generators are their own iterators
             PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => {
                 let items: Vec<PyObjectRef> = b.iter().map(|byte| PyObject::int(*byte as i64)).collect();
@@ -412,7 +412,7 @@ pub(super) fn py_get_iter(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
             PyObjectPayload::Instance(inst) if inst.class.get_attr("__namedtuple__").is_some() => {
                 if let Some(tup) = inst.attrs.read().get("_tuple").cloned() {
                     if let PyObjectPayload::Tuple(items) = &tup.payload {
-                        return Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(VecIterData { items: items.clone(), index: SyncUsize::new(0) }))));
+                        return Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(VecIterData { items: (**items).clone(), index: SyncUsize::new(0) }))));
                     }
                 }
                 Ok(PyObject::wrap(PyObjectPayload::VecIter(Box::new(VecIterData { items: vec![], index: SyncUsize::new(0) }))))

@@ -40,7 +40,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
         if prog.is_empty() {
             if let Some(first) = args.first() {
                 if let PyObjectPayload::Str(s) = &first.payload {
-                    prog = s.clone();
+                    prog = (**s).clone();
                 }
             }
         }

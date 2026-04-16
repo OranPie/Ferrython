@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 fn extract_bytes(obj: &PyObjectRef) -> PyResult<Vec<u8>> {
     match &obj.payload {
-        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok(b.clone()),
+        PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => Ok((**b).clone()),
         PyObjectPayload::Str(s) => Ok(s.as_bytes().to_vec()),
         _ => Err(PyException::type_error("expected bytes-like object")),
     }
@@ -1638,7 +1638,7 @@ fn build_tarfile_object(inner: Arc<Mutex<TarInner>>) -> PyObjectRef {
                 let data = if args.len() > 1 && !matches!(&args[1].payload, PyObjectPayload::None) {
                     // Try reading data from fileobj
                     if let PyObjectPayload::Bytes(b) = &args[1].payload {
-                        b.clone()
+                        (**b).clone()
                     } else {
                         extract_bytes_from_fileobj(&args[1]).unwrap_or_default()
                     }
@@ -1840,12 +1840,12 @@ fn tarfile_open(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
 fn extract_bytes_from_fileobj(fobj: &PyObjectRef) -> PyResult<Vec<u8>> {
     // Try direct bytes payload
     if let PyObjectPayload::Bytes(b) = &fobj.payload {
-        return Ok(b.clone());
+        return Ok((**b).clone());
     }
     // Try BytesIO: look for _buffer attribute
     if let Some(buf_attr) = fobj.get_attr("_buffer") {
         if let PyObjectPayload::Bytes(b) = &buf_attr.payload {
-            return Ok(b.clone());
+            return Ok((**b).clone());
         }
     }
     // Try getvalue() method
@@ -1854,13 +1854,13 @@ fn extract_bytes_from_fileobj(fobj: &PyObjectRef) -> PyResult<Vec<u8>> {
         if let PyObjectPayload::NativeFunction(nf) = &getvalue.payload {
             let result = (nf.func)(&[])?;
             if let PyObjectPayload::Bytes(b) = &result.payload {
-                return Ok(b.clone());
+                return Ok((**b).clone());
             }
         }
         if let PyObjectPayload::NativeClosure(nc) = &getvalue.payload {
             let result = (nc.func)(&[])?;
             if let PyObjectPayload::Bytes(b) = &result.payload {
-                return Ok(b.clone());
+                return Ok((**b).clone());
             }
         }
     }

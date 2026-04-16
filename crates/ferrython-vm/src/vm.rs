@@ -226,7 +226,7 @@ define_interned!(N_CLOSE, "close");
 #[inline(always)]
 fn init_interned<'a>(lock: &'a OnceLock<PyObjectRef>, name: &str) -> &'a PyObjectRef {
     lock.get_or_init(|| PyObjectRef::new_immortal(PyObject {
-        payload: PyObjectPayload::Str(CompactString::from(name))
+        payload: PyObjectPayload::Str(Box::new(CompactString::from(name)))
     }))
 }
 
@@ -919,7 +919,7 @@ impl VirtualMachine {
                                 }
                                 (PyObjectPayload::Str(_), PyObjectPayload::Str(rhs)) => {
                                     // String concat in-place: s = s + "a" (like CPython)
-                                    let rhs_clone: CompactString = rhs.clone();
+                                    let rhs_clone: CompactString = (**rhs).clone();
                                     // NLL: a, c borrows are dead after the clone above
                                     if local_idx == dest {
                                         let locals_ptr = frame.locals.as_mut_ptr();
@@ -1318,7 +1318,7 @@ impl VirtualMachine {
                 Opcode::GetIter => {
                     let obj = speek!(frame);
                     match &obj.payload {
-                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) => hot_ok!(profiling, self.profiler, instr.op),
+                        PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) => hot_ok!(profiling, self.profiler, instr.op),
                         PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) | PyObjectPayload::DictKeys(_) => {
                             let iter = PyObject::wrap(PyObjectPayload::RefIter {
                                 source: obj.clone(), index: SyncUsize::new(0)
@@ -1335,15 +1335,15 @@ impl VirtualMachine {
                     // SAFETY: stack non-empty (iterator on TOS)
                     let iter = unsafe { frame.peek_unchecked() };
                     // Lock-free fast path for RangeIter
-                    if let PyObjectPayload::RangeIter { current, stop, step } = &iter.payload {
-                        let cur = current.get();
-                        let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
+                    if let PyObjectPayload::RangeIter(ri) = &iter.payload {
+                        let cur = ri.current.get();
+                        let done = if ri.step > 0 { cur >= ri.stop } else { cur <= ri.stop };
                         if done {
                             drop(spop!(frame));
                             frame.ip = instr.arg as usize;
                         } else {
                             let v = PyObject::int(cur);
-                            current.set(cur + *step);
+                            ri.current.set(cur + ri.step);
                             spush!(frame, v);
                         }
                         hot_ok!(profiling, self.profiler, instr.op)
@@ -1819,14 +1819,14 @@ impl VirtualMachine {
                     let store_idx = (instr.arg & 0xFFFF) as usize;
                     let iter = unsafe { frame.peek_unchecked() };
                     // Lock-free fast path for RangeIter
-                    if let PyObjectPayload::RangeIter { current, stop, step } = &iter.payload {
-                        let cur = current.get();
-                        let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
+                    if let PyObjectPayload::RangeIter(ri) = &iter.payload {
+                        let cur = ri.current.get();
+                        let done = if ri.step > 0 { cur >= ri.stop } else { cur <= ri.stop };
                         if done {
                             drop(spop!(frame));
                             frame.ip = jump_target;
                         } else {
-                            current.set(cur + *step);
+                            ri.current.set(cur + ri.step);
                             // Try in-place mutation if dest holds sole reference
                             let dest_slot = unsafe { frame.locals.get_unchecked_mut(store_idx) };
                             if let Some(ref mut arc) = dest_slot {
@@ -2140,7 +2140,7 @@ impl VirtualMachine {
                             // refcount 2 (one on stack, one in a local) and the next
                             // instruction is STORE_FAST, clear the local to get refcount 1,
                             // then do push_str in place — avoids allocation per concat.
-                            let rhs: CompactString = y.clone(); // cheap for small strings (inline)
+                            let rhs: CompactString = (**y).clone(); // cheap for small strings (inline)
                             let len = frame.stack.len();
                             unsafe {
                                 let _b_arc = std::ptr::read(frame.stack.as_ptr().add(len - 1));
@@ -2884,7 +2884,7 @@ impl VirtualMachine {
                         let val = speek!(frame);
                         // Format value to string fragment (without allocating PyObject yet)
                         let fast_str = match &val.payload {
-                            PyObjectPayload::Str(s) => Some(s.clone()),
+                            PyObjectPayload::Str(s) => Some((**s).clone()),
                             PyObjectPayload::Int(PyInt::Small(n)) => {
                                 let mut buf = itoa::Buffer::new();
                                 Some(CompactString::from(buf.format(*n)))
@@ -3596,9 +3596,9 @@ impl VirtualMachine {
                                 if let PyObjectPayload::Int(PyInt::Small(stop)) = &arg.payload {
                                     let stop = *stop;
                                     unsafe { frame.stack.set_len(func_idx); }
-                                    let iter = PyObject::wrap(PyObjectPayload::RangeIter {
+                                    let iter = PyObject::wrap(PyObjectPayload::RangeIter(Box::new(ferrython_core::object::RangeIterData {
                                         current: SyncI64::new(0), stop, step: 1,
-                                    });
+                                    })));
                                     spush!(frame, iter);
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
@@ -3672,7 +3672,7 @@ impl VirtualMachine {
                                 };
                                 if let Some(name) = type_name {
                                     unsafe { frame.stack.set_len(func_idx); }
-                                    spush!(frame, PyObject::wrap(PyObjectPayload::BuiltinType(name.into())));
+                                    spush!(frame, PyObject::wrap(PyObjectPayload::BuiltinType(Box::new(name.into()))));
                                     hot_ok!(profiling, self.profiler, instr.op)
                                 } else {
                                     self.execute_one(instr)
@@ -3861,7 +3861,7 @@ impl VirtualMachine {
                                     if start_val != i64::MIN {
                                         let mut total: i64 = start_val;
                                         let mut ok = true;
-                                        for item in items {
+                                        for item in items.iter() {
                                             if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
                                                 if let Some(t) = total.checked_add(*n) {
                                                     total = t;
@@ -4192,9 +4192,9 @@ impl VirtualMachine {
                                     if let PyObjectPayload::Int(PyInt::Small(stop)) = &arg.payload {
                                         let stop = *stop;
                                         { let _ = spop!(frame); }
-                                        let iter = PyObject::wrap(PyObjectPayload::RangeIter {
+                                        let iter = PyObject::wrap(PyObjectPayload::RangeIter(Box::new(ferrython_core::object::RangeIterData {
                                             current: SyncI64::new(0), stop, step: 1,
-                                        });
+                                        })));
                                         spush!(frame, iter);
                                         hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
@@ -4358,7 +4358,7 @@ impl VirtualMachine {
                                     if let Some(items) = items {
                                         let mut total: i64 = 0;
                                         let mut ok = true;
-                                        for item in items {
+                                        for item in items.iter() {
                                             if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
                                                 if let Some(t) = total.checked_add(*n) {
                                                     total = t;
@@ -4769,7 +4769,7 @@ impl VirtualMachine {
                                     { let _ = spop!(frame); } // name
                                     if let PyObjectPayload::Set(set) = &receiver.payload {
                                         let hk = match &item.payload {
-                                            PyObjectPayload::Str(s) => Some(HashableKey::str_key(s.clone())),
+                                            PyObjectPayload::Str(s) => Some(HashableKey::str_key((**s).clone())),
                                             PyObjectPayload::Int(i) => Some(HashableKey::Int(i.clone())),
                                             PyObjectPayload::Bool(b) => Some(HashableKey::Bool(*b)),
                                             _ => None,
@@ -5151,7 +5151,7 @@ impl VirtualMachine {
                             }
                             // dict[str] = val — lock-free, zero-clone value
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                let hk = HashableKey::str_key(s.clone());
+                                let hk = HashableKey::str_key((**s).clone());
                                 let map_ptr = map.data_ptr();
                                 unsafe {
                                     let v = std::ptr::read(frame.stack.as_ptr().add(len - 3));
@@ -5213,7 +5213,7 @@ impl VirtualMachine {
                             Some(HashableKey::Int(PyInt::Small(*n)))
                         }
                         PyObjectPayload::Str(s) => {
-                            Some(HashableKey::str_key(s.clone()))
+                            Some(HashableKey::str_key((**s).clone()))
                         }
                         PyObjectPayload::Bool(b) => {
                             Some(HashableKey::Int(PyInt::Small(*b as i64)))
@@ -5249,7 +5249,7 @@ impl VirtualMachine {
                             Some(HashableKey::Int(PyInt::Small(*n)))
                         }
                         PyObjectPayload::Str(s) => {
-                            Some(HashableKey::str_key(s.clone()))
+                            Some(HashableKey::str_key((**s).clone()))
                         }
                         PyObjectPayload::Bool(b) => {
                             Some(HashableKey::Int(PyInt::Small(*b as i64)))
@@ -6117,7 +6117,7 @@ impl VirtualMachine {
                             }
                             // dict[str] = val
                             (PyObjectPayload::Dict(map), PyObjectPayload::Str(s)) => {
-                                let hk = HashableKey::str_key(s.clone());
+                                let hk = HashableKey::str_key((**s).clone());
                                 unsafe { &mut *map.data_ptr() }.insert(hk, val.clone());
                                 true
                             }
@@ -6547,13 +6547,13 @@ impl VirtualMachine {
                     _ => None,
                 }
             }
-            PyObjectPayload::RangeIter { current, stop, step } => {
-                let cur = current.get();
-                let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
+            PyObjectPayload::RangeIter(ri) => {
+                let cur = ri.current.get();
+                let done = if ri.step > 0 { cur >= ri.stop } else { cur <= ri.stop };
                 if done {
                     Some(None)
                 } else {
-                    current.set(cur + *step);
+                    ri.current.set(cur + ri.step);
                     Some(Some(PyObject::int(cur)))
                 }
             }

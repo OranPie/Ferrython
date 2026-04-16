@@ -667,7 +667,7 @@ impl VirtualMachine {
                     if !members.is_empty() {
                         let mut ns = IndexMap::new();
                         ns.insert(CompactString::from("__enum__"), PyObject::bool_val(true));
-                        let new_cls = PyObject::class(name_str.clone(), vec![cls.clone()], ns);
+                        let new_cls = PyObject::class((**name_str).clone(), vec![cls.clone()], ns);
                         if let PyObjectPayload::Class(ref new_cd) = new_cls.payload {
                             let mut new_ns = new_cd.namespace.write();
                             for (member_name, member_value) in &members {
@@ -1877,7 +1877,7 @@ impl VirtualMachine {
                                     if pos_args.len() >= 2 {
                                         let exc_list = match &pos_args[1].payload {
                                             PyObjectPayload::List(_) => pos_args[1].clone(),
-                                            PyObjectPayload::Tuple(items) => PyObject::list(items.clone()),
+                                            PyObjectPayload::Tuple(items) => PyObject::list((**items).clone()),
                                             _ => PyObject::list(vec![pos_args[1].clone()]),
                                         };
                                         a.insert(CompactString::from("exceptions"), exc_list);
@@ -2134,9 +2134,9 @@ impl VirtualMachine {
                                     total = total.add(item)?;
                                 }
                             }
-                            PyObjectPayload::Range { start, stop, step } => {
+                            PyObjectPayload::Range(rd) => {
                                 // Arithmetic sum for integer ranges — O(1) when total is int
-                                let (s, e, st) = (*start, *stop, *step);
+                                let (s, e, st) = (rd.start, rd.stop, rd.step);
                                 if st > 0 {
                                     let mut c = s;
                                     while c < e { total = total.add(&PyObject::int(c))?; c += st; }
@@ -2145,10 +2145,10 @@ impl VirtualMachine {
                                     while c > e { total = total.add(&PyObject::int(c))?; c += st; }
                                 }
                             }
-                            PyObjectPayload::RangeIter { current, stop, step, .. } => {
-                                let mut c = current.get();
-                                let s = *stop;
-                                let st = *step;
+                            PyObjectPayload::RangeIter(ri) => {
+                                let mut c = ri.current.get();
+                                let s = ri.stop;
+                                let st = ri.step;
                                 if st > 0 {
                                     while c < s { total = total.add(&PyObject::int(c))?; c += st; }
                                 } else if st < 0 {
@@ -2993,7 +2993,7 @@ impl VirtualMachine {
                 }
 
                 // ── Iterator protocol dispatch ──
-                if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter { .. } | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } = &bbm.receiver.payload {
+                if let PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } = &bbm.receiver.payload {
                     match bbm.method_name.as_str() {
                         "__next__" => {
                             match crate::builtins::iter_advance(&bbm.receiver)? {
@@ -3075,8 +3075,8 @@ impl VirtualMachine {
                     }
                 }
                 // Range methods
-                if let PyObjectPayload::Range { start, stop, step } = &bbm.receiver.payload {
-                    let (rs, re, rst) = (*start, *stop, *step);
+                if let PyObjectPayload::Range(rd) = &bbm.receiver.payload {
+                    let (rs, re, rst) = (rd.start, rd.stop, rd.step);
                     match bbm.method_name.as_str() {
                         "count" => {
                             if args.is_empty() { return Err(PyException::type_error("count() takes exactly one argument")); }
@@ -3299,11 +3299,10 @@ impl VirtualMachine {
                 let msg: CompactString = if args.is_empty() {
                     CompactString::default()
                 } else if let PyObjectPayload::Str(s) = &args[0].payload {
-                    s.clone()
+                    (**s).clone()
                 } else {
                     CompactString::from(args[0].py_to_string())
                 };
-                // Only clone args for exception types that need post-processing;
                 // common types (ValueError, TypeError, etc.) just move args in.
                 let needs_post = matches!(kind, ExceptionKind::ExceptionGroup | ExceptionKind::BaseExceptionGroup)
                     || (kind.is_subclass_of(&ExceptionKind::OSError) && args.len() >= 2)
@@ -3320,7 +3319,7 @@ impl VirtualMachine {
                             if args.len() >= 2 {
                                 let exc_list = match &args[1].payload {
                                     PyObjectPayload::List(_) => args[1].clone(),
-                                    PyObjectPayload::Tuple(items) => PyObject::list(items.clone()),
+                                    PyObjectPayload::Tuple(items) => PyObject::list((**items).clone()),
                                     _ => PyObject::list(vec![args[1].clone()]),
                                 };
                                 a.insert(CompactString::from("exceptions"), exc_list);

@@ -186,8 +186,8 @@ pub(super) fn file_write(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     if s.mode.contains('b') {
         // Binary write: store raw bytes
         let data = match &args[1].payload {
-            PyObjectPayload::Bytes(b) => b.clone(),
-            PyObjectPayload::ByteArray(b) => b.clone(),
+            PyObjectPayload::Bytes(b) => (**b).clone(),
+            PyObjectPayload::ByteArray(b) => (**b).clone(),
             _ => args[1].py_to_string().into_bytes(),
         };
         let len = data.len();
@@ -210,7 +210,7 @@ pub(super) fn file_writelines(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let mut s = state.write();
     if s.closed { return Err(PyException::value_error("I/O operation on closed file")); }
     let items = args[1].to_list()?;
-    for item in items {
+    for item in items.iter() {
         s.write_buf.push_str(&item.py_to_string());
     }
     Ok(PyObject::none())

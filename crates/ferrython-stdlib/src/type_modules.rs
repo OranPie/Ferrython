@@ -115,7 +115,7 @@ pub fn create_typing_module() -> PyObjectRef {
 
                     // Build __args__ tuple
                     let args_tuple = match &params.payload {
-                        PyObjectPayload::Tuple(items) => PyObject::tuple(items.clone()),
+                        PyObjectPayload::Tuple(items) => PyObject::tuple((**items).clone()),
                         _ => PyObject::tuple(vec![params.clone()]),
                     };
 
@@ -523,7 +523,7 @@ pub fn create_typing_module() -> PyObjectRef {
                     "__getitem__", move |gi_args: &[PyObjectRef]| {
                         let params = if gi_args.is_empty() { PyObject::none() } else { gi_args[0].clone() };
                         let new_at = match &params.payload {
-                            PyObjectPayload::Tuple(items) => PyObject::tuple(items.clone()),
+                            PyObjectPayload::Tuple(items) => PyObject::tuple((**items).clone()),
                             _ => PyObject::tuple(vec![params]),
                         };
                         let c = PyObject::class(CompactString::from("_GenericAlias"), vec![], IndexMap::new());

@@ -1198,7 +1198,7 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         PyObjectPayload::None | PyObjectPayload::Bool(_) | PyObjectPayload::Int(_)
         | PyObjectPayload::Float(_) | PyObjectPayload::Str(_) | PyObjectPayload::Bytes(_)
         | PyObjectPayload::FrozenSet(_) => Ok(obj.clone()),
-        PyObjectPayload::Tuple(items) => Ok(PyObject::tuple(items.clone())),
+        PyObjectPayload::Tuple(items) => Ok(PyObject::tuple((**items).clone())),
         PyObjectPayload::List(items) => Ok(PyObject::list(items.read().clone())),
         PyObjectPayload::Dict(map) => Ok(PyObject::dict(map.read().clone())),
         PyObjectPayload::Set(set) => Ok(PyObject::set(set.read().clone())),

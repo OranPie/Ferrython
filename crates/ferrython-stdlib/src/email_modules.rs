@@ -504,7 +504,7 @@ fn mime_application_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ));
     }
     let data = match &args[0].payload {
-        PyObjectPayload::Bytes(b) => b.clone(),
+        PyObjectPayload::Bytes(b) => (**b).clone(),
         PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
         _ => args[0].py_to_string().into_bytes(),
     };
@@ -574,7 +574,7 @@ fn mime_image_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
         ));
     }
     let data = match &args[0].payload {
-        PyObjectPayload::Bytes(b) => b.clone(),
+        PyObjectPayload::Bytes(b) => (**b).clone(),
         _ => args[0].py_to_string().into_bytes(),
     };
     let subtype = if args.len() > 1 {

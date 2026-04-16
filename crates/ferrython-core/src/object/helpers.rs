@@ -127,7 +127,7 @@ pub fn get_builtin_base_type_name(class: &PyObjectRef) -> Option<CompactString> 
                     if matches!(name.as_str(), "int" | "str" | "float" | "list" | "tuple"
                         | "set" | "frozenset" | "bytes" | "bytearray")
                     {
-                        return Some(name.clone());
+                        return Some((**name).clone());
                     }
                 }
                 PyObjectPayload::Class(_) => {
@@ -305,16 +305,16 @@ pub fn partial_cmp_objects(a: &PyObjectRef, b: &PyObjectRef) -> Option<std::cmp:
         (PyObjectPayload::ExceptionType(a), PyObjectPayload::ExceptionType(b)) => {
             if a == b { Some(std::cmp::Ordering::Equal) } else { None }
         }
-        (PyObjectPayload::Range { start: s1, stop: e1, step: st1 }, PyObjectPayload::Range { start: s2, stop: e2, step: st2 }) => {
+        (PyObjectPayload::Range(r1), PyObjectPayload::Range(r2)) => {
             // CPython: ranges are equal if they produce the same sequence
             // Simple shortcut: normalize empty ranges
-            let len1 = range_len(*s1, *e1, *st1);
-            let len2 = range_len(*s2, *e2, *st2);
+            let len1 = range_len(r1.start, r1.stop, r1.step);
+            let len2 = range_len(r2.start, r2.stop, r2.step);
             if len1 == 0 && len2 == 0 { return Some(std::cmp::Ordering::Equal); }
             if len1 != len2 { return None; }
-            if *s1 != *s2 { return None; }
+            if r1.start != r2.start { return None; }
             if len1 == 1 { return Some(std::cmp::Ordering::Equal); }
-            if *st1 == *st2 { Some(std::cmp::Ordering::Equal) } else { None }
+            if r1.step == r2.step { Some(std::cmp::Ordering::Equal) } else { None }
         }
         (PyObjectPayload::InstanceDict(a), PyObjectPayload::InstanceDict(b)) => {
             let a = a.read(); let b = b.read();
@@ -964,20 +964,20 @@ pub(super) fn get_slice_impl(
             }
             Ok(PyObject::bytes(result))
         }
-        PyObjectPayload::Range { start: rstart, stop: rstop, step: rstep } => {
-            let len = if *rstep > 0 && *rstart < *rstop {
-                (rstop - rstart + rstep - 1) / rstep
-            } else if *rstep < 0 && *rstart > *rstop {
-                (rstart - rstop - rstep - 1) / (-rstep)
+        PyObjectPayload::Range(rd) => {
+            let len = if rd.step > 0 && rd.start < rd.stop {
+                (rd.stop - rd.start + rd.step - 1) / rd.step
+            } else if rd.step < 0 && rd.start > rd.stop {
+                (rd.start - rd.stop - rd.step - 1) / (-rd.step)
             } else { 0 };
             let (sv, ev, slice_step) = resolve_slice(start, stop, step, len);
-            let _new_step = rstep * slice_step;
+            let _new_step = rd.step * slice_step;
             let mut result = Vec::new();
             let mut i = sv;
             if slice_step > 0 {
-                while i < ev && i < len { result.push(PyObject::int(rstart + i * rstep)); i += slice_step; }
+                while i < ev && i < len { result.push(PyObject::int(rd.start + i * rd.step)); i += slice_step; }
             } else if slice_step < 0 {
-                while i > ev && i >= 0 { result.push(PyObject::int(rstart + i * rstep)); i += slice_step; }
+                while i > ev && i >= 0 { result.push(PyObject::int(rd.start + i * rd.step)); i += slice_step; }
             }
             Ok(PyObject::list(result))
         }

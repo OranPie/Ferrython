@@ -82,7 +82,7 @@ pub fn create_threading_module() -> PyObjectRef {
             let thread_args = inst.attrs.read().get("_args").cloned().unwrap_or_else(|| PyObject::tuple(vec![]));
             if !matches!(&target.payload, PyObjectPayload::None) {
                 let call_args: Vec<PyObjectRef> = match &thread_args.payload {
-                    PyObjectPayload::Tuple(items) => items.clone(),
+                    PyObjectPayload::Tuple(items) => (**items).clone(),
                     PyObjectPayload::List(items) => items.read().clone(),
                     _ => vec![],
                 };
@@ -275,7 +275,7 @@ pub fn create_threading_module() -> PyObjectRef {
             if !matches!(&target.payload, PyObjectPayload::None) {
                 let thread_args = inst.attrs.read().get("_args").cloned().unwrap_or_else(|| PyObject::tuple(vec![]));
                 let call_args: Vec<PyObjectRef> = match &thread_args.payload {
-                    PyObjectPayload::Tuple(items) => items.clone(),
+                    PyObjectPayload::Tuple(items) => (**items).clone(),
                     PyObjectPayload::List(items) => items.read().clone(),
                     _ => vec![],
                 };
@@ -753,7 +753,7 @@ pub fn create_threading_module() -> PyObjectRef {
                     *a1.write() = true;
                     if !matches!(&tgt.payload, PyObjectPayload::None) {
                         let call_args: Vec<PyObjectRef> = match &targs.payload {
-                            PyObjectPayload::Tuple(items) => items.clone(),
+                            PyObjectPayload::Tuple(items) => (**items).clone(),
                             PyObjectPayload::List(items) => items.read().clone(),
                             _ => vec![],
                         };
@@ -1881,7 +1881,7 @@ pub fn create_multiprocessing_module() -> PyObjectRef {
                     *a1.write() = true;
                     if !matches!(&tgt.payload, PyObjectPayload::None) {
                         let call_args: Vec<PyObjectRef> = match &targs.payload {
-                            PyObjectPayload::Tuple(items) => items.clone(),
+                            PyObjectPayload::Tuple(items) => (**items).clone(),
                             PyObjectPayload::List(items) => items.read().clone(),
                             _ => vec![],
                         };

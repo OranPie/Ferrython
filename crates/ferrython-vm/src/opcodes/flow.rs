@@ -587,7 +587,7 @@ impl VirtualMachine {
                     PyObjectPayload::Tuple(items) => {
                         items.iter().map(|item| {
                             match &item.payload {
-                                PyObjectPayload::Str(s) => s.clone(),
+                                PyObjectPayload::Str(s) => (**s).clone(),
                                 _ => CompactString::from(item.py_to_string()),
                             }
                         }).collect()

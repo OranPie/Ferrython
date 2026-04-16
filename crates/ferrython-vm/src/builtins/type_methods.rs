@@ -1791,7 +1791,7 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
             // Extract items from list, tuple, or other sequence types
             let items: Vec<PyObjectRef> = match &args[0].payload {
                 PyObjectPayload::List(items) => items.read().clone(),
-                PyObjectPayload::Tuple(items) => items.clone(),
+                PyObjectPayload::Tuple(items) => (**items).clone(),
                 PyObjectPayload::FrozenSet(items) => items.values().cloned().collect(),
                 PyObjectPayload::Set(items) => items.read().values().cloned().collect(),
                 _ => return Err(PyException::type_error("can only join an iterable")),
@@ -2009,7 +2009,7 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                 if let Some(pos) = b.windows(sep.len()).position(|w| w == sep.as_slice()) {
                     Ok(PyObject::tuple(vec![
                         PyObject::bytes(b[..pos].to_vec()),
-                        PyObject::bytes(sep.clone()),
+                        PyObject::bytes((**sep).clone()),
                         PyObject::bytes(b[pos + sep.len()..].to_vec()),
                     ]))
                 } else {
@@ -2029,7 +2029,7 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
                 if let Some(pos) = b.windows(sep.len()).rposition(|w| w == sep.as_slice()) {
                     Ok(PyObject::tuple(vec![
                         PyObject::bytes(b[..pos].to_vec()),
-                        PyObject::bytes(sep.clone()),
+                        PyObject::bytes((**sep).clone()),
                         PyObject::bytes(b[pos + sep.len()..].to_vec()),
                     ]))
                 } else {
@@ -2105,13 +2105,13 @@ pub(super) fn call_bytes_method(b: &[u8], method: &str, args: &[PyObjectRef]) ->
         "translate" => {
             if args.is_empty() { return Err(PyException::type_error("translate requires a table argument")); }
             let table = match &args[0].payload {
-                PyObjectPayload::Bytes(t) | PyObjectPayload::ByteArray(t) => t.clone(),
+                PyObjectPayload::Bytes(t) | PyObjectPayload::ByteArray(t) => (**t).clone(),
                 PyObjectPayload::None => vec![],
                 _ => return Err(PyException::type_error("a bytes-like object or None is required")),
             };
             let delete: Vec<u8> = if args.len() > 1 {
                 match &args[1].payload {
-                    PyObjectPayload::Bytes(d) | PyObjectPayload::ByteArray(d) => d.clone(),
+                    PyObjectPayload::Bytes(d) | PyObjectPayload::ByteArray(d) => (**d).clone(),
                     _ => vec![],
                 }
             } else { vec![] };
@@ -2198,7 +2198,7 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
                 // Go from slice ptr back to Vec ptr (payload stores Vec<u8>)
                 let vec_ptr = &receiver.payload as *const PyObjectPayload;
                 if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
-                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    let vp = &**v as *const Vec<u8> as *mut Vec<u8>;
                     (*vp).push(byte_val);
                 }
             }
@@ -2207,7 +2207,7 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
         "extend" => {
             if args.is_empty() { return Err(PyException::type_error("extend() takes exactly one argument")); }
             let new_bytes: Vec<u8> = match &args[0].payload {
-                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => b.clone(),
+                PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) => (**b).clone(),
                 PyObjectPayload::List(items) => {
                     items.read().iter().map(|i| i.to_int().unwrap_or(0) as u8).collect()
                 }
@@ -2216,7 +2216,7 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
             unsafe {
                 let vec_ptr = &receiver.payload as *const PyObjectPayload;
                 if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
-                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    let vp = &**v as *const Vec<u8> as *mut Vec<u8>;
                     (*vp).extend_from_slice(&new_bytes);
                 }
             }
@@ -2226,7 +2226,7 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
             unsafe {
                 let vec_ptr = &receiver.payload as *const PyObjectPayload;
                 if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
-                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    let vp = &**v as *const Vec<u8> as *mut Vec<u8>;
                     if let Some(idx) = if args.is_empty() { Some((*vp).len().wrapping_sub(1)) } else { Some(args[0].to_int()? as usize) } {
                         if idx < (*vp).len() {
                             let val = (*vp).remove(idx);
@@ -2245,7 +2245,7 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
             unsafe {
                 let vec_ptr = &receiver.payload as *const PyObjectPayload;
                 if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
-                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    let vp = &**v as *const Vec<u8> as *mut Vec<u8>;
                     let len = (*vp).len() as i64;
                     let actual = if idx < 0 { (len + idx).max(0) as usize } else { (idx as usize).min((*vp).len()) };
                     (*vp).insert(actual, byte_val);
@@ -2257,7 +2257,7 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
             unsafe {
                 let vec_ptr = &receiver.payload as *const PyObjectPayload;
                 if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
-                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    let vp = &**v as *const Vec<u8> as *mut Vec<u8>;
                     (*vp).clear();
                 }
             }
@@ -2267,7 +2267,7 @@ pub(super) fn call_bytearray_method(receiver: &PyObjectRef, b: &[u8], method: &s
             unsafe {
                 let vec_ptr = &receiver.payload as *const PyObjectPayload;
                 if let PyObjectPayload::ByteArray(ref v) = *vec_ptr {
-                    let vp = v as *const Vec<u8> as *mut Vec<u8>;
+                    let vp = &**v as *const Vec<u8> as *mut Vec<u8>;
                     (*vp).reverse();
                 }
             }

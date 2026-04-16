@@ -406,11 +406,11 @@ impl HashableKey {
             PyObjectPayload::Bool(b) => Ok(HashableKey::Int(PyInt::Small(*b as i64))),
             PyObjectPayload::Int(n) => Ok(HashableKey::Int(n.clone())),
             PyObjectPayload::Float(f) => Ok(HashableKey::Float(OrderedFloat(*f))),
-            PyObjectPayload::Str(s) => Ok(HashableKey::str_key(s.clone())),
-            PyObjectPayload::Bytes(b) => Ok(HashableKey::Bytes(Box::new(b.clone()))),
+            PyObjectPayload::Str(s) => Ok(HashableKey::str_key((**s).clone())),
+            PyObjectPayload::Bytes(b) => Ok(HashableKey::Bytes(Box::new((**b).clone()))),
             PyObjectPayload::Tuple(items) => {
                 let mut keys = Vec::with_capacity(items.len());
-                for item in items { keys.push(HashableKey::from_object(item)?); }
+                for item in items.iter() { keys.push(HashableKey::from_object(item)?); }
                 Ok(HashableKey::Tuple(Box::new(keys)))
             }
             PyObjectPayload::FrozenSet(m) => {

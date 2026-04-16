@@ -181,7 +181,7 @@ impl VirtualMachine {
                 fast_int_op!(a, b, checked_add, +);
                 // Also fast-path str + str
                 if let (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) = (&a.payload, &b.payload) {
-                    let mut s = x.clone();
+                    let mut s = (**x).clone();
                     s.push_str(y);
                     self.vm_push(PyObject::str_val(s));
                     return Ok(None);
@@ -701,7 +701,7 @@ impl VirtualMachine {
                             let len = bytes.len() as i64;
                             let step_val = sd.step.as_ref().map(|v| v.as_int().unwrap_or(1)).unwrap_or(1);
                             let new_bytes: Vec<u8> = if let PyObjectPayload::Bytes(b) | PyObjectPayload::ByteArray(b) = &value.payload {
-                                b.clone()
+                                (**b).clone()
                             } else if let Some(n) = value.as_int() {
                                 vec![0u8; n.max(0) as usize]
                             } else {
@@ -964,7 +964,7 @@ impl VirtualMachine {
     /// __repr__/__str__ dunders that need VM context.
     fn vm_string_percent_format(&mut self, fmt: &str, args: &PyObjectRef) -> Result<PyObjectRef, PyException> {
         let arg_list: Vec<PyObjectRef> = match &args.payload {
-            PyObjectPayload::Tuple(items) => items.clone(),
+            PyObjectPayload::Tuple(items) => (**items).clone(),
             _ => vec![args.clone()],
         };
 
@@ -1106,7 +1106,7 @@ impl VirtualMachine {
     /// Bytes % formatting (PEP 461)
     fn vm_bytes_percent_format(&mut self, fmt: &[u8], args: &PyObjectRef) -> Result<PyObjectRef, PyException> {
         let arg_list: Vec<PyObjectRef> = match &args.payload {
-            PyObjectPayload::Tuple(items) => items.clone(),
+            PyObjectPayload::Tuple(items) => (**items).clone(),
             _ => vec![args.clone()],
         };
 
@@ -1163,7 +1163,7 @@ impl VirtualMachine {
             let formatted: Vec<u8> = match spec {
                 b's' | b'b' => {
                     match &arg.payload {
-                        PyObjectPayload::Bytes(b) => b.clone(),
+                        PyObjectPayload::Bytes(b) => (**b).clone(),
                         PyObjectPayload::Str(s) => s.as_bytes().to_vec(),
                         _ => {
                             let s = self.vm_str(arg)?;

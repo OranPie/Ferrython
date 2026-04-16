@@ -347,12 +347,12 @@ pub fn iter_advance(iter_obj: &PyObjectRef) -> PyResult<Option<(PyObjectRef, PyO
                 }
             }
         }
-        PyObjectPayload::RangeIter { current, stop, step } => {
-            let cur = current.get();
-            let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
+        PyObjectPayload::RangeIter(ri) => {
+            let cur = ri.current.get();
+            let done = if ri.step > 0 { cur >= ri.stop } else { cur <= ri.stop };
             if done { Ok(None) } else {
                 let v = PyObject::int(cur);
-                current.set(cur + *step);
+                ri.current.set(cur + ri.step);
                 Ok(Some((iter_obj.clone(), v)))
             }
         }
@@ -479,12 +479,12 @@ pub fn iter_next_value(iter_obj: &PyObjectRef) -> PyResult<Option<PyObjectRef>> 
                 _ => Err(PyException::type_error("lazy iterator requires VM-level iteration")),
             }
         }
-        PyObjectPayload::RangeIter { current, stop, step } => {
-            let cur = current.get();
-            let done = if *step > 0 { cur >= *stop } else { cur <= *stop };
+        PyObjectPayload::RangeIter(ri) => {
+            let cur = ri.current.get();
+            let done = if ri.step > 0 { cur >= ri.stop } else { cur <= ri.stop };
             if done { Ok(None) } else {
                 let v = PyObject::int(cur);
-                current.set(cur + *step);
+                ri.current.set(cur + ri.step);
                 Ok(Some(v))
             }
         }

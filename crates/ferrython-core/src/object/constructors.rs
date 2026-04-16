@@ -260,9 +260,9 @@ static FLOAT_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immo
 static FLOAT_NEG_ONE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Float(-1.0) }));
 
 // ── Empty collection singletons ──
-static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Tuple(vec![]) }));
-static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(CompactString::const_new("")) }));
-static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bytes(vec![]) }));
+static EMPTY_TUPLE: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Tuple(Box::new(vec![])) }));
+static EMPTY_STR: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Str(Box::new(CompactString::const_new(""))) }));
+static EMPTY_BYTES: LazyLock<PyObjectRef> = LazyLock::new(|| PyObjectRef::new_immortal(PyObject { payload: PyObjectPayload::Bytes(Box::new(vec![])) }));
 
 // ── GC Tracking for cycle-capable objects (Instance, Dict, List) ──
 // Static UnsafeCell: no TLS overhead — single-threaded GIL interpreter.
@@ -503,15 +503,15 @@ impl PyObject {
     #[inline]
     pub fn str_val(v: CompactString) -> PyObjectRef {
         if v.is_empty() { return EMPTY_STR.clone(); }
-        Self::wrap_leaf(PyObjectPayload::Str(v))
+        Self::wrap_leaf(PyObjectPayload::Str(Box::new(v)))
     }
     pub fn bytes(v: Vec<u8>) -> PyObjectRef {
         if v.is_empty() { return EMPTY_BYTES.clone(); }
-        Self::wrap_leaf(PyObjectPayload::Bytes(v))
+        Self::wrap_leaf(PyObjectPayload::Bytes(Box::new(v)))
     }
-    pub fn bytearray(v: Vec<u8>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::ByteArray(v)) }
+    pub fn bytearray(v: Vec<u8>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::ByteArray(Box::new(v))) }
     pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef {
-        let obj = Self::wrap(PyObjectPayload::List(PyCell::new(items)));
+        let obj = Self::wrap(PyObjectPayload::List(Box::new(PyCell::new(items))));
         track_object(&obj);
         obj
     }
@@ -519,11 +519,11 @@ impl PyObject {
     /// since leaf-only lists cannot form reference cycles.
     #[inline]
     pub fn list_leaf(items: Vec<PyObjectRef>) -> PyObjectRef {
-        Self::wrap_leaf(PyObjectPayload::List(PyCell::new(items)))
+        Self::wrap_leaf(PyObjectPayload::List(Box::new(PyCell::new(items))))
     }
     pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef {
         if items.is_empty() { return EMPTY_TUPLE.clone(); }
-        Self::wrap_leaf(PyObjectPayload::Tuple(items))
+        Self::wrap_leaf(PyObjectPayload::Tuple(Box::new(items)))
     }
     pub fn set<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
         if items.is_empty() {
@@ -568,8 +568,8 @@ impl PyObject {
         obj
     }
     pub fn function(func: PyFunction) -> PyObjectRef { Self::wrap(PyObjectPayload::Function(Box::new(func))) }
-    pub fn builtin_function(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinFunction(name)) }
-    pub fn builtin_type(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinType(name)) }
+    pub fn builtin_function(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinFunction(Box::new(name))) }
+    pub fn builtin_type(name: CompactString) -> PyObjectRef { Self::wrap(PyObjectPayload::BuiltinType(Box::new(name))) }
     pub fn code(code: ferrython_bytecode::CodeObject) -> PyObjectRef { Self::wrap(PyObjectPayload::Code(std::rc::Rc::new(code))) }
     pub fn class(name: CompactString, bases: Vec<PyObjectRef>, namespace: IndexMap<CompactString, PyObjectRef>) -> PyObjectRef {
         let fx_ns: FxAttrMap = namespace.into_iter().collect();
@@ -694,7 +694,7 @@ impl PyObject {
         Self::wrap(PyObjectPayload::FrozenSet(Box::new(fx)))
     }
     pub fn range(start: i64, stop: i64, step: i64) -> PyObjectRef {
-        Self::wrap(PyObjectPayload::Range { start, stop, step })
+        Self::wrap(PyObjectPayload::Range(Box::new(RangeData { start, stop, step })))
     }
     pub fn cell(cell: Rc<PyCell<Option<PyObjectRef>>>) -> PyObjectRef {
         Self::wrap(PyObjectPayload::Cell(cell))
