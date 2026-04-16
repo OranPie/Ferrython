@@ -5643,10 +5643,17 @@ impl VirtualMachine {
                         let idx = instr.arg as usize;
                         let name = frame.code.names[idx].clone();
                         let value = spop!(frame);
+                        // Update cache slot in-place so subsequent LoadName hits
+                        if frame.global_cache.is_some() {
+                            let cache = std::rc::Rc::make_mut(frame.global_cache.as_mut().unwrap());
+                            if idx < cache.len() {
+                                cache[idx] = Some(value.clone());
+                            }
+                        }
                         frame.globals.write().insert(name, value);
                         crate::frame::bump_globals_version();
-                        // Invalidate global cache so next LoadName/LoadGlobal rebuilds
-                        frame.global_cache_version = 0;
+                        // Sync cache version to new globals version (cache is up-to-date)
+                        frame.global_cache_version = crate::frame::globals_version();
                         hot_ok!(profiling, self.profiler, instr.op)
                     } else {
                         self.execute_one(instr)

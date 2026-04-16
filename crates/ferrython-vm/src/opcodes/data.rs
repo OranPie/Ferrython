@@ -80,6 +80,12 @@ impl VirtualMachine {
                         // Populate global cache so inline fast path can hit next time
                         if frame.scope_kind == ScopeKind::Module {
                             let ver = crate::frame::globals_version();
+                            if frame.global_cache_version != ver && frame.global_cache.is_some() {
+                                // Version mismatch — clear stale entries first
+                                let cache = Rc::make_mut(frame.global_cache.as_mut().unwrap());
+                                for slot in cache.iter_mut() { *slot = None; }
+                                frame.global_cache_version = ver;
+                            }
                             let cache = frame.global_cache.get_or_insert_with(|| {
                                 Rc::new(vec![None; frame.code.names.len()])
                             });
@@ -94,12 +100,21 @@ impl VirtualMachine {
                 }
             }
             Opcode::StoreName => {
-                let name = frame.code.names[instr.arg as usize].clone();
+                let idx = instr.arg as usize;
+                let name = frame.code.names[idx].clone();
                 let value = frame.pop();
                 match frame.scope_kind {
                     ScopeKind::Module => {
+                        // Update cache slot in-place before inserting into globals
+                        if frame.global_cache.is_some() {
+                            let cache = Rc::make_mut(frame.global_cache.as_mut().unwrap());
+                            if idx < cache.len() {
+                                cache[idx] = Some(value.clone());
+                            }
+                        }
                         frame.globals.write().insert(name, value);
                         crate::frame::bump_globals_version();
+                        frame.global_cache_version = crate::frame::globals_version();
                     }
                     ScopeKind::Class => { frame.local_names_insert(name, value); }
                     ScopeKind::Function => { frame.local_names_insert(name, value); }
@@ -237,10 +252,18 @@ impl VirtualMachine {
                 frame.push(resolved);
             }
             Opcode::StoreGlobal => {
-                let name = frame.code.names[instr.arg as usize].clone();
+                let idx = instr.arg as usize;
+                let name = frame.code.names[idx].clone();
                 let value = frame.pop();
+                if frame.global_cache.is_some() {
+                    let cache = Rc::make_mut(frame.global_cache.as_mut().unwrap());
+                    if idx < cache.len() {
+                        cache[idx] = Some(value.clone());
+                    }
+                }
                 frame.globals.write().insert(name, value);
                 crate::frame::bump_globals_version();
+                frame.global_cache_version = crate::frame::globals_version();
             }
             Opcode::DeleteGlobal => {
                 let name = &frame.code.names[instr.arg as usize];
