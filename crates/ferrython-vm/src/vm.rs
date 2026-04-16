@@ -4990,27 +4990,30 @@ impl VirtualMachine {
                         // will detect CallMethodPopTop and discard the return value
                         let cm_instr = ferrython_bytecode::Instruction::new(Opcode::CallMethod, instr.arg);
                         let slot_0 = sget!(frame, base_idx);
-                        let fast_data = if !matches!(&slot_0.payload, PyObjectPayload::None) {
+                        let is_simple_method = if !matches!(&slot_0.payload, PyObjectPayload::None) {
                             if let PyObjectPayload::Function(pf) = &slot_0.payload {
-                                if pf.is_simple && pf.code.arg_count as usize == arg_count + 1 {
-                                    Some((Rc::clone(&pf.code), pf.globals.clone(), Rc::clone(&pf.constant_cache)))
-                                } else { None }
-                            } else { None }
-                        } else { None };
-                        if let Some((code, globals, cc)) = fast_data {
-                            // Inline frame creation (same as CallMethod)
-                            let mut new_frame = Frame::new_from_pool(
-                                code, globals, self.builtins.clone(), cc, &mut self.frame_pool,
-                            );
+                                pf.is_simple && pf.code.arg_count as usize == arg_count + 1
+                            } else { false }
+                        } else { false };
+                        if is_simple_method {
+                            // Inline frame creation using borrowed path (avoids Rc clones)
+                            let method_idx = frame.stack.len() - arg_count - 2;
                             let arg_start = frame.stack.len() - arg_count;
+                            let mut new_frame = unsafe {
+                                let method_obj: PyObjectRef = std::ptr::read(frame.stack.as_ptr().add(method_idx));
+                                let pf_ptr = match &method_obj.payload {
+                                    PyObjectPayload::Function(pf) => &**pf as *const ferrython_core::types::PyFunction,
+                                    _ => std::hint::unreachable_unchecked(),
+                                };
+                                Frame::new_borrowed(&*pf_ptr, method_obj, &self.builtins, &mut self.frame_pool)
+                            };
                             unsafe {
                                 let base = frame.stack.as_ptr();
                                 for ii in 0..arg_count {
                                     new_frame.locals[ii + 1] = Some(std::ptr::read(base.add(arg_start + ii)));
                                 }
                                 new_frame.locals[0] = Some(std::ptr::read(base.add(arg_start - 1)));
-                                let _method = std::ptr::read(base.add(arg_start - 2));
-                                frame.stack.set_len(arg_start - 2);
+                                frame.stack.set_len(method_idx);
                             }
                             if Rc::ptr_eq(&frame.code, &new_frame.code) {
                                 if let Some(ref cache) = frame.global_cache {

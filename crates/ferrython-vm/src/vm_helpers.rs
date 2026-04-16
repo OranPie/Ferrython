@@ -1844,7 +1844,18 @@ impl VirtualMachine {
         // If first is not an Instance, likely all are homogeneous primitives.
         let first_is_instance = matches!(&items[0].payload, PyObjectPayload::Instance(_));
         if !first_is_instance {
-            // Use sort_unstable for primitives — faster (no allocation for merge buffer)
+            // Homogeneous small-int: extract i64, sort natively, skip per-comparison matching
+            if matches!(&items[0].payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))) {
+                let all_small = items.iter().all(|x| matches!(&x.payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))));
+                if all_small {
+                    items.sort_unstable_by(|a, b| {
+                        let av = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &a.payload { *v } else { 0 };
+                        let bv = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &b.payload { *v } else { 0 };
+                        av.cmp(&bv)
+                    });
+                    return Ok(());
+                }
+            }
             items.sort_unstable_by(|a, b| {
                 builtins::partial_cmp_for_sort(a, b).unwrap_or(std::cmp::Ordering::Equal)
             });

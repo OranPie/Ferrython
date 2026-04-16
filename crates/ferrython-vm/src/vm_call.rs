@@ -513,14 +513,44 @@ impl VirtualMachine {
                     }
                 };
                 if let Some(init_fn) = init_fn {
-                    // Prepend instance to pos_args in-place (avoids new Vec allocation)
-                    pos_args.insert(0, instance.clone());
-                    let init_result = self.call_object(init_fn, pos_args)?;
-                    if !matches!(&init_result.payload, PyObjectPayload::None) {
-                        return Err(PyException::type_error(
-                            "__init__() should return None, not '".to_string()
-                                + init_result.type_name() + "'"
-                        ));
+                    // Fast path: simple Python function __init__ — inline frame creation
+                    let total_args = pos_args.len() + 1; // +1 for self
+                    let is_simple_init = if let PyObjectPayload::Function(pf) = &init_fn.payload {
+                        pf.is_simple && pf.code.arg_count as usize == total_args
+                            && pf.closure.is_empty()
+                    } else { false };
+                    if is_simple_init {
+                        let mut new_frame = unsafe {
+                            let pf_ptr = match &init_fn.payload {
+                                PyObjectPayload::Function(pf) => &**pf as *const ferrython_core::types::PyFunction,
+                                _ => std::hint::unreachable_unchecked(),
+                            };
+                            Frame::new_borrowed(&*pf_ptr, init_fn, &self.builtins, &mut self.frame_pool)
+                        };
+                        // locals[0] = self, locals[1..] = pos_args
+                        new_frame.locals[0] = Some(instance.clone());
+                        for (i, arg) in pos_args.into_iter().enumerate() {
+                            new_frame.locals[i + 1] = Some(arg);
+                        }
+                        new_frame.scope_kind = ScopeKind::Function;
+                        new_frame.discard_return = false;
+                        self.call_stack.push(new_frame);
+                        let init_result = self.run_frame()?;
+                        if !matches!(&init_result.payload, PyObjectPayload::None) {
+                            return Err(PyException::type_error(
+                                "__init__() should return None, not '".to_string()
+                                    + init_result.type_name() + "'"
+                            ));
+                        }
+                    } else {
+                        pos_args.insert(0, instance.clone());
+                        let init_result = self.call_object(init_fn, pos_args)?;
+                        if !matches!(&init_result.payload, PyObjectPayload::None) {
+                            return Err(PyException::type_error(
+                                "__init__() should return None, not '".to_string()
+                                    + init_result.type_name() + "'"
+                            ));
+                        }
                     }
                 } else if cd.is_exception_subclass {
                     if let PyObjectPayload::Instance(inst) = &instance.payload {
@@ -1309,9 +1339,13 @@ impl VirtualMachine {
                         }
                         "sorted" => {
                             if !pos_args.is_empty() {
-                                // Clone list contents directly — avoids collect_iterable overhead
+                                // Steal contents if list is temporary (refcount==1) — avoids clone
                                 let mut items_vec = if let PyObjectPayload::List(ref cell) = pos_args[0].payload {
-                                    cell.read().clone()
+                                    if PyObjectRef::strong_count(&pos_args[0]) == 1 {
+                                        std::mem::take(&mut *cell.write())
+                                    } else {
+                                        cell.read().clone()
+                                    }
                                 } else if let PyObjectPayload::Tuple(ref t) = pos_args[0].payload {
                                     t.to_vec()
                                 } else {
@@ -2097,8 +2131,13 @@ impl VirtualMachine {
                     }
                     "sorted" => {
                         if !args.is_empty() {
+                            // Steal contents if list is temporary (refcount==1) — avoids clone
                             let mut items = if let PyObjectPayload::List(ref cell) = args[0].payload {
-                                cell.read().clone()
+                                if PyObjectRef::strong_count(&args[0]) == 1 {
+                                    std::mem::take(&mut *cell.write())
+                                } else {
+                                    cell.read().clone()
+                                }
                             } else if let PyObjectPayload::Tuple(ref t) = args[0].payload {
                                 t.to_vec()
                             } else {
