@@ -307,6 +307,61 @@ pub(super) fn builtin_sum(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     let items_ref: &[PyObjectRef] = match &args[0].payload {
         PyObjectPayload::List(v) => unsafe { &*v.data_ptr() },
         PyObjectPayload::Tuple(v) => v.as_slice(),
+        // O(1) range sum via arithmetic series: n * (start + stop - step) / 2
+        PyObjectPayload::Range(rd) => {
+            if rd.step == 0 {
+                return Err(PyException::value_error("range() arg 3 must not be zero"));
+            }
+            let n = if rd.step > 0 {
+                if rd.start >= rd.stop { 0i64 } else { (rd.stop - rd.start + rd.step - 1) / rd.step }
+            } else {
+                if rd.start <= rd.stop { 0i64 } else { (rd.start - rd.stop - rd.step - 1) / (-rd.step) }
+            };
+            if n == 0 {
+                return Ok(start_val.clone());
+            }
+            // sum = n * start + step * n * (n - 1) / 2
+            let range_sum = (n as i128) * (rd.start as i128)
+                + (rd.step as i128) * (n as i128) * ((n - 1) as i128) / 2;
+            let start_i = match &start_val.payload {
+                PyObjectPayload::Int(PyInt::Small(s)) => *s as i128,
+                PyObjectPayload::Float(f) => return Ok(PyObject::float(*f + range_sum as f64)),
+                _ => {
+                    // General start: fall back to materialization
+                    let items = args[0].to_list()?;
+                    return sum_items(&items, start_val);
+                }
+            };
+            let total = start_i + range_sum;
+            if total >= i64::MIN as i128 && total <= i64::MAX as i128 {
+                return Ok(PyObject::int(total as i64));
+            }
+            use num_bigint::BigInt;
+            return Ok(PyObject::big_int(BigInt::from(total)));
+        }
+        // Iterate RangeIter directly without materializing to Vec
+        PyObjectPayload::RangeIter(ri) => {
+            let mut current = ri.current.get();
+            let mut total: i64 = match &start_val.payload {
+                PyObjectPayload::Int(PyInt::Small(s)) => *s,
+                _ => {
+                    let items = args[0].to_list()?;
+                    return sum_items(&items, start_val);
+                }
+            };
+            if ri.step > 0 {
+                while current < ri.stop {
+                    total = total.wrapping_add(current);
+                    current += ri.step;
+                }
+            } else {
+                while current > ri.stop {
+                    total = total.wrapping_add(current);
+                    current += ri.step;
+                }
+            }
+            return Ok(PyObject::int(total));
+        }
         _ => {
             // Fallback: materialize to list
             let items = args[0].to_list()?;

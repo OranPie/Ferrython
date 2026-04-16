@@ -3846,29 +3846,58 @@ impl VirtualMachine {
                             // Inline sum(iterable) — native i64 accumulation for list/tuple of ints
                             (Some("sum"), 1) | (Some("sum"), 2) => {
                                 let iterable = sget!(frame, func_idx + 1);
-                                let items: Option<&[PyObjectRef]> = match &iterable.payload {
-                                    PyObjectPayload::List(v) => Some(unsafe { &*v.data_ptr() }),
-                                    PyObjectPayload::Tuple(v) => Some(v.as_slice()),
-                                    _ => None,
-                                };
+                                let start_val: i64 = if arg_count == 2 {
+                                    if let PyObjectPayload::Int(PyInt::Small(s)) = &sget!(frame, func_idx + 2).payload {
+                                        *s
+                                    } else { i64::MIN }
+                                } else { 0 };
                                 let mut fast_result: Option<i64> = None;
-                                if let Some(items) = items {
-                                    let start_val: i64 = if arg_count == 2 {
-                                        if let PyObjectPayload::Int(PyInt::Small(s)) = &sget!(frame, func_idx + 2).payload {
-                                            *s
-                                        } else { i64::MIN } // sentinel: fall back
-                                    } else { 0 };
-                                    if start_val != i64::MIN {
-                                        let mut total: i64 = start_val;
-                                        let mut ok = true;
-                                        for item in items.iter() {
-                                            if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
-                                                if let Some(t) = total.checked_add(*n) {
-                                                    total = t;
+                                if start_val != i64::MIN {
+                                    match &iterable.payload {
+                                        PyObjectPayload::List(v) => {
+                                            let items = unsafe { &*v.data_ptr() };
+                                            let mut total: i64 = start_val;
+                                            let mut ok = true;
+                                            for item in items.iter() {
+                                                if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
+                                                    if let Some(t) = total.checked_add(*n) {
+                                                        total = t;
+                                                    } else { ok = false; break; }
                                                 } else { ok = false; break; }
-                                            } else { ok = false; break; }
+                                            }
+                                            if ok { fast_result = Some(total); }
                                         }
-                                        if ok { fast_result = Some(total); }
+                                        PyObjectPayload::Tuple(v) => {
+                                            let mut total: i64 = start_val;
+                                            let mut ok = true;
+                                            for item in v.iter() {
+                                                if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
+                                                    if let Some(t) = total.checked_add(*n) {
+                                                        total = t;
+                                                    } else { ok = false; break; }
+                                                } else { ok = false; break; }
+                                            }
+                                            if ok { fast_result = Some(total); }
+                                        }
+                                        // O(1) range sum via arithmetic series
+                                        PyObjectPayload::Range(rd) => {
+                                            let n = if rd.step > 0 {
+                                                if rd.start >= rd.stop { 0i64 } else { (rd.stop - rd.start + rd.step - 1) / rd.step }
+                                            } else if rd.step < 0 {
+                                                if rd.start <= rd.stop { 0i64 } else { (rd.start - rd.stop - rd.step - 1) / (-rd.step) }
+                                            } else { 0 };
+                                            if n == 0 {
+                                                fast_result = Some(start_val);
+                                            } else {
+                                                let range_sum = (n as i128) * (rd.start as i128)
+                                                    + (rd.step as i128) * (n as i128) * ((n - 1) as i128) / 2;
+                                                let total = start_val as i128 + range_sum;
+                                                if total >= i64::MIN as i128 && total <= i64::MAX as i128 {
+                                                    fast_result = Some(total as i64);
+                                                }
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
                                 if let Some(total) = fast_result {
@@ -4350,29 +4379,55 @@ impl VirtualMachine {
                                 }
                                 (Some("sum"), 1) => {
                                     let arg = sget!(frame, frame.stack.len() - 1);
-                                    let items: Option<&[PyObjectRef]> = match &arg.payload {
-                                        PyObjectPayload::List(v) => Some(unsafe { &*v.data_ptr() }),
-                                        PyObjectPayload::Tuple(v) => Some(v.as_slice()),
-                                        _ => None,
-                                    };
-                                    if let Some(items) = items {
-                                        let mut total: i64 = 0;
-                                        let mut ok = true;
-                                        for item in items.iter() {
-                                            if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
-                                                if let Some(t) = total.checked_add(*n) {
-                                                    total = t;
+                                    let mut fast_result: Option<i64> = None;
+                                    match &arg.payload {
+                                        PyObjectPayload::List(v) => {
+                                            let items = unsafe { &*v.data_ptr() };
+                                            let mut total: i64 = 0;
+                                            let mut ok = true;
+                                            for item in items.iter() {
+                                                if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
+                                                    if let Some(t) = total.checked_add(*n) {
+                                                        total = t;
+                                                    } else { ok = false; break; }
                                                 } else { ok = false; break; }
-                                            } else { ok = false; break; }
+                                            }
+                                            if ok { fast_result = Some(total); }
                                         }
-                                        if ok {
-                                            { let _ = spop!(frame); }
-                                            spush!(frame, PyObject::int(total));
-                                            hot_ok!(profiling, self.profiler, instr.op)
-                                        } else {
-                                            spush!(frame, func_obj.clone());
-                                            self.execute_one(Instruction::new(Opcode::CallFunction, 1))
+                                        PyObjectPayload::Tuple(v) => {
+                                            let mut total: i64 = 0;
+                                            let mut ok = true;
+                                            for item in v.iter() {
+                                                if let PyObjectPayload::Int(PyInt::Small(n)) = &item.payload {
+                                                    if let Some(t) = total.checked_add(*n) {
+                                                        total = t;
+                                                    } else { ok = false; break; }
+                                                } else { ok = false; break; }
+                                            }
+                                            if ok { fast_result = Some(total); }
                                         }
+                                        PyObjectPayload::Range(rd) => {
+                                            let n = if rd.step > 0 {
+                                                if rd.start >= rd.stop { 0i64 } else { (rd.stop - rd.start + rd.step - 1) / rd.step }
+                                            } else if rd.step < 0 {
+                                                if rd.start <= rd.stop { 0i64 } else { (rd.start - rd.stop - rd.step - 1) / (-rd.step) }
+                                            } else { 0 };
+                                            if n == 0 {
+                                                fast_result = Some(0);
+                                            } else {
+                                                let range_sum = (n as i128) * (rd.start as i128)
+                                                    + (rd.step as i128) * (n as i128) * ((n - 1) as i128) / 2;
+                                                if range_sum >= i64::MIN as i128 && range_sum <= i64::MAX as i128 {
+                                                    fast_result = Some(range_sum as i64);
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    if let Some(total) = fast_result {
+                                        { let _ = spop!(frame); }
+                                        spush!(frame, PyObject::int(total));
+                                        hot_ok!(profiling, self.profiler, instr.op)
                                     } else {
                                         spush!(frame, func_obj.clone());
                                         self.execute_one(Instruction::new(Opcode::CallFunction, 1))
