@@ -763,21 +763,36 @@ impl Drop for PyObjectPayload {
         match self {
             PyObjectPayload::Dict(rc) | PyObjectPayload::Set(rc) => {
                 super::constructors::try_recycle_map(rc);
-                // After try_recycle_map, the Rc is either recycled (refcount bumped to
-                // freelist) or not. Either way, normal drop of `self` will decrement the
-                // Rc — if recycled, it goes from 2→1 (freelist holds it); if not, it
-                // goes from N→N-1 (normal behavior).
             }
             PyObjectPayload::ExceptionInstance(data) => {
-                // SAFETY: We're in Drop, so data won't be accessed after this.
-                // ManuallyDrop::take() moves the Box out; ManuallyDrop's destructor
-                // is a no-op, so no double-free occurs.
                 let taken = unsafe { ManuallyDrop::take(data) };
                 super::constructors::recycle_exception_box(taken);
             }
             PyObjectPayload::Instance(data) => {
                 let taken = unsafe { ManuallyDrop::take(data) };
                 super::constructors::recycle_instance_box(taken);
+            }
+            // Recycle boxed allocations to typed freelists — avoids malloc/free
+            // for the hottest allocation paths (str_split creates 6+ Boxes per call).
+            // std::mem::replace swaps variant to None so compiler's drop-glue is no-op.
+            // ptr::read extracts the inner Box; forget prevents old's Drop from running.
+            PyObjectPayload::Str(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::List(_) => {
+                let old = std::mem::replace(self, PyObjectPayload::None);
+                unsafe {
+                    match &old {
+                        PyObjectPayload::Str(b) => {
+                            super::constructors::recycle_str_box(std::ptr::read(b as *const _));
+                        }
+                        PyObjectPayload::Tuple(b) => {
+                            super::constructors::recycle_tuple_box(std::ptr::read(b as *const _));
+                        }
+                        PyObjectPayload::List(b) => {
+                            super::constructors::recycle_list_box(std::ptr::read(b as *const _));
+                        }
+                        _ => std::hint::unreachable_unchecked(),
+                    }
+                    std::mem::forget(old);
+                }
             }
             _ => {}
         }

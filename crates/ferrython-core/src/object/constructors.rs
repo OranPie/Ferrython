@@ -49,6 +49,108 @@ thread_local! {
         UnsafeCell::new(Vec::with_capacity(ATTR_FREELIST_MAX));
 }
 
+// ── String Box freelist ──
+// Recycle Box<CompactString> to avoid malloc/free per string creation/destruction.
+// str_split creates 6+ short strings per call — this eliminates the Box alloc overhead.
+// SAFETY: Single-threaded interpreter (GIL) — no concurrent access.
+const STR_BOX_FREELIST_MAX: usize = 128;
+struct StrBoxHolder(UnsafeCell<Vec<Box<CompactString>>>);
+unsafe impl Sync for StrBoxHolder {}
+static STR_BOX_FREELIST: StrBoxHolder = StrBoxHolder(UnsafeCell::new(Vec::new()));
+
+/// Allocate a Box<CompactString>, reusing from freelist if possible.
+#[inline(always)]
+pub fn alloc_str_box(s: CompactString) -> Box<CompactString> {
+    unsafe {
+        let list = &mut *STR_BOX_FREELIST.0.get();
+        if let Some(mut b) = list.pop() {
+            *b = s;
+            b
+        } else {
+            Box::new(s)
+        }
+    }
+}
+
+/// Return a Box<CompactString> to the freelist.
+#[inline(always)]
+pub(crate) fn recycle_str_box(mut b: Box<CompactString>) {
+    // Clear to release any heap-allocated string data
+    b.clear();
+    unsafe {
+        let list = &mut *STR_BOX_FREELIST.0.get();
+        if list.len() < STR_BOX_FREELIST_MAX {
+            list.push(b);
+        }
+    }
+}
+
+// ── Tuple Box freelist ──
+// Recycle Box<Vec<PyObjectRef>> for tuple creation/destruction.
+const TUPLE_BOX_FREELIST_MAX: usize = 80;
+struct TupleBoxHolder(UnsafeCell<Vec<Box<Vec<PyObjectRef>>>>);
+unsafe impl Sync for TupleBoxHolder {}
+static TUPLE_BOX_FREELIST: TupleBoxHolder = TupleBoxHolder(UnsafeCell::new(Vec::new()));
+
+/// Allocate a Box<Vec<PyObjectRef>> for Tuple, reusing from freelist if possible.
+#[inline(always)]
+pub fn alloc_tuple_box(items: Vec<PyObjectRef>) -> Box<Vec<PyObjectRef>> {
+    unsafe {
+        let list = &mut *TUPLE_BOX_FREELIST.0.get();
+        if let Some(mut b) = list.pop() {
+            *b = items;
+            b
+        } else {
+            Box::new(items)
+        }
+    }
+}
+
+/// Return a Box<Vec<PyObjectRef>> to the freelist.
+#[inline(always)]
+pub(crate) fn recycle_tuple_box(mut b: Box<Vec<PyObjectRef>>) {
+    b.clear();
+    unsafe {
+        let list = &mut *TUPLE_BOX_FREELIST.0.get();
+        if list.len() < TUPLE_BOX_FREELIST_MAX {
+            list.push(b);
+        }
+    }
+}
+
+// ── List Box freelist ──
+// Recycle Box<PyCell<Vec<PyObjectRef>>> for list creation/destruction.
+const LIST_BOX_FREELIST_MAX: usize = 80;
+struct ListBoxHolder(UnsafeCell<Vec<Box<PyCell<Vec<PyObjectRef>>>>>);
+unsafe impl Sync for ListBoxHolder {}
+static LIST_BOX_FREELIST: ListBoxHolder = ListBoxHolder(UnsafeCell::new(Vec::new()));
+
+/// Allocate a Box<PyCell<Vec<PyObjectRef>>> for List, reusing from freelist if possible.
+#[inline(always)]
+pub fn alloc_list_box(items: Vec<PyObjectRef>) -> Box<PyCell<Vec<PyObjectRef>>> {
+    unsafe {
+        let list = &mut *LIST_BOX_FREELIST.0.get();
+        if let Some(b) = list.pop() {
+            *b.data_ptr() = items;
+            b
+        } else {
+            Box::new(PyCell::new(items))
+        }
+    }
+}
+
+/// Return a Box<PyCell<Vec<PyObjectRef>>> to the freelist.
+#[inline(always)]
+pub(crate) fn recycle_list_box(b: Box<PyCell<Vec<PyObjectRef>>>) {
+    unsafe { (*b.data_ptr()).clear(); }
+    unsafe {
+        let list = &mut *LIST_BOX_FREELIST.0.get();
+        if list.len() < LIST_BOX_FREELIST_MAX {
+            list.push(b);
+        }
+    }
+}
+
 /// Allocate an ExceptionInstanceData box, reusing from freelist if possible.
 #[inline]
 pub fn alloc_exception_box(
@@ -503,7 +605,7 @@ impl PyObject {
     #[inline]
     pub fn str_val(v: CompactString) -> PyObjectRef {
         if v.is_empty() { return EMPTY_STR.clone(); }
-        Self::wrap_leaf(PyObjectPayload::Str(Box::new(v)))
+        Self::wrap_leaf(PyObjectPayload::Str(alloc_str_box(v)))
     }
     pub fn bytes(v: Vec<u8>) -> PyObjectRef {
         if v.is_empty() { return EMPTY_BYTES.clone(); }
@@ -511,7 +613,7 @@ impl PyObject {
     }
     pub fn bytearray(v: Vec<u8>) -> PyObjectRef { Self::wrap_leaf(PyObjectPayload::ByteArray(Box::new(v))) }
     pub fn list(items: Vec<PyObjectRef>) -> PyObjectRef {
-        let obj = Self::wrap(PyObjectPayload::List(Box::new(PyCell::new(items))));
+        let obj = Self::wrap(PyObjectPayload::List(alloc_list_box(items)));
         track_object(&obj);
         obj
     }
@@ -519,11 +621,11 @@ impl PyObject {
     /// since leaf-only lists cannot form reference cycles.
     #[inline]
     pub fn list_leaf(items: Vec<PyObjectRef>) -> PyObjectRef {
-        Self::wrap_leaf(PyObjectPayload::List(Box::new(PyCell::new(items))))
+        Self::wrap_leaf(PyObjectPayload::List(alloc_list_box(items)))
     }
     pub fn tuple(items: Vec<PyObjectRef>) -> PyObjectRef {
         if items.is_empty() { return EMPTY_TUPLE.clone(); }
-        Self::wrap_leaf(PyObjectPayload::Tuple(Box::new(items)))
+        Self::wrap_leaf(PyObjectPayload::Tuple(alloc_tuple_box(items)))
     }
     pub fn set<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
         if items.is_empty() {
