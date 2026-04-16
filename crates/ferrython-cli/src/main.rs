@@ -71,6 +71,16 @@ fn main_inner() {
     
     let args: Vec<String> = env::args().collect();
 
+    // Check for --compat flag or FERRYTHON_COMPAT env var: disable superinstructions
+    // to emit only standard CPython 3.8 opcodes for fair performance comparison.
+    let compat_mode = args.iter().any(|a| a == "--compat")
+        || env::var("FERRYTHON_COMPAT").map(|v| v == "1" || v == "true").unwrap_or(false);
+    if compat_mode {
+        ferrython_compiler::set_superinstructions_enabled(false);
+    }
+    // Filter out --compat from args for downstream processing
+    let args: Vec<String> = args.into_iter().filter(|a| a != "--compat").collect();
+
     if args.len() < 2 {
         // If stdin is not a terminal, read from stdin as a script
         if atty::isnt(atty::Stream::Stdin) {
@@ -175,6 +185,7 @@ fn main_inner() {
         println!("  --dis FILE      Disassemble bytecode to stderr, then execute");
         println!("  --profile FILE  Run with execution profiling");
         println!("  --stats FILE    Show bytecode statistics");
+        println!("  --compat        CPython-compatible mode (no superinstructions)");
         println!("  -h, --help      Show this help");
         println!();
         println!("Project commands:");

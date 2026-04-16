@@ -120,7 +120,44 @@ macro_rules! chain_pop_none {
     }};
 }
 
-
+/// Compare look-ahead: if a CompareOp produces a boolean and the next instruction
+/// is PopJumpIfFalse or PopJumpIfTrue, skip the intermediate bool allocation and
+/// jump/fall-through directly. Avoids: 1 PyObjectRef alloc, 1 push, 1 dispatch, 1 pop.
+/// This is a runtime optimization — the bytecode stream stays standard CPython 3.8.
+macro_rules! cmp_jump_lookahead {
+    ($result:expr, $frame:expr, $instr_base:expr, $instr_count:expr, $profiling:expr, $profiler:expr, $op:expr) => {{
+        let next_ip = $frame.ip;
+        if next_ip < $instr_count {
+            let ni = unsafe { *$instr_base.add(next_ip) };
+            if ni.op == Opcode::PopJumpIfFalse {
+                // Drop both operands, skip bool creation, just jump if false
+                let len = $frame.stack.len();
+                unsafe {
+                    let _a = std::ptr::read($frame.stack.as_ptr().add(len - 2));
+                    let _b = std::ptr::read($frame.stack.as_ptr().add(len - 1));
+                    $frame.stack.set_len(len - 2);
+                }
+                if !$result { $frame.ip = ni.arg as usize; } else { $frame.ip = next_ip + 1; }
+                if $profiling { $profiler.end_instruction($op); }
+                continue;
+            } else if ni.op == Opcode::PopJumpIfTrue {
+                let len = $frame.stack.len();
+                unsafe {
+                    let _a = std::ptr::read($frame.stack.as_ptr().add(len - 2));
+                    let _b = std::ptr::read($frame.stack.as_ptr().add(len - 1));
+                    $frame.stack.set_len(len - 2);
+                }
+                if $result { $frame.ip = ni.arg as usize; } else { $frame.ip = next_ip + 1; }
+                if $profiling { $profiler.end_instruction($op); }
+                continue;
+            }
+        }
+        // No look-ahead match: fall through to normal bool push
+        unsafe { $frame.binary_op_result(PyObject::bool_val($result)) };
+        if $profiling { $profiler.end_instruction($op); }
+        continue;
+    }};
+}
 use crate::builtins;
 use crate::frame::{AttrInlineCache, BlockKind, Frame, FramePool, SharedBuiltins};
 use compact_str::CompactString;
@@ -566,6 +603,8 @@ impl VirtualMachine {
                     // SAFETY: stack non-empty (compiler guarantees), idx < locals.len()
                     let val = spop!(frame);
                     sset_local!(frame, instr.arg as usize, val);
+                    // Chain-consume JumpAbsolute if it follows (common in loop bodies)
+                    chain_jump!(frame, instr_base, instr_count);
                     hot_ok!(profiling, self.profiler, instr.op)
                 }
                 // Fused StoreFast + JumpAbsolute — saves one dispatch per loop iteration
@@ -2300,8 +2339,7 @@ impl VirtualMachine {
                     // Arc pointer equality fast-path: same object → equal
                     if (instr.arg == 2 || instr.arg == 3) && PyObjectRef::ptr_eq(a, b) {
                         let result = instr.arg == 2; // Eq=true, Ne=false
-                        unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                        hot_ok!(profiling, self.profiler, instr.op)
+                        cmp_jump_lookahead!(result, frame, instr_base, instr_count, profiling, self.profiler, instr.op)
                     } else {
                     match (&a.payload, &b.payload) {
                         (PyObjectPayload::Int(PyInt::Small(x)), PyObjectPayload::Int(PyInt::Small(y))) => {
@@ -2313,8 +2351,7 @@ impl VirtualMachine {
                                 4 => x > y,  // Gt
                                 _ => x >= y, // Ge (5)
                             };
-                            unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
+                            cmp_jump_lookahead!(result, frame, instr_base, instr_count, profiling, self.profiler, instr.op)
                         }
                         (PyObjectPayload::Float(x), PyObjectPayload::Float(y)) => {
                             let (xv, yv) = (*x, *y);
@@ -2326,15 +2363,13 @@ impl VirtualMachine {
                                 4 => xv > yv,
                                 _ => xv >= yv,
                             };
-                            unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
+                            cmp_jump_lookahead!(result, frame, instr_base, instr_count, profiling, self.profiler, instr.op)
                         }
                         // String equality (hot for dict lookups, isinstance checks)
                         (PyObjectPayload::Str(x), PyObjectPayload::Str(y)) if instr.arg == 2 || instr.arg == 3 => {
                             let eq = x == y;
                             let result = if instr.arg == 2 { eq } else { !eq };
-                            unsafe { frame.binary_op_result(PyObject::bool_val(result)) };
-                            hot_ok!(profiling, self.profiler, instr.op)
+                            cmp_jump_lookahead!(result, frame, instr_base, instr_count, profiling, self.profiler, instr.op)
                         }
                         _ => self.execute_one(instr),
                     }

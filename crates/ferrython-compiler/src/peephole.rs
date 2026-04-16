@@ -5,9 +5,28 @@
 //! - Dead store elimination: `LOAD_CONST; POP_TOP` → `NOP; NOP`
 //! - Jump chain collapse: `JUMP x` where `x` is `JUMP y` → `JUMP y`
 //! - Conditional jump over unconditional jump simplification
+//!
+//! Superinstruction fusion is optional and controlled by `set_superinstructions_enabled()`.
+//! When disabled (compat mode), only standard CPython 3.8 opcodes are emitted.
 
 use ferrython_bytecode::code::{CodeObject, ConstantValue};
 use ferrython_bytecode::opcode::{Instruction, Opcode};
+use std::cell::Cell;
+
+thread_local! {
+    static SUPERINSTRUCTIONS_ENABLED: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Enable or disable superinstruction fusion. When disabled, the compiler emits
+/// only standard CPython 3.8 opcodes for a clean apples-to-apples comparison.
+pub fn set_superinstructions_enabled(enabled: bool) {
+    SUPERINSTRUCTIONS_ENABLED.with(|c| c.set(enabled));
+}
+
+/// Returns whether superinstruction fusion is currently enabled.
+pub fn superinstructions_enabled() -> bool {
+    SUPERINSTRUCTIONS_ENABLED.with(|c| c.get())
+}
 
 /// Run all peephole optimizations on a code object (and recursively on nested code objects).
 pub fn optimize(code: &mut CodeObject) {
@@ -36,9 +55,11 @@ pub fn optimize(code: &mut CodeObject) {
     remove_nops(code);
 
     // Superinstruction fusion (after NOPs are removed, after jump targets are final).
-    // This fuses adjacent LoadFast+LoadFast, LoadFast+LoadConst, StoreFast+LoadFast
-    // into single instructions, saving one dispatch loop iteration per pair.
-    fuse_superinstructions(code);
+    // Only runs when superinstructions are enabled (default). Disabled in compat mode
+    // to emit only standard CPython 3.8 opcodes for fair comparison.
+    if superinstructions_enabled() {
+        fuse_superinstructions(code);
+    }
 
     // Compute max stack depth so frames can pre-allocate the exact capacity needed
     compute_max_stack_size(code);

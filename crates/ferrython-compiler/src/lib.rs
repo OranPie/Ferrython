@@ -10,6 +10,7 @@ mod peephole;
 
 pub use compiler::Compiler;
 pub use error::CompileError;
+pub use peephole::{set_superinstructions_enabled, superinstructions_enabled};
 
 use ferrython_ast::Module;
 use ferrython_bytecode::CodeObject;
