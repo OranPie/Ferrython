@@ -5622,8 +5622,37 @@ impl VirtualMachine {
                         self.execute_one(instr)
                     }
                 }
-                // StoreGlobal/StoreName: not in tight loops, delegate to cold path
-                Opcode::StoreGlobal | Opcode::StoreName => self.execute_one(instr),
+                // Inline LoadName: check global cache, fallback to full path
+                // In module scope locals==globals, so global_cache covers LoadName too
+                Opcode::LoadName => {
+                    let idx = instr.arg as usize;
+                    let ver = crate::frame::globals_version();
+                    if frame.global_cache_version == ver {
+                        if let Some(ref cache) = frame.global_cache {
+                            if let Some(ref v) = unsafe { cache.get_unchecked(idx) } {
+                                spush!(frame, v.clone());
+                                hot_ok!(profiling, self.profiler, instr.op)
+                            }
+                        }
+                    }
+                    self.execute_one(instr)
+                }
+                // Inline StoreName for module scope (hot in module-level loops)
+                Opcode::StoreName => {
+                    if frame.scope_kind == crate::frame::ScopeKind::Module {
+                        let idx = instr.arg as usize;
+                        let name = frame.code.names[idx].clone();
+                        let value = spop!(frame);
+                        frame.globals.write().insert(name, value);
+                        crate::frame::bump_globals_version();
+                        // Invalidate global cache so next LoadName/LoadGlobal rebuilds
+                        frame.global_cache_version = 0;
+                        hot_ok!(profiling, self.profiler, instr.op)
+                    } else {
+                        self.execute_one(instr)
+                    }
+                }
+                Opcode::StoreGlobal => self.execute_one(instr),
                 // Inline StoreAttr fast path for simple instance attribute writes
                 Opcode::StoreAttr => {
                     let name = &frame.code.names[instr.arg as usize];

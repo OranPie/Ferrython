@@ -73,9 +73,21 @@ impl VirtualMachine {
         let frame = self.vm_frame();
         match instr.op {
             Opcode::LoadName => {
-                let name = &frame.code.names[instr.arg as usize];
+                let idx = instr.arg as usize;
+                let name = &frame.code.names[idx];
                 match frame.load_name(name) {
-                    Some(v) => frame.push(v),
+                    Some(v) => {
+                        // Populate global cache so inline fast path can hit next time
+                        if frame.scope_kind == ScopeKind::Module {
+                            let ver = crate::frame::globals_version();
+                            let cache = frame.global_cache.get_or_insert_with(|| {
+                                Rc::new(vec![None; frame.code.names.len()])
+                            });
+                            Rc::make_mut(cache)[idx] = Some(v.clone());
+                            frame.global_cache_version = ver;
+                        }
+                        frame.push(v);
+                    }
                     None => return Err(PyException::name_error(format!(
                         "name '{}' is not defined", name
                     ))),
