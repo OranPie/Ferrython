@@ -535,7 +535,11 @@ impl VirtualMachine {
                         new_frame.scope_kind = ScopeKind::Function;
                         new_frame.discard_return = false;
                         self.call_stack.push(new_frame);
-                        let init_result = self.run_frame()?;
+                        let init_result = self.run_frame();
+                        if let Some(f) = self.call_stack.pop() {
+                            f.recycle(&mut self.frame_pool);
+                        }
+                        let init_result = init_result?;
                         if !matches!(&init_result.payload, PyObjectPayload::None) {
                             return Err(PyException::type_error(
                                 "__init__() should return None, not '".to_string()
@@ -2116,15 +2120,62 @@ impl VirtualMachine {
                         if args.is_empty() {
                             return Err(PyException::type_error("sum() requires at least 1 argument"));
                         }
-                        let items = self.collect_iterable(&args[0])?;
                         let start = if args.len() > 1 { args[1].clone() } else { PyObject::int(0) };
                         let mut total = start;
-                        for item in items {
-                            // Use VM-level add to support __add__/__radd__
-                            if let Some(r) = self.try_binary_dunder(&total, &item, "__add__", Some("__radd__"))? {
-                                total = r;
-                            } else {
-                                total = total.add(&item)?;
+                        // Inline lazy iteration — avoid materializing entire iterable
+                        match &args[0].payload {
+                            PyObjectPayload::List(cell) => {
+                                for item in cell.read().iter() {
+                                    total = total.add(item)?;
+                                }
+                            }
+                            PyObjectPayload::Tuple(items) => {
+                                for item in items.iter() {
+                                    total = total.add(item)?;
+                                }
+                            }
+                            PyObjectPayload::Range { start, stop, step } => {
+                                // Arithmetic sum for integer ranges — O(1) when total is int
+                                let (s, e, st) = (*start, *stop, *step);
+                                if st > 0 {
+                                    let mut c = s;
+                                    while c < e { total = total.add(&PyObject::int(c))?; c += st; }
+                                } else if st < 0 {
+                                    let mut c = s;
+                                    while c > e { total = total.add(&PyObject::int(c))?; c += st; }
+                                }
+                            }
+                            PyObjectPayload::RangeIter { current, stop, step, .. } => {
+                                let mut c = current.get();
+                                let s = *stop;
+                                let st = *step;
+                                if st > 0 {
+                                    while c < s { total = total.add(&PyObject::int(c))?; c += st; }
+                                } else if st < 0 {
+                                    while c > s { total = total.add(&PyObject::int(c))?; c += st; }
+                                }
+                            }
+                            PyObjectPayload::Iterator(_) => {
+                                let items = self.collect_iterable(&args[0])?;
+                                for item in items {
+                                    total = total.add(&item)?;
+                                }
+                            }
+                            PyObjectPayload::Generator(gen_arc) => {
+                                let gen_arc = gen_arc.clone();
+                                loop {
+                                    match self.resume_generator_for_iter(&gen_arc) {
+                                        Ok(Some(item)) => { total = total.add(&item)?; }
+                                        Ok(None) => break,
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                            }
+                            _ => {
+                                let items = self.collect_iterable(&args[0])?;
+                                for item in items {
+                                    total = total.add(&item)?;
+                                }
                             }
                         }
                         return Ok(total);

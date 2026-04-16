@@ -302,7 +302,7 @@ impl VirtualMachine {
                     let keys_to_remove: Vec<_> = other.read().keys().cloned().collect();
                     let mut w = set.write();
                     for k in keys_to_remove {
-                        w.shift_remove(&k);
+                        w.swap_remove(&k);
                     }
                     drop(w);
                     a.clone()
@@ -858,13 +858,13 @@ impl VirtualMachine {
                     }
                     PyObjectPayload::Dict(map) => {
                         let hk = self.vm_to_hashable_key(&key)?;
-                        if map.write().shift_remove(&hk).is_none() {
+                        if map.write().swap_remove(&hk).is_none() {
                             return Err(PyException::key_error(key.repr()));
                         }
                     }
                     PyObjectPayload::InstanceDict(attrs) => {
                         let key_str = CompactString::from(key.py_to_string());
-                        if attrs.write().shift_remove(&key_str).is_none() {
+                        if attrs.write().swap_remove(&key_str).is_none() {
                             return Err(PyException::key_error(key.repr()));
                         }
                     }
@@ -875,7 +875,7 @@ impl VirtualMachine {
                         }
                         if let Some(ref ds) = inst.dict_storage {
                             let hk = self.vm_to_hashable_key(&key)?;
-                            if ds.write().shift_remove(&hk).is_none() {
+                            if ds.write().swap_remove(&hk).is_none() {
                                 return Err(PyException::key_error(key.repr()));
                             }
                             return Ok(None);

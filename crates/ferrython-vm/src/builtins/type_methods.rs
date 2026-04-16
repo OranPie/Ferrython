@@ -536,7 +536,7 @@ pub(super) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
             check_args_min("pop", args, 1)?;
             let key = args[0].to_hashable_key()?;
             let default = if args.len() >= 2 { Some(args[1].clone()) } else { None };
-            match map.write().shift_remove(&key) {
+            match map.write().swap_remove(&key) {
                 Some(v) => Ok(v),
                 None => match default {
                     Some(d) => Ok(d),
@@ -685,7 +685,7 @@ pub(super) fn call_dict_method(map: &Rc<PyCell<FxHashKeyMap>>, method: &str, arg
         "__delitem__" => {
             check_args_min("dict.__delitem__", args, 1)?;
             let key = args[0].to_hashable_key()?;
-            match map.write().shift_remove(&key) {
+            match map.write().swap_remove(&key) {
                 Some(_) => Ok(PyObject::none()),
                 None => Err(PyException::key_error(args[0].py_to_string())),
             }
@@ -902,7 +902,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
         "remove" => {
             check_args_min("remove", args, 1)?;
             let hk = args[0].to_hashable_key()?;
-            if m.write().shift_remove(&hk).is_none() {
+            if m.write().swap_remove(&hk).is_none() {
                 return Err(PyException::key_error(args[0].repr()));
             }
             Ok(PyObject::none())
@@ -910,7 +910,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
         "discard" => {
             check_args_min("discard", args, 1)?;
             let hk = args[0].to_hashable_key()?;
-            m.write().shift_remove(&hk);
+            m.write().swap_remove(&hk);
             Ok(PyObject::none())
         }
         "pop" => {
@@ -919,7 +919,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
                 return Err(PyException::key_error("pop from an empty set"));
             }
             let key = guard.keys().next().unwrap().clone();
-            let val = guard.shift_remove(&key).unwrap();
+            let val = guard.swap_remove(&key).unwrap();
             Ok(val)
         }
         "clear" => {
@@ -947,7 +947,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
                 .collect();
             let mut guard = m.write();
             for k in &remove_keys {
-                guard.shift_remove(k);
+                guard.swap_remove(k);
             }
             Ok(PyObject::none())
         }
@@ -977,7 +977,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
                 }
             }
             for k in &to_remove {
-                guard.shift_remove(k);
+                guard.swap_remove(k);
             }
             // Add items from other that weren't in self
             for item in &other_items {
