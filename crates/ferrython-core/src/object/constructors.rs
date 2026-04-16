@@ -151,6 +151,42 @@ pub(crate) fn recycle_list_box(b: Box<PyCell<Vec<PyObjectRef>>>) {
     }
 }
 
+// ── BuiltinBoundMethod Box freelist ──
+// Recycle Box<BuiltinBoundMethodData> for builtin method calls (str.replace, list.append, etc.)
+const BBM_BOX_FREELIST_MAX: usize = 64;
+struct BbmBoxHolder(UnsafeCell<Vec<Box<BuiltinBoundMethodData>>>);
+unsafe impl Sync for BbmBoxHolder {}
+static BBM_BOX_FREELIST: BbmBoxHolder = BbmBoxHolder(UnsafeCell::new(Vec::new()));
+
+/// Allocate a Box<BuiltinBoundMethodData>, reusing from freelist if possible.
+#[inline(always)]
+pub fn alloc_bbm_box(receiver: PyObjectRef, method_name: CompactString) -> Box<BuiltinBoundMethodData> {
+    unsafe {
+        let list = &mut *BBM_BOX_FREELIST.0.get();
+        if let Some(mut b) = list.pop() {
+            b.receiver = receiver;
+            b.method_name = method_name;
+            b
+        } else {
+            Box::new(BuiltinBoundMethodData { receiver, method_name })
+        }
+    }
+}
+
+/// Return a Box<BuiltinBoundMethodData> to the freelist.
+#[inline(always)]
+pub(crate) fn recycle_bbm_box(mut b: Box<BuiltinBoundMethodData>) {
+    // Drop receiver ref to prevent leaks
+    b.receiver = PyObject::none();
+    b.method_name = CompactString::new("");
+    unsafe {
+        let list = &mut *BBM_BOX_FREELIST.0.get();
+        if list.len() < BBM_BOX_FREELIST_MAX {
+            list.push(b);
+        }
+    }
+}
+
 /// Allocate an ExceptionInstanceData box, reusing from freelist if possible.
 #[inline]
 pub fn alloc_exception_box(

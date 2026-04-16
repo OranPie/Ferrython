@@ -1229,15 +1229,28 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
     }
     let old_len = old.len();
     let limit = max_count.unwrap_or(usize::MAX);
-
-    // For results that likely fit inline (≤23 bytes), use single-pass with inline
-    // CompactString — avoids the cost of a pre-counting scan.
-    // For larger strings where growth is expected, pre-count for exact capacity.
     let new_len = new.len();
+
+    // Same-length replacement: use match_indices for SIMD-accelerated search,
+    // then overwrite matched positions in a byte copy (no realloc, no push_str)
+    if old_len == new_len {
+        let new_bytes = new.as_bytes();
+        let mut bytes = Vec::from(s.as_bytes());
+        let mut replaced = 0usize;
+        for (pos, _) in s.match_indices(old) {
+            if replaced >= limit { break; }
+            bytes[pos..pos + old_len].copy_from_slice(new_bytes);
+            replaced += 1;
+        }
+        if replaced == 0 { return CompactString::from(s); }
+        // SAFETY: replaced same-length valid UTF-8 substrings with valid UTF-8 replacements
+        return unsafe { CompactString::from(String::from_utf8_unchecked(bytes)) };
+    }
+
     let growth_per_replace = new_len as isize - old_len as isize;
-    if growth_per_replace <= 0 || s.len() <= 23 {
-        // Result shrinks or fits inline — single-pass with inline CompactString
-        let mut result = CompactString::new("");
+    if growth_per_replace < 0 || s.len() <= 23 {
+        // Shrink case: pre-allocate to source length (result ≤ source)
+        let mut result = CompactString::with_capacity(s.len());
         let mut remainder = s;
         let mut replaced = 0usize;
         while replaced < limit {
@@ -1254,7 +1267,7 @@ fn replace_into_compact(s: &str, old: &str, new: &str, max_count: Option<usize>)
         result.push_str(remainder);
         result
     } else {
-        // Result grows — pre-count to allocate exact capacity
+        // Growth case: pre-count to allocate exact capacity
         let occurrence_count = if limit == usize::MAX {
             s.matches(old).count()
         } else {
@@ -1292,9 +1305,9 @@ fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             )),
         };
     }
-    // Pre-compute total length and build result in a single pass.
-    // For all item counts, exact capacity avoids CompactString reallocation.
-    let sep_total = sep.len() * (items.len() - 1);
+    // Pre-compute total length, then build result with unsafe memcpy (skip bounds checks).
+    let sep_len = sep.len();
+    let sep_total = sep_len * (items.len() - 1);
     let mut total_len = sep_total;
     for (i, item) in items.iter().enumerate() {
         if let PyObjectPayload::Str(s) = &item.payload {
@@ -1305,12 +1318,31 @@ fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             ));
         }
     }
-    let mut result = CompactString::with_capacity(total_len);
+    // Build result using raw pointer writes — avoids push_str bounds checks
+    let mut buf = Vec::<u8>::with_capacity(total_len);
+    let base = buf.as_mut_ptr();
+    let mut offset = 0usize;
+    let sep_bytes = sep.as_bytes();
     for (i, item) in items.iter().enumerate() {
         if let PyObjectPayload::Str(s) = &item.payload {
-            if i > 0 { result.push_str(sep); }
-            result.push_str(s.as_str());
+            if i > 0 && sep_len > 0 {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(sep_bytes.as_ptr(), base.add(offset), sep_len);
+                }
+                offset += sep_len;
+            }
+            let s_bytes = s.as_bytes();
+            let s_len = s_bytes.len();
+            if s_len > 0 {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(s_bytes.as_ptr(), base.add(offset), s_len);
+                }
+                offset += s_len;
+            }
         }
     }
-    Ok(PyObject::str_val(result))
+    unsafe { buf.set_len(offset); }
+    // SAFETY: all input strings were valid UTF-8, separator is valid UTF-8
+    let result_str = unsafe { String::from_utf8_unchecked(buf) };
+    Ok(PyObject::str_val(CompactString::from(result_str)))
 }

@@ -191,7 +191,7 @@ fn wrap_class_attr_for_instance(obj: &PyObjectRef, inst: &InstanceData, v: PyObj
 fn instance_builtin_method(obj: &PyObjectRef, inst: &InstanceData, name: &str) -> Option<PyObjectRef> {
     let make_bound = |name: &str| -> PyObjectRef {
         PyObjectRef::new(PyObject {
-            payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+            payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
         })
     };
 
@@ -806,7 +806,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "imag" => Some(PyObject::float(*imag)),
                     "__class__" => Some(PyObject::builtin_type(CompactString::from("complex"))),
                     "conjugate" => Some(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from("conjugate") }))
+                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from("conjugate")))
                     })),
                     _ => None,
                 }
@@ -1043,7 +1043,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                     return Some(native);
                                 }
                                 Some(PyObjectRef::new(PyObject {
-                                    payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                                    payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                                 }))
                             } else {
                                 None
@@ -1105,7 +1105,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                             };
                             if has_method {
                                 Some(PyObjectRef::new(PyObject {
-                                    payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                                    payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                                 }))
                             } else {
                                 None
@@ -1134,7 +1134,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                         }
                         // Return a BuiltinBoundMethod that the VM will handle
                         Some(PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                            payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                         }))
                     }
                     _ => None,
@@ -1622,7 +1622,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__lshift__" | "__rshift__" | "__and__" | "__or__" | "__xor__" |
                 "__ceil__" | "__floor__" | "__round__" | "__trunc__" |
                 "__sizeof__" | "as_integer_ratio" => Some(PyObjectRef::new(PyObject {
-                    payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                    payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                 })),
                 _ => None,
             },
@@ -1640,7 +1640,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__floordiv__" | "__mod__" | "__pow__" | "__divmod__" |
                 "__round__" | "__ceil__" | "__floor__" | "__trunc__" |
                 "__sizeof__" | "as_integer_ratio" | "fromhex" => Some(PyObjectRef::new(PyObject {
-                    payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                    payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                 })),
                 _ => None,
             },
@@ -1652,7 +1652,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("bool"))),
                 "bit_length" | "bit_count" | "to_bytes" | "conjugate" | "__abs__" |
                 "__int__" | "__float__" | "__index__" | "__bool__" |
-                "__repr__" | "__str__" | "__hash__" | "__format__" | "__sizeof__" => Some(PyObjectRef::new(PyObject {                    payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                "__repr__" | "__str__" | "__hash__" | "__format__" | "__sizeof__" => Some(PyObjectRef::new(PyObject {                    payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                 })),
                 _ => None,
             },
@@ -1664,7 +1664,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 "__class__" => Some(PyObject::builtin_type(CompactString::from("range"))),
                 "count" | "index" | "__contains__" | "__iter__" | "__reversed__" | "__len__" => {
                     Some(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                     }))
                 }
                 _ => None,
@@ -1688,7 +1688,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__mod__" | "__bool__" | "__sizeof__"
                 ) {
                     return Some(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                     }));
                 }
                 None
@@ -1706,7 +1706,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__reversed__" | "__bool__" | "__hash__" | "__sizeof__"
                 ) {
                     return Some(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                     }));
                 }
                 None
@@ -1725,7 +1725,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__or__" | "__ior__" | "__bool__" | "__hash__" | "__sizeof__"
                 ) {
                     return Some(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                     }));
                 }
                 None
@@ -1741,7 +1741,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__repr__" | "__str__" | "__add__" | "__mul__" | "__bool__" | "__sizeof__"
                 ) {
                     return Some(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                     }));
                 }
                 None
@@ -1760,7 +1760,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__gt__" | "__ge__" | "__repr__" | "__str__" | "__bool__" | "__hash__" | "__sizeof__"
                 ) {
                     return Some(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                     }));
                 }
                 None
@@ -1777,7 +1777,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__repr__" | "__str__" | "__bool__" | "__sizeof__"
                 ) {
                     return Some(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                     }));
                 }
                 None
@@ -1802,7 +1802,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     | "__bool__" | "__hash__" | "__sizeof__"
                 ) {
                     return Some(PyObjectRef::new(PyObject {
-                        payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                     }));
                 }
                 None
@@ -1812,14 +1812,14 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     // Generator protocol: send, throw, close, __next__, __iter__
                     "send" | "throw" | "close" | "__next__" => {
                         Some(PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                            payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                         }))
                     }
                     // Context manager protocol: generators from @contextmanager
                     // __enter__ calls next(gen), __exit__ calls gen.close()/gen.throw()
                     "__enter__" | "__exit__" => {
                         Some(PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                            payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                         }))
                     }
                     "__iter__" => Some(obj.clone()),
@@ -1834,7 +1834,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     // Coroutine protocol: send, throw, close
                     "send" | "throw" | "close" => {
                         Some(PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                            payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                         }))
                     }
                     // __await__ on a coroutine returns self (the coroutine IS its own iterator for await)
@@ -1850,13 +1850,13 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     // Sync methods that BuiltinBoundMethod dispatches in vm_call
                     "send" | "throw" | "close" => {
                         Some(PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                            payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                         }))
                     }
                     // Async iteration protocol — __aiter__ returns self when called
                     "__aiter__" | "__anext__" | "asend" | "athrow" | "aclose" => {
                         Some(PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                            payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                         }))
                     }
                     "ag_frame" | "ag_code" => Some(PyObject::none()),
@@ -1871,7 +1871,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                     "__await__" => Some(obj.clone()),
                     "send" | "throw" | "close" => {
                         Some(PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                            payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                         }))
                     }
                     _ => None,
@@ -2040,7 +2040,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                                 };
                                 if known_methods {
                                     return Some(PyObjectRef::new(PyObject {
-                                        payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: instance.clone(), method_name: CompactString::from(name) }))
+                                        payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(instance.clone(), CompactString::from(name)))
                                     }));
                                 }
                             }
@@ -2281,7 +2281,7 @@ pub(super) fn py_get_attr(obj: &PyObjectRef, name: &str) -> Option<PyObjectRef> 
                 match name {
                     "__next__" | "__iter__" | "__length_hint__" => {
                         Some(PyObjectRef::new(PyObject {
-                            payload: PyObjectPayload::BuiltinBoundMethod(Box::new(BuiltinBoundMethodData { receiver: obj.clone(), method_name: CompactString::from(name) }))
+                            payload: PyObjectPayload::BuiltinBoundMethod(super::constructors::alloc_bbm_box(obj.clone(), CompactString::from(name)))
                         }))
                     }
                     "__class__" => Some(PyObject::builtin_type(CompactString::from("iterator"))),

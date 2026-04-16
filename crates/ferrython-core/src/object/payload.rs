@@ -776,7 +776,8 @@ impl Drop for PyObjectPayload {
             // for the hottest allocation paths (str_split creates 6+ Boxes per call).
             // std::mem::replace swaps variant to None so compiler's drop-glue is no-op.
             // ptr::read extracts the inner Box; forget prevents old's Drop from running.
-            PyObjectPayload::Str(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::List(_) => {
+            PyObjectPayload::Str(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::List(_)
+            | PyObjectPayload::BuiltinBoundMethod(_) => {
                 let old = std::mem::replace(self, PyObjectPayload::None);
                 unsafe {
                     match &old {
@@ -788,6 +789,9 @@ impl Drop for PyObjectPayload {
                         }
                         PyObjectPayload::List(b) => {
                             super::constructors::recycle_list_box(std::ptr::read(b as *const _));
+                        }
+                        PyObjectPayload::BuiltinBoundMethod(b) => {
+                            super::constructors::recycle_bbm_box(std::ptr::read(b as *const _));
                         }
                         _ => std::hint::unreachable_unchecked(),
                     }
