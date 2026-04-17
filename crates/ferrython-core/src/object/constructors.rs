@@ -18,36 +18,32 @@ use super::methods::PyObjectMethods;
 // dict/set creation, we pop from the freelist (clear + reuse), avoiding malloc.
 // SAFETY: Single-threaded interpreter (GIL) — no concurrent access to TLS.
 const MAP_FREELIST_MAX: usize = 80; // CPython uses 80 for dicts
-thread_local! {
-    static MAP_FREELIST: UnsafeCell<Vec<Rc<PyCell<FxHashKeyMap>>>> =
-        UnsafeCell::new(Vec::with_capacity(MAP_FREELIST_MAX));
-}
+struct MapFreelistHolder(UnsafeCell<Vec<Rc<PyCell<FxHashKeyMap>>>>);
+unsafe impl Sync for MapFreelistHolder {}
+static MAP_FREELIST: MapFreelistHolder = MapFreelistHolder(UnsafeCell::new(Vec::new()));
 
 // ── Exception instance freelist ──
 // Recycle Box<ExceptionInstanceData> to avoid malloc/free per raise/catch cycle.
-// SAFETY: Single-threaded interpreter (GIL) — no concurrent access to TLS.
+// SAFETY: Single-threaded interpreter (GIL) — no concurrent access.
 const EXCEPTION_FREELIST_MAX: usize = 16;
-thread_local! {
-    static EXCEPTION_FREELIST: UnsafeCell<Vec<Box<ExceptionInstanceData>>> =
-        UnsafeCell::new(Vec::with_capacity(EXCEPTION_FREELIST_MAX));
-}
+struct ExceptionFreelistHolder(UnsafeCell<Vec<Box<ExceptionInstanceData>>>);
+unsafe impl Sync for ExceptionFreelistHolder {}
+static EXCEPTION_FREELIST: ExceptionFreelistHolder = ExceptionFreelistHolder(UnsafeCell::new(Vec::new()));
 
 // ── Instance freelist ──
 // Recycle Box<InstanceData> + its inner Rc<PyCell<FxAttrMap>> to avoid 2 mallocs per instance.
-// SAFETY: Single-threaded interpreter (GIL) — no concurrent access to TLS.
+// SAFETY: Single-threaded interpreter (GIL) — no concurrent access.
 const INSTANCE_FREELIST_MAX: usize = 80;
-thread_local! {
-    static INSTANCE_FREELIST: UnsafeCell<Vec<Box<InstanceData>>> =
-        UnsafeCell::new(Vec::with_capacity(INSTANCE_FREELIST_MAX));
-}
+struct InstanceFreelistHolder(UnsafeCell<Vec<Box<InstanceData>>>);
+unsafe impl Sync for InstanceFreelistHolder {}
+static INSTANCE_FREELIST: InstanceFreelistHolder = InstanceFreelistHolder(UnsafeCell::new(Vec::new()));
 
 // ── Attr map freelist ──
 // Recycle Rc<PyCell<FxAttrMap>> for instance attrs.
 const ATTR_FREELIST_MAX: usize = 80;
-thread_local! {
-    static ATTR_FREELIST: UnsafeCell<Vec<SharedFxAttrMap>> =
-        UnsafeCell::new(Vec::with_capacity(ATTR_FREELIST_MAX));
-}
+struct AttrFreelistHolder(UnsafeCell<Vec<SharedFxAttrMap>>);
+unsafe impl Sync for AttrFreelistHolder {}
+static ATTR_FREELIST: AttrFreelistHolder = AttrFreelistHolder(UnsafeCell::new(Vec::new()));
 
 // ── String Box freelist ──
 // Recycle Box<CompactString> to avoid malloc/free per string creation/destruction.
@@ -223,9 +219,8 @@ pub fn alloc_exception_box(
     message: CompactString,
     args: Vec<PyObjectRef>,
 ) -> Box<ExceptionInstanceData> {
-    EXCEPTION_FREELIST.with(|fl| {
-        // SAFETY: single-threaded (GIL), no reentrant access during pop
-        let list = unsafe { &mut *fl.get() };
+    unsafe {
+        let list = &mut *EXCEPTION_FREELIST.0.get();
         if let Some(mut data) = list.pop() {
             data.kind = kind;
             data.message = message;
@@ -240,7 +235,7 @@ pub fn alloc_exception_box(
                 attrs: None,
             })
         }
-    })
+    }
 }
 
 /// Return an ExceptionInstanceData box to the freelist.
@@ -252,21 +247,20 @@ pub(crate) fn recycle_exception_box(mut data: Box<ExceptionInstanceData>) {
     data.args.clear();
     data.attrs = None;
     data.message = CompactString::default();
-    EXCEPTION_FREELIST.with(|fl| {
-        // SAFETY: single-threaded (GIL), inner refs already cleared (no reentrant drops)
-        let list = unsafe { &mut *fl.get() };
+    unsafe {
+        let list = &mut *EXCEPTION_FREELIST.0.get();
         if list.len() < EXCEPTION_FREELIST_MAX {
             list.push(data);
         }
-    })
+    }
 }
 
 /// Allocate an InstanceData box, reusing from freelist if possible.
 /// The returned InstanceData has a recycled attrs map with cleared entries but retained capacity.
 #[inline]
 pub fn alloc_instance_box(class: PyObjectRef, class_flags: u8, dict_storage: Option<Rc<PyCell<FxHashKeyMap>>>, expected_attrs: usize) -> Box<InstanceData> {
-    INSTANCE_FREELIST.with(|fl| {
-        let list = unsafe { &mut *fl.get() };
+    unsafe {
+        let list = &mut *INSTANCE_FREELIST.0.get();
         if let Some(mut data) = list.pop() {
             data.class = class;
             data.class_flags = class_flags;
@@ -275,7 +269,7 @@ pub fn alloc_instance_box(class: PyObjectRef, class_flags: u8, dict_storage: Opt
             // Check if attrs Rc is uniquely owned — if shared (e.g., __dict__ created
             // an InstanceDict), we must not clear it; allocate a fresh one instead.
             if Rc::strong_count(&data.attrs) == 1 {
-                unsafe { &mut *data.attrs.data_ptr() }.clear();
+                (&mut *data.attrs.data_ptr()).clear();
             } else {
                 data.attrs = alloc_attr_map();
             }
@@ -294,7 +288,7 @@ pub fn alloc_instance_box(class: PyObjectRef, class_flags: u8, dict_storage: Opt
                 class_flags,
             })
         }
-    })
+    }
 }
 
 /// Return an InstanceData box to the freelist.
@@ -312,41 +306,40 @@ pub(crate) fn recycle_instance_box(mut data: Box<InstanceData>) {
     data.dict_storage = None;
     let old_class = std::mem::replace(&mut data.class, NONE_SINGLETON.clone());
     drop(old_class);
-    INSTANCE_FREELIST.with(|fl| {
-        let list = unsafe { &mut *fl.get() };
+    unsafe {
+        let list = &mut *INSTANCE_FREELIST.0.get();
         if list.len() < INSTANCE_FREELIST_MAX {
             list.push(data);
         }
-    })
+    }
 }
 
 /// Allocate an attr map (Rc<PyCell<FxAttrMap>>), reusing from freelist if possible.
 #[inline]
 pub fn alloc_attr_map() -> SharedFxAttrMap {
-    ATTR_FREELIST.with(|fl| {
-        let list = unsafe { &mut *fl.get() };
+    unsafe {
+        let list = &mut *ATTR_FREELIST.0.get();
         if let Some(rc) = list.pop() {
             rc
         } else {
             Rc::new(PyCell::new(FxAttrMap::default()))
         }
-    })
+    }
 }
 
 /// Allocate an attr map with initial data.
 #[inline]
 fn alloc_attr_map_with(attrs: FxAttrMap) -> SharedFxAttrMap {
-    ATTR_FREELIST.with(|fl| {
-        let list = unsafe { &mut *fl.get() };
+    unsafe {
+        let list = &mut *ATTR_FREELIST.0.get();
         if let Some(rc) = list.pop() {
-            // Replace contents with new data (retaining allocation if capacity fits)
-            let map = unsafe { &mut *rc.data_ptr() };
+            let map = &mut *rc.data_ptr();
             *map = attrs;
             rc
         } else {
             Rc::new(PyCell::new(attrs))
         }
-    })
+    }
 }
 
 /// Try to recycle an attr map back to the freelist (if uniquely owned).
@@ -354,15 +347,15 @@ fn alloc_attr_map_with(attrs: FxAttrMap) -> SharedFxAttrMap {
 pub(crate) fn try_recycle_attr_map(rc: &SharedFxAttrMap) -> bool {
     if Rc::strong_count(rc) == 1 {
         unsafe { &mut *rc.data_ptr() }.clear();
-        ATTR_FREELIST.with(|fl| {
-            let list = unsafe { &mut *fl.get() };
+        unsafe {
+            let list = &mut *ATTR_FREELIST.0.get();
             if list.len() < ATTR_FREELIST_MAX {
                 list.push(rc.clone());
                 true
             } else {
                 false
             }
-        })
+        }
     } else {
         false
     }
@@ -371,15 +364,14 @@ pub(crate) fn try_recycle_attr_map(rc: &SharedFxAttrMap) -> bool {
 /// Allocate an inner Rc<PyCell<FxHashKeyMap>>, reusing from freelist if possible.
 #[inline]
 pub fn alloc_map_inner() -> Rc<PyCell<FxHashKeyMap>> {
-    MAP_FREELIST.with(|fl| {
-        // SAFETY: single-threaded (GIL), no reentrant access during pop
-        let list = unsafe { &mut *fl.get() };
+    unsafe {
+        let list = &mut *MAP_FREELIST.0.get();
         if let Some(rc) = list.pop() {
             rc
         } else {
             Rc::new(PyCell::new(new_fx_hashkey_map()))
         }
-    })
+    }
 }
 
 /// Return an inner Rc<PyCell<FxHashKeyMap>> to the freelist if it's uniquely owned.
@@ -388,16 +380,15 @@ pub fn alloc_map_inner() -> Rc<PyCell<FxHashKeyMap>> {
 pub(crate) fn try_recycle_map(rc: &mut Rc<PyCell<FxHashKeyMap>>) -> bool {
     if Rc::strong_count(rc) == 1 {
         unsafe { &mut *rc.data_ptr() }.clear();
-        MAP_FREELIST.with(|fl| {
-            // SAFETY: single-threaded (GIL), map already cleared (no reentrant drops)
-            let list = unsafe { &mut *fl.get() };
+        unsafe {
+            let list = &mut *MAP_FREELIST.0.get();
             if list.len() < MAP_FREELIST_MAX {
                 list.push(rc.clone());
                 true
             } else {
                 false
             }
-        })
+        }
     } else {
         false
     }
@@ -754,15 +745,15 @@ impl PyObject {
             alloc_map_inner()
         } else {
             // Try to reuse a freelist Rc (already cleared) — just write items into it
-            MAP_FREELIST.with(|fl| {
-                let list = unsafe { &mut *fl.get() };
+            unsafe {
+                let list = &mut *MAP_FREELIST.0.get();
                 if let Some(rc) = list.pop() {
                     *rc.write() = items;
                     rc
                 } else {
                     Rc::new(PyCell::new(items))
                 }
-            })
+            }
         };
         let obj = Self::wrap(PyObjectPayload::Dict(inner));
         track_object(&obj);

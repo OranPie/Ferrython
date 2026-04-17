@@ -4953,7 +4953,8 @@ impl VirtualMachine {
                                             _ => None,
                                         };
                                         if let Some(k) = hk {
-                                            unsafe { &mut *set.data_ptr() }.insert(k, item);
+                                            // entry API: skip value write + old value drop for duplicates
+                                            unsafe { &mut *set.data_ptr() }.entry(k).or_insert(item);
                                             chain_pop_none!(frame, instr_base, instr_count, profiling, self.profiler, instr.op)
                                         } else {
                                             // Non-hashable: use general dispatch
