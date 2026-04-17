@@ -187,24 +187,8 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
             };
             let sep_arg = pos.first();
             let parts: Vec<PyObjectRef> = match sep_arg {
-                None => match maxsplit {
-                    Some(n) => s.splitn(n + 1, char::is_whitespace)
-                        .filter(|p| !p.is_empty())
-                        .map(|p| PyObject::str_from_utf8_slice(p.as_bytes()))
-                        .collect(),
-                    None => s.split_whitespace()
-                        .map(|p| PyObject::str_from_utf8_slice(p.as_bytes()))
-                        .collect(),
-                },
-                Some(a) if matches!(&a.payload, PyObjectPayload::None) => match maxsplit {
-                    Some(n) => s.splitn(n + 1, char::is_whitespace)
-                        .filter(|p| !p.is_empty())
-                        .map(|p| PyObject::str_from_utf8_slice(p.as_bytes()))
-                        .collect(),
-                    None => s.split_whitespace()
-                        .map(|p| PyObject::str_from_utf8_slice(p.as_bytes()))
-                        .collect(),
-                },
+                None => split_whitespace_fast(s.as_bytes(), maxsplit),
+                Some(a) if matches!(&a.payload, PyObjectPayload::None) => split_whitespace_fast(s.as_bytes(), maxsplit),
                 Some(a) => {
                     let sep = a.as_str().ok_or_else(|| PyException::type_error("split() argument must be str or None"))?;
                     match maxsplit {
@@ -217,30 +201,13 @@ pub(super) fn call_str_method(s: &str, method: &str, args: &[PyObjectRef]) -> Py
                             }
                             let sep_len = sep.len();
                             if sep_len == 1 {
-                                // Single-byte separator: memchr-accelerated scan
-                                let sep_byte = sep.as_bytes()[0];
-                                let bytes = s.as_bytes();
-                                let len = bytes.len();
-                                let mut parts = Vec::with_capacity(8);
-                                let mut start = 0;
-                                while start <= len {
-                                    match memchr::memchr(sep_byte, &bytes[start..]) {
-                                        Some(i) => {
-                                            parts.push(PyObject::str_from_utf8_slice(&bytes[start..start + i]));
-                                            start = start + i + 1;
-                                        }
-                                        None => {
-                                            parts.push(PyObject::str_from_utf8_slice(&bytes[start..len]));
-                                            break;
-                                        }
-                                    }
-                                }
-                                parts
+                                split_single_byte(s.as_bytes(), sep.as_bytes()[0])
                             } else {
-                                // Multi-byte separator: memchr-accelerated search
+                                // Multi-byte separator: memchr-accelerated search, pre-counted
                                 let sep_b = sep.as_bytes();
                                 let bytes = s.as_bytes();
-                                let mut parts = Vec::with_capacity(8);
+                                let count = fast_count(bytes, sep_b, usize::MAX);
+                                let mut parts = Vec::with_capacity(count + 1);
                                 let mut start = 0;
                                 loop {
                                     match fast_find(bytes, start, sep_b) {
@@ -1239,6 +1206,66 @@ pub fn punycode_decode_bytes(bytes: &[u8]) -> PyResult<PyObjectRef> {
     Ok(PyObject::str_val(CompactString::from(result)))
 }
 
+/// Fast whitespace split — single byte-scan pass, no iterator/filter overhead.
+/// Matches Python semantics: strips leading/trailing whitespace, splits on runs of whitespace.
+#[inline]
+fn split_whitespace_fast(bytes: &[u8], maxsplit: Option<usize>) -> Vec<PyObjectRef> {
+    let len = bytes.len();
+    if len == 0 { return Vec::new(); }
+    let max = maxsplit.unwrap_or(usize::MAX);
+    let mut parts = Vec::with_capacity(12); // CPython's PREALLOC_SIZE
+    let mut splits = 0usize;
+    let mut i = 0;
+    while i < len {
+        // Skip whitespace
+        let b = unsafe { *bytes.get_unchecked(i) };
+        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == 0x0b || b == 0x0c {
+            i += 1;
+            continue;
+        }
+        if splits >= max {
+            parts.push(PyObject::str_from_utf8_slice(&bytes[i..]));
+            return parts;
+        }
+        // Find end of word
+        let start = i;
+        i += 1;
+        while i < len {
+            let b = unsafe { *bytes.get_unchecked(i) };
+            if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == 0x0b || b == 0x0c { break; }
+            i += 1;
+        }
+        parts.push(PyObject::str_from_utf8_slice(&bytes[start..i]));
+        splits += 1;
+    }
+    parts
+}
+
+/// Fast single-byte separator split — single pass, no pre-count.
+/// Uses PREALLOC=12 (matches CPython's PREALLOC_SIZE) to avoid reallocation for typical cases.
+#[inline]
+fn split_single_byte(bytes: &[u8], sep: u8) -> Vec<PyObjectRef> {
+    let len = bytes.len();
+    let mut parts = Vec::with_capacity(12);
+    let mut start = 0;
+    // Direct byte scan for short strings (avoids memchr function call overhead)
+    if len <= 256 {
+        for i in 0..len {
+            if unsafe { *bytes.get_unchecked(i) } == sep {
+                parts.push(PyObject::str_from_utf8_slice(&bytes[start..i]));
+                start = i + 1;
+            }
+        }
+    } else {
+        for pos in memchr::memchr_iter(sep, bytes) {
+            parts.push(PyObject::str_from_utf8_slice(&bytes[start..pos]));
+            start = pos + 1;
+        }
+    }
+    parts.push(PyObject::str_from_utf8_slice(&bytes[start..]));
+    parts
+}
+
 /// Replace occurrences of `old` with `new` in `s`, writing directly into a CompactString.
 /// memchr-accelerated substring search: find `needle` in `haystack[start..]`.
 /// Returns byte offset relative to `haystack` start.
@@ -1400,11 +1427,33 @@ fn join_str_slice(sep: &str, items: &[PyObjectRef]) -> PyResult<PyObjectRef> {
             ));
         }
     }
-    // Build result using raw pointer writes — avoids push_str bounds checks
+    // For small results, use a stack buffer to avoid heap allocation entirely.
+    // CompactString stores up to 24 bytes inline; stack buffer avoids Vec alloc + copy.
+    let sep_bytes = sep.as_bytes();
+    if total_len <= 128 {
+        let mut stack_buf = [0u8; 128];
+        let base = stack_buf.as_mut_ptr();
+        let mut offset = 0usize;
+        for (i, item) in items.iter().enumerate() {
+            if let PyObjectPayload::Str(s) = &item.payload {
+                if i > 0 && sep_len > 0 {
+                    unsafe { std::ptr::copy_nonoverlapping(sep_bytes.as_ptr(), base.add(offset), sep_len); }
+                    offset += sep_len;
+                }
+                let s_bytes = s.as_bytes();
+                let s_len = s_bytes.len();
+                if s_len > 0 {
+                    unsafe { std::ptr::copy_nonoverlapping(s_bytes.as_ptr(), base.add(offset), s_len); }
+                    offset += s_len;
+                }
+            }
+        }
+        return Ok(PyObject::str_from_utf8_slice(&stack_buf[..offset]));
+    }
+    // Large result: heap-allocated buffer
     let mut buf = Vec::<u8>::with_capacity(total_len);
     let base = buf.as_mut_ptr();
     let mut offset = 0usize;
-    let sep_bytes = sep.as_bytes();
     for (i, item) in items.iter().enumerate() {
         if let PyObjectPayload::Str(s) = &item.payload {
             if i > 0 && sep_len > 0 {

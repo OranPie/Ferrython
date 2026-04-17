@@ -673,7 +673,11 @@ impl PyObject {
         match bytes.len() {
             0 => EMPTY_STR.clone(),
             1 if bytes[0] < 128 => CHAR_CACHE[bytes[0] as usize].clone(),
-            _ => Self::str_val(CompactString::from(unsafe { std::str::from_utf8_unchecked(bytes) })),
+            _ => {
+                // Skip str_val's redundant empty/1-char checks — we already handled those
+                let cs = CompactString::from(unsafe { std::str::from_utf8_unchecked(bytes) });
+                Self::wrap_leaf(PyObjectPayload::Str(alloc_str_box(cs)))
+            }
         }
     }
     pub fn bytes(v: Vec<u8>) -> PyObjectRef {

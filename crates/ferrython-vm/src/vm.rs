@@ -165,7 +165,7 @@ use ferrython_bytecode::code::{CodeObject, CodeFlags, ConstantValue};
 use ferrython_bytecode::opcode::{Instruction, Opcode};
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
 use ferrython_core::object::{ new_fx_hashkey_map, PyCell, 
-    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData,
+    PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef, IteratorData, VecIterData,
     lookup_in_class_mro, SyncI64, SyncUsize, FxAttrMap, is_hidden_dict_key,
     CLASS_FLAG_HAS_GETATTRIBUTE, CLASS_FLAG_HAS_DESCRIPTORS, CLASS_FLAG_HAS_SETATTR, CLASS_FLAG_HAS_SLOTS,
 };
@@ -1319,7 +1319,36 @@ impl VirtualMachine {
                     let obj = speek!(frame);
                     match &obj.payload {
                         PyObjectPayload::Iterator(_) | PyObjectPayload::RangeIter(..) | PyObjectPayload::VecIter(_) | PyObjectPayload::RefIter { .. } | PyObjectPayload::Generator(_) => hot_ok!(profiling, self.profiler, instr.op),
-                        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) | PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) | PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_) | PyObjectPayload::DictValues(_) => {
+                        PyObjectPayload::List(_) | PyObjectPayload::Tuple(_) => {
+                            let iter = PyObject::wrap(PyObjectPayload::RefIter {
+                                source: obj.clone(), index: SyncUsize::new(0)
+                            });
+                            let len = frame.stack.len();
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        // Pre-convert dict keys/values to VecIter snapshot — avoids per-step
+                        // RefIter→Dict→get_index→to_object overhead in ForIter hot loop.
+                        PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
+                            let map = unsafe { &*cell.data_ptr() };
+                            let mut items = Vec::with_capacity(map.len());
+                            for (k, _) in map.iter() {
+                                items.push(k.to_object());
+                            }
+                            let iter = PyObject::wrap(PyObjectPayload::VecIter(Box::new(VecIterData { items, index: SyncUsize::new(0) })));
+                            let len = frame.stack.len();
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        PyObjectPayload::DictValues(cell) => {
+                            let map = unsafe { &*cell.data_ptr() };
+                            let items: Vec<PyObjectRef> = map.values().cloned().collect();
+                            let iter = PyObject::wrap(PyObjectPayload::VecIter(Box::new(VecIterData { items, index: SyncUsize::new(0) })));
+                            let len = frame.stack.len();
+                            unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
+                            hot_ok!(profiling, self.profiler, instr.op)
+                        }
+                        PyObjectPayload::DictItems(_) => {
                             let iter = PyObject::wrap(PyObjectPayload::RefIter {
                                 source: obj.clone(), index: SyncUsize::new(0)
                             });
@@ -1624,30 +1653,38 @@ impl VirtualMachine {
                                     };
                                     match (v0, v1) {
                                         (Some(Some(a)), Some(Some(b))) => {
-                                            // Both sources yielded — reuse cached tuple
-                                            let tuple = if let Some(ref mut cached) = cached_tuple {
-                                                if let Some(obj) = PyObjectRef::get_mut(cached) {
-                                                    if let PyObjectPayload::Tuple(ref mut items) = obj.payload {
-                                                        items[0] = a;
-                                                        items[1] = b;
-                                                        cached.clone()
-                                                    } else {
-                                                        let t = PyObject::tuple(vec![a, b]);
-                                                        *cached = t.clone();
-                                                        t
-                                                    }
-                                                } else {
-                                                    let t = PyObject::tuple(vec![a, b]);
-                                                    *cached = t.clone();
-                                                    t
-                                                }
-                                            } else {
-                                                let t = PyObject::tuple(vec![a, b]);
-                                                *cached_tuple = Some(t.clone());
-                                                t
-                                            };
                                             drop(data);
-                                            spush!(frame, tuple);
+                                            // Look-ahead: fuse with UnpackSequence+StoreFast to
+                                            // avoid tuple creation entirely (saves alloc+drop per iter).
+                                            let nip = frame.ip;
+                                            if nip + 2 < instr_count {
+                                                let i0 = unsafe { *instr_base.add(nip) };
+                                                if i0.op == Opcode::UnpackSequence && i0.arg == 2 {
+                                                    let i1 = unsafe { *instr_base.add(nip + 1) };
+                                                    let i2 = unsafe { *instr_base.add(nip + 2) };
+                                                    if i1.op == Opcode::StoreFast {
+                                                        if i2.op == Opcode::StoreFast {
+                                                            // Full fusion: ForIter+Unpack+2×StoreFast
+                                                            sset_local!(frame, i1.arg as usize, a);
+                                                            sset_local!(frame, i2.arg as usize, b);
+                                                            frame.ip = nip + 3;
+                                                            hot_ok!(profiling, self.profiler, instr.op)
+                                                        } else if i2.op == Opcode::StoreFastJumpAbsolute {
+                                                            sset_local!(frame, i1.arg as usize, a);
+                                                            sset_local!(frame, (i2.arg >> 16) as usize, b);
+                                                            frame.ip = (i2.arg & 0xFFFF) as usize;
+                                                            hot_ok_chain!(profiling, self.profiler, instr.op, frame, instr_base, instr_count)
+                                                        }
+                                                    }
+                                                    // Partial fusion: skip tuple, push a/b reversed for UnpackSequence
+                                                    spush!(frame, b);
+                                                    spush!(frame, a);
+                                                    frame.ip = nip + 1; // skip UnpackSequence
+                                                    hot_ok!(profiling, self.profiler, instr.op)
+                                                }
+                                            }
+                                            // Fallback: create tuple
+                                            spush!(frame, PyObject::tuple(vec![a, b]));
                                             hot_ok!(profiling, self.profiler, instr.op)
                                         }
                                         (Some(None), Some(None)) if is_strict => {
