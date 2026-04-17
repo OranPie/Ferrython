@@ -5434,7 +5434,13 @@ impl VirtualMachine {
                         if let Some(map_ptr) = map_ptr {
                             let value = spop!(frame);
                             let _key = spop!(frame);
-                            unsafe { &mut *map_ptr }.insert(hk, value);
+                            let map = unsafe { &mut *map_ptr };
+                            // Pre-allocate on first insert into empty dict (comprehension pattern).
+                            // Avoids 5-6 intermediate reallocations for typical dict comprehensions.
+                            if map.capacity() == 0 {
+                                map.reserve(32);
+                            }
+                            map.insert(hk, value);
                             hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                             self.execute_one(instr)
@@ -5469,7 +5475,11 @@ impl VirtualMachine {
                         } else { None };
                         if let Some(set_ptr) = set_ptr {
                             let item = spop!(frame);
-                            unsafe { &mut *set_ptr }.insert(hk, item);
+                            let set = unsafe { &mut *set_ptr };
+                            if set.capacity() == 0 {
+                                set.reserve(16);
+                            }
+                            set.insert(hk, item);
                             hot_ok!(profiling, self.profiler, instr.op)
                         } else {
                             self.execute_one(instr)
@@ -5792,7 +5802,6 @@ impl VirtualMachine {
                 Opcode::StoreName => {
                     if frame.scope_kind == crate::frame::ScopeKind::Module {
                         let idx = instr.arg as usize;
-                        let name = frame.code.names[idx].clone();
                         let value = spop!(frame);
                         // Update cache slot in-place so subsequent LoadName hits
                         if frame.global_cache.is_some() {
@@ -5801,7 +5810,15 @@ impl VirtualMachine {
                                 cache[idx] = Some(value.clone());
                             }
                         }
-                        frame.globals.write().insert(name, value);
+                        // Update-in-place when name already exists (avoids CompactString clone)
+                        let name_ref = &frame.code.names[idx];
+                        let mut globals = frame.globals.write();
+                        if let Some(slot) = globals.get_mut(name_ref) {
+                            *slot = value;
+                        } else {
+                            globals.insert(name_ref.clone(), value);
+                        }
+                        drop(globals);
                         crate::frame::bump_globals_version();
                         // Sync cache version to new globals version (cache is up-to-date)
                         frame.global_cache_version = crate::frame::globals_version();

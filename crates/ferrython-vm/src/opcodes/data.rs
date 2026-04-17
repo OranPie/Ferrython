@@ -253,7 +253,6 @@ impl VirtualMachine {
             }
             Opcode::StoreGlobal => {
                 let idx = instr.arg as usize;
-                let name = frame.code.names[idx].clone();
                 let value = frame.pop();
                 if frame.global_cache.is_some() {
                     let cache = Rc::make_mut(frame.global_cache.as_mut().unwrap());
@@ -261,7 +260,15 @@ impl VirtualMachine {
                         cache[idx] = Some(value.clone());
                     }
                 }
-                frame.globals.write().insert(name, value);
+                // Update-in-place when name already exists (avoids CompactString clone)
+                let name_ref = &frame.code.names[idx];
+                let mut globals = frame.globals.write();
+                if let Some(slot) = globals.get_mut(name_ref) {
+                    *slot = value;
+                } else {
+                    globals.insert(name_ref.clone(), value);
+                }
+                drop(globals);
                 crate::frame::bump_globals_version();
                 frame.global_cache_version = crate::frame::globals_version();
             }
