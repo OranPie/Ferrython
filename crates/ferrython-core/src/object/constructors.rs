@@ -701,14 +701,11 @@ impl PyObject {
         Self::wrap_leaf(PyObjectPayload::Tuple(alloc_tuple_box(items)))
     }
     pub fn set<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
-        if items.is_empty() {
-            // Reuse from freelist
-            let inner = alloc_map_inner();
-            Self::wrap(PyObjectPayload::Set(inner))
-        } else {
-            let fx: FxHashKeyMap = items.into_iter().collect();
-            Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(fx))))
-        }
+        let fx: FxHashKeyFlatMap = items.into_iter().collect();
+        Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(fx))))
+    }
+    pub fn set_from_flatmap(map: FxHashKeyFlatMap) -> PyObjectRef {
+        Self::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(map))))
     }
     pub fn dict<S: std::hash::BuildHasher>(items: IndexMap<HashableKey, PyObjectRef, S>) -> PyObjectRef {
         let inner = if items.is_empty() {

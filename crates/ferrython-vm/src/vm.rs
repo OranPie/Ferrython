@@ -2492,9 +2492,9 @@ impl VirtualMachine {
                         PyObjectPayload::Set(items) => {
                             let r = unsafe { &*items.data_ptr() };
                             match &needle.payload {
-                                PyObjectPayload::Str(s) => Some(r.contains_key(&BorrowedStrKey(s.as_str()))),
-                                PyObjectPayload::Int(PyInt::Small(n)) => Some(r.contains_key(&BorrowedIntKey(*n))),
-                                PyObjectPayload::Bool(b) => Some(r.contains_key(&BorrowedIntKey(*b as i64))),
+                                PyObjectPayload::Str(s) => Some(r.contains_key(&HashableKey::str_key((**s).clone()))),
+                                PyObjectPayload::Int(PyInt::Small(n)) => Some(r.contains_key(&HashableKey::Int(PyInt::Small(*n)))),
+                                PyObjectPayload::Bool(b) => Some(r.contains_key(&HashableKey::Int(PyInt::Small(*b as i64)))),
                                 _ => {
                                     if let Ok(hk) = HashableKey::from_object(needle) {
                                         Some(r.contains_key(&hk))
@@ -6045,11 +6045,11 @@ impl VirtualMachine {
                             }
                             (PyObjectPayload::Str(s), PyObjectPayload::Set(items)) => {
                                 let r = unsafe { &*items.data_ptr() };
-                                Some(r.contains_key(&BorrowedStrKey(s.as_str())))
+                                Some(r.contains_key(&HashableKey::str_key((**s).clone())))
                             }
                             (PyObjectPayload::Int(PyInt::Small(n)), PyObjectPayload::Set(items)) => {
                                 let r = unsafe { &*items.data_ptr() };
-                                Some(r.contains_key(&BorrowedIntKey(*n)))
+                                Some(r.contains_key(&HashableKey::Int(PyInt::Small(*n))))
                             }
                             (PyObjectPayload::Str(needle_s), PyObjectPayload::List(items_arc)) => {
                                 let items = unsafe { &*items_arc.data_ptr() };
@@ -6350,9 +6350,9 @@ impl VirtualMachine {
                             PyObjectPayload::Set(items) => {
                                 let r = unsafe { &*items.data_ptr() };
                                 match &needle.payload {
-                                    PyObjectPayload::Int(PyInt::Small(n)) => Some(r.contains_key(&BorrowedIntKey(*n))),
-                                    PyObjectPayload::Str(s) => Some(r.contains_key(&BorrowedStrKey(s.as_str()))),
-                                    PyObjectPayload::Bool(b) => Some(r.contains_key(&BorrowedIntKey(*b as i64))),
+                                    PyObjectPayload::Int(PyInt::Small(n)) => Some(r.contains_key(&HashableKey::Int(PyInt::Small(*n)))),
+                                    PyObjectPayload::Str(s) => Some(r.contains_key(&HashableKey::str_key((**s).clone()))),
+                                    PyObjectPayload::Bool(b) => Some(r.contains_key(&HashableKey::Int(PyInt::Small(*b as i64)))),
                                     _ => None,
                                 }
                             }

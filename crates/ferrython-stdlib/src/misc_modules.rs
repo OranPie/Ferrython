@@ -1201,7 +1201,7 @@ fn shallow_copy(obj: &PyObjectRef) -> PyResult<PyObjectRef> {
         PyObjectPayload::Tuple(items) => Ok(PyObject::tuple((**items).clone())),
         PyObjectPayload::List(items) => Ok(PyObject::list(items.read().clone())),
         PyObjectPayload::Dict(map) => Ok(PyObject::dict(map.read().clone())),
-        PyObjectPayload::Set(set) => Ok(PyObject::set(set.read().clone())),
+        PyObjectPayload::Set(set) => Ok(PyObject::set_from_flatmap(set.read().clone())),
         PyObjectPayload::Instance(inst) => {
             // Create new instance with same class, shallow copy of attrs
             Ok(PyObject::wrap(PyObjectPayload::Instance(std::mem::ManuallyDrop::new(Box::new(InstanceData {

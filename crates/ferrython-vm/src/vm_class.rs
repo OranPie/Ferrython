@@ -851,6 +851,7 @@ impl VirtualMachine {
                             is_exception_subclass: cd.is_exception_subclass,
                             instance_flags: cd.instance_flags,
                             cached_init: PyCell::new(None),
+                            cached_init_inline: PyCell::new(None),
                             has_custom_new: Cell::new(cd.has_custom_new.get()),
                         })))
                     } else {

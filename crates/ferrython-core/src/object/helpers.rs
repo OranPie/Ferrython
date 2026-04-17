@@ -1015,6 +1015,11 @@ pub(super) fn format_set(open: &str, close: &str, map: &FxHashKeyMap) -> String 
     format!("{}{}{}", open, inner.join(", "), close)
 }
 
+pub(super) fn format_set_flat(open: &str, close: &str, map: &FxHashKeyFlatMap) -> String {
+    let inner: Vec<String> = map.values().map(|v| v.repr()).collect();
+    format!("{}{}{}", open, inner.join(", "), close)
+}
+
 pub(super) fn format_dict(map: &FxHashKeyMap) -> String {
     let inner: Vec<String> = map.iter()
         .filter(|(k, _)| !is_hidden_dict_key(k))

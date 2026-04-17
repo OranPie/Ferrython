@@ -302,7 +302,7 @@ impl VirtualMachine {
                     let keys_to_remove: Vec<_> = other.read().keys().cloned().collect();
                     let mut w = set.write();
                     for k in keys_to_remove {
-                        w.swap_remove(&k);
+                        w.remove(&k);
                     }
                     drop(w);
                     a.clone()

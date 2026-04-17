@@ -1511,7 +1511,7 @@ pub fn create_abc_module() -> PyObjectRef {
         let mut ns = cd.namespace.write();
         ns.insert(
             CompactString::from("__abstractmethods__"),
-            PyObject::wrap(PyObjectPayload::Set(ferrython_core::object::alloc_map_inner())),
+            PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(ferrython_core::object::new_fx_hashkey_flatmap())))),
         );
         // ABC.register(subclass) — registers subclass as a virtual subclass
         let abc_ref = abc_class.clone();

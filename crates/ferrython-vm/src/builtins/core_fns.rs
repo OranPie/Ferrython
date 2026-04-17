@@ -143,6 +143,7 @@ pub(super) fn builtin_type(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                         is_exception_subclass: cd.is_exception_subclass,
                         instance_flags: cd.instance_flags,
                         cached_init: PyCell::new(None),
+                        cached_init_inline: PyCell::new(None),
                         has_custom_new: Cell::new(cd.has_custom_new.get()),
                     }))));
                 }
@@ -270,21 +271,27 @@ fn min_max_impl(args: &[PyObjectRef], target_ord: std::cmp::Ordering, name: &str
 
 /// Optimized min/max over a slice: uses direct i64 comparison for homogeneous small-int lists.
 fn min_max_slice(items: &[PyObjectRef], target_ord: std::cmp::Ordering) -> PyResult<PyObjectRef> {
-    // Homogeneous small-int: scan as i64, return the winning element by index
+    // Single-pass: try small-int scan, fall back to generic on first non-int
     if items.len() >= 2 {
-        let all_small_int = items.iter().all(|x| matches!(&x.payload, PyObjectPayload::Int(ferrython_core::types::PyInt::Small(_))));
-        if all_small_int {
-            let is_min = target_ord == std::cmp::Ordering::Less;
+        let is_min = target_ord == std::cmp::Ordering::Less;
+        if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(first_val)) = &items[0].payload {
             let mut best_idx = 0usize;
-            let mut best_val = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &items[0].payload { *v } else { 0 };
+            let mut best_val = *first_val;
+            let mut all_small = true;
             for (i, item) in items[1..].iter().enumerate() {
-                let v = if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(val)) = &item.payload { *val } else { 0 };
-                if (is_min && v < best_val) || (!is_min && v > best_val) {
-                    best_val = v;
-                    best_idx = i + 1;
+                if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(v)) = &item.payload {
+                    if (is_min && *v < best_val) || (!is_min && *v > best_val) {
+                        best_val = *v;
+                        best_idx = i + 1;
+                    }
+                } else {
+                    all_small = false;
+                    break;
                 }
             }
-            return Ok(items[best_idx].clone());
+            if all_small {
+                return Ok(items[best_idx].clone());
+            }
         }
     }
     // Generic path: track best by index, clone only once at the end

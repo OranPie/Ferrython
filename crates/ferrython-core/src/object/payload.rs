@@ -89,10 +89,26 @@ pub type FxAttrMap = IndexMap<CompactString, PyObjectRef, FxBuildHasher>;
 /// Dict/Set map using FxHash for fast key lookups (HashableKey → PyObjectRef).
 pub type FxHashKeyMap = IndexMap<HashableKey, PyObjectRef, FxBuildHasher>;
 
+/// Flat hash map for Set — no insertion-order tracking (Python sets don't guarantee order).
+/// ~30-40% faster inserts vs IndexMap for large sets.
+pub type FxHashKeyFlatMap = std::collections::HashMap<HashableKey, PyObjectRef, FxBuildHasher>;
+
 /// Create a new empty FxHashKeyMap (with FxHash, not SipHash).
 #[inline]
 pub fn new_fx_hashkey_map() -> FxHashKeyMap {
     IndexMap::with_hasher(FxBuildHasher::default())
+}
+
+/// Create a new empty FxHashKeyFlatMap for sets (with FxHash).
+#[inline]
+pub fn new_fx_hashkey_flatmap() -> FxHashKeyFlatMap {
+    FxHashKeyFlatMap::with_hasher(FxBuildHasher::default())
+}
+
+/// Create a new FxHashKeyFlatMap with pre-allocated capacity.
+#[inline]
+pub fn new_fx_hashkey_flatmap_with_capacity(cap: usize) -> FxHashKeyFlatMap {
+    FxHashKeyFlatMap::with_capacity_and_hasher(cap, FxBuildHasher::default())
 }
 
 /// Convert a SipHash IndexMap to FxHashKeyMap.
@@ -673,7 +689,7 @@ pub enum PyObjectPayload {
     ByteArray(Box<Vec<u8>>),
     List(Box<PyCell<Vec<PyObjectRef>>>),
     Tuple(Box<Vec<PyObjectRef>>),
-    Set(Rc<PyCell<FxHashKeyMap>>),
+    Set(Rc<PyCell<FxHashKeyFlatMap>>),
     FrozenSet(Box<FxHashKeyMap>),
     Dict(Rc<PyCell<FxHashKeyMap>>),
     /// A dict that is a live view of an instance's __dict__ (shares backing store)
@@ -761,8 +777,11 @@ impl Drop for PyObjectPayload {
     #[inline]
     fn drop(&mut self) {
         match self {
-            PyObjectPayload::Dict(rc) | PyObjectPayload::Set(rc) => {
+            PyObjectPayload::Dict(rc) => {
                 super::constructors::try_recycle_map(rc);
+            }
+            PyObjectPayload::Set(_) => {
+                // HashMap-based set — no freelist recycling (cheap to drop)
             }
             PyObjectPayload::ExceptionInstance(data) => {
                 let taken = unsafe { ManuallyDrop::take(data) };
@@ -1001,6 +1020,10 @@ pub struct ClassData {
     /// Cached __init__ function for fast instantiation (avoids vtable/namespace
     /// lookup per call). Populated lazily on first instantiation. Cleared on class mutation.
     pub cached_init: PyCell<Option<PyObjectRef>>,
+    /// Cached inline __init__ slots: `Some(slots)` = inlinable (each slot is
+    /// `(arg_local_index, name_index)` for LOAD_FAST+STORE_ATTR pairs).
+    /// `None` = not inlinable. Outer Option: not yet analyzed.
+    pub cached_init_inline: PyCell<Option<Option<Vec<(usize, usize)>>>>,
     /// Cached flag: true if __new__ is defined in this class's namespace.
     /// Pre-computed at class creation, invalidated on mutation.
     pub has_custom_new: Cell<bool>,
@@ -1214,6 +1237,7 @@ impl ClassData {
             is_exception_subclass,
             instance_flags,
             cached_init: PyCell::new(None),
+            cached_init_inline: PyCell::new(None),
             has_custom_new: Cell::new(has_custom_new),
         }
     }
@@ -1235,6 +1259,7 @@ impl ClassData {
         self.class_version = next_class_version();
         // Invalidate cached __init__ and __new__ flags
         *self.cached_init.write() = None;
+        *self.cached_init_inline.write() = None;
         self.has_custom_new.set(self.namespace.read().contains_key("__new__"));
     }
 

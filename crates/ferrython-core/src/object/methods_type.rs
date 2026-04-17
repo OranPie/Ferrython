@@ -180,7 +180,7 @@ pub(super) fn py_to_string(obj: &PyObjectRef) -> String {
                 else {
                     let ptr = PyObjectRef::as_ptr(obj) as usize;
                     if !repr_enter(ptr) { return "set(...)".into(); }
-                    let result = format_set("{", "}", &m);
+                    let result = format_set_flat("{", "}", &m);
                     repr_leave(ptr);
                     result
                 }

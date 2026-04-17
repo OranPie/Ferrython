@@ -12,7 +12,7 @@ use super::helpers::*;
 use super::methods::PyObjectMethods;
 
 /// Extract keys as HashableKey set from DictKeys or DictItems view.
-fn extract_view_keys(obj: &PyObjectRef) -> Option<FxHashKeyMap> {
+fn extract_view_keys(obj: &PyObjectRef) -> Option<FxHashKeyFlatMap> {
     match &obj.payload {
         PyObjectPayload::DictKeys(m) => {
             let r = m.read();
@@ -27,13 +27,13 @@ fn extract_view_keys(obj: &PyObjectRef) -> Option<FxHashKeyMap> {
             }).collect())
         }
         PyObjectPayload::Set(s) => Some(s.read().clone()),
-        PyObjectPayload::FrozenSet(s) => Some(s.as_ref().clone()),
+        PyObjectPayload::FrozenSet(s) => Some(s.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
         _ => None,
     }
 }
 
-/// Build a set result from an IndexMap of HashableKey.
-fn keys_to_set(keys: FxHashKeyMap) -> PyObjectRef {
+/// Build a set result from a FxHashKeyFlatMap.
+fn keys_to_set(keys: FxHashKeyFlatMap) -> PyObjectRef {
     PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(keys))))
 }
 
@@ -161,7 +161,7 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             }
             (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
                 let ra = a.read(); let rb = b.read();
-                let mut result = new_fx_hashkey_map();
+                let mut result = new_fx_hashkey_flatmap();
                 for (k, v) in ra.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
@@ -178,7 +178,7 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             }
             (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
                 let ra = a.read();
-                let mut result = new_fx_hashkey_map();
+                let mut result = new_fx_hashkey_flatmap();
                 for (k, v) in ra.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
@@ -187,7 +187,7 @@ pub(super) fn py_sub(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectRef> 
             | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
                 if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
                 if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
-                    let mut result = new_fx_hashkey_map();
+                    let mut result = new_fx_hashkey_flatmap();
                     for (k, v) in ak.iter() { if !bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                     Ok(keys_to_set(result))
                 } else {
@@ -635,7 +635,7 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
                 let ra = a.read(); let rb = b.read();
-                let mut result = new_fx_hashkey_map();
+                let mut result = new_fx_hashkey_flatmap();
                 for (k, v) in ra.iter() { if rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
@@ -652,7 +652,7 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             }
             (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
                 let ra = a.read();
-                let mut result = new_fx_hashkey_map();
+                let mut result = new_fx_hashkey_flatmap();
                 for (k, v) in ra.iter() { if b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
             }
@@ -692,7 +692,7 @@ pub(super) fn py_bit_and(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
                 if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
                 if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
-                    let mut result = new_fx_hashkey_map();
+                    let mut result = new_fx_hashkey_flatmap();
                     for (k, v) in ak.iter() { if bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                     Ok(keys_to_set(result))
                 } else {
@@ -788,7 +788,7 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
         match (&a.payload, &b.payload) {
             (PyObjectPayload::Set(a), PyObjectPayload::Set(b)) => {
                 let ra = a.read(); let rb = b.read();
-                let mut result = new_fx_hashkey_map();
+                let mut result = new_fx_hashkey_flatmap();
                 for (k, v) in ra.iter() { if !rb.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 for (k, v) in rb.iter() { if !ra.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
@@ -808,7 +808,7 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             }
             (PyObjectPayload::Set(a), PyObjectPayload::FrozenSet(b)) => {
                 let ra = a.read();
-                let mut result = new_fx_hashkey_map();
+                let mut result = new_fx_hashkey_flatmap();
                 for (k, v) in ra.iter() { if !b.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 for (k, v) in b.iter() { if !ra.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                 Ok(PyObject::wrap(PyObjectPayload::Set(Rc::new(PyCell::new(result)))))
@@ -818,7 +818,7 @@ pub(super) fn py_bit_xor(a: &PyObjectRef, b: &PyObjectRef) -> PyResult<PyObjectR
             | (_, PyObjectPayload::DictKeys(_) | PyObjectPayload::DictItems(_))
                 if extract_view_keys(a).is_some() && extract_view_keys(b).is_some() => {
                 if let (Some(ak), Some(bk)) = (extract_view_keys(a), extract_view_keys(b)) {
-                    let mut result = new_fx_hashkey_map();
+                    let mut result = new_fx_hashkey_flatmap();
                     for (k, v) in ak.iter() { if !bk.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                     for (k, v) in bk.iter() { if !ak.contains_key(k) { result.insert(k.clone(), v.clone()); } }
                     Ok(keys_to_set(result))

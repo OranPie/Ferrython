@@ -520,6 +520,44 @@ impl VirtualMachine {
                             && pf.closure.is_empty()
                     } else { false };
                     if is_simple_init {
+                        // Check if __init__ is trivially inlinable (only LOAD_FAST+STORE_ATTR pairs)
+                        let inline_slots: Option<Vec<(usize, usize)>> = {
+                            let cached = cd.cached_init_inline.read();
+                            if let Some(ref info) = *cached {
+                                info.clone()
+                            } else {
+                                drop(cached);
+                                let info = analyze_trivial_init(unsafe {
+                                    match &init_fn.payload {
+                                        PyObjectPayload::Function(pf) => &pf.code,
+                                        _ => std::hint::unreachable_unchecked(),
+                                    }
+                                });
+                                *cd.cached_init_inline.write() = Some(info.clone());
+                                info
+                            }
+                        };
+                        if let Some(ref slots) = inline_slots {
+                            // INLINE: directly set attrs on instance — no frame needed
+                            if let PyObjectPayload::Instance(inst) = &instance.payload {
+                                let code: &CodeObject = unsafe {
+                                    match &init_fn.payload {
+                                        PyObjectPayload::Function(pf) => &pf.code,
+                                        _ => std::hint::unreachable_unchecked(),
+                                    }
+                                };
+                                let map = unsafe { &mut *inst.attrs.data_ptr() };
+                                for &(arg_idx, name_idx) in slots.iter() {
+                                    // arg_idx is 1-based (0=self); pos_args is 0-based
+                                    let value = std::mem::replace(
+                                        &mut pos_args[arg_idx - 1],
+                                        PyObject::none(),
+                                    );
+                                    map.insert(code.names[name_idx].clone(), value);
+                                }
+                            }
+                        } else {
+                        // Not inlinable — use frame
                         let mut new_frame = unsafe {
                             let pf_ptr = match &init_fn.payload {
                                 PyObjectPayload::Function(pf) => &**pf as *const ferrython_core::types::PyFunction,
@@ -545,6 +583,7 @@ impl VirtualMachine {
                                 "__init__() should return None, not '".to_string()
                                     + init_result.type_name() + "'"
                             ));
+                        }
                         }
                     } else {
                         pos_args.insert(0, instance.clone());
@@ -3931,4 +3970,47 @@ impl VirtualMachine {
             }
         }
     }
+}
+
+/// Analyze a __init__ function's bytecode to check if it is trivially inlinable.
+/// Returns `Some(slots)` where each slot is `(arg_local_index, name_index)` for
+/// a LOAD_FAST+LOAD_FAST(self)+STORE_ATTR triple. Returns `None` if the body
+/// contains anything beyond simple `self.attr = arg` assignments + `return None`.
+fn analyze_trivial_init(code: &CodeObject) -> Option<Vec<(usize, usize)>> {
+    use ferrython_bytecode::Opcode;
+    let instrs = &code.instructions;
+    let len = instrs.len();
+    if len < 2 { return None; }
+
+    let mut i = 0;
+    let mut slots = Vec::new();
+
+    while i + 3 <= len {
+        if instrs[i].op == Opcode::LoadFast
+            && instrs[i + 1].op == Opcode::LoadFast
+            && instrs[i + 1].arg == 0  // self
+            && instrs[i + 2].op == Opcode::StoreAttr
+        {
+            let arg_idx = instrs[i].arg as usize;
+            if arg_idx == 0 { return None; } // loading self as value — not a simple attr store
+            slots.push((arg_idx, instrs[i + 2].arg as usize));
+            i += 3;
+        } else {
+            break;
+        }
+    }
+
+    // Must end with LOAD_CONST + RETURN_VALUE and have at least one slot
+    if slots.is_empty() || i + 2 != len { return None; }
+    if instrs[i].op != Opcode::LoadConst || instrs[i + 1].op != Opcode::ReturnValue {
+        return None;
+    }
+    // Verify the constant is None
+    let const_idx = instrs[i].arg as usize;
+    if const_idx < code.constants.len() {
+        if !matches!(code.constants[const_idx], ferrython_bytecode::code::ConstantValue::None) {
+            return None;
+        }
+    }
+    Some(slots)
 }

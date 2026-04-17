@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 use ferrython_core::error::{ExceptionKind, PyException, PyResult};
-use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell, 
+use ferrython_core::object::{ FxHashKeyMap, FxHashKeyFlatMap, new_fx_hashkey_map, new_fx_hashkey_flatmap, PyCell, 
     check_args_min,
     PyObject, PyObjectMethods, PyObjectPayload, PyObjectRef,
 };
@@ -807,9 +807,9 @@ pub(super) fn call_tuple_method(items: &[PyObjectRef], method: &str, args: &[PyO
     }
 }
 
-pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
+pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyFlatMap>>, method: &str, args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
     match method {
-        "copy" => Ok(PyObject::set(m.read().clone())),
+        "copy" => Ok(PyObject::set_from_flatmap(m.read().clone())),
         "union" | "__or__" => {
             check_args_min("union", args, 1)?;
             let mut result = m.read().clone();
@@ -818,7 +818,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
                 let hk = item.to_hashable_key()?;
                 result.entry(hk).or_insert(item);
             }
-            Ok(PyObject::set(result))
+            Ok(PyObject::set_from_flatmap(result))
         }
         "intersection" | "__and__" => {
             check_args_min("intersection", args, 1)?;
@@ -826,11 +826,11 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
             let other_keys: std::collections::HashSet<String> = other_items.iter()
                 .map(|x| x.py_to_string()).collect();
             let guard = m.read();
-            let result: FxHashKeyMap = guard.iter()
+            let result: FxHashKeyFlatMap = guard.iter()
                 .filter(|(_, v)| other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            Ok(PyObject::set(result))
+            Ok(PyObject::set_from_flatmap(result))
         }
         "difference" | "__sub__" => {
             check_args_min("difference", args, 1)?;
@@ -838,11 +838,11 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
             let other_keys: std::collections::HashSet<String> = other_items.iter()
                 .map(|x| x.py_to_string()).collect();
             let guard = m.read();
-            let result: FxHashKeyMap = guard.iter()
+            let result: FxHashKeyFlatMap = guard.iter()
                 .filter(|(_, v)| !other_keys.contains(&v.py_to_string()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            Ok(PyObject::set(result))
+            Ok(PyObject::set_from_flatmap(result))
         }
         "symmetric_difference" | "__xor__" => {
             check_args_min("symmetric_difference", args, 1)?;
@@ -852,7 +852,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
                 .map(|x| x.py_to_string()).collect();
             let other_keys: std::collections::HashSet<String> = other_items.iter()
                 .map(|x| x.py_to_string()).collect();
-            let mut result = IndexMap::new();
+            let mut result = new_fx_hashkey_flatmap();
             for (k, v) in guard.iter() {
                 if !other_keys.contains(&v.py_to_string()) {
                     result.insert(k.clone(), v.clone());
@@ -865,7 +865,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
                     }
                 }
             }
-            Ok(PyObject::set(result))
+            Ok(PyObject::set_from_flatmap(result))
         }
         "issubset" => {
             check_args_min("issubset", args, 1)?;
@@ -902,7 +902,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
         "remove" => {
             check_args_min("remove", args, 1)?;
             let hk = args[0].to_hashable_key()?;
-            if m.write().swap_remove(&hk).is_none() {
+            if m.write().remove(&hk).is_none() {
                 return Err(PyException::key_error(args[0].repr()));
             }
             Ok(PyObject::none())
@@ -910,7 +910,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
         "discard" => {
             check_args_min("discard", args, 1)?;
             let hk = args[0].to_hashable_key()?;
-            m.write().swap_remove(&hk);
+            m.write().remove(&hk);
             Ok(PyObject::none())
         }
         "pop" => {
@@ -919,7 +919,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
                 return Err(PyException::key_error("pop from an empty set"));
             }
             let key = guard.keys().next().unwrap().clone();
-            let val = guard.swap_remove(&key).unwrap();
+            let val = guard.remove(&key).unwrap();
             Ok(val)
         }
         "clear" => {
@@ -947,7 +947,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
                 .collect();
             let mut guard = m.write();
             for k in &remove_keys {
-                guard.swap_remove(k);
+                guard.remove(k);
             }
             Ok(PyObject::none())
         }
@@ -977,7 +977,7 @@ pub(super) fn call_set_method(m: &Rc<PyCell<FxHashKeyMap>>, method: &str, args: 
                 }
             }
             for k in &to_remove {
-                guard.swap_remove(k);
+                guard.remove(k);
             }
             // Add items from other that weren't in self
             for item in &other_items {
