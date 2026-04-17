@@ -12,7 +12,7 @@ use ferrython_core::object::{ FxHashKeyMap, new_fx_hashkey_map, PyCell,
     PyObjectPayload, PyObjectRef, is_data_descriptor, has_descriptor_get, lookup_in_class_mro,
     get_builtin_base_type_name,
 };
-use ferrython_core::types::{HashableKey, SharedConstantCache, SharedGlobals};
+use ferrython_core::types::{HashableKey, PyInt, SharedConstantCache, SharedGlobals};
 use indexmap::IndexMap;
 use std::rc::Rc;
 
@@ -498,13 +498,12 @@ impl VirtualMachine {
                 && !cd.has_custom_new.get()
             {
                 let instance = PyObject::instance(cls.clone());
-                // Use cached __init__ (populated lazily, invalidated on class mutation)
+                // Use cached __init__ — unsafe data_ptr avoids RefCell borrow overhead
                 let init_fn = {
-                    let cached = cd.cached_init.read();
-                    if cached.is_some() {
-                        cached.clone()
+                    let cached_ptr = unsafe { &*cd.cached_init.data_ptr() };
+                    if cached_ptr.is_some() {
+                        cached_ptr.clone()
                     } else {
-                        drop(cached);
                         let found = cd.method_vtable.read().get("__init__").cloned()
                             .or_else(|| cd.namespace.read().get("__init__").cloned())
                             .or_else(|| ferrython_core::object::lookup_in_class_mro(cls, "__init__"));
@@ -521,20 +520,19 @@ impl VirtualMachine {
                     } else { false };
                     if is_simple_init {
                         // Check if __init__ is trivially inlinable (only LOAD_FAST+STORE_ATTR pairs)
-                        let inline_slots: Option<Vec<(usize, usize)>> = {
-                            let cached = cd.cached_init_inline.read();
-                            if let Some(ref info) = *cached {
-                                info.clone()
-                            } else {
-                                drop(cached);
+                        // Use unsafe data_ptr to avoid RefCell borrow + Vec clone on the hot path
+                        let cached_ptr = unsafe { &*cd.cached_init_inline.data_ptr() };
+                        let inline_slots: &Option<Vec<(usize, usize)>> = match cached_ptr {
+                            Some(ref info) => info,
+                            None => {
                                 let info = analyze_trivial_init(unsafe {
                                     match &init_fn.payload {
                                         PyObjectPayload::Function(pf) => &pf.code,
                                         _ => std::hint::unreachable_unchecked(),
                                     }
                                 });
-                                *cd.cached_init_inline.write() = Some(info.clone());
-                                info
+                                *cd.cached_init_inline.write() = Some(info);
+                                unsafe { (&*cd.cached_init_inline.data_ptr()).as_ref().unwrap() }
                             }
                         };
                         if let Some(ref slots) = inline_slots {
@@ -2164,49 +2162,164 @@ impl VirtualMachine {
                         // Inline lazy iteration — avoid materializing entire iterable
                         match &args[0].payload {
                             PyObjectPayload::List(cell) => {
-                                for item in cell.read().iter() {
-                                    total = total.add(item)?;
+                                let items = cell.read();
+                                if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(s)) = &total.payload {
+                                    let mut acc: i64 = *s;
+                                    let mut fallback_idx = items.len();
+                                    for (i, item) in items.iter().enumerate() {
+                                        if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(n)) = &item.payload {
+                                            acc = acc.wrapping_add(*n);
+                                        } else {
+                                            total = PyObject::int(acc);
+                                            total = total.add(item)?;
+                                            fallback_idx = i + 1;
+                                            break;
+                                        }
+                                    }
+                                    if fallback_idx < items.len() {
+                                        for item in &items[fallback_idx..] {
+                                            total = total.add(item)?;
+                                        }
+                                    } else {
+                                        total = PyObject::int(acc);
+                                    }
+                                } else {
+                                    for item in items.iter() {
+                                        total = total.add(item)?;
+                                    }
                                 }
                             }
                             PyObjectPayload::Tuple(items) => {
-                                for item in items.iter() {
-                                    total = total.add(item)?;
+                                if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(s)) = &total.payload {
+                                    let mut acc: i64 = *s;
+                                    let mut fallback_idx = items.len();
+                                    for (i, item) in items.iter().enumerate() {
+                                        if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(n)) = &item.payload {
+                                            acc = acc.wrapping_add(*n);
+                                        } else {
+                                            total = PyObject::int(acc);
+                                            total = total.add(item)?;
+                                            fallback_idx = i + 1;
+                                            break;
+                                        }
+                                    }
+                                    if fallback_idx < items.len() {
+                                        for item in &items[fallback_idx..] {
+                                            total = total.add(item)?;
+                                        }
+                                    } else {
+                                        total = PyObject::int(acc);
+                                    }
+                                } else {
+                                    for item in items.iter() {
+                                        total = total.add(item)?;
+                                    }
                                 }
                             }
                             PyObjectPayload::Range(rd) => {
-                                // Arithmetic sum for integer ranges — O(1) when total is int
+                                // O(1) arithmetic sum for integer ranges
                                 let (s, e, st) = (rd.start, rd.stop, rd.step);
-                                if st > 0 {
-                                    let mut c = s;
-                                    while c < e { total = total.add(&PyObject::int(c))?; c += st; }
+                                let n = if st > 0 {
+                                    if e > s { (e - s - 1) / st + 1 } else { 0 }
                                 } else if st < 0 {
-                                    let mut c = s;
-                                    while c > e { total = total.add(&PyObject::int(c))?; c += st; }
+                                    if s > e { (s - e - 1) / (-st) + 1 } else { 0 }
+                                } else { 0 };
+                                if n > 0 {
+                                    // Gauss: sum = n*start + step*n*(n-1)/2
+                                    let range_sum = n.wrapping_mul(s).wrapping_add(
+                                        st.wrapping_mul(n).wrapping_mul(n - 1) / 2
+                                    );
+                                    total = total.add(&PyObject::int(range_sum))?;
                                 }
                             }
                             PyObjectPayload::RangeIter(ri) => {
-                                let mut c = ri.current.get();
+                                // O(1) arithmetic sum for range iterators
+                                let c = ri.current.get();
                                 let s = ri.stop;
                                 let st = ri.step;
-                                if st > 0 {
-                                    while c < s { total = total.add(&PyObject::int(c))?; c += st; }
+                                let n = if st > 0 {
+                                    if s > c { (s - c - 1) / st + 1 } else { 0 }
                                 } else if st < 0 {
-                                    while c > s { total = total.add(&PyObject::int(c))?; c += st; }
+                                    if c > s { (c - s - 1) / (-st) + 1 } else { 0 }
+                                } else { 0 };
+                                if n > 0 {
+                                    let range_sum = n.wrapping_mul(c).wrapping_add(
+                                        st.wrapping_mul(n).wrapping_mul(n - 1) / 2
+                                    );
+                                    total = total.add(&PyObject::int(range_sum))?;
+                                    ri.current.set(c + st * n); // advance iterator to exhaustion
                                 }
                             }
                             PyObjectPayload::Iterator(_) => {
                                 let items = self.collect_iterable(&args[0])?;
-                                for item in items {
-                                    total = total.add(&item)?;
+                                // Native i64 accumulation for homogeneous int iterators
+                                if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(s)) = &total.payload {
+                                    let mut acc: i64 = *s;
+                                    let mut fallback_idx = items.len();
+                                    for (i, item) in items.iter().enumerate() {
+                                        if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(n)) = &item.payload {
+                                            acc = acc.wrapping_add(*n);
+                                        } else {
+                                            total = PyObject::int(acc);
+                                            total = total.add(&item)?;
+                                            fallback_idx = i + 1;
+                                            break;
+                                        }
+                                    }
+                                    if fallback_idx < items.len() {
+                                        for item in &items[fallback_idx..] {
+                                            total = total.add(&item)?;
+                                        }
+                                    } else {
+                                        total = PyObject::int(acc);
+                                    }
+                                } else {
+                                    for item in items {
+                                        total = total.add(&item)?;
+                                    }
                                 }
                             }
                             PyObjectPayload::Generator(gen_arc) => {
                                 let gen_arc = gen_arc.clone();
-                                loop {
-                                    match self.resume_generator_for_iter(&gen_arc) {
-                                        Ok(Some(item)) => { total = total.add(&item)?; }
-                                        Ok(None) => break,
-                                        Err(e) => return Err(e),
+                                // Native i64 accumulation for homogeneous int generators
+                                if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(s)) = &total.payload {
+                                    let mut acc: i64 = *s;
+                                    let mut use_native = true;
+                                    loop {
+                                        match self.resume_generator_for_iter(&gen_arc) {
+                                            Ok(Some(item)) => {
+                                                if let PyObjectPayload::Int(ferrython_core::types::PyInt::Small(n)) = &item.payload {
+                                                    acc = acc.wrapping_add(*n);
+                                                } else {
+                                                    // Switch to generic accumulation
+                                                    total = PyObject::int(acc);
+                                                    total = total.add(&item)?;
+                                                    use_native = false;
+                                                    break;
+                                                }
+                                            }
+                                            Ok(None) => break,
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                    if use_native {
+                                        return Ok(PyObject::int(acc));
+                                    }
+                                    // Fell through — continue with generic total
+                                    loop {
+                                        match self.resume_generator_for_iter(&gen_arc) {
+                                            Ok(Some(item)) => { total = total.add(&item)?; }
+                                            Ok(None) => break,
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                } else {
+                                    loop {
+                                        match self.resume_generator_for_iter(&gen_arc) {
+                                            Ok(Some(item)) => { total = total.add(&item)?; }
+                                            Ok(None) => break,
+                                            Err(e) => return Err(e),
+                                        }
                                     }
                                 }
                             }
@@ -2374,12 +2487,18 @@ impl VirtualMachine {
                     }
                     "min" => {
                         if args.len() == 1 {
+                            if let Some(r) = self.native_min_max_list(&args[0], false)? {
+                                return Ok(r);
+                            }
                             let items = self.collect_iterable(&args[0])?;
                             return self.compute_min_max(items, false, None, None, "min");
                         }
                     }
                     "max" => {
                         if args.len() == 1 {
+                            if let Some(r) = self.native_min_max_list(&args[0], true)? {
+                                return Ok(r);
+                            }
                             let items = self.collect_iterable(&args[0])?;
                             return self.compute_min_max(items, true, None, None, "max");
                         }
@@ -3855,6 +3974,35 @@ impl VirtualMachine {
             }
         }
         Ok(best)
+    }
+
+    /// Native i64 min/max for lists of small ints.
+    /// Returns None if the arg is not a list or contains non-int items (caller falls back).
+    fn native_min_max_list(&self, arg: &PyObjectRef, is_max: bool) -> PyResult<Option<PyObjectRef>> {
+        let items = match &arg.payload {
+            PyObjectPayload::List(rc) => rc.read(),
+            _ => return Ok(None),
+        };
+        if items.is_empty() {
+            let name = if is_max { "max" } else { "min" };
+            return Err(PyException::value_error(format!("{}() arg is an empty sequence", name)));
+        }
+        let first = match &items[0].payload {
+            PyObjectPayload::Int(PyInt::Small(n)) => *n,
+            _ => return Ok(None),
+        };
+        let mut best = first;
+        for item in &items[1..] {
+            match &item.payload {
+                PyObjectPayload::Int(PyInt::Small(n)) => {
+                    let v = *n;
+                    if is_max { if v > best { best = v; } }
+                    else { if v < best { best = v; } }
+                }
+                _ => return Ok(None),
+            }
+        }
+        Ok(Some(PyObject::int(best)))
     }
 
     /// Post-process parsed JSON: apply object_hook, parse_float, parse_int

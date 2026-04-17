@@ -1327,23 +1327,20 @@ impl VirtualMachine {
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        // Pre-convert dict keys/values to VecIter snapshot — avoids per-step
-                        // RefIter→Dict→get_index→to_object overhead in ForIter hot loop.
-                        PyObjectPayload::Dict(cell) | PyObjectPayload::MappingProxy(cell) | PyObjectPayload::DictKeys(cell) => {
-                            let map = unsafe { &*cell.data_ptr() };
-                            let mut items = Vec::with_capacity(map.len());
-                            for (k, _) in map.iter() {
-                                items.push(k.to_object());
-                            }
-                            let iter = PyObject::wrap(PyObjectPayload::VecIter(Box::new(VecIterData { items, index: SyncUsize::new(0) })));
+                        // Use RefIter for dict keys — avoids upfront Vec allocation + extra
+                        // clone round. ForIter handles RefIter→Dict→get_index→to_object per step.
+                        PyObjectPayload::Dict(_) | PyObjectPayload::MappingProxy(_) | PyObjectPayload::DictKeys(_) => {
+                            let iter = PyObject::wrap(PyObjectPayload::RefIter {
+                                source: obj.clone(), index: SyncUsize::new(0)
+                            });
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
                             hot_ok!(profiling, self.profiler, instr.op)
                         }
-                        PyObjectPayload::DictValues(cell) => {
-                            let map = unsafe { &*cell.data_ptr() };
-                            let items: Vec<PyObjectRef> = map.values().cloned().collect();
-                            let iter = PyObject::wrap(PyObjectPayload::VecIter(Box::new(VecIterData { items, index: SyncUsize::new(0) })));
+                        PyObjectPayload::DictValues(_) => {
+                            let iter = PyObject::wrap(PyObjectPayload::RefIter {
+                                source: obj.clone(), index: SyncUsize::new(0)
+                            });
                             let len = frame.stack.len();
                             unsafe { *frame.stack.get_unchecked_mut(len - 1) = iter };
                             hot_ok!(profiling, self.profiler, instr.op)

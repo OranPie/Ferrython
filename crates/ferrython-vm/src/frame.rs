@@ -79,85 +79,44 @@ impl Block {
     pub fn stack_level(&self) -> usize { self.stack_level as usize }
 }
 
-/// Fixed-capacity inline block stack (avoids Vec heap allocation).
-/// 4 inline slots cover typical nesting; overflow spills to a Vec.
-const BLOCK_STACK_INLINE: usize = 4;
-
+/// Compact block stack — `None` when empty (common case), Vec when blocks exist.
+/// Saves 40 bytes per Frame vs the previous inline-array design.
 #[derive(Debug, Clone)]
-pub struct BlockStack {
-    inline: [std::mem::MaybeUninit<Block>; BLOCK_STACK_INLINE],
-    len: u8,
-    overflow: Option<Vec<Block>>,
-}
+pub struct BlockStack(Option<Vec<Block>>);
 
 impl BlockStack {
     #[inline(always)]
-    pub fn new() -> Self {
-        Self {
-            inline: [std::mem::MaybeUninit::uninit(); BLOCK_STACK_INLINE],
-            len: 0,
-            overflow: None,
-        }
-    }
+    pub fn new() -> Self { Self(None) }
 
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.len == 0 && self.overflow.as_ref().map_or(true, |v| v.is_empty())
+        self.0.as_ref().map_or(true, |v| v.is_empty())
     }
 
     #[inline(always)]
     pub fn push(&mut self, block: Block) {
-        if (self.len as usize) < BLOCK_STACK_INLINE {
-            self.inline[self.len as usize].write(block);
-            self.len += 1;
-        } else {
-            self.overflow.get_or_insert_with(|| Vec::with_capacity(4)).push(block);
-        }
+        self.0.get_or_insert_with(|| Vec::with_capacity(4)).push(block);
     }
 
     #[inline(always)]
     pub fn pop(&mut self) -> Option<Block> {
-        if let Some(ref mut ov) = self.overflow {
-            if let Some(b) = ov.pop() {
-                return Some(b);
-            }
-        }
-        if self.len > 0 {
-            self.len -= 1;
-            Some(unsafe { self.inline[self.len as usize].assume_init() })
-        } else {
-            None
-        }
+        self.0.as_mut().and_then(|v| v.pop())
     }
 
     #[inline(always)]
     pub fn last(&self) -> Option<&Block> {
-        if let Some(ref ov) = self.overflow {
-            if let Some(b) = ov.last() {
-                return Some(b);
-            }
-        }
-        if self.len > 0 {
-            Some(unsafe { self.inline[(self.len - 1) as usize].assume_init_ref() })
-        } else {
-            None
-        }
+        self.0.as_ref().and_then(|v| v.last())
     }
 
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &Block> {
-        let inline_slice = unsafe {
-            std::slice::from_raw_parts(self.inline.as_ptr() as *const Block, self.len as usize)
-        };
-        let overflow_slice = self.overflow.as_deref().unwrap_or(&[]);
-        inline_slice.iter().chain(overflow_slice.iter())
+        self.0.as_deref().unwrap_or(&[]).iter()
     }
 
     #[inline(always)]
     pub fn clear(&mut self) {
-        self.len = 0;
-        if let Some(ref mut ov) = self.overflow {
-            ov.clear();
+        if let Some(ref mut v) = self.0 {
+            v.clear();
         }
     }
 }
