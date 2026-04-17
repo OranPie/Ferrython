@@ -1081,7 +1081,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                         let mut ns = FxAttrMap::default();
                         for (k, v) in r.iter() {
                             let key_str = match k {
-                                HashableKey::Str(s) => CompactString::clone(s),
+                                HashableKey::Str(s) => s.as_ref().clone(),
                                 _ => CompactString::from(k.to_object().py_to_string()),
                             };
                             ns.insert(key_str, v.clone());
@@ -1119,7 +1119,7 @@ pub fn resolve_builtin_type_method(type_name: &str, method_name: &str) -> Option
                         let mut ns = FxAttrMap::default();
                         for (k, v) in r.iter() {
                             let key_str = match k {
-                                HashableKey::Str(s) => CompactString::clone(s),
+                                HashableKey::Str(s) => s.as_ref().clone(),
                                 _ => CompactString::from(k.to_object().py_to_string()),
                             };
                             ns.insert(key_str, v.clone());

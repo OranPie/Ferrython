@@ -186,7 +186,7 @@ fn builtin_type_create(name_obj: &PyObjectRef, bases_obj: &PyObjectRef, dict_obj
             let mut ns = FxAttrMap::default();
             for (k, v) in r.iter() {
                 let key_str = match k {
-                    HashableKey::Str(s) => CompactString::clone(s),
+                    HashableKey::Str(s) => s.as_ref().clone(),
                     _ => CompactString::from(k.to_object().py_to_string()),
                 };
                 ns.insert(key_str, v.clone());

@@ -477,7 +477,7 @@ fn make_http_response_class() -> PyObjectRef {
                 let map = d.read();
                 for (k, v) in map.iter() {
                     let ks = match k {
-                        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+                        HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
                         _ => continue,
                     };
                     result.push(PyObject::tuple(vec![ks, v.clone()]));
@@ -642,7 +642,7 @@ fn urllib_request_constructor(args: &[PyObjectRef]) -> PyResult<PyObjectRef> {
                     for (k, v) in hm.read().iter() {
                         if let HashableKey::Str(key) = k {
                             extra_headers.insert(
-                                HashableKey::str_key(key.clone()),
+                                HashableKey::str_key(key.as_ref().clone()),
                                 v.clone(),
                             );
                         }

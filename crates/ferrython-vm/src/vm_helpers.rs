@@ -1974,7 +1974,7 @@ impl VirtualMachine {
                 let m = map.read();
                 for (k, v) in m.iter() {
                     let key_str = match k {
-                        HashableKey::Str(s) => CompactString::clone(s),
+                        HashableKey::Str(s) => s.as_ref().clone(),
                         _ => CompactString::from(format!("{:?}", k)),
                     };
                     new_globals.insert(key_str, v.clone());
@@ -1988,7 +1988,7 @@ impl VirtualMachine {
                         let lm = lmap.read();
                         for (k, v) in lm.iter() {
                             let key_str = match k {
-                                HashableKey::Str(s) => CompactString::clone(s),
+                                HashableKey::Str(s) => s.as_ref().clone(),
                                 _ => CompactString::from(format!("{:?}", k)),
                             };
                             new_globals.insert(key_str, v.clone());
@@ -2058,7 +2058,7 @@ impl VirtualMachine {
                 let gm = globs_map.read();
                 for (k, v) in gm.iter() {
                     let key_str = match k {
-                        HashableKey::Str(s) => CompactString::clone(s),
+                        HashableKey::Str(s) => s.as_ref().clone(),
                         _ => CompactString::from(format!("{:?}", k)),
                     };
                     new_globals.insert(key_str, v.clone());
@@ -2084,7 +2084,7 @@ impl VirtualMachine {
                     let lm = locals_arc.read();
                     for (k, v) in lm.iter() {
                         let key_str = match k {
-                            HashableKey::Str(s) => CompactString::clone(s),
+                            HashableKey::Str(s) => s.as_ref().clone(),
                             _ => CompactString::from(format!("{:?}", k)),
                         };
                         new_globals.insert(key_str, v.clone());

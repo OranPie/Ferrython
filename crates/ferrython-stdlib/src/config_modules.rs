@@ -59,7 +59,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                                 let r = kw_map.read();
                                 for (k, v) in r.iter() {
                                     if let HashableKey::Str(ks) = k {
-                                        kwargs.insert(ks.clone(), v.clone());
+                                        kwargs.insert(ks.as_ref().clone(), v.clone());
                                     }
                                 }
                             }
@@ -214,7 +214,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                                             let r = kw_map.read();
                                             for (k, v) in r.iter() {
                                                 if let HashableKey::Str(ks) = k {
-                                                    kwargs.insert(ks.clone(), v.clone());
+                                                    kwargs.insert(ks.as_ref().clone(), v.clone());
                                                 }
                                             }
                                         }
@@ -271,7 +271,7 @@ fn create_argument_parser(ap_cls: &PyObjectRef, args: &[PyObjectRef]) -> PyResul
                     let r = kw_map.read();
                     for (k, v) in r.iter() {
                         if let HashableKey::Str(ks) = k {
-                            attrs.insert(ks.clone(), v.clone());
+                            attrs.insert(ks.as_ref().clone(), v.clone());
                         }
                     }
                 }
@@ -1053,7 +1053,7 @@ pub fn create_configparser_module() -> PyObjectRef {
         if args.is_empty() { return Ok(PyObject::list(vec![])); }
         if let Some(secs) = get_sections(&args[0]) {
             let keys: Vec<PyObjectRef> = secs.read().keys()
-                .filter_map(|k| if let HashableKey::Str(s) = k { Some(PyObject::str_val(CompactString::clone(s))) } else { None })
+                .filter_map(|k| if let HashableKey::Str(s) = k { Some(PyObject::str_val(s.as_ref().clone())) } else { None })
                 .collect();
             return Ok(PyObject::list(keys));
         }
@@ -1092,7 +1092,7 @@ pub fn create_configparser_module() -> PyObjectRef {
             if let Some(sec_dict) = r.get(&HashableKey::str_key(section)) {
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
                     let keys: Vec<PyObjectRef> = d.read().keys()
-                        .filter_map(|k| if let HashableKey::Str(s) = k { Some(PyObject::str_val(CompactString::clone(s))) } else { None })
+                        .filter_map(|k| if let HashableKey::Str(s) = k { Some(PyObject::str_val(s.as_ref().clone())) } else { None })
                         .collect();
                     return Ok(PyObject::list(keys));
                 }
@@ -1110,7 +1110,7 @@ pub fn create_configparser_module() -> PyObjectRef {
                 if let PyObjectPayload::Dict(d) = &sec_dict.payload {
                     let items: Vec<PyObjectRef> = d.read().iter()
                         .map(|(k, v)| {
-                            let key = if let HashableKey::Str(s) = k { PyObject::str_val(CompactString::clone(s)) } else { PyObject::none() };
+                            let key = if let HashableKey::Str(s) = k { PyObject::str_val(s.as_ref().clone()) } else { PyObject::none() };
                             PyObject::tuple(vec![key, v.clone()])
                         }).collect();
                     return Ok(PyObject::list(items));

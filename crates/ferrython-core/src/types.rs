@@ -375,8 +375,10 @@ pub enum HashableKey {
     Bool(bool),
     Int(PyInt),
     Float(OrderedFloat),
-    /// String key — inlined to avoid Box heap allocation per key.
-    Str(CompactString),
+    /// String key — boxed to keep HashableKey at 24 bytes (entries 40B vs CPython 24B).
+    /// Box adds one pointer indirection for hash/eq, but the 8-byte per-entry savings
+    /// improves cache utilization for table probing.
+    Str(Box<CompactString>),
     Bytes(Box<Vec<u8>>),
     Tuple(Box<Vec<HashableKey>>),
     FrozenSet(Box<Vec<HashableKey>>),
@@ -391,13 +393,13 @@ pub enum HashableKey {
 
 impl Eq for HashableKey {}
 
-const _HASHABLE_KEY_SIZE_CHECK: () = assert!(std::mem::size_of::<HashableKey>() <= 32);
+const _HASHABLE_KEY_SIZE_CHECK: () = assert!(std::mem::size_of::<HashableKey>() <= 24);
 
 impl HashableKey {
     /// Convenience constructor for string keys.
     #[inline]
     pub fn str_key(s: CompactString) -> Self {
-        HashableKey::Str(s)
+        HashableKey::Str(Box::new(s))
     }
 
     pub fn from_object(obj: &PyObjectRef) -> PyResult<Self> {
@@ -470,7 +472,7 @@ impl HashableKey {
     pub fn to_object(&self) -> PyObjectRef {
         match self {
             HashableKey::Int(n) => n.to_object(),
-            HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+            HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
             HashableKey::None => PyObject::none(),
             HashableKey::Bool(b) => PyObject::bool_val(*b),
             HashableKey::Float(f) => PyObject::float(f.0),

@@ -1402,7 +1402,7 @@ impl VirtualMachine {
                                     // Inline int key conversion (avoids nested match in to_object)
                                     Some(match hk {
                                         HashableKey::Int(PyInt::Small(n)) => PyObject::int(*n),
-                                        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+                                        HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
                                         _ => hk.to_object(),
                                     })
                                 } else { None }
@@ -1953,7 +1953,7 @@ impl VirtualMachine {
                                     let (hk, _) = map.get_index(idx).unwrap();
                                     Some(match hk {
                                         HashableKey::Int(PyInt::Small(n)) => PyObject::int(*n),
-                                        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+                                        HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
                                         _ => hk.to_object(),
                                     })
                                 } else { None }

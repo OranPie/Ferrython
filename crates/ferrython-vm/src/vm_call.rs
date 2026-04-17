@@ -2926,8 +2926,8 @@ impl VirtualMachine {
                                 for (k, _v) in kw {
                                     if let HashableKey::Str(fname) = k {
                                         if fname.as_str() != "defaults" && fname.as_str() != "module" && fname.as_str() != "rename" {
-                                            if !field_names.contains(&fname.clone()) {
-                                                field_names.push(fname.clone());
+                                            if !field_names.contains(&fname.as_ref().clone()) {
+                                                field_names.push(fname.as_ref().clone());
                                             }
                                         }
                                     }
@@ -3346,7 +3346,7 @@ impl VirtualMachine {
                                         if all_str && !rd.is_empty() {
                                             for (k, v) in rd.iter() {
                                                 if let HashableKey::Str(s) = k {
-                                                    extracted.push((s.clone(), v.clone()));
+                                                    extracted.push((s.as_ref().clone(), v.clone()));
                                                 }
                                             }
                                             true

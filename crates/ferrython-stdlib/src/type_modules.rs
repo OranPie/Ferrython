@@ -1348,7 +1348,7 @@ pub fn create_types_module() -> PyObjectRef {
                         let mut attrs = d.attrs.write();
                         for (k, v) in kw.read().iter() {
                             if let HashableKey::Str(s) = k {
-                                attrs.insert(s.clone(), v.clone());
+                                attrs.insert(s.as_ref().clone(), v.clone());
                             }
                         }
                     }

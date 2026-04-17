@@ -791,7 +791,7 @@ fn unpack_one_format(c: char, count: usize, data: &[u8], offset: &mut usize, res
 
 fn hashable_key_to_pyobj(k: &HashableKey) -> PyObjectRef {
     match k {
-        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+        HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
         HashableKey::Int(n) => PyObject::int(n.to_i64().unwrap_or(0)),
         HashableKey::Float(f) => PyObject::float(f.0),
         HashableKey::Bool(b) => PyObject::bool_val(*b),
@@ -982,7 +982,7 @@ fn pickle_extract_instance(
         if let PyObjectPayload::Dict(map) = &state.payload {
             for (k, v) in map.read().iter() {
                 if let HashableKey::Str(name) = k {
-                    data_pairs.push((name.clone(), v.clone()));
+                    data_pairs.push((name.as_ref().clone(), v.clone()));
                 }
             }
         }
@@ -1326,7 +1326,7 @@ fn pkl_reduce(callable: &PklStackItem, args: &PyObjectRef) -> PyResult<PyObjectR
                         let mut attrs = IndexMap::new();
                         for (k, v) in map_r.iter() {
                             if let HashableKey::Str(s) = k {
-                                attrs.insert(s.clone(), v.clone());
+                                attrs.insert(s.as_ref().clone(), v.clone());
                             }
                         }
                         let cls = PyObject::class(CompactString::from(name.as_str()), vec![], IndexMap::new());
@@ -3235,7 +3235,7 @@ pub fn create_shelve_module() -> PyObjectRef {
             w.insert(CompactString::from("keys"), PyObject::native_closure(
                 "Shelf.keys", move |_: &[PyObjectRef]| {
                     let keys: Vec<PyObjectRef> = d4.read().keys().map(|k| match k {
-                        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+                        HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
                         _ => PyObject::none(),
                     }).collect();
                     Ok(PyObject::list(keys))
@@ -3255,7 +3255,7 @@ pub fn create_shelve_module() -> PyObjectRef {
                 "Shelf.items", move |_: &[PyObjectRef]| {
                     let items: Vec<PyObjectRef> = d4c.read().iter().map(|(k, v)| {
                         let key = match k {
-                            HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+                            HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
                             _ => PyObject::none(),
                         };
                         PyObject::tuple(vec![key, v.clone()])
@@ -3401,7 +3401,7 @@ pub fn create_dbm_module() -> PyObjectRef {
             w.insert(CompactString::from("keys"), PyObject::native_closure(
                 "dbm.keys", move |_args: &[PyObjectRef]| {
                     let keys: Vec<PyObjectRef> = d4.read().keys().map(|k| match k {
-                        HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+                        HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
                         _ => PyObject::str_val(CompactString::from(format!("{:?}", k))),
                     }).collect();
                     Ok(PyObject::list(keys))
@@ -3535,7 +3535,7 @@ pub fn create_marshal_module() -> PyObjectRef {
                     buf.extend_from_slice(&(map.len() as u32).to_le_bytes());
                     for (k, v) in map.iter() {
                         let key_obj = match k {
-                            HashableKey::Str(s) => PyObject::str_val(CompactString::clone(s)),
+                            HashableKey::Str(s) => PyObject::str_val(s.as_ref().clone()),
                             HashableKey::Int(n) => PyObject::int(n.to_i64().unwrap_or(0)),
                             HashableKey::Bool(b) => PyObject::bool_val(*b),
                             _ => PyObject::none(),
