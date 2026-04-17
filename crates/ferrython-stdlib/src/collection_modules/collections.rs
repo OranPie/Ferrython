@@ -1705,9 +1705,43 @@ fn install_string_methods(attrs: &SharedFxAttrMap, data: &PyObjectRef) {
     });
     str_method!(attrs, "join", s_val, |s: &String, args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         if args.is_empty() { return Err(PyException::type_error("join() requires 1 argument")); }
-        let items = args[0].to_list()?;
-        let strs: Vec<String> = items.iter().map(|x| x.py_to_string()).collect();
-        Ok(PyObject::str_val(CompactString::from(strs.join(s))))
+        // Direct access to list/tuple data via data_ptr — avoids to_list() Vec clone
+        let (items_slice, _owned): (&[PyObjectRef], Option<Vec<PyObjectRef>>) = match &args[0].payload {
+            PyObjectPayload::List(v) => {
+                let vec = unsafe { &*v.data_ptr() };
+                (vec.as_slice(), None)
+            }
+            PyObjectPayload::Tuple(v) => (&**v, None),
+            _ => {
+                let list = args[0].to_list()?;
+                // Need owned Vec to live long enough — store it and take slice
+                (unsafe { std::slice::from_raw_parts(list.as_ptr(), list.len()) }, Some(list))
+            }
+        };
+        if items_slice.is_empty() {
+            return Ok(PyObject::str_val(CompactString::new("")));
+        }
+        // Single-allocation join: pre-compute total length, then build
+        let sep_len = s.len();
+        let mut total_len = 0usize;
+        for (i, item) in items_slice.iter().enumerate() {
+            if i > 0 { total_len += sep_len; }
+            if let PyObjectPayload::Str(sr) = &item.payload {
+                total_len += sr.as_str().len();
+            } else {
+                total_len += item.py_to_string().len();
+            }
+        }
+        let mut result = String::with_capacity(total_len);
+        for (i, item) in items_slice.iter().enumerate() {
+            if i > 0 { result.push_str(s); }
+            if let PyObjectPayload::Str(sr) = &item.payload {
+                result.push_str(sr.as_str());
+            } else {
+                result.push_str(&item.py_to_string());
+            }
+        }
+        Ok(PyObject::str_from_utf8_slice(result.as_bytes()))
     });
     str_method!(attrs, "isalpha", s_val, |s: &String, _args: &[PyObjectRef]| -> PyResult<PyObjectRef> {
         Ok(PyObject::bool_val(!s.is_empty() && s.chars().all(|c| c.is_alphabetic())))
